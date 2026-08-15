@@ -99,6 +99,13 @@ type entry struct {
 	Service    string    `json:"service,omitempty"`
 	Message    string    `json:"message"`
 	SbxVersion string    `json:"sbxVersion"`
+
+	// Event and DurationMs exist for machines. A consumer that wants to count wakes should
+	// not have to match "woke in 278ms" out of a sentence written for a human, because the
+	// sentence is allowed to change and the field is not. Both are omitted when unset, so
+	// every existing line is byte-identical, and neither is ever rendered on a terminal.
+	Event      string `json:"event,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
 // Version is stamped by main so that a JSON log line says which build produced it.
@@ -151,6 +158,15 @@ func (l *Logger) Align(width int) {
 }
 
 func (l *Logger) Log(lvl Level, sandbox, service, msg string) {
+	l.event(lvl, sandbox, service, "", 0, msg)
+}
+
+// Event logs the same line and tags it for a machine reading the JSON stream.
+func (l *Logger) Event(lvl Level, sandbox, service, event string, ms int64, format string, a ...any) {
+	l.event(lvl, sandbox, service, event, ms, fmt.Sprintf(format, a...))
+}
+
+func (l *Logger) event(lvl Level, sandbox, service, event string, ms int64, msg string) {
 	if lvl < l.level {
 		return
 	}
@@ -168,6 +184,8 @@ func (l *Logger) Log(lvl Level, sandbox, service, msg string) {
 			Service:    service,
 			Message:    msg,
 			SbxVersion: Version,
+			Event:      event,
+			DurationMs: ms,
 		})
 		if err != nil {
 			return

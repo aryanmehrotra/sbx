@@ -92,6 +92,12 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck -S warning scripts/*.sh scripts/lib/*.sh deploy/entrypoint.sh
+      - name: console module
+        run: |
+          cd console
+          go build ./...
+          go vet ./...
+          go test ./...
       - name: measurement maths
         run: bash scripts/lib/measure_test.sh
       - name: harness gating (injected failures)
