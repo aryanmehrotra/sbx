@@ -6,6 +6,7 @@ that you can run. Nothing is quoted from a single run.
 ```sh
 scripts/bench.sh 20                                  # wake latency, distribution
 go test -run '^$' -bench RoundTrip -count 12 .       # proxy overhead, for benchstat
+go test -run '^$' -bench Stream -count 10 ./internal/daemon   # bulk throughput
 ./sbx selftest                                       # the whole cycle, ~9s
 ./scripts/e2e.sh 3                                   # several sandboxes at once
 ./scripts/recovery.sh                                # kill the daemon, twice
@@ -65,6 +66,45 @@ table exists to prevent.
 ⚠️ **This measures round trips on a connection that is already open.** It is not what a
 client pays to *open* one. That is the next section, and for a long time it was the missing
 number.
+
+---
+
+## Throughput
+
+The proxy overhead above is a latency figure on a six-byte PING, and until now every
+benchmark and script in this repo moved six bytes. The workloads sbx actually fronts are
+databases and browsers: a `pg_dump`, a `COPY`, a large result set, a CDP screenshot. Whether
+sitting in that path cost 5% or 300% was simply unknown — the same position this project was
+in about the per-connection cost before somebody measured it.
+
+`go test -bench Stream -benchtime 30x -count 10`, 16 MiB per iteration, loopback:
+
+```
+  direct    n=10   median 12136 MB/s   min 6678   max 12451
+  proxied   n=10   median  6870 MB/s   min 5627   max  7643
+```
+
+**A bulk transfer runs at about 57% of direct — call it a 43% cost.** That is a real number
+and it is published because it is real, not because it is flattering. It is also, in
+practice, far above what the workloads behind it produce: 6.8 GB/s on loopback is an order of
+magnitude more than a Postgres `COPY` will feed you, so the binding constraint stays the
+database. It would matter for something that genuinely streams at memory speed.
+
+**A bigger buffer was tried and is worse**, which is the opposite of the obvious fix. Each
+direction copies through a 32 KiB buffer, and the reasonable suggestion is that fewer, larger
+syscalls would be cheaper:
+
+```
+   32 KiB   5274 MB/s      (what it does)
+   64 KiB   5541 MB/s      within the noise
+  256 KiB   2654 MB/s      half the throughput
+```
+
+So it stays at 32 KiB. On Linux there is a real avenue this does not take — `io.Copy` between
+two `*net.TCPConn` can reach `splice(2)` and avoid the userspace copy entirely — but the
+per-chunk `touch()` that records activity is exactly what defeats the type assertion
+`splice` depends on, and these numbers are from macOS, where `splice` does not exist. Worth
+revisiting with a Linux measurement; not worth guessing at.
 
 ---
 
