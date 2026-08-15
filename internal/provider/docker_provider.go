@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,9 +94,26 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 	}
 
 	for i := range maxSlots {
-		if !used[i] {
-			return i, nil
+		if used[i] {
+			continue
 		}
+
+		// Listed as free, and then actually checked. The container list says which slots are
+		// SPOKEN FOR; the ports say which are TAKEN, and between two concurrent creates those
+		// are different questions — the loser of a race is handed a gap that another create
+		// is about to fill, and finds out at `docker run` with "failed to set up container
+		// networking". Measured before this: four concurrent creates, three failures.
+		//
+		// Binding is the same question docker asks a moment later, so asking it here turns a
+		// raw runtime error into picking the next slot. It is a probe and not a reservation,
+		// so it narrows the race rather than closing it; the lock in cli/slotlock.go covers
+		// the rest for one machine, and nothing covers two machines driving one remote
+		// daemon, which is why this is best-effort by design.
+		if !d.backingPortsFree(i) {
+			continue
+		}
+
+		return i, nil
 	}
 
 	return 0, fmt.Errorf("all %d sandbox slots are in use; destroy one first", maxSlots)
@@ -642,4 +660,28 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	return nil
+}
+
+// backingPortsFree reports whether a slot's docker-published ports can be bound.
+//
+// The backing ports, not the public ones: docker publishes on 30000+, and the public ports
+// belong to the daemon, which may not be running when a sandbox is created. Probing the wrong
+// half of the pair is a check that always passes.
+//
+// Only the first few of the block are tried. A slot is claimed by its first service, so a
+// collision shows up there, and binding twenty sockets per candidate slot to be thorough
+// would cost more than the race does.
+func (d *dockerProvider) backingPortsFree(slot int) bool {
+	for i := range 3 {
+		port := backingBase + slot*blockSize + i
+
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err != nil {
+			return false
+		}
+
+		_ = ln.Close()
+	}
+
+	return true
 }

@@ -39,6 +39,11 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		return err
 	}
 
+	// Held only until the first container exists — see slotlock.go. After that the slot is
+	// claimed by something every other create can see.
+	releaseSlot := lockSlots()
+	defer releaseSlot()
+
 	slot, err := p.AllocSlot(ctx, sandbox)
 	if err != nil {
 		return err
@@ -91,6 +96,10 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		if err := createOne(ctx, p, sandbox, slot, start, name, svc, specDir, iso); err != nil {
 			return err
 		}
+
+		// The slot now belongs to a real container, so nothing else can be handed it. Every
+		// remaining service — pulls, health checks, init — proceeds unserialised.
+		releaseSlot()
 
 		created = append(created, p.Endpoints(sandbox, name, slot, start, svc.Ports)...)
 	}

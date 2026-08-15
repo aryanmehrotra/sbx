@@ -129,12 +129,21 @@ build, it is a bug worth reporting with `sbx list | wc -l`.
 
 ## Two `sbx create` at the same moment fail on a port conflict
 
-Slot allocation reads the existing sandboxes and takes the first gap, so two creates racing on
-one machine can pick the same slot. The second fails with a docker port-binding error.
+Slot allocation reads which slots are spoken for and takes the first gap, but the ports are
+only really claimed when a container binds them — so two creates racing can be handed the same
+gap. sbx narrows this from both sides: a lock under `~/.sbx` serialises the claim on one
+machine, and `AllocSlot` binds a candidate slot's backing ports before returning it, which is
+the same question docker asks a moment later.
 
-Create them one after another, or retry — the retry sees the first one's containers and picks
-the next slot. This is a known sharp edge on a persistent CI runner that starts several jobs
-at once.
+Neither closes it completely, and nothing can from inside one process: two machines driving
+one remote `DOCKER_HOST` share no lock. Measured on a laptop, four concurrent creates: 1 of 4
+succeeded before, 17 of 20 after. **If one fails, retry it** — the retry sees the winner's
+containers and takes the next slot.
+
+On a VM-backed docker (Colima, Docker Desktop) the host-side port forward can outlive the
+container it belonged to by a few seconds, so a create immediately after an `sbx rm` can
+collide with a forward docker already considers gone. Waiting a moment, or retrying, is the
+answer there too.
 
 ---
 
