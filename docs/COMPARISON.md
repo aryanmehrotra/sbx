@@ -299,7 +299,7 @@ documentation leads with, and this is where sbx has nothing rather than somethin
 | **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, filesystem only | ● 5–30 ms, with RAM | ● | ● | ◐ | ○ |
 | **Prebuilt templates, versioned and cached** | ◐ five, embedded, not built | ● | ● 24 h cache | ● | ● | ● |
 | **Declarative image builder** | ○ bring your own image | ◐ | ● | ● | ◐ | ● |
-| **Interactive access: SSH · PTY · VNC** | ◐ `exec` only | ◐ | ● all three | ◐ | ◐ | ● |
+| **Interactive access: SSH · PTY · VNC** | ◐ `exec -t` gives a PTY; no SSH, no VNC | ◐ | ● all three | ◐ | ◐ | ● |
 | **Volumes shared between sandboxes** | ○ one per service | ● NFS/block | ● subpath mounts | ● | ◐ | ● |
 | **Language SDKs** (Python, JS) | ○ CLI only | ● | ● | ● | ● | ● |
 | **Multiple regions / hosts** | ○ one machine | ● | ● | ● | ● | ● |
