@@ -425,3 +425,19 @@ arm on this run; and zeropod entirely.
 an idle laptop and a wake on one that is paging are not the same measurement. Several
 figures in this project's history were taken during a period when the VM had 107 MB free and
 a load average of 20; they were wrong by an order of magnitude and are not in this file.
+
+**A worked example, from the session that wrote most of this page.** After several hours of
+end-to-end suites the same machine sat at load average 9 with 30 containers and 484 volumes,
+and `bench.sh 20` returned a median of 262 ms with a standard deviation of 314 ms — against
+the 191 ms / stdev 24 ms above. The number above was not replaced, for two reasons worth
+stating:
+
+- **A noisy measurement does not refute a clean one.** The stdev is thirteen times larger;
+  what it measures is the machine, not the wake.
+- **Whether the code regressed is a different question, and it has a different answer.** An
+  interleaved A/B of the two builds on that same loaded machine — order alternating, n=14 —
+  showed no difference outside the noise in either direction. A paired comparison survives
+  conditions that destroy an absolute one, which is why the harness is built that way.
+
+So the honest position is: 191 ms stands as measured under the conditions named beside it, and
+nothing since has been shown to move it.
