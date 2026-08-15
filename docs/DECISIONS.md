@@ -265,3 +265,41 @@ the API stays read-only for that reason as much as for the lifecycle one.
 **"Hosted Postgres, operated for you" stays in the use-something-else table permanently.**
 Neon is the answer there and always will be — not because sbx cannot branch and scale to
 zero, but because "somebody else runs it" is the whole product and this one is run by you.
+
+---
+
+### A built image is keyed by its content, never by its age
+
+`build:` names the image it produces `sbx-build-<sha256 of the context>`, so the second
+create with an unchanged context finds the image already there and does no build at all.
+
+The alternative — and what Daytona does — is to expire the cache on a timer, 24 hours in its
+case. A clock is wrong in both directions at once: it rebuilds a context that has not changed
+since yesterday, and it reuses one that changed five minutes ago if the entry is still young.
+Content-addressing has neither failure. Change a byte and the tag changes; change nothing and
+the tag is the same next month.
+
+What goes into the hash is the part that decides whether this works in practice:
+
+**Not timestamps.** A fresh `git clone` rewrites every mtime, so an mtime-keyed cache misses
+on every CI runner — which is precisely the machine where the cache is worth the most, and
+the one where the developer never sees it failing.
+
+**File modes, yes.** A script that stops being executable is a different image. Hashing only
+contents would make that a silent cache hit that fails at runtime, which is worse than a
+rebuild.
+
+**`.git` and `node_modules`, no.** Otherwise the tag changes on every commit whether or not
+any build input did, and the cache never hits twice.
+
+**Symlinks are skipped**, since the target is either already inside the context or outside
+it, and following one out of the context would put the host's filesystem into the key.
+
+`image` and `build` together is an error rather than a precedence rule. Whichever one we
+picked, half of all readers would guess the other, and the cost of guessing wrong is running
+an image the file does not appear to describe.
+
+Docker only. Building in a cluster means pushing to a registry the nodes can pull from —
+credentials, a registry address, a retention policy — none of which sbx can assume without
+becoming an opinionated CI system. `BuilderFor` refuses on kubernetes and says why, which is
+the same negotiated-capability rule as snapshots.

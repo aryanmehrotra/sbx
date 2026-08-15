@@ -64,6 +64,31 @@ table exists to prevent.
 
 ---
 
+## Build cache
+
+`build:` tags an image by a hash of its context, so the question is what a cache hit actually
+saves. `sbx create`, wall clock, n=10 each, same machine, interleaved with the baseline:
+
+```
+  cold cache (builds)       n=10   median  1070 ms   min  860 ms   max 2133 ms
+  warm cache (skipped)      n=10   median   590 ms   min  360 ms   max 2241 ms
+  image: (pull, no build)   n=10   median   798 ms   min  493 ms   max 1092 ms
+```
+
+**A build costs about 480 ms here; a cache hit costs nothing measurable.** The warm median
+came out 208 ms *below* the plain-`image:` baseline, which is not a result — the runs spread
+360–2241 ms, so a 208 ms difference is well inside the jitter and the honest statement is
+that a cache hit and a plain image create are indistinguishable. That is the claim worth
+making anyway: the point of hashing the context is that the second create does no build work
+at all, not that it somehow beats pulling.
+
+The 480 ms is this Dockerfile — one `RUN echo` on `nginx:alpine`. A real one is seconds to
+minutes, which is the whole reason the cache key is content and not a clock: Daytona's
+24-hour expiry rebuilds work that has not changed and reuses work that has, and both errors
+cost the full build.
+
+---
+
 ## Memory
 
 Both containers fresh, both idle, same image — which is the only comparison that means

@@ -54,6 +54,13 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 
 		start, _ := sp.StartIndex(layout, name)
 
+		// Resolve a build into an image first: everything downstream — the provider, the
+		// labels, the wake path — only ever knows about images.
+		svc, err = buildIfNeeded(ctx, p, specDir, name, svc)
+		if err != nil {
+			return err
+		}
+
 		if err := createOne(ctx, p, sandbox, slot, start, name, svc, specDir, iso); err != nil {
 			return err
 		}

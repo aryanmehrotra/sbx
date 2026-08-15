@@ -31,8 +31,27 @@ type Spec struct {
 }
 
 // Service is one wakeable container.
+// Build describes an image to build instead of pull.
+//
+// The alternative today is that everyone writes their own Dockerfile, builds it by hand,
+// tags it themselves and remembers to rebuild it — which is a build system every user
+// reimplements badly. Daytona ships one and caches it; this is the same idea with the
+// caching done by content rather than by a clock.
+type Build struct {
+	// Context is the directory to build, relative to the spec.
+	Context string `json:"context"`
+
+	// Dockerfile is relative to Context. Empty means "Dockerfile".
+	Dockerfile string `json:"dockerfile,omitempty"`
+}
+
 type Service struct {
+	// Image is what to run. Exactly one of Image or Build is required — an image with no
+	// build is a pull, a build with no image is built and tagged by its own content.
 	Image string `json:"image"`
+
+	// Build makes the image instead of pulling it.
+	Build *Build `json:"build,omitempty"`
 
 	// Ports are container-side ports to expose. Public and backing ports are assigned
 	// from the sandbox's slot, never chosen here: two repos that both picked 5432 would
@@ -100,8 +119,19 @@ type Service struct {
 }
 
 func (s Service) validate(name string) error {
-	if strings.TrimSpace(s.Image) == "" {
-		return fmt.Errorf("service %q: image is required", name)
+	hasImage, hasBuild := strings.TrimSpace(s.Image) != "", s.Build != nil
+
+	switch {
+	case !hasImage && !hasBuild:
+		return fmt.Errorf("service %q: needs an image or a build", name)
+	case hasImage && hasBuild:
+		// Refused rather than picking one. Which of the two wins is exactly the kind of
+		// thing a reader would guess wrong, and guessing here means running a different
+		// image than the file appears to describe.
+		return fmt.Errorf("service %q: has both image and build — one or the other, "+
+			"since a built image is tagged from its own content", name)
+	case hasBuild && strings.TrimSpace(s.Build.Context) == "":
+		return fmt.Errorf("service %q: build needs a context directory", name)
 	}
 
 	if len(s.Ports) == 0 {

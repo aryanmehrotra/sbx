@@ -59,7 +59,8 @@ script that already knows a port.
 
 | field | required | does |
 |---|---|---|
-| `image` | ● | Any container image |
+| `image` | ●* | Any container image |
+| `build` | ●* | Build one instead: `{ "context": "./app", "dockerfile": "Dockerfile" }` |
 | `ports` | ● | Container-side ports. The public and backing ports are **assigned from the sandbox's slot**, never chosen here |
 | `health` | | A command run **inside** the container — how sbx knows it is serving |
 | `env` | | Environment variables |
@@ -72,6 +73,41 @@ script that already knows a port.
 | `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
 | `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
+
+### `image` or `build` — exactly one
+
+\* Every service needs something to run. Give it an `image` to pull, or a `build` to make:
+
+```json
+{ "build": { "context": "./app" }, "ports": [3000] }
+```
+
+`context` is relative to the spec file. `dockerfile` defaults to `Dockerfile` and is relative
+to the context. Both is an error rather than a precedence rule — which of the two wins is
+exactly the thing a reader guesses wrong, and guessing means running an image the file does
+not appear to describe.
+
+**The tag is a hash of the context**, so an unchanged context is a cache hit and no build
+runs at all:
+
+```
+$ sbx create feat-x            # first time
+  web          building…
+$ sbx create feat-y            # same context
+  web          build cached (sbx-build-bc02342a9ba51b10)
+```
+
+Content, not a clock. Daytona expires build caches after 24 hours, which both rebuilds work
+that has not changed and reuses work that has. Hashing the inputs is right in both
+directions: change one byte and you get a different tag, change nothing and you get the same
+one next month. Timestamps are excluded for the same reason — a fresh `git clone` rewrites
+every mtime, so a time-based key would miss on every CI runner, which is exactly where the
+cache is worth the most. File modes are included, because a script that stops being
+executable is a different image. `.git` and `node_modules` are skipped.
+
+Docker only. In a cluster, building means pushing to a registry the nodes can pull from —
+credentials and a registry sbx has no business assuming — so `sbx create` says so and stops
+rather than half-working.
 
 ### Why ports aren't yours to choose
 

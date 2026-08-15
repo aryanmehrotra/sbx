@@ -263,3 +263,29 @@ func CollectorFor(p Provider) (Collector, error) {
 
 	return c, nil
 }
+
+// Builder makes an image from a directory instead of pulling one.
+//
+// Optional, and kubernetes does not implement it on purpose: building in a cluster means
+// pushing to a registry the cluster can pull from, which needs credentials and a decision
+// about where images live. That is the operator's, and DECISIONS.md already records the
+// same reasoning for snapshots.
+type Builder interface {
+	// Build produces tag from contextDir, using dockerfile relative to it.
+	Build(ctx context.Context, tag, contextDir, dockerfile string) error
+
+	// HasImage reports whether tag is already present, so an unchanged context is free.
+	HasImage(ctx context.Context, tag string) (bool, error)
+}
+
+// BuilderFor returns the provider's build support, or a refusal naming the backend.
+func BuilderFor(p Provider) (Builder, error) {
+	b, ok := p.(Builder)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot build images: in a cluster that means "+
+			"pushing to a registry it can pull from, which needs credentials and a decision "+
+			"about where images live — build it yourself and name it with `image`", p.Name())
+	}
+
+	return b, nil
+}

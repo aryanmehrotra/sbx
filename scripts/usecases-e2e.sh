@@ -362,6 +362,79 @@ JSON
     || ok "env refuses an unknown sandbox"
 fi
 
+# ── building an image instead of pulling one ──────────────────────────────────
+if want "build"; then
+  case_ "build: your own Dockerfile, and an unchanged context does not rebuild"
+
+  # The marker carries $TAG, so this run's context hashes to a tag no previous run produced.
+  # Otherwise "the first create builds" quietly depends on cleanup having worked last time,
+  # and the case passes or fails on leftover docker state rather than on the code.
+  mkdir -p "$WORK/ctx"
+  cat > "$WORK/ctx/Dockerfile" <<DOCKER
+FROM nginx:alpine
+RUN echo "marker-$TAG-v1" > /usr/share/nginx/html/index.html
+DOCKER
+  cat > "$WORK/build.json" <<JSON
+{ "version": 1, "services": { "web": { "build": { "context": "ctx" }, "ports": [80],
+  "health": "wget -qO- http://127.0.0.1/ >/dev/null" } }, "exports": { "WEB_PORT": "web:80" } }
+JSON
+
+  out=$("$SBX" create "$TAG-b1" --spec "$WORK/build.json" 2>&1)
+  if echo "$out" | grep -q 'building'; then
+    ok "the first create builds"
+  else
+    bad "the first create did not build" "$out"
+  fi
+
+  # The Dockerfile's own content has to be what is served, or something else was run.
+  # Through the daemon, the way anyone actually reaches a sandbox.
+  "$SBX" serve --idle 10m --refresh 5s >/dev/null 2>&1 &
+  DAEMON=$!
+  sleep 3
+
+  eval "$("$SBX" env "$TAG-b1" --spec "$WORK/build.json" 2>/dev/null)"
+  curl -sf -m 30 "http://127.0.0.1:${WEB_PORT:-0}/" 2>/dev/null | grep -q "marker-$TAG-v1" \
+    && ok "it serves what the Dockerfile put there" \
+    || bad "the built image did not serve its own content"
+
+  # The whole point: same context, no build. Not "a faster build" — no build.
+  "$SBX" rm "$TAG-b1" >/dev/null 2>&1
+  out=$("$SBX" create "$TAG-b2" --spec "$WORK/build.json" 2>&1)
+  echo "$out" | grep -q 'cached' && ok "an unchanged context is a cache hit" \
+    || bad "an unchanged context rebuilt" "$out"
+
+  # And the other half, or the cache would serve a stale image forever.
+  sed -i.bak "s/marker-$TAG-v1/marker-$TAG-v2/" "$WORK/ctx/Dockerfile"
+  "$SBX" rm "$TAG-b2" >/dev/null 2>&1
+  out=$("$SBX" create "$TAG-b3" --spec "$WORK/build.json" 2>&1)
+  echo "$out" | grep -q 'building' && ok "a changed context rebuilds" \
+    || bad "a changed context was served from cache" "$out"
+
+  # b3 was created after the daemon started, so give the daemon a refresh interval to notice
+  # it. Unset first: a stale WEB_PORT from b1 would point at a sandbox that no longer exists
+  # and fail for a reason that has nothing to do with the build.
+  unset WEB_PORT
+  sleep 7
+
+  eval "$("$SBX" env "$TAG-b3" --spec "$WORK/build.json" 2>/dev/null)"
+  curl -sf -m 30 "http://127.0.0.1:${WEB_PORT:-0}/" 2>/dev/null | grep -q "marker-$TAG-v2" \
+    && ok "the rebuild is what gets served" \
+    || bad "the rebuilt image did not serve the new content"
+
+  kill "$DAEMON" 2>/dev/null; DAEMON=""
+
+  cat > "$WORK/both.json" <<'JSON'
+{ "version": 1, "services": { "web": { "image": "nginx:alpine", "build": { "context": "ctx" },
+  "ports": [80] } }, "exports": { "WEB_PORT": "web:80" } }
+JSON
+  "$SBX" create "$TAG-b4" --spec "$WORK/both.json" >/dev/null 2>&1 \
+    && bad "a service with both image and build was accepted" \
+    || ok "image and build together are refused rather than ranked"
+
+  for s in "$TAG-b1" "$TAG-b2" "$TAG-b3" "$TAG-b4"; do "$SBX" rm "$s" >/dev/null 2>&1; done
+  docker rmi -f $(docker images -q 'sbx-build-*' 2>/dev/null) >/dev/null 2>&1
+fi
+
 # ── templates ─────────────────────────────────────────────────────────────────
 if want "templates"; then
   case_ "templates: an agent can start one with nothing on disk"

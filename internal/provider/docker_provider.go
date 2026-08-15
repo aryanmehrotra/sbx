@@ -392,6 +392,34 @@ func (d *dockerProvider) CopyVolume(_ context.Context, src, dst string) error {
 	return nil
 }
 
+func (d *dockerProvider) Build(_ context.Context, tag, contextDir, dockerfile string) error {
+	out, err := d.docker("build", "-t", tag, "-f", filepath.Join(contextDir, dockerfile), contextDir)
+	if err != nil {
+		return fmt.Errorf("building %s: %w: %s", tag, err, lastLines(out, 12))
+	}
+
+	return nil
+}
+
+func (d *dockerProvider) HasImage(_ context.Context, tag string) (bool, error) {
+	if _, err := d.docker("image", "inspect", tag); err != nil {
+		return false, nil // absent, not broken: inspect fails the same way for both
+	}
+
+	return true, nil
+}
+
+// lastLines keeps a build failure readable. Docker's output is long and the reason is at
+// the end; printing all of it buries the line someone needs.
+func lastLines(s string, n int) string {
+	ls := strings.Split(strings.TrimSpace(s), "\n")
+	if len(ls) > n {
+		ls = ls[len(ls)-n:]
+	}
+
+	return strings.Join(ls, "\n")
+}
+
 func (d *dockerProvider) VolumeFor(sandbox, service string) string {
 	return volumeName(sandbox, service)
 }
