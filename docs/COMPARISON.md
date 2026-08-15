@@ -295,7 +295,7 @@ documentation leads with, and this is where sbx has nothing rather than somethin
 
 | | sbx | E2B | Daytona | Modal | Cloudflare | Northflank |
 |---|---|---|---|---|---|---|
-| **Network egress control** — allow/deny by IP, CIDR, domain | ○ **nothing** | ● wildcards | ● firewall | ● | ● | ● |
+| **Network egress control** — allow/deny by IP, CIDR, domain | ◐ `egress: deny`, all-or-nothing | ● wildcards | ● firewall | ● | ● | ● |
 | **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, filesystem only | ● 5–30 ms, with RAM | ● | ● | ◐ | ○ |
 | **Prebuilt templates, versioned and cached** | ◐ five, embedded, not built | ● | ● 24 h cache | ● | ● | ● |
 | **Declarative image builder** | ○ bring your own image | ◐ | ● | ● | ◐ | ● |
@@ -306,11 +306,14 @@ documentation leads with, and this is where sbx has nothing rather than somethin
 
 ● yes · ◐ partial or conditional · ○ no
 
-**Read that table before the one above it.** Eight rows, and sbx scores nothing on four of
-them. The most serious is the first: sbx has **no network controls whatsoever** — a sandbox
-can reach anything the host can. For a tool that talks about agents running code, that is a
-gap, not a nuance, and it is the one row here that is a security property rather than a
-convenience.
+**Read that table before the one above it.** Eight rows, and sbx scores nothing on three of
+them.
+
+The first row was the most serious and is now half closed. `egress: "deny"` gives a service
+no route off the host while leaving it reachable and wakeable — verified in both directions.
+What it is not is what the rivals actually ship: allow and deny **by domain, CIDR and IP**.
+All-or-nothing is a real control and a coarse one, and the gap between it and a wildcard
+allow-list is where a filtering proxy would have to go.
 
 The second is nearly as important and is not the same thing as CRIU: E2B can spawn *many*
 sandboxes from one snapshot in tens of milliseconds. That is a different capability from

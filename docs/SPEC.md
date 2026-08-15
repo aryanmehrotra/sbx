@@ -68,6 +68,7 @@ script that already knows a port.
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `optional` | | Not created unless `--optional` — but still reserves its ports |
+| `egress` | | `"deny"` — no routed egress. It can still be reached, and can still talk to its own sandbox |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
 
 ### Why ports aren't yours to choose
@@ -94,6 +95,29 @@ docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
 
 Schemas, users, seed data. A woken container already has whatever this created, so re-running
 it would be at best wasted and at worst destructive.
+
+### `egress: "deny"` blocks the way out, not the way in
+
+```json
+{ "image": "node:22", "ports": [3000], "egress": "deny" }
+```
+
+Docker gets a per-sandbox bridge with IP masquerade disabled: no NAT off the host, so nothing
+routed leaves — and docker still publishes ports into it, so waking is untouched. Verified
+both directions: the service could not fetch `example.com`, and it still woke on a connection
+and answered 200.
+
+The obvious alternatives do not work and were tried: `--internal` and `--network none` both
+block egress **and** stop docker publishing the port, producing a sandbox that can never be
+woken. → [DECISIONS.md](DECISIONS.md)
+
+It is **not a domain allow-list**. Docker has no primitive for that; doing it properly needs a
+filtering proxy in the data path, which is a component with a lifecycle rather than a flag.
+DNS still resolves — docker's resolver sits on the bridge and needs no route out.
+
+The kubernetes provider **refuses** a service that declares it rather than starting one with
+egress open: the cluster answer is a NetworkPolicy, only some CNIs enforce them, and a
+security control that silently did nothing is worse than one that says no.
 
 ### `optional` still reserves its ports
 

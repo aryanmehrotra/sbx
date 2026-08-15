@@ -217,3 +217,28 @@ The provider-neutral shape is a spec field saying *what* is wanted — deny egre
 backend implementing it natively or refusing: NetworkPolicy in a cluster, and for docker a
 primitive that does not currently exist, since `--internal` and `--network none` both stop
 port publishing and make a sandbox that can never be woken.
+
+### Egress is denied by a bridge without NAT, not by a firewall sbx writes
+
+`egress: "deny"` puts the service on a per-sandbox bridge created with
+`com.docker.network.bridge.enable_ip_masquerade=false`. No masquerade means no NAT off the
+host, so nothing routed leaves — and docker still publishes ports into that bridge, so the
+wake path is untouched. Measured: published port answered 200, an outbound fetch was blocked,
+and the service still slept and woke on a connection.
+
+Two rejected approaches, both tried:
+
+**`--internal` and `--network none`** block egress and also stop docker publishing the port
+at all, so the sandbox can never be woken. A security control that breaks the thing it
+protects will be turned on by someone who then trusts it.
+
+**iptables rules in the `DOCKER-USER` chain**, applied by sbx launching a privileged
+container. This would have worked on the machine it was written on. It is also sbx reaching
+around the abstraction it claims to have and mutating a host firewall — invasive, untestable
+where it cannot run, and correct only while docker is arranged one particular way. The bridge
+option asks docker to do it, which is the difference between configuring a backend and
+operating on the host behind its back.
+
+The kubernetes provider refuses the field rather than ignoring it. Its answer is a
+NetworkPolicy, only some CNIs enforce them, and a control that silently did nothing is worse
+than one that says no.

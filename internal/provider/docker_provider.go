@@ -128,6 +128,14 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 ) error {
 	cn := containerName(sandbox, service)
 
+	// Before the container joins it, and only when something asks. Fails closed: a service
+	// that declared "deny" and could not get the network must not start with egress open.
+	if svc.Egress == spec.EgressDeny {
+		if err := d.ensureEgressNetwork(sandbox); err != nil {
+			return err
+		}
+	}
+
 	if _, err := d.docker("inspect", cn); err == nil {
 		fmt.Printf("  %-12s already exists\n", service)
 		return nil
@@ -159,6 +167,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	// paraphrase.
 	if svc.GPUs != "" {
 		args = append(args, "--gpus", svc.GPUs)
+	}
+
+	if svc.Egress == spec.EgressDeny {
+		args = append(args, "--network", egressNetwork(sandbox))
 	}
 
 	for i := range eps {
@@ -207,6 +219,38 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	_, err := d.docker(args...)
 
 	return err
+}
+
+func egressNetwork(sandbox string) string { return "sbx-noegress-" + sandbox }
+
+// ensureEgressNetwork creates a bridge with IP masquerade disabled.
+//
+// Without masquerade there is no NAT off the host, so nothing routed leaves — and docker
+// still publishes ports into it, so the wake path is untouched. That last part is why this
+// works and the obvious alternatives do not: `--internal` and `--network none` both block
+// egress AND stop publishing, which produces a sandbox that can never be woken.
+//
+// Measured 2026-08-15: published port answered 200, external fetch blocked, docker's
+// embedded DNS still resolved — it sits on the bridge and needs no route out.
+func (d *dockerProvider) ensureEgressNetwork(sandbox string) error {
+	name := egressNetwork(sandbox)
+
+	if _, err := d.docker("network", "inspect", name); err == nil {
+		return nil
+	}
+
+	if _, err := d.docker("network", "create",
+		"-o", "com.docker.network.bridge.enable_ip_masquerade=false",
+		"--label", labelSandbox+"="+sandbox, name); err != nil {
+		// Racing another service of the same sandbox is not a failure.
+		if _, e := d.docker("network", "inspect", name); e == nil {
+			return nil
+		}
+
+		return fmt.Errorf("service declared egress deny and the network could not be created: %w", err)
+	}
+
+	return nil
 }
 
 func dockerRuntime(iso Isolation) string {
@@ -492,6 +536,13 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 		if _, err := d.docker("volume", "rm", volumeName(sandbox, u.Service)); err == nil {
 			fmt.Printf("  removed volume %s\n", volumeName(sandbox, u.Service))
 		}
+	}
+
+	// After the containers: docker refuses to remove a network still in use. A sandbox that
+	// never declared egress deny has none, and the failure is ignored — this is cleanup, and
+	// reporting "no such network" would make every ordinary rm look like it went wrong.
+	if _, err := d.docker("network", "rm", egressNetwork(sandbox)); err == nil {
+		fmt.Printf("  removed network %s\n", egressNetwork(sandbox))
 	}
 
 	return nil

@@ -105,6 +105,15 @@ func activatorPort(slot, ordinal, i int) int {
 func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal int, service string,
 	svc spec.Service, _ []Endpoint, _ string, iso Isolation,
 ) error {
+	// Refused, not ignored. The cluster answer is a NetworkPolicy, which needs a CNI that
+	// enforces them — many do not — and silently leaving a service open when its spec said
+	// deny is the one outcome a security control must never produce.
+	if svc.Egress == spec.EgressDeny {
+		return fmt.Errorf("service %q declares egress deny, which the kubernetes provider "+
+			"does not implement yet: the cluster answer is a NetworkPolicy and it is only "+
+			"enforced by some CNIs, so sbx will not pretend to have applied one", service)
+	}
+
 	name := kubeName(sandbox, service)
 
 	if _, err := k.kc("", "get", "deployment", name); err == nil {

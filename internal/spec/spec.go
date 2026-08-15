@@ -63,6 +63,22 @@ type Service struct {
 	// queries the analytics store should not pay for one.
 	Optional bool `json:"optional,omitempty"`
 
+	// Egress says whether this service may reach the network beyond the host.
+	//
+	//	""      unset — whatever the backend does by default, which is what every
+	//	        existing spec already gets
+	//	"deny"  no routed egress. It can still be reached, and can still talk to the
+	//	        rest of its own sandbox
+	//
+	// Named for the intent, not the mechanism: docker does it with a bridge that has IP
+	// masquerade disabled, a cluster does it with a NetworkPolicy, and a backend that
+	// cannot do it at all must refuse rather than quietly leave the service open.
+	//
+	// It is not a domain allow-list. Docker has no primitive for that and doing it
+	// properly needs a filtering proxy in the data path — a component with a lifecycle,
+	// not a flag. Claiming it with anything less would be a control that does not control.
+	Egress string `json:"egress,omitempty"`
+
 	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.
@@ -84,8 +100,20 @@ func (s Service) validate(name string) error {
 		}
 	}
 
+	// A typo in a security control must fail rather than silently leave egress open.
+	// "den" is not "deny", and the difference is a sandbox that can reach the internet.
+	switch s.Egress {
+	case "", EgressDeny:
+	default:
+		return fmt.Errorf("service %q: egress %q is not valid — the only value is %q",
+			name, s.Egress, EgressDeny)
+	}
+
 	return nil
 }
+
+// EgressDeny is the only egress value, because "allow" is the absence of the field.
+const EgressDeny = "deny"
 
 // LoadSpec reads and validates a sandbox.json.
 func LoadSpec(path string) (*Spec, error) {
