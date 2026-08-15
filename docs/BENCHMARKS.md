@@ -162,44 +162,49 @@ number, and each exists because of a specific way this kind of benchmark lies:
 by design — that is a *result*. zeropod has none because nothing yet distinguishes
 checkpointed from running — that is not.
 
-### First run · 2026-08-15 — *not the comparison table*
+### Measured · 2026-08-15
 
-⚠️ **This is a harness smoke run, not the cross-contender comparison.** The plan gates that
-comparison on a zeropod probe (`ubuntu-latest`/amd64, where its arm64-on-macOS caveat does not
-apply) which **has not been run**. Publishing a field comparison that measures the two weaker
-rivals and omits the one that beats us would be the flattering outcome even with every printed
-number honest — so no such table is published here yet.
+Conditions printed by the run, copied from the artifact rather than remembered:
+darwin/arm64, **host load 5.37**, 285 MB free in the VM, docker 29.2.1, **noise floor
+380 µs/req ±90 µs**. Idle windows differ per arm and print too — sbx 5 s, Sablier 60 s,
+Lazytainer 10 s. This is still a loaded laptop; the numbers below are a comparison taken
+under one set of conditions, not a specification.
 
-⚠️ **Not headline numbers either.** The host was at load 6.95 with 268 MB free in the VM — the
-condition the next section says produced figures "wrong by an order of magnitude". Below is
-what the harness did and what it refused to do, nothing more.
+| contender | target | n | median | paired delta | **first attempt served** | overhead | resident |
+|---|---|---|---|---|---|---|---|
+| **sbx** | nginx | 5 | **174 ms** | **116 ms** | **5/5** | 33 µs/req ±21 µs | 13.9 MB `ps` |
+| **sbx** | postgres | 5 | 931 ms | 511 ms | **5/5** | n/a | 13.0 MB `ps` |
+| Lazytainer | postgres | 5 | 3286 ms | 3198 ms | **0/5** | n/a | 10.2 MB `docker stats` |
+| Lazytainer | nginx | — | SKIPPED | — | — | — | could not be stood up on this run |
+| Sablier | nginx | — | SKIPPED | — | — | — | middleware did not block: a request to a stopped target failed instead of waiting |
+| Sablier | postgres | — | **N/A** | — | — | — | HTTP-only by design — a middleware on an HTTP request cannot wake a `psql` client |
+| zeropod | both | — | omitted | — | — | — | no observable distinguishes checkpointed from running |
 
-| contender | target | status | n | median | paired delta | what comes back |
-|---|---|---|---|---|---|---|
-| **sbx** | nginx | OK | 5 | 398 ms | **191 ms** | disk-warm, process cold |
-| **sbx** | postgres | OK | 5 | 683 ms | **504 ms** | disk-warm, process cold |
-| Sablier | nginx | SKIPPED | — | — | — | middleware did not block: a request to a stopped target failed rather than waiting |
-| Sablier | postgres | **N/A** | — | — | — | HTTP-only by design — a middleware on an HTTP request cannot wake a `psql` client |
-| Lazytainer | both | SKIPPED | — | — | — | never slept in 75 s; no group discovered from `LAZYTAINER_GROUP_*`, config format unverified |
+**The column that matters is "first attempt served", not the milliseconds.**
 
-**zeropod appears in no row at all, deliberately.** It CRIU-checkpoints while the pod stays
-phase `Running`, so neither `docker inspect` nor `kubectl get pod` can express "asleep". With
-no gate, every sample would either void (flattering by omission) or record a *warm* request as
-a wake (worse). A `SKIPPED` row would read as a bad day; the true fact is that the strongest
-rival's mechanism cannot currently be gated at all, and a dash in a table does not say that.
+Lazytainer wakes on a *packet threshold*. Measured directly: attempts 1–5 were refused in
+about a millisecond each, and the sixth was served 5150 ms after the first. It never holds
+the connection. So a client that does not retry — `psql`, a connection pool, a test runner
+somebody else wrote — does not get a slow response from it. It gets a failure.
 
-Four of six printed rows are a refusal. **Postgres is the row that matters** — raw TCP, the
-case that separates this from every HTTP-middleware tool, and Sablier's `N/A` there is the
-measured version of a claim this project had only ever made in prose.
+sbx served the first attempt every time, on both targets. That is the whole claim this
+project makes, and until this run it had never been measured against anything.
 
-**Steady-state overhead reports "below harness resolution — see `proxy_bench_test.go`".** The
-interleaved measurement against sbx's own backing port returned a −4 µs delta against ±922 µs
-of jitter. That is not evidence the proxy is free; it is evidence this instrument is three
-orders of magnitude too coarse to see it, which is why `internal/daemon/proxy_bench_test.go`
-and benchstat exist and remain the source for that number (~15 µs).
+Its 3286 ms is also not a latency to compare with ours: it is gated by its own 3 s poll
+rate, which is why its spread is 43 ms against our 19 ms. Different mechanisms, not a
+faster or slower version of the same one.
 
-The p90 and stdev on the OK rows are the machine, not the software. Re-run on an idle host
-before quoting anything from here.
+**Overhead: 33 µs/req over a same-container floor**, jitter ±21 µs — the first run in which
+this harness could resolve the proxy tax at all. It is the same quantity `proxy_bench_test.go`
+puts at ~15 µs by a different method: benchstat times a bare loopback echo, this times HTTP
+through a real container, so the two are close rather than equal and neither replaces the
+other. Rows without a same-container baseline print `n/a` instead of a number — an earlier
+version compared a rival against a *separately published* nginx and produced −852 µs/req,
+faster than direct, which is an artifact of comparing two containers.
+
+**Still unmeasured, and stated rather than omitted:** Sablier's wake path, because its
+Traefik middleware would not engage under any plugin configuration tried; Lazytainer's nginx
+arm on this run; and zeropod entirely.
 
 ---
 

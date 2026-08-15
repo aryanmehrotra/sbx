@@ -129,6 +129,39 @@ measure_noise_floor() {
   NOISE_JITTER_US=$(python3 -c "print(abs($a - $b))")
 }
 
+# wake_sample times a wake and reports whether the first attempt was served.
+#
+# Measured, 2026-08-15: Lazytainer refuses connections until its packet threshold is
+# crossed — attempts 1 to 5 were refused in about a millisecond each and the sixth was
+# served, 5150ms after the first. It never holds a connection. sbx holds it and answers
+# once the service is up, so an unmodified client sees one slow request instead of five
+# failures.
+#
+# Reporting only latency would hide that difference entirely, and it is the more important
+# fact: a client that does not retry works against one of these and not the other.
+#
+# Prints: "<ms> <first-ok:1|0>", or nothing when it never served.
+wake_sample() { # client-fn, port, seconds
+  local client="$1" port="$2" limit="$3" t0 t1 first=1 waited=0
+  t0=$(measure_ms)
+
+  while :; do
+    if "$client" "$port"; then
+      t1=$(measure_ms)
+      printf '%s %s\n' "$((t1 - t0))" "$first"
+
+      return 0
+    fi
+
+    first=0
+    waited=$((waited + 1))
+
+    [ "$waited" -ge "$limit" ] && return 1
+
+    sleep 1
+  done
+}
+
 # ── docker helpers shared by the container-hosted arms ──────────────────────────
 container_stopped() { # name — stopped OR paused counts as asleep
   local st
@@ -263,30 +296,44 @@ lazytainer_up() { # target
   local img port
   img=$(image_for "$1")
   port=$([ "$1" = nginx ] && echo 80 || echo 5432)
+
+  # Configured by LABELS on the lazytainer container, not environment variables. The env
+  # form was invented here and silently discovered no group at all, so the target never
+  # slept and every sample voided: its logs said only "Starting Lazytainer".
+  # Source: github.com/vmorganp/Lazytainer README, read 2026-08-15.
+  #   lazytainer.group.<name>.<property>   on lazytainer
+  #   lazytainer.group=<name>              on the monitored container
+  # Defaults there: inactiveTimeout 30s, minPacketThreshold 30, pollRate 30s, sleepMethod stop.
   docker run -d --name cmp-lazy --cap-add NET_ADMIN -p 18081:"$port" \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -e LAZYTAINER_GROUP_cmp_ports="$port" \
-    -e LAZYTAINER_GROUP_cmp_minPacketThreshold=5 \
-    -e LAZYTAINER_GROUP_cmp_inactiveTimeout=10 \
+    -v /var/run/docker.sock:/var/run/docker.sock:ro \
+    -l "lazytainer.group.cmp.ports=$port" \
+    -l "lazytainer.group.cmp.inactiveTimeout=10" \
+    -l "lazytainer.group.cmp.minPacketThreshold=5" \
+    -l "lazytainer.group.cmp.pollRate=3" \
+    -e VERBOSE=true \
     ghcr.io/vmorganp/lazytainer:master >/dev/null 2>&1 || return 1
-  # The target shares lazytainer's network namespace — that is how it intercepts.
+
   local env_args=()
   [ "$1" = postgres ] && env_args=(-e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app)
   # ${a[@]+"${a[@]}"} — bash 3.2, which macOS still ships, calls an empty array unbound
   # under `set -u`. This expands to nothing when empty instead of aborting the adapter.
   docker run -d --name cmp-lazy-target --network "container:cmp-lazy" \
     -l lazytainer.group=cmp ${env_args[@]+"${env_args[@]}"} "$img" >/dev/null 2>&1 || return 1
+
   PORT=18081
   sleep 6
+
   local i
   for i in $(seq 1 30); do $(client_for "$1") "$PORT" && break; sleep 1; done
   $(client_for "$1") "$PORT" || { REASON="target never served through lazytainer"; return 1; }
+
   # Precondition: it must put the target to sleep, or there is nothing to measure.
   if ! wait_stopped cmp-lazy-target 75; then
-    REASON="target never slept in 75s — no group discovered from LAZYTAINER_GROUP_* env (its logs show only 'Starting Lazytainer'), so its config format here is unverified"
+    REASON="target never slept in 75s — check its labels against the Lazytainer README"
     return 1
   fi
 }
+
 lazytainer_asleep() { wait_stopped cmp-lazy-target 90; }
 lazytainer_rss() {
   local a
@@ -349,13 +396,19 @@ measure_one() { # contender, target
   fi
   port="$PORT"
 
-  local samples="" pairs="" void=0 failed=0 i t0 t1 wake base
+  local samples="" pairs="" void=0 failed=0 transparent=0 i t0 t1 wake base
   for i in $(seq 1 "$RUNS"); do
     if ! "${c}_asleep" "$t"; then void=$((void + 1)); continue; fi
 
-    t0=$(measure_ms); "$client" "$port"; local ok=$?; t1=$(measure_ms)
-    if [ "$ok" != "0" ]; then failed=$((failed + 1)); continue; fi
-    wake=$((t1 - t0))
+    local sample
+    if ! sample=$(wake_sample "$client" "$port" 60); then
+      failed=$((failed + 1))
+      continue
+    fi
+
+    wake=${sample%% *}
+    local firstok=${sample##* }
+    [ "$firstok" = "1" ] && transparent=$((transparent + 1))
 
     # Paired baseline: same client, same path, target now awake.
     t0=$(measure_ms); "$client" "$port" >/dev/null 2>&1; t1=$(measure_ms)
@@ -363,7 +416,8 @@ measure_one() { # contender, target
 
     samples="$samples $wake"
     pairs="$pairs $wake:$base"
-    printf '    run %-3s wake %6s ms   baseline %5s ms\n' "$i" "$wake" "$base"
+    printf '    run %-3s wake %6s ms   baseline %5s ms   first-attempt %s\n' \
+      "$i" "$wake" "$base" "$([ "$firstok" = 1 ] && echo served || echo REFUSED)"
   done
 
   local n
@@ -390,7 +444,7 @@ measure_one() { # contender, target
     rss=$("${c}_rss")
     local ovh="n/a"
     if [ "$t" = nginx ]; then
-      local through fa fb floor jitter fport=""
+      local fa fb floor fport=""
       # Prefer the contender's own direct path: same container, same host, same client,
       # without its wake mechanism. Measuring against a separately published nginx would
       # fold two different containers into the delta and call the difference "overhead".
@@ -398,9 +452,7 @@ measure_one() { # contender, target
       if [ -n "$fport" ] && client_nginx "$fport"; then
         fa=$(keepalive_us_per_req "http://127.0.0.1:$fport/" 50)
         fb=$(keepalive_us_per_req "http://127.0.0.1:$fport/" 50)
-        [ "$fa" != "n/a" ] && [ "$fb" != "n/a" ] && { floor="$fa"; jitter=$(python3 -c "print(abs($fa - $fb))"); }
-      else
-        floor="$NOISE_FLOOR_US"; jitter="${NOISE_JITTER_US:-0}"
+        [ "$fa" != "n/a" ] && [ "$fb" != "n/a" ] && floor="$fa"
       fi
       if [ -n "$fport" ] && [ -n "${floor:-}" ] && [ "$floor" != "n/a" ]; then
         # Interleaved, not sequential. Measuring all of the floor and then all of the
@@ -425,13 +477,15 @@ measure_one() { # contender, target
           ovh="$ovh [interleaved, same container without the splice, n=6 pairs]"
         fi
       else
-        through=$(keepalive_us_per_req "http://127.0.0.1:$port/" 50)
-        if [ "$through" != "n/a" ] && [ -n "${floor:-}" ] && [ "$floor" != "n/a" ]; then
-          ovh=$(measure_overhead_verdict "$through" "$floor" "$jitter")
-        fi
+        # No same-container baseline for this contender, so the only floor available is a
+        # separately published nginx — a different container, on a different bridge. The
+        # delta would fold those differences in and call the result "overhead"; one such
+        # measurement came out at -852us/req, faster than direct, which is not a proxy tax
+        # but an artifact of comparing two containers. Refused rather than published.
+        ovh="n/a — no same-container baseline; see BENCHMARKS.md"
       fi
     fi
-    record "$c" "$t" "OK" "n=$n median=${med}ms $spread stdev=${sd}ms | delta median=${dmed}ms $dspread stdev=${dsd}ms | void=$void failed=$failed rss=$rss overhead=$ovh"
+    record "$c" "$t" "OK" "n=$n median=${med}ms $spread stdev=${sd}ms | delta median=${dmed}ms $dspread stdev=${dsd}ms | void=$void failed=$failed transparent=$transparent/$n rss=$rss overhead=$ovh"
   fi
   "${c}_down"
 }
@@ -472,7 +526,7 @@ main() {
   measure_conditions "$SBX" extended
   note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
   note "runs" "$RUNS per contender per target"
-  note "noise floor" "${NOISE_FLOOR_US:-n/a} us/req — same client, nginx published directly"
+  note "noise floor" "${NOISE_FLOOR_US:-n/a} us/req ±${NOISE_JITTER_US:-?} — same client, nginx published directly, measured twice"
   note "idle windows" "sbx $IDLE · sablier $SABLIER_WINDOW · lazytainer $LAZY_WINDOW"
   say
 
