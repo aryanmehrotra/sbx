@@ -155,6 +155,8 @@ number, and each exists because of a specific way this kind of benchmark lies:
 | a sample counts only on a **correct protocol reply** | Sablier's middleware failed to engage during development and returned **502 in 98 ms** — faster than sbx's real wake. A status code is not evidence |
 | a sample is **VOID** unless the target was verifiably asleep at `t0` | otherwise a rival whose mechanism never engaged scores a spectacular wake for answering while already awake |
 | every wake is **paired** with a baseline through the identical client | the first real run showed ~100 ms of each 336 ms "wake" was `curl`'s own startup |
+| overhead is measured against **the same container without the wake path**, interleaved | a separately published nginx folds two different containers into the delta; and measuring all the floor then all the through path lets load drift land in the answer — this floor moved 660 µs → 4280 µs between two runs on one machine |
+| a delta inside the harness's own jitter is **not published as a number** | the jitter here is ±150–900 µs and the proxy tax is ~15 µs, so this harness cannot resolve it and says so |
 
 `N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
 by design — that is a *result*. zeropod has none because nothing yet distinguishes
@@ -190,8 +192,14 @@ Four of six printed rows are a refusal. **Postgres is the row that matters** —
 case that separates this from every HTTP-middleware tool, and Sablier's `N/A` there is the
 measured version of a claim this project had only ever made in prose.
 
-The p90 and stdev on the two OK rows (1785 ms, 636 ms) are the machine, not the software.
-Re-run on an idle host before quoting anything from here.
+**Steady-state overhead reports "below harness resolution — see `proxy_bench_test.go`".** The
+interleaved measurement against sbx's own backing port returned a −4 µs delta against ±922 µs
+of jitter. That is not evidence the proxy is free; it is evidence this instrument is three
+orders of magnitude too coarse to see it, which is why `internal/daemon/proxy_bench_test.go`
+and benchstat exist and remain the source for that number (~15 µs).
+
+The p90 and stdev on the OK rows are the machine, not the software. Re-run on an idle host
+before quoting anything from here.
 
 ---
 

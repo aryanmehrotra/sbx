@@ -29,6 +29,7 @@ RUNS=2
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n       %s\n' "$1" "$2"; }
+skipped() { printf '  skip %s (%s)\n' "$1" "$2"; }
 
 # The status recorded for the single contender under test.
 status_of() { IFS='|' read -r _ _ s _ <<< "${RESULTS[0]:-||NONE|}"; echo "$s"; }
@@ -108,6 +109,35 @@ measure_one stub nginx >/dev/null 2>&1
 [[ "$(detail_of)" == *"min="* && "$(detail_of)" != *" p90="* ]] \
   && ok "n<10 reports min/max, never p90" \
   || bad "low-n spread" "got [$(detail_of)]"
+
+# 8. Teardown after a kill. The adapters start real containers, networks and files, and
+#    only the trap stands between an interrupted run and leaked state. `trap ... EXIT`
+#    alone does not run when bash is killed by a signal it has not trapped, which is why
+#    the trap lists INT and TERM.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  docker rm -f cmp-pg-client >/dev/null 2>&1
+  ( CONTENDERS=sbx TARGETS=nginx bash "$HERE/compare.sh" 1 >/dev/null 2>&1 ) &
+  runner=$!
+  w=0
+  while [ $w -lt 30 ]; do
+    docker inspect cmp-pg-client >/dev/null 2>&1 && break
+    sleep 1; w=$((w + 1))
+  done
+  if docker inspect cmp-pg-client >/dev/null 2>&1; then
+    kill -TERM "$runner" 2>/dev/null
+    w=0
+    while [ $w -lt 20 ] && docker inspect cmp-pg-client >/dev/null 2>&1; do sleep 1; w=$((w + 1)); done
+    docker inspect cmp-pg-client >/dev/null 2>&1 \
+      && bad "teardown after a kill" "cmp-pg-client survived SIGTERM" \
+      || ok "teardown after a kill leaves no containers behind"
+  else
+    skipped "teardown after a kill" "client container never appeared"
+  fi
+  wait "$runner" 2>/dev/null
+  docker rm -f cmp-pg-client >/dev/null 2>&1
+else
+  skipped "teardown after a kill" "docker unavailable"
+fi
 
 echo
 echo "----------------------------------------"

@@ -94,11 +94,16 @@ client_postgres() { # port
 # nginx. Anything that does not clear the floor is reported as below resolution rather
 # than as a number, because a delta smaller than the instrument is not a measurement.
 keepalive_us_per_req() { # url, count -> median microseconds per request, or n/a
-  local url="$1" count="$2" urls=""
-  local i
-  for i in $(seq 1 "$count"); do urls="$urls $url"; done
-  # shellcheck disable=SC2086
-  curl -s -o /dev/null -w '%{time_total}\n' --keepalive-time 60 $urls 2>/dev/null \
+  local url="$1" count="$2" i
+  local args=(-s -w '%{time_total}\n')
+  # -o binds to ONE url positionally. A single -o with N urls sends the first body to
+  # /dev/null and the remaining N-1 to stdout, where they land in the numbers being
+  # parsed — which is exactly how this first reported "could not convert '<!DOCTYPE html>'".
+  for i in $(seq 1 "$count"); do args+=(-o /dev/null "$url"); done
+  # Connection reuse comes from curl's default handling of sequential same-host transfers
+  # in one invocation, not from any flag — worth stating so nobody "cleans up" a flag
+  # believing it is what holds the connection open.
+  curl "${args[@]}" 2>/dev/null \
     | python3 -c '
 import sys, statistics
 xs = [float(l) for l in sys.stdin if l.strip()]
@@ -107,13 +112,21 @@ print("n/a" if not xs else f"{statistics.median(xs) * 1e6:.0f}")
 }
 
 NOISE_FLOOR_US=""
+NOISE_JITTER_US=""
 measure_noise_floor() {
   docker rm -f cmp-floor >/dev/null 2>&1
   docker run -d --name cmp-floor -p 18090:80 nginx:alpine >/dev/null 2>&1 || return 1
-  local i
+  local i a b
   for i in $(seq 1 30); do client_nginx 18090 && break; sleep 1; done
-  NOISE_FLOOR_US=$(keepalive_us_per_req "http://127.0.0.1:18090/" 50)
+  # Direct vs direct: the same client against the same directly published target, twice.
+  # One absolute latency is a baseline, not a floor — the floor is how much this apparatus
+  # disagrees with itself, and only a delta larger than that is a measurement.
+  a=$(keepalive_us_per_req "http://127.0.0.1:18090/" 50)
+  b=$(keepalive_us_per_req "http://127.0.0.1:18090/" 50)
   docker rm -f cmp-floor >/dev/null 2>&1
+  [ "$a" = "n/a" ] || [ "$b" = "n/a" ] && { NOISE_FLOOR_US=""; return 1; }
+  NOISE_FLOOR_US="$a"
+  NOISE_JITTER_US=$(python3 -c "print(abs($a - $b))")
 }
 
 # ── docker helpers shared by the container-hosted arms ──────────────────────────
@@ -161,6 +174,10 @@ sbx_up() { # target
   sleep 3
 }
 sbx_asleep() { wait_stopped "sbx-${SBX_NAME}-$1" 60; }
+# docker_provider.go:9 — client -> 20002 (wake, sbx serve listens) -> 30002 (backing,
+# docker publishes). The backing port reaches the same container without the splice, so
+# through-minus-backing is the proxy's cost and nothing else's.
+sbx_floor_port() { echo $((PORT - 20000 + 30000)); }
 sbx_rss() {
   # The daemon is a host process, not a container: docker stats cannot see it.
   local pid rss
@@ -301,9 +318,10 @@ zeropod_down()   { :; }
 # ════════════════════════════════════════════════════════════════════════════════
 cleanup() {
   sbx_down; sablier_down; lazytainer_down; zeropod_down
-  docker rm -f "$PGCLIENT" >/dev/null 2>&1
+  docker rm -f "$PGCLIENT" cmp-floor >/dev/null 2>&1
+  rm -f /tmp/cmp-sablier.yml
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 measure_one() { # contender, target
   local c="$1" t="$2" client port
@@ -371,16 +389,45 @@ measure_one() { # contender, target
     fi
     rss=$("${c}_rss")
     local ovh="n/a"
-    if [ "$t" = nginx ] && [ -n "$NOISE_FLOOR_US" ] && [ "$NOISE_FLOOR_US" != "n/a" ]; then
-      local through
-      through=$(keepalive_us_per_req "http://127.0.0.1:$port/" 50)
-      if [ "$through" != "n/a" ]; then
-        local d=$((through - NOISE_FLOOR_US))
-        # A delta at or below the floor is not a measurement of the proxy.
-        if [ "$d" -le "$NOISE_FLOOR_US" ] && [ "$d" -lt 2000 ]; then
-          ovh="below harness resolution (through=${through}us floor=${NOISE_FLOOR_US}us) — see proxy_bench_test.go"
-        else
-          ovh="${d}us/req over floor"
+    if [ "$t" = nginx ]; then
+      local through fa fb floor jitter fport=""
+      # Prefer the contender's own direct path: same container, same host, same client,
+      # without its wake mechanism. Measuring against a separately published nginx would
+      # fold two different containers into the delta and call the difference "overhead".
+      declare -f "${c}_floor_port" >/dev/null 2>&1 && fport=$("${c}_floor_port")
+      if [ -n "$fport" ] && client_nginx "$fport"; then
+        fa=$(keepalive_us_per_req "http://127.0.0.1:$fport/" 50)
+        fb=$(keepalive_us_per_req "http://127.0.0.1:$fport/" 50)
+        [ "$fa" != "n/a" ] && [ "$fb" != "n/a" ] && { floor="$fa"; jitter=$(python3 -c "print(abs($fa - $fb))"); }
+      else
+        floor="$NOISE_FLOOR_US"; jitter="${NOISE_JITTER_US:-0}"
+      fi
+      if [ -n "$fport" ] && [ -n "${floor:-}" ] && [ "$floor" != "n/a" ]; then
+        # Interleaved, not sequential. Measuring all of the floor and then all of the
+        # through path lets load drift between the two blocks land entirely in the delta:
+        # the floor moved 660us -> 4280us between two runs on this machine, six times the
+        # figure being measured. Alternating makes drift common-mode, which is the same
+        # reason every wake carries its own paired baseline.
+        # Distinct names: `pairs`, `dmed` and `dsd` already hold the WAKE pairing in this
+        # same function, and reusing them here overwrote the published wake delta with the
+        # overhead delta — a corrupted number that still looked plausible in the table.
+        local opairs="" tu fu
+        for _ in 1 2 3 4 5 6; do
+          tu=$(keepalive_us_per_req "http://127.0.0.1:$port/" 20)
+          fu=$(keepalive_us_per_req "http://127.0.0.1:$fport/" 20)
+          [ "$tu" != "n/a" ] && [ "$fu" != "n/a" ] && opairs="$opairs $tu:$fu"
+        done
+        local omed osd
+        omed=$(printf '%s\n' $opairs | measure_pairs | measure_stat median)
+        osd=$(printf '%s\n' $opairs | measure_pairs | measure_stat stdev)
+        if [ "$omed" != "n/a" ]; then
+          ovh=$(measure_overhead_verdict $((floor + omed)) "$floor" "${osd:-0}")
+          ovh="$ovh [interleaved, same container without the splice, n=6 pairs]"
+        fi
+      else
+        through=$(keepalive_us_per_req "http://127.0.0.1:$port/" 50)
+        if [ "$through" != "n/a" ] && [ -n "${floor:-}" ] && [ "$floor" != "n/a" ]; then
+          ovh=$(measure_overhead_verdict "$through" "$floor" "$jitter")
         fi
       fi
     fi
@@ -393,8 +440,14 @@ measure_one() { # contender, target
 # medians. If wake depends on how long the target slept, every cross-contender number is
 # biased by an experimental parameter that differs per arm — so this is measured rather
 # than assumed.
+# The endpoints are the rivals' actual configured windows, not round numbers: lazytainer
+# runs at inactiveTimeout=10s and sablier at sessionDuration=1m. Testing at anything else
+# would not establish that the cross-contender table is unbiased by which window each arm
+# happened to use.
+LAZY_WINDOW=10s
+SABLIER_WINDOW=60s
 window_independence() {
-  local short=5s long=45s a b
+  local short="$LAZY_WINDOW" long="$SABLIER_WINDOW" a b
   say "── window independence (sbx · nginx) ───────────────────────"
   IDLE="$short"; RESULTS=(); measure_one sbx nginx >/dev/null 2>&1
   a=$(detail_field "median")
@@ -420,7 +473,7 @@ main() {
   note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
   note "runs" "$RUNS per contender per target"
   note "noise floor" "${NOISE_FLOOR_US:-n/a} us/req — same client, nginx published directly"
-  note "idle windows" "sbx $IDLE · sablier sessionDuration=1m · lazytainer inactiveTimeout=10s"
+  note "idle windows" "sbx $IDLE · sablier $SABLIER_WINDOW · lazytainer $LAZY_WINDOW"
   say
 
   [ "${WINDOW_CHECK:-0}" = "1" ] && window_independence

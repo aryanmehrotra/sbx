@@ -117,3 +117,23 @@ for line in sys.stdin:
 print("n/a")
 ' "$1"
 }
+
+# measure_overhead_verdict — is a measured delta bigger than the instrument?
+#
+#   measure_overhead_verdict <through_us> <floor_us> <jitter_us>
+#
+# `jitter` is the harness's own noise, measured direct-vs-direct: the same client against
+# the same directly published target, twice. A delta smaller than that is not a small
+# overhead, it is the measurement apparatus, and publishing it as a number would be a
+# figure invented by the instrument. Prints either a number or the refusal.
+measure_overhead_verdict() {
+  python3 -c '
+import sys
+through, floor, jitter = (int(float(x)) for x in sys.argv[1:4])
+d = through - floor
+if abs(d) <= jitter:
+    print(f"below harness resolution (delta {d}us, jitter +/-{jitter}us) - see proxy_bench_test.go")
+else:
+    print(f"{d}us/req over floor (jitter +/-{jitter}us)")
+' "$1" "$2" "$3"
+}

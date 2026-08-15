@@ -87,6 +87,32 @@ eq "absent container is n/a" "n/a" "$(echo "$STATS" | measure_rss_kib not-runnin
 # A prefix must not match a different container.
 eq "no prefix matching" "n/a" "$(echo "$STATS" | measure_rss_kib sbx-bench)"
 
+# --------------------------------------------------------- overhead verdict ----
+# A delta smaller than the harness's own disagreement with itself is the instrument,
+# not the proxy. These pin both directions, because getting this wrong can flatter
+# sbx (hiding real overhead) just as easily as it can penalise it.
+case "$(measure_overhead_verdict 1200 1000 500)" in
+  *"below harness resolution"*) ok "delta 200us under 500us jitter -> refused" ;;
+  *) bad "small delta refused" "got [$(measure_overhead_verdict 1200 1000 500)]" ;;
+esac
+
+case "$(measure_overhead_verdict 4000 1000 500)" in
+  *"3000us/req over floor"*) ok "delta 3000us over 500us jitter -> published" ;;
+  *) bad "large delta published" "got [$(measure_overhead_verdict 4000 1000 500)]" ;;
+esac
+
+# Faster-than-direct is jitter, not a negative overhead worth publishing.
+case "$(measure_overhead_verdict 800 1000 500)" in
+  *"below harness resolution"*) ok "negative delta inside jitter -> refused" ;;
+  *) bad "negative delta" "got [$(measure_overhead_verdict 800 1000 500)]" ;;
+esac
+
+# Zero jitter must not make everything publishable: an exact tie is still not a signal.
+case "$(measure_overhead_verdict 1000 1000 0)" in
+  *"below harness resolution"*) ok "zero delta with zero jitter -> refused" ;;
+  *) bad "zero delta" "got [$(measure_overhead_verdict 1000 1000 0)]" ;;
+esac
+
 echo
 echo "----------------------------------------"
 printf 'passed %d · failed %d\n' "$PASS" "$FAIL"

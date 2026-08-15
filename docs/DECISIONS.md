@@ -91,3 +91,43 @@ Asking for a runtime the machine lacks never silently downgrades you. Docker ref
 immediately. Kubernetes also refused — but silently, taking two minutes to report that the
 service "never became ready" when the actual problem was a missing RuntimeClass. It now
 checks first and says so in one second.
+
+### What makes two wake numbers comparable
+
+`scripts/compare.sh` publishes numbers from different tools measured on one machine, which
+is only meaningful under rules decided in advance. These are those rules, written with the
+first table rather than after someone disputes one.
+
+**A sample counts only on a correct protocol reply.** Not a status code, not a connection —
+a `PONG`, a body, a row. Sablier's middleware failed to engage during development and
+returned 502 in 98 ms, faster than sbx's real wake. A benchmark that accepts status codes
+publishes a rival's failure as its best result.
+
+**A sample is void unless the target was verifiably asleep when the clock started.** A
+contender whose mechanism never engaged otherwise scores a spectacular wake for answering
+while it was already awake. Void samples are counted and printed beside n.
+
+**Every wake is paired with a baseline through the identical client, and the compared
+quantity is the paired difference.** The arms do not share a network path — sbx publishes on
+the host, docker-hosted rivals from inside the VM — and roughly 100 ms of an early 336 ms
+"wake" turned out to be `curl` starting up. Statistics on the delta are computed on the
+paired differences; a p90 of an unpaired subtraction is undefined and must never appear.
+
+**Below n=10 a row reports min/median/max, never p90**, because a nearest-rank p90 over five
+samples is the fourth-highest value wearing a percentile's name. `BENCHMARKS.md` already
+followed this for its n=5 kubernetes row.
+
+**A delta smaller than the harness's own jitter is not published as a number.** The floor is
+measured direct-vs-direct — the same client against the same directly published target,
+twice — and anything inside it reports "below harness resolution" instead of a figure the
+instrument invented.
+
+**Three statuses, because they are three different facts.** `N/A` means the contender cannot
+do this by design and is a result: Sablier has no postgres row because it is HTTP-only.
+`SKIPPED` means it could not be stood up here and is not a result. **No row at all** means it
+cannot be gated — zeropod checkpoints while the pod stays `Running`, so nothing distinguishes
+its asleep from its awake, and a dash in a table would read as a bad day rather than as the
+absence of a measurable property.
+
+**Rows in different categories are not ranked against each other.** Disk-warm and
+RAM-restored are different quantities; every row carries what comes back.
