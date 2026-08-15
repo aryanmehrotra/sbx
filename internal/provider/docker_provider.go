@@ -348,10 +348,12 @@ func (d *dockerProvider) healthCommand(ref string) (string, bool) {
 }
 
 func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {
-	// --pause=true is docker's default and is what makes this crash-consistent rather than
-	// torn: the container is paused for the duration of the copy, so the filesystem does
-	// not move underneath it.
-	_, err := d.docker("commit", "--pause=true", ref, image)
+	// Pausing for the duration of the copy is what makes this crash-consistent rather than
+	// torn — the filesystem does not move underneath it. It is docker's default and the flag
+	// that used to say so is deprecated, so passing it printed a deprecation notice on top of
+	// every commit error, burying the actual reason. Not passing it keeps the behaviour and
+	// loses the noise; `--no-pause` is the flag that would change it.
+	_, err := d.docker("commit", ref, image)
 
 	return err
 }

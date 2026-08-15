@@ -55,6 +55,14 @@ func snapshotImage(name, service string) string {
 // database in this project's examples is built to survive. Stopping first would be cleaner
 // and would also mean the snapshot silently interrupts whoever is using the sandbox.
 func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([]SnapshotRef, error) {
+	if err := ValidateName("sandbox", sandbox); err != nil {
+		return nil, err
+	}
+
+	if err := ValidateSnapshotName(name); err != nil {
+		return nil, err
+	}
+
 	if name == "" {
 		return nil, fmt.Errorf("a snapshot needs a name: sbx snapshot <sandbox> <name>")
 	}
