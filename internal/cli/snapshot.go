@@ -222,6 +222,29 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 		return err
 	}
 
+	if err := restoreVolumes(ctx, p, snap, sandbox, units, refs); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n  forked from snapshot %q — filesystem state only, processes start cold.\n", snapshot)
+	fmt.Printf("  use it with: sbx env %s --spec %s\n", sandbox, forked)
+
+	return nil
+}
+
+// restoreVolumes copies each snapshotted volume over the freshly created service's own.
+//
+// Separated from Fork for one reason: the order here is the correctness argument, and it is
+// the only part of a fork that can silently produce a healthy server with the wrong data.
+// Create has just started every service to health-check it, so a database is running and
+// serving from a data directory it initialised itself. Copying over that while it runs is
+// replacing the floor underneath a live process.
+//
+// So: stop, then copy, per service — never copy first, and never copy into a service that is
+// still up. Anything not present in the snapshot is left exactly as Create made it.
+func restoreVolumes(ctx context.Context, p provider.Provider, snap provider.Snapshotter,
+	sandbox string, units []provider.Unit, refs []SnapshotRef,
+) error {
 	for _, u := range units {
 		var from string
 
@@ -245,9 +268,6 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 
 		fmt.Printf("  %-12s restored from %s\n", u.Service, from)
 	}
-
-	fmt.Printf("\n  forked from snapshot %q — filesystem state only, processes start cold.\n", snapshot)
-	fmt.Printf("  use it with: sbx env %s --spec %s\n", sandbox, forked)
 
 	return nil
 }

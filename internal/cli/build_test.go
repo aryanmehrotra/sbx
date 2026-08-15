@@ -118,3 +118,46 @@ func TestMissingContextIsAnError(t *testing.T) {
 		t.Error("a missing build context was accepted")
 	}
 }
+
+// node_modules is excluded for the same reason .git is: it is enormous, it is derived, and
+// hashing it would make the tag change whenever a lockfile install did — busting the cache
+// for a reason that has nothing to do with what goes into the image.
+func TestNodeModulesIsIgnored(t *testing.T) {
+	a := ctxDir(t, map[string]string{"Dockerfile": "FROM node:22\n"})
+	before := tagOf(t, a)
+
+	if err := os.MkdirAll(filepath.Join(a, "node_modules", "left-pad"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(a, "node_modules", "left-pad", "index.js"),
+		[]byte("module.exports = 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if tagOf(t, a) != before {
+		t.Error("node_modules changed the tag — an npm install would rebuild the image")
+	}
+}
+
+// A symlink's target is either already inside the context — in which case it is hashed once,
+// where it lives — or outside it, in which case following it would put part of the host's
+// filesystem into the tag and make the build unreproducible on any other machine.
+func TestSymlinksAreSkipped(t *testing.T) {
+	a := ctxDir(t, map[string]string{"Dockerfile": "FROM nginx\n"})
+	before := tagOf(t, a)
+
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("host state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(outside, filepath.Join(a, "link.txt")); err != nil {
+		t.Skipf("this filesystem will not make a symlink: %v", err)
+	}
+
+	if tagOf(t, a) != before {
+		t.Error("a symlink out of the context changed the tag — the host's filesystem is in " +
+			"the cache key, so the same context hashes differently on another machine")
+	}
+}
