@@ -410,16 +410,25 @@ JSON
   echo "$out" | grep -q 'building' && ok "a changed context rebuilds" \
     || bad "a changed context was served from cache" "$out"
 
-  # b3 was created after the daemon started, so give the daemon a refresh interval to notice
-  # it. Unset first: a stale WEB_PORT from b1 would point at a sandbox that no longer exists
-  # and fail for a reason that has nothing to do with the build.
+  # b3 was created after the daemon started, so the daemon needs a refresh tick to notice it.
+  # Polled rather than slept: a fixed wait is a guess that passes on an idle laptop and fails
+  # on a loaded CI runner, and a suite that fails for machine reasons is one people learn to
+  # ignore. Unset first — a stale WEB_PORT from b1 points at a sandbox that no longer exists
+  # and would fail for a reason that has nothing to do with the build.
   unset WEB_PORT
-  sleep 7
-
   eval "$("$SBX" env "$TAG-b3" --spec "$WORK/build.json" 2>/dev/null)"
-  curl -sf -m 30 "http://127.0.0.1:${WEB_PORT:-0}/" 2>/dev/null | grep -q "marker-$TAG-v2" \
-    && ok "the rebuild is what gets served" \
-    || bad "the rebuilt image did not serve the new content"
+
+  served=""
+  for _ in $(seq 1 40); do
+    served=$(curl -sf -m 10 "http://127.0.0.1:${WEB_PORT:-0}/" 2>/dev/null)
+    case "$served" in *"marker-$TAG-v2"*) break ;; esac
+    sleep 1
+  done
+
+  case "$served" in
+    *"marker-$TAG-v2"*) ok "the rebuild is what gets served" ;;
+    *) bad "the rebuilt image did not serve the new content" "got: ${served:-nothing}" ;;
+  esac
 
   kill "$DAEMON" 2>/dev/null; DAEMON=""
 
