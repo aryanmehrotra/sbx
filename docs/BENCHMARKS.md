@@ -72,17 +72,18 @@ anything:
 | `mysql:8.0` | 411 MB | **110 MB** |
 | `clickhouse:24.3` | 199 MB | 201 MB |
 | a sleeping sandbox | — | **0 B** |
-| the daemon | — | 4.5 MB ⚠️ **contradicted below** |
+| the daemon, at rest | — | **9.1 MB** |
+| the daemon, fronting one sandbox | — | 9.6 MB |
+| the daemon, after traffic | — | 10.4 MB |
 
-⚠️ **The 4.5 MB daemon figure does not reproduce and is under correction.** On 2026-08-15
-`scripts/compare.sh` measured the same daemon at **9.2 MB** (nginx run) and **11.8 MB**
-(postgres run) via `ps -o rss` while it was proxying a live sandbox — roughly two to three
-times the published number. The two are not necessarily the same quantity: 4.5 MB was a
-daemon at rest with nothing attached, and these are a daemon with a listener, a splice and a
-wake policy running under memory pressure. That is exactly the kind of "different quantity,
-same column" mistake this file retracted the ClickHouse figure for, so **neither number
-should be quoted until both are re-measured with the state stated beside them.** Do not cite
-4.5 MB in the meantime; it is in the README.
+**Corrected 2026-08-15: the daemon was published at 4.5 MB and that figure is wrong.**
+Measured by `ps -o rss` on this build: 9296 KiB with no sandboxes at all, 9808 KiB fronting
+one, 10640 KiB after a wake and some traffic. It is not a matter of different quantities —
+the at-rest number, the most favourable one available, is still twice what was claimed.
+
+What the new figures do show is that the growth is small and bounded: about half a megabyte
+to front a sandbox, and the rest is buffers that traffic touches. The 4.5 MB claim was in
+the README, ARCHITECTURE's diagram and this table, and is corrected in all three.
 
 MySQL's saving is real and comes from `performance_schema=OFF` and a 48 MB buffer pool.
 

@@ -45,7 +45,7 @@ This costs zero for the ones you're not using. → [USE-CASES.md](docs/USE-CASES
    your client                              sbx serve
    (psql, redis-cli, a pool,             ┌──────────────┐
     Playwright, curl)                    │  always up   │
-        │                                │  ~4.5 MB ⚠️   │
+        │                                │   ~9.1 MB    │
         │  :20002  ── PUBLIC ────────────▶              │
         │            (owned by sbx)      └──────┬───────┘
         │                                       │
@@ -124,7 +124,7 @@ Aligned columns on a terminal, **JSON when piped**. Everything wakes what it tou
 | wake, docker | **191 ms** · n=20, p90 232 ms |
 | wake, kubernetes | **1534 ms** · n=5 |
 | a sleeping sandbox | **0 B** |
-| the daemon | 4.5 MB ⚠️ [under correction](docs/BENCHMARKS.md#memory) |
+| the daemon | **9.1 MB** at rest · 9.6 MB fronting one sandbox |
 
 Measured by [`scripts/bench.sh`](scripts/bench.sh), on the machine printed beside the results.
 → [BENCHMARKS.md](docs/BENCHMARKS.md)

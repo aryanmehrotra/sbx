@@ -254,13 +254,20 @@ state of that attempt:
 | claim in this file | status |
 |---|---|
 | Sablier is HTTP-only — cannot wake a `psql` client | **measured**: reports `N/A` for the postgres target, by design, not by failure |
-| Sablier's ~1.5–2 ms steady-state overhead | **unmeasured here** — its Traefik middleware would not engage under either plugin config we tried, so no honest number was taken |
+| Sablier's ~1.5–2 ms steady-state overhead | **unmeasured here** — its Traefik middleware would not engage under any plugin config tried, so no honest number was taken |
 | zeropod restores in tens to a few hundred ms, with RAM intact | **unmeasured here** — no verified observable distinguishes checkpointed from running, so the arm produces no table rather than a number taken without that gate |
-| Lazytainer wakes on any TCP | **unmeasured here** — no group was discovered from its env configuration on this host |
-| sbx wakes on raw TCP (postgres) | **measured** — [BENCHMARKS.md](BENCHMARKS.md#against-the-field-measured-here) |
+| Lazytainer wakes on any TCP | **measured** — it does, but it never holds the connection: attempts 1–5 refused, served on the 6th, 5150 ms later. 0/5 first attempts served against sbx's 5/5 |
+| sbx wakes on raw TCP (postgres) | **measured** — 5/5 first attempts served, median 931 ms |
+| sbx's proxy tax | **measured** — 33 µs/req over a same-container floor, ±21 µs, alongside benchstat's ~15 µs by a different method |
+| the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
 
-Four of five are still read rather than run. That is a weaker position than this document
-reads as having, and it is stated here rather than left to be inferred.
+Two of seven are still read rather than run — Sablier's overhead and zeropod's restore —
+and one of the measurements refuted a claim of our own rather than a rival's.
+
+The Lazytainer row is the one worth reading twice. "Wakes on any TCP" is true of it and
+was the axis this document used to group it with sbx. Measuring it showed the grouping was
+too kind: waking on a packet threshold and holding a connection are different products, and
+only one of them works for a client that does not retry.
 
 ---
 
