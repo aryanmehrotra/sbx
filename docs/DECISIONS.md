@@ -242,3 +242,26 @@ operating on the host behind its back.
 The kubernetes provider refuses the field rather than ignoring it. Its answer is a
 NetworkPolicy, only some CNIs enforce them, and a control that silently did nothing is worse
 than one that says no.
+
+### sbx is a tool people run, not a service anyone offers
+
+The obvious next step from a control plane is multi-tenancy: authentication, per-user
+isolation, quotas, and eventually somebody hosting it. That is not the direction.
+
+sbx exists to be adopted into other people's workflows — a binary they run on hardware they
+already have, for their own branches, agents and CI. It is not trying to become the thing you
+buy instead of E2B, and the comparison tables should be read that way: they explain which tool
+fits a job, not which vendor wins.
+
+Three consequences, so this is a decision rather than a mood:
+
+**No auth, no tenancy, no quota**, and the README says so where someone might deploy it
+anyway. A shared box for a team that trusts each other is the supported shape.
+
+**The GoFr console is for the operator, not for tenants.** Metrics, health and a read-only
+view of what the daemon is doing. It is not the seam through which sbx becomes hosted, and
+the API stays read-only for that reason as much as for the lifecycle one.
+
+**"Hosted Postgres, operated for you" stays in the use-something-else table permanently.**
+Neon is the answer there and always will be — not because sbx cannot branch and scale to
+zero, but because "somebody else runs it" is the whole product and this one is run by you.

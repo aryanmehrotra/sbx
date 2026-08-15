@@ -237,19 +237,21 @@ eval "$(sbx env "$BRANCH")"
 On a persistent runner, leaving the sandbox behind is the interesting case: the next job on
 that branch reuses warm, migrated state and pays one wake instead of a create.
 
-### On a shared box, for a team
+### A team, on hardware you already have
 
-Run the daemon on a host everyone can reach and point clients at it:
+sbx is a tool you run, not a service anyone sells or offers. The team case is the same
+binary on a box you already own:
 
 ```sh
 sbx serve --idle 30m &                  # deploy/ has a systemd unit and a launchd plist
 sbx url my-branch web                   # https://….trycloudflare.com, wakes on open
 ```
 
-⚠️ **This is a shared box, not a multi-tenant service.** There is no authentication, no
-per-user isolation and no quota — anyone who can reach the ports can use any sandbox on that
-host. It is the right shape for a team that already trusts each other and the wrong one for
-anything public. `sbx doctor` tells you what the host can enforce before you rely on it.
+⚠️ **A shared box, deliberately — not a multi-tenant platform.** There is no authentication,
+no per-user isolation and no quota, and none are planned: sbx is meant to be adopted into
+your workflow, not operated as a service for strangers. It is the right shape for a team that
+already trusts each other and the wrong one for anything public. `sbx doctor` tells you what
+the host can enforce before you rely on it.
 
 ---
 
