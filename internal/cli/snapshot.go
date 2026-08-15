@@ -174,6 +174,13 @@ func SnapshotsOf(ctx context.Context, p provider.Provider, name string) ([]Snaps
 func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox string,
 	withOptional bool, iso provider.Isolation,
 ) error {
+	// Before the snapshot lookup, not after. Create validates this too, but by then the
+	// snapshot has been resolved and a temporary spec written — work thrown away for
+	// something knowable from the argument itself.
+	if err := ValidateName(sandbox); err != nil {
+		return err
+	}
+
 	snap, err := provider.SnapshotterFor(p)
 	if err != nil {
 		return err
