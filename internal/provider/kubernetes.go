@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -368,6 +369,21 @@ func (k *kubeProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	}
 
 	return true, true
+}
+
+func (k *kubeProvider) ExecTTY(ctx context.Context, ref string, argv []string) error {
+	args := []string{"exec", "-i"}
+	if isTerminal(os.Stdin) {
+		args = append(args, "-t")
+	}
+
+	args = append(args, "-n", k.namespace, ref, "--")
+	args = append(args, argv...)
+
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+
+	return cmd.Run()
 }
 
 func (k *kubeProvider) Exec(_ context.Context, ref string, argv []string) (string, error) {

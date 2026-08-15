@@ -295,6 +295,30 @@ func (d *dockerProvider) healthCommand(ref string) (string, bool) {
 	return cmd, cmd != ""
 }
 
+func (d *dockerProvider) ExecTTY(ctx context.Context, ref string, argv []string) error {
+	// -i always, -t only when stdin really is a terminal: asking docker for a TTY when
+	// stdin is a pipe makes it refuse outright, which would break `sbx exec -t` inside a
+	// script for no reason the user could see.
+	flags := []string{"exec", "-i"}
+	if isTerminal(os.Stdin) {
+		flags = append(flags, "-t")
+	}
+
+	cmd := exec.CommandContext(ctx, "docker", append(append(flags, ref), argv...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+
+	return cmd.Run()
+}
+
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
 func (d *dockerProvider) Exec(_ context.Context, ref string, argv []string) (string, error) {
 	return d.docker(append([]string{"exec", ref}, argv...)...)
 }

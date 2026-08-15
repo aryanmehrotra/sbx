@@ -35,12 +35,14 @@ func (alwaysServing) Name() string { return "bench" }
 func (alwaysServing) Create(context.Context, string, int, int, string, spec.Service, []provider.Endpoint, string, provider.Isolation) error {
 	return nil
 }
-func (alwaysServing) Start(context.Context, string) error                      { return nil }
-func (alwaysServing) Stop(context.Context, string) error                       { return nil }
-func (alwaysServing) Healthy(context.Context, string) (bool, bool)             { return true, true }
-func (alwaysServing) Probe(context.Context, string) (bool, bool)               { return true, true }
-func (alwaysServing) List(context.Context, string) ([]provider.Unit, error)    { return nil, nil }
-func (alwaysServing) Remove(context.Context, string) error                     { return nil }
+func (alwaysServing) Start(context.Context, string) error                   { return nil }
+func (alwaysServing) Stop(context.Context, string) error                    { return nil }
+func (alwaysServing) Healthy(context.Context, string) (bool, bool)          { return true, true }
+func (alwaysServing) Probe(context.Context, string) (bool, bool)            { return true, true }
+func (alwaysServing) List(context.Context, string) ([]provider.Unit, error) { return nil, nil }
+func (alwaysServing) Remove(context.Context, string) error                  { return nil }
+func (alwaysServing) ExecTTY(context.Context, string, []string) error       { return nil }
+
 func (alwaysServing) Exec(context.Context, string, []string) (string, error)   { return "", nil }
 func (alwaysServing) Logs(context.Context, string, int, bool, io.Writer) error { return nil }
 func (alwaysServing) Copy(context.Context, string, string, string) error       { return nil }

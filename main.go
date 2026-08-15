@@ -172,11 +172,18 @@ func dispatch(cmd string, args []string) error {
 	case "exec":
 		fs := flag.NewFlagSet("exec", flag.ExitOnError)
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		tty := fs.Bool("t", false, "attach a terminal — for a shell, psql, redis-cli")
 
-		if len(positional) < 2 || fs.NArg() == 0 {
-			return fmt.Errorf("usage: sbx exec <sandbox> <service> <command>...")
+		// Parse first, then take positionals from what is left. flag stops at the first
+		// non-flag argument, so `sbx exec -t br pg psql -U app` gives sbx the -t and hands
+		// psql its own -U untouched — which is how docker and kubectl behave, and what
+		// anyone typing this expects. Splitting positionals first, as the other commands
+		// do, made a LEADING flag consume the sandbox name and print a usage error.
+		_ = fs.Parse(args)
+
+		positional := fs.Args()
+		if len(positional) < 3 {
+			return fmt.Errorf("usage: sbx exec [-t] <sandbox> <service> <command>...")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -184,7 +191,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cli.Exec(context.Background(), p, positional[0], positional[1], fs.Args())
+		return cli.Exec(context.Background(), p, positional[0], positional[1], positional[2:], *tty)
 
 	case "logs":
 		fs := flag.NewFlagSet("logs", flag.ExitOnError)
@@ -413,7 +420,7 @@ func usage() {
   sbx ready  <sandbox> [--timeout 90s]
   sbx add    <sandbox> <service> --image IMG --port 5432[,...] [--health CMD]
                                  [--env K=V,...] [--volume PATH] [ARGS...]
-  sbx exec   <sandbox> <service> <command>...
+  sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
   sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named
   sbx cp     <sandbox> <service> <src> <dst>    (inside path is prefixed with :)
   sbx url    <sandbox> <service> [--via cloudflared|ngrok|ssh]

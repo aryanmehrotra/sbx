@@ -141,6 +141,13 @@ type Provider interface {
 	// one by passing {"sh", "-c", ...}.
 	Exec(ctx context.Context, ref string, argv []string) (string, error)
 
+	// ExecTTY is Exec with a terminal attached, wired straight to this process's stdio.
+	// It is a separate method rather than a flag because the two have different shapes:
+	// Exec captures output and returns it, this one hands the terminal over and returns
+	// only when the user is done. Trying to be both is how a shell ends up with no
+	// echo and no job control.
+	ExecTTY(ctx context.Context, ref string, argv []string) error
+
 	// Logs writes a service's output to w, optionally following it.
 	//
 	// A writer rather than a string because following has no end: a sandbox is a set of

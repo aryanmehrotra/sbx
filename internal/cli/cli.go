@@ -496,10 +496,17 @@ func serviceRef(ctx context.Context, p provider.Provider, sandbox, service strin
 		sandbox, service, strings.Join(names, ", "))
 }
 
-func Exec(ctx context.Context, p provider.Provider, sandbox, service string, argv []string) error {
+// Exec runs a command inside a service. With tty it hands the terminal over instead of
+// capturing output, which is what makes `sbx exec -t my-branch postgres psql` a usable
+// shell rather than a command that appears to hang with no prompt.
+func Exec(ctx context.Context, p provider.Provider, sandbox, service string, argv []string, tty bool) error {
 	ref, err := serviceRef(ctx, p, sandbox, service)
 	if err != nil {
 		return err
+	}
+
+	if tty {
+		return p.ExecTTY(ctx, ref, argv)
 	}
 
 	out, err := p.Exec(ctx, ref, argv)
