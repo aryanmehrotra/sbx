@@ -245,6 +245,23 @@ cluster.
 That is a narrower claim than the one this file made in its first version, and it is the true
 one.
 
+### What we have actually measured, and what we have only read
+
+Everything above about the three rivals comes from their documentation and source. As of
+2026-08-15, `scripts/compare.sh` has tried to measure them on one machine, and this is the
+state of that attempt:
+
+| claim in this file | status |
+|---|---|
+| Sablier is HTTP-only — cannot wake a `psql` client | **measured**: reports `N/A` for the postgres target, by design, not by failure |
+| Sablier's ~1.5–2 ms steady-state overhead | **unmeasured here** — its Traefik middleware would not engage under either plugin config we tried, so no honest number was taken |
+| zeropod restores in tens to a few hundred ms, with RAM intact | **unmeasured here** — no verified observable distinguishes checkpointed from running, so the arm produces no table rather than a number taken without that gate |
+| Lazytainer wakes on any TCP | **unmeasured here** — no group was discovered from its env configuration on this host |
+| sbx wakes on raw TCP (postgres) | **measured** — [BENCHMARKS.md](BENCHMARKS.md#against-the-field-measured-here) |
+
+Four of five are still read rather than run. That is a weaker position than this document
+reads as having, and it is stated here rather than left to be inferred.
+
 ---
 
 ## Feature by feature

@@ -91,4 +91,8 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck -S warning scripts/*.sh deploy/entrypoint.sh
+          shellcheck -S warning scripts/*.sh scripts/lib/*.sh deploy/entrypoint.sh
+      - name: measurement maths
+        run: bash scripts/lib/measure_test.sh
+      - name: harness gating (injected failures)
+        run: bash scripts/compare_test.sh

@@ -72,7 +72,17 @@ anything:
 | `mysql:8.0` | 411 MB | **110 MB** |
 | `clickhouse:24.3` | 199 MB | 201 MB |
 | a sleeping sandbox | — | **0 B** |
-| the daemon | — | 4.5 MB |
+| the daemon | — | 4.5 MB ⚠️ **contradicted below** |
+
+⚠️ **The 4.5 MB daemon figure does not reproduce and is under correction.** On 2026-08-15
+`scripts/compare.sh` measured the same daemon at **9.2 MB** (nginx run) and **11.8 MB**
+(postgres run) via `ps -o rss` while it was proxying a live sandbox — roughly two to three
+times the published number. The two are not necessarily the same quantity: 4.5 MB was a
+daemon at rest with nothing attached, and these are a daemon with a listener, a splice and a
+wake policy running under memory pressure. That is exactly the kind of "different quantity,
+same column" mistake this file retracted the ClickHouse figure for, so **neither number
+should be quoted until both are re-measured with the state stated beside them.** Do not cite
+4.5 MB in the meantime; it is in the README.
 
 MySQL's saving is real and comes from `performance_schema=OFF` and a 48 MB buffer pool.
 
@@ -123,6 +133,73 @@ The one comparison that *is* fair is structural rather than numerical: **what ha
 the wake to start at all.** On every hosted platform it's an SDK call from code that knows the
 sandbox exists; here it's the client's own socket. That's in
 [COMPARISON.md](COMPARISON.md), and it doesn't depend on anyone's hardware.
+
+---
+
+## Against the field, measured here
+
+`scripts/compare.sh` runs sbx and its self-hosted rivals against the same targets on one
+machine. It answers the obvious objection to the table above: every rival figure in it was
+read rather than measured.
+
+```sh
+scripts/compare.sh 20                          # all contenders, both targets
+CONTENDERS=sbx,sablier scripts/compare.sh 5
+```
+
+**It publishes almost nothing, on purpose.** Three rules decide whether a sample may become a
+number, and each exists because of a specific way this kind of benchmark lies:
+
+| rule | why |
+|---|---|
+| a sample counts only on a **correct protocol reply** | Sablier's middleware failed to engage during development and returned **502 in 98 ms** — faster than sbx's real wake. A status code is not evidence |
+| a sample is **VOID** unless the target was verifiably asleep at `t0` | otherwise a rival whose mechanism never engaged scores a spectacular wake for answering while already awake |
+| every wake is **paired** with a baseline through the identical client | the first real run showed ~100 ms of each 336 ms "wake" was `curl`'s own startup |
+| overhead is measured against **the same container without the wake path**, interleaved | a separately published nginx folds two different containers into the delta; and measuring all the floor then all the through path lets load drift land in the answer — this floor moved 660 µs → 4280 µs between two runs on one machine |
+| a delta inside the harness's own jitter is **not published as a number** | the jitter here is ±150–900 µs and the proxy tax is ~15 µs, so this harness cannot resolve it and says so |
+
+`N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
+by design — that is a *result*. zeropod has none because nothing yet distinguishes
+checkpointed from running — that is not.
+
+### First run · 2026-08-15 — *not the comparison table*
+
+⚠️ **This is a harness smoke run, not the cross-contender comparison.** The plan gates that
+comparison on a zeropod probe (`ubuntu-latest`/amd64, where its arm64-on-macOS caveat does not
+apply) which **has not been run**. Publishing a field comparison that measures the two weaker
+rivals and omits the one that beats us would be the flattering outcome even with every printed
+number honest — so no such table is published here yet.
+
+⚠️ **Not headline numbers either.** The host was at load 6.95 with 268 MB free in the VM — the
+condition the next section says produced figures "wrong by an order of magnitude". Below is
+what the harness did and what it refused to do, nothing more.
+
+| contender | target | status | n | median | paired delta | what comes back |
+|---|---|---|---|---|---|---|
+| **sbx** | nginx | OK | 5 | 398 ms | **191 ms** | disk-warm, process cold |
+| **sbx** | postgres | OK | 5 | 683 ms | **504 ms** | disk-warm, process cold |
+| Sablier | nginx | SKIPPED | — | — | — | middleware did not block: a request to a stopped target failed rather than waiting |
+| Sablier | postgres | **N/A** | — | — | — | HTTP-only by design — a middleware on an HTTP request cannot wake a `psql` client |
+| Lazytainer | both | SKIPPED | — | — | — | never slept in 75 s; no group discovered from `LAZYTAINER_GROUP_*`, config format unverified |
+
+**zeropod appears in no row at all, deliberately.** It CRIU-checkpoints while the pod stays
+phase `Running`, so neither `docker inspect` nor `kubectl get pod` can express "asleep". With
+no gate, every sample would either void (flattering by omission) or record a *warm* request as
+a wake (worse). A `SKIPPED` row would read as a bad day; the true fact is that the strongest
+rival's mechanism cannot currently be gated at all, and a dash in a table does not say that.
+
+Four of six printed rows are a refusal. **Postgres is the row that matters** — raw TCP, the
+case that separates this from every HTTP-middleware tool, and Sablier's `N/A` there is the
+measured version of a claim this project had only ever made in prose.
+
+**Steady-state overhead reports "below harness resolution — see `proxy_bench_test.go`".** The
+interleaved measurement against sbx's own backing port returned a −4 µs delta against ±922 µs
+of jitter. That is not evidence the proxy is free; it is evidence this instrument is three
+orders of magnitude too coarse to see it, which is why `internal/daemon/proxy_bench_test.go`
+and benchstat exist and remain the source for that number (~15 µs).
+
+The p90 and stdev on the OK rows are the machine, not the software. Re-run on an idle host
+before quoting anything from here.
 
 ---
 
