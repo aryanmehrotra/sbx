@@ -303,3 +303,23 @@ Docker only. Building in a cluster means pushing to a registry the nodes can pul
 credentials, a registry address, a retention policy — none of which sbx can assume without
 becoming an opinionated CI system. `BuilderFor` refuses on kubernetes and says why, which is
 the same negotiated-capability rule as snapshots.
+
+---
+
+### Adding an optional spec field does not bump `version`
+
+The tempting rule is that every new field is a new format version. It is the wrong one here,
+because `ParseSpec` already sets `DisallowUnknownFields`. An older binary meeting a newer
+spec says:
+
+```
+sbx: sandbox.json: json: unknown field "build"
+```
+
+which names the field that is not understood. Bumping to `"version": 2` would replace that
+with `unsupported version 2 (this build understands 1)` — strictly less information — and
+would force every existing spec file to be edited even when it uses nothing new.
+
+So `version` is reserved for a change that would be **silently misread**: a field that
+changes meaning, a default that flips, a structure that is re-shaped. Optional additions are
+not that, and the decoder already refuses them by name.
