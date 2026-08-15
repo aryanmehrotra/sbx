@@ -82,8 +82,29 @@ if ! kubectl apply -k https://github.com/ctrox/zeropod/config/kind >/dev/null 2>
   skip "zeropod manifests would not apply"
 fi
 
-kubectl -n zeropod-system rollout status daemonset/zeropod-node --timeout=300s >/dev/null 2>&1 \
-  || skip "the zeropod node daemonset never became ready"
+# Longer than it looks like it needs: the init container installs a containerd shim onto
+# the node and restarts containerd, which on a cold runner is image pulls plus a runtime
+# restart under the very kubelet doing the watching.
+if ! kubectl -n zeropod-system rollout status daemonset/zeropod-node --timeout=600s >/dev/null 2>&1; then
+  # A skip that says only "it did not become ready" cannot be acted on. Everything below is
+  # what someone would type next anyway, so the log has it without a second run.
+  say
+  say "  ── why it did not become ready ───────────────────────────"
+  kubectl -n zeropod-system get pods -o wide 2>&1 | sed 's/^/    /' | head -8
+  say
+  kubectl -n zeropod-system describe daemonset zeropod-node 2>&1 \
+    | grep -A 12 -i 'events\|conditions' | sed 's/^/    /' | head -20
+  say
+  for c in installer zeropod-node; do
+    say "    ── logs: $c"
+    kubectl -n zeropod-system logs daemonset/zeropod-node -c "$c" --tail=25 2>&1 \
+      | sed 's/^/      /' | head -25
+  done
+  say
+  kubectl get events -n zeropod-system --sort-by=.lastTimestamp 2>&1 | tail -12 | sed 's/^/    /'
+
+  skip "the zeropod node daemonset never became ready — diagnosis above"
+fi
 say "  zeropod installed"
 
 # ── the target ─────────────────────────────────────────────────────────────────
