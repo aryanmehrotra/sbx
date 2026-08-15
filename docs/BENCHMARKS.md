@@ -370,8 +370,14 @@ number, and each exists because of a specific way this kind of benchmark lies:
 | a delta inside the harness's own jitter is **not published as a number** | the jitter here is ±150–900 µs and the proxy tax is ~15 µs, so this harness cannot resolve it and says so |
 
 `N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
-by design — that is a *result*. zeropod has none because nothing yet distinguishes
-checkpointed from running — that is not.
+by design — that is a *result*.
+
+zeropod took two attempts to gate honestly, and the second one is the interesting part. It
+does not stop the container: the pod stays `Running` while checkpointed, so `kubectl get pod`
+cannot tell asleep from awake, and a wake timed without that distinction is a warm request
+wearing a wake's name. `scripts/zeropod-probe.sh` gates on the `zeropod_running` metric
+instead — 0 when checkpointed — scraped from inside the cluster. That is what turned "cannot
+be measured" into the 272 ms row below.
 
 ### Measured · 2026-08-15
 
@@ -414,8 +420,10 @@ version compared a rival against a *separately published* nginx and produced −
 faster than direct, which is an artifact of comparing two containers.
 
 **Still unmeasured, and stated rather than omitted:** Sablier's wake path, because its
-Traefik middleware would not engage under any plugin configuration tried; Lazytainer's nginx
-arm on this run; and zeropod entirely.
+Traefik middleware would not engage under any plugin configuration tried; and Lazytainer's
+nginx arm on this run. That is all of it — zeropod used to be on this list and is now the
+272 ms row above, which is the only time this project has independently confirmed a rival's
+published claim rather than disputing one.
 
 ---
 

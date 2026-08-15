@@ -47,7 +47,18 @@ a spec could start something, the spec would eventually be the thing that left i
 |---|---|---|
 | `version` | ● | `1`. Lets a future format change be detected rather than silently misread |
 | `services` | ● | The declared set, keyed by name — a map, so a name is unambiguous when merging |
-| `exports` | | Maps port assignments onto the variables your scripts already read |
+| `exports` | | Maps port assignments onto the variables your scripts already read — each also yields a matching `_HOST` |
+
+### Every port export gets a host to go with it
+
+A declared export produces two variables, not one. `DATABASE_PORT` also yields
+`DATABASE_HOST`; `PGPORT` yields `PGHOST` — no underscore, because that is what libpq itself
+reads, and it is why `psql -U app -d app` with no host or port argument reaches the sandbox at
+all. `MYSQL_PORT` yields `MYSQL_HOST` by the same rule.
+
+The rule is: strip a trailing `_PORT` if there is one, otherwise a trailing `PORT`, and append
+`_HOST` or `HOST` to match. A bare `PORT` export is left alone rather than becoming `_HOST`,
+which would be neither useful nor obviously wrong to whoever wrote it.
 
 **`exports` is how adoption stays cheap.** `{"DB_PORT": "mysql:3306"}` becomes
 `DB_PORT=<public port of mysql 3306>`. Without it, adopting sbx would mean editing every

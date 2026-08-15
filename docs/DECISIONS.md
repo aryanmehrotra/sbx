@@ -125,9 +125,12 @@ instrument invented.
 **Three statuses, because they are three different facts.** `N/A` means the contender cannot
 do this by design and is a result: Sablier has no postgres row because it is HTTP-only.
 `SKIPPED` means it could not be stood up here and is not a result. **No row at all** means it
-cannot be gated — zeropod checkpoints while the pod stays `Running`, so nothing distinguishes
-its asleep from its awake, and a dash in a table would read as a bad day rather than as the
-absence of a measurable property.
+cannot be gated — and that is a claim with a shelf life, which zeropod proved. It checkpoints
+while the pod stays `Running`, so nothing in `kubectl get pod` separates its asleep from its
+awake, and it sat here as unmeasurable for exactly that reason. The answer was a different
+observable rather than no observable: `zeropod_running` is 0 while checkpointed, and gating on
+that produced a real 272 ms measurement. "Cannot be gated" is a statement about the gate you
+have looked for, so it belongs in a document that expects to be revisited.
 
 **Rows in different categories are not ranked against each other.** Disk-warm and
 RAM-restored are different quantities; every row carries what comes back.

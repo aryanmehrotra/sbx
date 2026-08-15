@@ -6,7 +6,8 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **One Go binary. Every branch, task or agent gets its own Postgres, Redis or browser — asleep
-at 0 B, awake in 191 ms the moment something connects to it.**
+at 0 B of memory, awake on the first connection: 191 ms for redis, about a second for
+postgres, and that first connection is *held* rather than refused.**
 
 <img src="docs/demo.svg" alt="A terminal running sbx selftest: a sandbox is created, sleeps to zero, is woken by a socket in 251 ms, and its data survives." width="860">
 
@@ -143,7 +144,7 @@ other, wrong for anything public. →
 | | |
 |---|---|
 | `sbx create` / `rm` | make one from `sandbox.json` or `--template`, destroy it with its data |
-| `sbx env` | exports for your tooling — posix, fish, powershell, **json** |
+| `sbx env` | exports for your tooling — posix, fish, powershell, cmd, **json** |
 | `sbx ready` | wake it and block until it's serving — the CI one-liner |
 | `sbx exec [-t]` | run anything inside it; `-t` attaches a terminal for a shell or `psql` |
 | `sbx logs [-f]` | **every service on one stdout**, structured — the one command that does *not* wake anything |
@@ -154,7 +155,7 @@ other, wrong for anything public. →
 | `sbx init` | print a starter `sandbox.json` — `sbx init > sandbox.json` |
 | `sbx validate` | check it without creating anything — the pre-commit hook |
 | `sbx prewarm` | pull the images now, so the first create isn't a download |
-| `sbx gc` | reclaim volumes whose sandbox is gone — lists by default, deletes only with `--force` |
+| `sbx gc` | reclaim volumes whose sandbox is gone, and with `--snapshots` the saved states too (never swept by default) — lists unless you pass `--force`; `--older-than` narrows it |
 | `sbx doctor` | what this machine can and cannot do, before you rely on it |
 | `sbx list` · `sbx templates` | what exists and what's awake · the built-in specs |
 | `sbx serve` | **the daemon** — it owns the ports and does all waking and sleeping; one per machine |
@@ -167,8 +168,9 @@ INFO [14:16:40] my-branch/redis     Ready to accept connections tcp
 
 Aligned columns on a terminal, **JSON when piped**.
 
-Every command that touches a sandbox takes `--provider docker|kubernetes`, `--namespace` and
-`--isolation container|gvisor|kata` — `serve` takes the first two. `doctor`, `validate` and
+Every command that touches a sandbox takes `--provider docker|kubernetes`, `--namespace`,
+`--isolation container|gvisor|kata` and `--socket` (the docker endpoint) — `serve` takes all
+but `--isolation`, plus `--idle`, `--refresh` and `--ready`. `doctor`, `validate` and
 `templates` need none of them. `SBX_PROVIDER_KIND`, `SBX_NAMESPACE` and `SBX_ISOLATION` set
 the defaults, and `DOCKER_HOST` is honoured.
 
@@ -186,16 +188,25 @@ stack than running tests.
 Vercel Sandbox or Modal give you a real one. Or if you want somebody else to operate it:
 that's Neon, and always will be.
 
-The one thing that makes this different from every other tool here: **nothing has to call an
-SDK to wake a sandbox.** A connection pool can't call `sandbox.connect()`, and neither can
-`pg_dump`, a migration tool or a test runner somebody else wrote.
+**Nothing has to call an SDK to wake a sandbox.** A connection pool can't call
+`sandbox.connect()`, and neither can `pg_dump`, a migration tool or a test runner somebody
+else wrote. Fly's proxy and Knative's activator manage that too — Fly's is in Fly's cloud,
+Knative's is HTTP only. *Any protocol, on your own machine, with no account* is the corner
+nobody else is in.
 
-| | wakes on | so the client can be |
-|---|---|---|
-| **sbx** | **any TCP connection** | anything with a socket |
-| E2B · Daytona · Modal · Vercel · Cloudflare | an SDK call | only your own code |
-| Fly Machines | a request through Fly Proxy | anything, incl. TCP |
-| Knative | an HTTP request | HTTP/gRPC/WS only |
+And waking is not the hard part; **holding the connection while it wakes** is. A client that
+gets refused and does not retry is a client that fails, and most don't retry:
+
+| | wakes on | so the client can be | first attempt served |
+|---|---|---|---|
+| **sbx** | **any TCP connection** | anything with a socket | **5/5 measured**, nginx and postgres |
+| E2B · Daytona · Modal · Vercel · Cloudflare | an SDK call | only your own code | your code retries |
+| Fly Machines | a request through Fly Proxy | anything, incl. TCP | held by the proxy |
+| Knative | an HTTP request | HTTP/gRPC/WS only | held by the activator |
+| Lazytainer | packets crossing a threshold | anything that **retries** | **0/5 measured** — refused, then served 5 s later |
+
+That last row is the one measurement in this project where a live rival was run side by side
+and lost outright. → [BENCHMARKS.md](docs/BENCHMARKS.md)
 
 ⚠️ **The wake is paid on `connect`, not on the query.** A client that gives up connecting in
 two seconds will give up on a cold postgres. Raise its connect timeout above the wake —

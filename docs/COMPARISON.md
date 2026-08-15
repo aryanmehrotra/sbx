@@ -67,7 +67,7 @@ different is that this runs on your laptop, with no account, on any protocol.
 
 | | at rest | wake | what survives |
 |---|---|---|---|
-| **sbx** | **0 B** | **191 ms** docker · 1534 ms k8s | disk. processes cold-start |
+| **sbx** | **0 B RAM**, and the volume it already had | **191 ms** redis · 931 ms postgres · 1534 ms k8s | disk. processes cold-start |
 | E2B | storage only | **~1 s** | **disk + RAM + running processes** |
 | Daytona | storage only | *no wake figure published* | disk, persistent volume |
 | Fly (suspended) | storage only | a few hundred ms | RAM snapshot |
@@ -81,9 +81,11 @@ resume. sbx does not snapshot RAM. A sleeping sandbox is a stopped container wit
 intact, so a wake is a **cold process start against warm data** — Postgres replays its WAL and
 comes up, it doesn't resume mid-transaction.
 
-That is a worse guarantee. It is also why a sleeping sandbox is genuinely **0 B** rather than
-"storage only", and why sleeping costs nothing to enter — there is no 4 s/GiB checkpoint to pay
-before the saving starts. For a database on a branch, disk-warm is the state that matters. For
+That is a worse guarantee. It is also why sleeping costs nothing to *enter*: a sleeping
+sandbox holds **0 B of memory** and no storage beyond the volume it already had, where a
+paused E2B or a suspended Fly machine keeps a RAM image on top of its disk — written at about
+4 s per GiB of RAM before any saving starts. No checkpoint to pay for, and no meter on the
+disk it keeps. For a database on a branch, disk-warm is the state that matters. For
 an agent's half-finished Python REPL, it isn't, and E2B is the better tool.
 
 ---
