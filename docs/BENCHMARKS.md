@@ -20,8 +20,9 @@ go test -run '^$' -bench RoundTrip -count 12 .       # proxy overhead, for bench
 | docker | **191 ms** | n=20, p90 232 ms, stdev 24 ms |
 | kubernetes | **1534 ms** | n=5, min 1362, max 2060 — a pod must be scheduled |
 
-For scale, published figures: E2B 662 ms resume, Daytona 1254 ms, Neon 300–500 ms. Those are
-hosted platforms; these are a laptop and a minikube.
+These are a laptop and a minikube. For scale against hosted platforms, see
+[against other platforms](#against-other-platforms) below — including why that comparison is
+weaker than it looks.
 
 ### How it got there
 
@@ -79,6 +80,49 @@ MySQL's saving is real and comes from `performance_schema=OFF` and a 48 MB buffe
 That compared a loaded server carrying real data against a fresh empty one and credited the
 difference to configuration. An idle ClickHouse is about 200 MB either way; the cache caps
 matter under load, not at rest. The same mistake inflated the MySQL figure from 3.7× to 6×.
+
+---
+
+## Against other platforms
+
+Vendor-documented figures, read August 2026, beside ours. **This is not a benchmark**, and the
+next section explains why it would be dishonest to present it as one.
+
+| | idle → serving | what comes back | measured by |
+|---|---|---|---|
+| **sbx** docker | **191 ms** | disk warm, process cold | `scripts/bench.sh 20`, this repo |
+| **sbx** kubernetes | **1534 ms** | disk warm, process cold | `scripts/bench.sh`, minikube |
+| E2B resume | ~1000 ms | **RAM + processes** | [vendor docs][e2b] |
+| Neon | 300–800 ms | Postgres data | [vendor docs][neon] |
+| Fly, suspended | a few hundred ms | RAM snapshot | [vendor docs][fly] |
+| Fly, stopped | ~2000 ms+ | disk | [vendor docs][fly] |
+| Daytona | ~90 ms p99 *reported* | disk, persistent volume | third-party 2026 roundup |
+| Knative | pod schedule, seconds | volume if attached | — |
+
+[e2b]: https://docs.e2b.dev/sandbox/persistence
+[neon]: https://neon.com/docs/connect/connection-latency
+[fly]: https://fly.io/docs/reference/suspend-resume/
+
+### Why these numbers don't belong in the same table
+
+They are here because people ask, and refusing to answer is its own kind of dishonesty. But
+four things make the column non-comparable, and all four favour us:
+
+1. **Different hardware.** Ours is one laptop with nothing else running. Theirs is a
+   multi-tenant fleet serving other people at the same time.
+2. **No network.** 191 ms is loopback. Every hosted figure is a client somewhere else on the
+   internet, and the [Neon docs are explicit][neon] that physical distance dominates.
+3. **Different work.** E2B's ~1 s restores a memory image with your processes inside it. Our
+   191 ms starts a process against a warm disk. **Theirs is the harder problem**, and a
+   like-for-like row would compare their number to a cold `docker start` plus a health check
+   — which is exactly what our 5282 ms first measurement was.
+4. **They publish a floor, we publish a distribution.** n=20, p90 and stdev are in the row
+   above. A vendor's "~1 s" has no n.
+
+The one comparison that *is* fair is structural rather than numerical: **what has to happen for
+the wake to start at all.** On every hosted platform it's an SDK call from code that knows the
+sandbox exists; here it's the client's own socket. That's in
+[COMPARISON.md](COMPARISON.md), and it doesn't depend on anyone's hardware.
 
 ---
 

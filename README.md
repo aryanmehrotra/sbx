@@ -66,8 +66,9 @@ This one costs zero for the ones you're not using.
 | the daemon | 4.5 MB |
 | tuned MySQL | **110 MB** vs 411 MB stock |
 
-Published, for scale: E2B 662 ms resume · Daytona 1254 ms · Neon 300–500 ms. Those are hosted
-platforms. This is a laptop. → [BENCHMARKS.md](docs/BENCHMARKS.md)
+Published vendor figures, for scale: E2B ~1 s resume · Neon 300–800 ms · Fly suspend a few
+hundred ms. Those are hosted platforms on their hardware; this is a laptop, and the two were
+not measured the same way. → [BENCHMARKS.md](docs/BENCHMARKS.md) · [COMPARISON.md](docs/COMPARISON.md)
 
 ---
 
@@ -234,18 +235,48 @@ is the wake signal.
 
 ---
 
-## Where to use something else
+## How it compares
 
-| If you need | Use |
+Two different products get called "sandbox". Most of them are **a place to run code** — the
+unit is an execution session, the client is an SDK, and isolation is what's being sold. This
+is the other kind: **a place to run the services a branch needs**, where the client is `psql`
+or a connection pool and the thing being sold is cost at rest.
+
+Everyone scales to zero. The question that separates them is **what has to happen to bring it
+back:**
+
+| | wakes on | so the client can be | off-cloud |
+|---|---|---|---|
+| **sbx** | **any TCP connection** | anything with a socket | **laptop + cluster** |
+| E2B · Daytona · Modal · Vercel | an SDK call | only your own code | ✗ |
+| Cloudflare Sandbox SDK | an SDK call over RPC | only your own code | ✗ |
+| Fly Machines | a request through Fly Proxy | anything, incl. TCP | ✗ |
+| Knative | an HTTP request | HTTP/gRPC/WS only | ✓ cluster |
+| Neon | a Postgres connection | Postgres clients only | ✗ |
+
+A connection pool can't call `sandbox.connect()`. Neither can `pg_dump`, a migration tool, or
+a test runner somebody else wrote. On an SDK-triggered platform every tool that touches the
+sandbox has to be sandbox-aware. Here the socket *is* the signal, so nothing is.
+
+**What you give up for that.** E2B pauses to a memory snapshot — processes and loaded
+variables come back exactly as they were. This restores disk only: a wake is a cold process
+start against warm data. That's a worse guarantee, and it's why a sleeping sandbox is **0 B**
+instead of "storage only".
+
+| If you need | Use instead |
 |---|---|
-| An agent running genuinely untrusted code | E2B, Daytona |
-| A URL per pull request, for reviewers | Uffizzi, Okteto, Northflank |
+| To run genuinely untrusted code | E2B, Vercel Sandbox, Modal — real microVMs |
+| An agent's REPL resumed mid-thought | E2B — RAM snapshot |
+| A URL per pull request, for reviewers | Northflank, Uffizzi, Okteto |
 | Only ephemeral test fixtures | Testcontainers |
-| HTTP-only, already on Knative | Knative |
+| Hosted serverless Postgres, and that's it | Neon |
+
+→ **[COMPARISON.md](docs/COMPARISON.md)** — the full table, every claim sourced to vendor docs.
 
 **Honest limits.** A container shares the host kernel — `--isolation gvisor|kata` is
 declarable and refused when the runtime is absent, but operating a hardened cluster is yours.
-And nobody outside its author has run this in production.
+Every hosted platform above has real isolation and real users; this has neither. **Nobody
+outside its author has run it in production.**
 
 ---
 
@@ -254,6 +285,7 @@ And nobody outside its author has run this in production.
 | | |
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | the pieces, both data paths, addressing |
+| [COMPARISON.md](docs/COMPARISON.md) | against E2B, Daytona, Modal, Fly, Neon, Knative — sourced |
 | [USE-CASES.md](docs/USE-CASES.md) | four shapes this fits, and the ones it doesn't |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | every number, and how to re-run it |
 | [DECISIONS.md](docs/DECISIONS.md) | why it's shaped this way — mostly things that broke |

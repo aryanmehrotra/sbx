@@ -82,10 +82,13 @@ somebody opens it. A reviewer clicks, waits about a second, sees the app.
 
 | If you need | Use |
 |---|---|
-| An agent running genuinely untrusted code | E2B, Daytona — real multi-tenant isolation |
+| An agent running genuinely untrusted code | E2B, Vercel Sandbox, Modal — Firecracker microVMs |
+| An agent's REPL resumed mid-thought | E2B — it snapshots RAM; this restores disk only |
 | A URL per pull request, for reviewers | Uffizzi, Okteto, Northflank |
 | Only ephemeral test fixtures | Testcontainers — ephemeral is right there |
 | HTTP-only, already on Knative | Knative — mature, and this is not |
+
+→ [COMPARISON.md](COMPARISON.md) for the full table, sourced to vendor documentation.
 
 **Honest limits.** A container shares the host kernel; `--isolation gvisor|kata` is
 declarable and refused when the runtime is absent, but operating a hardened cluster is not
