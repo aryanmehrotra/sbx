@@ -228,10 +228,45 @@ if want "wake"; then
 
   # Reliability, not speed: three cycles in a row have to behave the same way. A wake that
   # works once and not twice is the failure people actually hit.
+  # How to reach the daemon from a psql that is itself in a container.
+  #
+  # The daemon listens on 127.0.0.1 only, deliberately — these ports are not for the network.
+  # So `host.docker.internal` cannot work on Linux: it resolves to the host GATEWAY
+  # (172.17.0.1), and a listener bound to loopback does not accept from there. That is why
+  # this case failed on every CI run while passing on a macOS laptop, where a VM-backed
+  # docker routes it differently. `--network host` puts the client in the host's namespace,
+  # so 127.0.0.1 means the same thing on both sides.
+  # Chosen by trying it, not by guessing from the platform. `--network host` starts fine on a
+  # VM-backed docker and puts the container in the VM's network namespace, where 127.0.0.1 is
+  # the VM rather than the host — so "did the flag work" is the wrong question and "can this
+  # actually reach the daemon" is the right one.
+  pg_host_args=""
+  pg_host=""
+
+  for candidate in "--network host|127.0.0.1" "--add-host=host.docker.internal:host-gateway|host.docker.internal"; do
+    args="${candidate%%|*}"
+    host="${candidate##*|}"
+
+    # shellcheck disable=SC2086 # args is a deliberate multi-word argument list
+    if docker run --rm $args alpine:3 \
+         sh -c "nc -z -w 3 $host $DATABASE_PORT" >/dev/null 2>&1; then
+      pg_host_args="$args"
+      pg_host="$host"
+      break
+    fi
+  done
+
+  if [ -z "$pg_host" ]; then
+    skip "wake cycles" "no route from a container to the daemon's loopback port on this host"
+    pg_host_args="--network host"
+    pg_host="127.0.0.1"
+  fi
+
   cycles_ok=0
   for _ in 1 2 3; do
-    if docker run --rm --add-host=host.docker.internal:host-gateway -e PGPASSWORD=app \
-         postgres:16-alpine psql -h host.docker.internal -p "$DATABASE_PORT" -U app -d app \
+    # shellcheck disable=SC2086 # pg_host_args is a deliberate multi-word argument list
+    if docker run --rm $pg_host_args -e PGPASSWORD=app \
+         postgres:16-alpine psql -h "$pg_host" -p "$DATABASE_PORT" -U app -d app \
          -tAc 'select v from w' 2>/dev/null | grep -q survives; then
       cycles_ok=$((cycles_ok + 1))
     fi

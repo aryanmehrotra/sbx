@@ -183,6 +183,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+      - run: sudo apt-get update && sudo apt-get install -y redis-tools
       - run: go build -o sbx .
       - name: kill the daemon and prove nothing was lost
         run: ./scripts/recovery.sh
