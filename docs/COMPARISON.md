@@ -186,7 +186,7 @@ covered next.
 Not the hosted platforms — three self-hosted Go projects that solve the same problem, and the
 ones to read before this one. Two of them predate it.
 
-### zeropod · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 939★
+### zeropod · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 939★ · **measured**
 
 A containerd shim. eBPF watches TCP activity; after an idle period CRIU checkpoints the
 container to disk; an activator holds the port and **restores on the first connection in tens
@@ -194,6 +194,10 @@ to a few hundred milliseconds** — with memory, open files and processes intact
 
 **This is the same mechanism as ours, done at a lower layer, and on the RAM question it beats
 us outright.** What we restore is a disk. What it restores is the process.
+
+Measured rather than taken on trust: **272 ms median restore, n=4, and 4/4 first attempts
+served** — it holds the connection, as we do. `scripts/zeropod-probe.sh` runs it in CI. Their
+documented "tens to a few hundred milliseconds" is accurate.
 
 Where it costs more: it replaces your container runtime. It needs a containerd shim installed
 on every node, CRIU, eBPF and a Kubernetes cluster — root-level infrastructure, configured per
@@ -255,14 +259,15 @@ state of that attempt:
 |---|---|
 | Sablier is HTTP-only — cannot wake a `psql` client | **measured**: reports `N/A` for the postgres target, by design, not by failure |
 | Sablier's ~1.5–2 ms steady-state overhead | **unmeasured here** — its Traefik middleware would not engage under any plugin config tried, so no honest number was taken |
-| zeropod restores in tens to a few hundred ms, with RAM intact | **unmeasured here** — no verified observable distinguishes checkpointed from running, so the arm produces no table rather than a number taken without that gate |
+| zeropod restores in tens to a few hundred ms, with RAM intact | **measured** — 272 ms median, n=4, 4/4 first attempts served, on a kind cluster in CI. Their claim holds |
 | Lazytainer wakes on any TCP | **measured** — it does, but it never holds the connection: attempts 1–5 refused, served on the 6th, 5150 ms later. 0/5 first attempts served against sbx's 5/5 |
 | sbx wakes on raw TCP (postgres) | **measured** — 5/5 first attempts served, median 931 ms |
 | sbx's proxy tax | **measured** — 33 µs/req over a same-container floor, ±21 µs, alongside benchstat's ~15 µs by a different method |
 | the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
 
-Two of seven are still read rather than run — Sablier's overhead and zeropod's restore —
-and one of the measurements refuted a claim of our own rather than a rival's.
+One of seven is still read rather than run — Sablier's overhead, because its middleware
+would not engage. Everything else has been run, and one of the measurements refuted a claim
+of our own rather than a rival's.
 
 The Lazytainer row is the one worth reading twice. "Wakes on any TCP" is true of it and
 was the axis this document used to group it with sbx. Measuring it showed the grouping was

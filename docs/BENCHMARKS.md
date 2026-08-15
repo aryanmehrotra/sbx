@@ -181,7 +181,7 @@ under one set of conditions, not a specification.
 | Lazytainer | nginx | — | SKIPPED | — | — | — | could not be stood up on this run |
 | Sablier | nginx | — | SKIPPED | — | — | — | middleware did not block: a request to a stopped target failed instead of waiting |
 | Sablier | postgres | — | **N/A** | — | — | — | HTTP-only by design — a middleware on an HTTP request cannot wake a `psql` client |
-| zeropod | both | — | omitted | — | — | — | no observable distinguishes checkpointed from running |
+| **zeropod** | nginx | 4 | **272 ms** | — | **4/4** | — | **RAM and processes, via CRIU** — measured in CI, see below |
 
 **The column that matters is "first attempt served", not the milliseconds.**
 
