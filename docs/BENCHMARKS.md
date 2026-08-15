@@ -72,7 +72,17 @@ anything:
 | `mysql:8.0` | 411 MB | **110 MB** |
 | `clickhouse:24.3` | 199 MB | 201 MB |
 | a sleeping sandbox | — | **0 B** |
-| the daemon | — | 4.5 MB |
+| the daemon | — | 4.5 MB ⚠️ **contradicted below** |
+
+⚠️ **The 4.5 MB daemon figure does not reproduce and is under correction.** On 2026-08-15
+`scripts/compare.sh` measured the same daemon at **9.2 MB** (nginx run) and **11.8 MB**
+(postgres run) via `ps -o rss` while it was proxying a live sandbox — roughly two to three
+times the published number. The two are not necessarily the same quantity: 4.5 MB was a
+daemon at rest with nothing attached, and these are a daemon with a listener, a splice and a
+wake policy running under memory pressure. That is exactly the kind of "different quantity,
+same column" mistake this file retracted the ClickHouse figure for, so **neither number
+should be quoted until both are re-measured with the state stated beside them.** Do not cite
+4.5 MB in the meantime; it is in the README.
 
 MySQL's saving is real and comes from `performance_schema=OFF` and a 48 MB buffer pool.
 
@@ -150,12 +160,17 @@ number, and each exists because of a specific way this kind of benchmark lies:
 by design — that is a *result*. zeropod has none because nothing yet distinguishes
 checkpointed from running — that is not.
 
-### First run · 2026-08-15
+### First run · 2026-08-15 — *not the comparison table*
 
-⚠️ **Not headline numbers, and they do not replace the table at the top of this file.** The
-host was at load 6.95 with 268 MB free in the VM — the condition the next section says
-produced figures "wrong by an order of magnitude". Published to show what the harness does and
-what it refuses to do, not to claim a result.
+⚠️ **This is a harness smoke run, not the cross-contender comparison.** The plan gates that
+comparison on a zeropod probe (`ubuntu-latest`/amd64, where its arm64-on-macOS caveat does not
+apply) which **has not been run**. Publishing a field comparison that measures the two weaker
+rivals and omits the one that beats us would be the flattering outcome even with every printed
+number honest — so no such table is published here yet.
+
+⚠️ **Not headline numbers either.** The host was at load 6.95 with 268 MB free in the VM — the
+condition the next section says produced figures "wrong by an order of magnitude". Below is
+what the harness did and what it refused to do, nothing more.
 
 | contender | target | status | n | median | paired delta | what comes back |
 |---|---|---|---|---|---|---|
@@ -164,11 +179,16 @@ what it refuses to do, not to claim a result.
 | Sablier | nginx | SKIPPED | — | — | — | middleware did not block: a request to a stopped target failed rather than waiting |
 | Sablier | postgres | **N/A** | — | — | — | HTTP-only by design — a middleware on an HTTP request cannot wake a `psql` client |
 | Lazytainer | both | SKIPPED | — | — | — | never slept in 75 s; no group discovered from `LAZYTAINER_GROUP_*`, config format unverified |
-| zeropod | both | SKIPPED | — | — | — | no running cluster, and no verified "checkpointed" observable |
 
-Six of eight rows are a refusal. **Postgres is the row that matters** — raw TCP, the case that
-separates this from every HTTP-middleware tool, and Sablier's `N/A` there is the measured
-version of a claim this project had only ever made in prose.
+**zeropod appears in no row at all, deliberately.** It CRIU-checkpoints while the pod stays
+phase `Running`, so neither `docker inspect` nor `kubectl get pod` can express "asleep". With
+no gate, every sample would either void (flattering by omission) or record a *warm* request as
+a wake (worse). A `SKIPPED` row would read as a bad day; the true fact is that the strongest
+rival's mechanism cannot currently be gated at all, and a dash in a table does not say that.
+
+Four of six printed rows are a refusal. **Postgres is the row that matters** — raw TCP, the
+case that separates this from every HTTP-middleware tool, and Sablier's `N/A` there is the
+measured version of a claim this project had only ever made in prose.
 
 The p90 and stdev on the two OK rows (1785 ms, 636 ms) are the machine, not the software.
 Re-run on an idle host before quoting anything from here.

@@ -45,15 +45,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
-
 measure_conditions "$SBX"
 echo
 
 echo "── setup ───────────────────────────────────────────────────"
-t0=$(ms)
+t0=$(measure_ms)
 "$SBX" create "$NAME" --spec "$SPEC" >/dev/null || { echo "bench: create failed" >&2; exit 1; }
-t1=$(ms)
+t1=$(measure_ms)
 printf '  create         %s ms  (image pull, health wait, init — once)\n' "$((t1 - t0))"
 
 eval "$("$SBX" env "$NAME" --spec "$SPEC")"
@@ -77,9 +75,9 @@ for i in $(seq 1 "$RUNS"); do
     [ "$waited" -gt 60 ] && { echo "  run $i: never slept, skipping" >&2; continue 2; }
   done
 
-  t0=$(ms)
+  t0=$(measure_ms)
   out=$(redis-cli -h 127.0.0.1 -p "$REDIS_PORT" ping 2>&1)
-  t1=$(ms)
+  t1=$(measure_ms)
 
   if [ "$out" != "PONG" ]; then
     printf '  run %-3s        FAILED: %s\n' "$i" "$out"

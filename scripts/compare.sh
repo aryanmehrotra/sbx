@@ -36,8 +36,6 @@ NET=cmp-net
 # shellcheck source=lib/measure.sh
 . "$ROOT/scripts/lib/measure.sh"
 
-ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
-
 say()  { printf '%s\n' "$*"; }
 note() { printf '  %-12s %s\n' "$1" "$2"; }
 
@@ -120,8 +118,12 @@ sbx_available() {
 sbx_up() { # target
   SBX_NAME="cmp-$1-$$"
   "$SBX" create "$SBX_NAME" --spec "$ROOT/examples/$1/sandbox.json" >/dev/null 2>&1 || return 1
+  WEB_PORT=""; DATABASE_PORT=""
   eval "$("$SBX" env "$SBX_NAME" --spec "$ROOT/examples/$1/sandbox.json" 2>/dev/null)"
-  PORT=$([ "$1" = nginx ] && echo "$WEB_PORT" || echo "$DATABASE_PORT")
+  PORT=$([ "$1" = nginx ] && echo "${WEB_PORT:-}" || echo "${DATABASE_PORT:-}")
+  # Unset would abort the whole run under `set -u`. Every other failure here degrades to
+  # one SKIPPED row, and this one should too.
+  [ -n "$PORT" ] || { REASON="sbx env exported no port for $1"; return 1; }
   "$SBX" serve --idle "$IDLE" --refresh 2s >/dev/null 2>&1 &
   SBX_DAEMON=$!
   sleep 3
@@ -251,10 +253,11 @@ lazytainer_down() { docker rm -f cmp-lazy-target cmp-lazy >/dev/null 2>&1; }
 # produces no table at all — not a SKIPPED row that reads as a bad day, and certainly
 # not a number taken without the gate.
 zeropod_available() {
-  command -v minikube >/dev/null 2>&1 || { REASON="minikube not installed"; return 1; }
-  minikube status >/dev/null 2>&1 || { REASON="no running minikube cluster"; return 1; }
-  REASON="no verified 'checkpointed' observable"
-  return 1
+  # The observable problem comes first because it is unconditional: even with a healthy
+  # cluster we would have no way to tell asleep from awake, so "no cluster" would be a
+  # misleading reason to print. Fix the gate before bothering with the infrastructure.
+  REASON="no verified 'checkpointed' observable: zeropod CRIU-checkpoints while the pod stays phase Running, so neither docker inspect nor kubectl get pod can express asleep. No gate means no table"
+  return 3
 }
 zeropod_up()     { return 1; }
 zeropod_asleep() { return 1; }
@@ -279,6 +282,13 @@ measure_one() { # contender, target
   # "failed" while bench.sh was measuring it fine on the same machine.
   REASON=""
   "${c}_available" "$t"; local rc=$?
+  # rc=3 — the contender cannot be gated at all, so it gets no row. A SKIPPED row reads
+  # as "a bad day"; the true fact is that nothing distinguishes its asleep from its awake,
+  # and a reader comparing against it deserves that stated, not a dash in a table.
+  if [ "$rc" = "3" ]; then
+    say "  OMITTED — $REASON"
+    return
+  fi
   if [ "$rc" = "2" ]; then record "$c" "$t" "N/A" "$REASON"; return; fi
   if [ "$rc" != "0" ]; then record "$c" "$t" "SKIPPED" "${REASON:-unavailable}"; return; fi
 
@@ -293,12 +303,12 @@ measure_one() { # contender, target
   for i in $(seq 1 "$RUNS"); do
     if ! "${c}_asleep" "$t"; then void=$((void + 1)); continue; fi
 
-    t0=$(ms); "$client" "$port"; local ok=$?; t1=$(ms)
+    t0=$(measure_ms); "$client" "$port"; local ok=$?; t1=$(measure_ms)
     if [ "$ok" != "0" ]; then failed=$((failed + 1)); continue; fi
     wake=$((t1 - t0))
 
     # Paired baseline: same client, same path, target now awake.
-    t0=$(ms); "$client" "$port" >/dev/null 2>&1; t1=$(ms)
+    t0=$(measure_ms); "$client" "$port" >/dev/null 2>&1; t1=$(measure_ms)
     base=$((t1 - t0))
 
     samples="$samples $wake"
@@ -311,19 +321,30 @@ measure_one() { # contender, target
   if [ "$n" = "n/a" ] || [ "$n" = "0" ]; then
     record "$c" "$t" "SKIPPED" "no valid samples (void $void, failed $failed)"
   else
-    local med p90 sd dmed rss
+    local med sd spread deltas dmed dsd dspread rss
     med=$(printf '%s\n' $samples | measure_stat median)
-    p90=$(printf '%s\n' $samples | measure_stat p90)
     sd=$(printf '%s\n' $samples | measure_stat stdev)
-    dmed=$(printf '%s\n' $pairs | measure_pairs | measure_stat median)
+    deltas=$(printf '%s\n' $pairs | measure_pairs)
+    dmed=$(echo "$deltas" | measure_stat median)
+    dsd=$(echo "$deltas" | measure_stat stdev)
+    # Below n=10 a nearest-rank p90 is just the 4th-highest sample wearing a
+    # percentile's name. BENCHMARKS.md:21 already reports min/max for its n=5 row;
+    # this follows that rather than inventing a second convention.
+    if [ "$n" -lt 10 ]; then
+      spread="min=$(printf '%s\n' $samples | measure_stat min)ms max=$(printf '%s\n' $samples | measure_stat max)ms"
+      dspread="dmin=$(echo "$deltas" | measure_stat min)ms dmax=$(echo "$deltas" | measure_stat max)ms"
+    else
+      spread="p90=$(printf '%s\n' $samples | measure_stat p90)ms"
+      dspread="dp90=$(echo "$deltas" | measure_stat p90)ms"
+    fi
     rss=$("${c}_rss")
-    record "$c" "$t" "OK" "n=$n median=${med}ms p90=${p90}ms stdev=${sd}ms delta=${dmed}ms void=$void failed=$failed rss=$rss"
+    record "$c" "$t" "OK" "n=$n median=${med}ms $spread stdev=${sd}ms | delta median=${dmed}ms $dspread stdev=${dsd}ms | void=$void failed=$failed rss=$rss"
   fi
   "${c}_down"
 }
 
 preflight
-measure_conditions "$SBX"
+measure_conditions "$SBX" extended
 note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
 note "runs" "$RUNS per contender per target"
 say
@@ -338,7 +359,9 @@ done
 
 say "── results ─────────────────────────────────────────────────"
 printf '  %-12s %-9s %-8s %s\n' CONTENDER TARGET STATUS DETAIL
-for r in "${RESULTS[@]}"; do
+# ${a[@]+...} again: bash 3.2 calls an empty array unbound under `set -u`, and a run where
+# every contender was omitted is exactly when this loop is empty.
+for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
   IFS='|' read -r c t s d <<< "$r"
   printf '  %-12s %-9s %-8s %s\n' "$c" "$t" "$s" "$d"
 done

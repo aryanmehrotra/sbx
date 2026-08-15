@@ -15,19 +15,27 @@
 # A benchmark that prints 0 for "no data" is the failure mode this whole harness exists
 # to prevent: 0 ms looks like a result, and it is the absence of one.
 
+# measure_ms — wall clock in milliseconds. Shared so the two scripts cannot drift into
+# timing the same thing two ways.
+measure_ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
+
 # measure_conditions — what the machine was doing, printed before any result.
 # A wake on an idle laptop and a wake on one that is paging are not the same
 # measurement, and the numbers should say which.
-measure_conditions() { # optional: path to an sbx binary
-  local sbx="${1:-}"
+# `extended` adds the host triple and docker version, which compare.sh needs to make a
+# cross-contender run reproducible. bench.sh passes nothing and gets byte-identical output
+# to what it printed before the extraction — the acceptance criterion was that its behaviour
+# does not change, and "we improved it" is not the same thing as "unchanged".
+measure_conditions() { # path to an sbx binary, [extended]
+  local sbx="${1:-}" mode="${2:-}"
   echo "── conditions ──────────────────────────────────────────────"
-  printf '  host           %s\n' "$(uname -sm)"
+  [ "$mode" = extended ] && printf '  host           %s\n' "$(uname -sm)"
   printf '  host load      %s\n' "$(uptime | sed 's/.*averages*: *//')"
   if command -v colima >/dev/null 2>&1; then
     printf '  vm memory      %s\n' \
       "$(colima ssh -- free -m 2>/dev/null | awk 'NR==2{print $3" MB used, "$4" MB free of "$2" MB"}')"
   fi
-  if command -v docker >/dev/null 2>&1; then
+  if [ "$mode" = extended ] && command -v docker >/dev/null 2>&1; then
     printf '  docker         %s\n' "$(docker info --format '{{.ServerVersion}} · {{.Architecture}}' 2>/dev/null)"
   fi
   [ -n "$sbx" ] && [ -x "$sbx" ] && printf '  sbx            %s\n' "$("$sbx" version 2>/dev/null)"
