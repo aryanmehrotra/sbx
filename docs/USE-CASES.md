@@ -120,14 +120,37 @@ The expensive part of a per-task sandbox is rarely the container — it is getti
 into it. A schema, a migration, a fixture set: doing that once per agent is what makes
 "a sandbox each" sound extravagant.
 
+The spec can do the seeding, which is both fewer commands and the version that is
+reproducible — `files` mounts your migration in and `init` runs it once, after the service
+first reports healthy:
+
+```json
+{ "postgres": { "image": "postgres:16-alpine", "ports": [5432],
+                "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
+                "health": "psql -U app -d app -c 'select 1'",
+                "files": { "./schema.sql": "/tmp/schema.sql" },
+                "init":  [ "psql -U app -d app -f /tmp/schema.sql" ] } }
+```
+
 ```sh
-sbx create main --template postgres              # the one you seed
-sbx cp main postgres ./schema.sql :/tmp/schema.sql        # your own migration file
-sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
+sbx create main                # seeded by init, once
 sbx snapshot main golden
 
-sbx fork golden agent-1                          # the spec is remembered
+sbx fork golden agent-1        # the spec is remembered
 sbx fork golden agent-2
+```
+
+⚠️ The health command is `psql -U app -d app -c 'select 1'`, not `pg_isready`. `pg_isready`
+answers yes while postgres is still bootstrapping, before `POSTGRES_DB` exists — so `init`
+runs against a database that is not there yet. → [SPEC.md](SPEC.md)
+
+The seed lives in the committed file rather than in somebody's shell history, so the next
+person forking from that snapshot can see how the golden state was made. If the data is too
+large to commit, or the sandbox already exists, do it by hand instead:
+
+```sh
+sbx cp   main postgres ./schema.sql :/tmp/schema.sql
+sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
 ```
 
 Each fork has its own copy and its own ports; a write in one is invisible to the others and

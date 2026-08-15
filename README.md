@@ -197,6 +197,11 @@ SDK to wake a sandbox.** A connection pool can't call `sandbox.connect()`, and n
 | Fly Machines | a request through Fly Proxy | anything, incl. TCP |
 | Knative | an HTTP request | HTTP/gRPC/WS only |
 
+⚠️ **The wake is paid on `connect`, not on the query.** A client that gives up connecting in
+two seconds will give up on a cold postgres. Raise its connect timeout above the wake —
+`PGCONNECT_TIMEOUT` for libpq — and expect a pooled client to see a server-initiated close
+when a sandbox sleeps. → [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+
 ⚠️ **Honest limits.** A container shares the host kernel unless you run `--isolation gvisor`,
 which CI proves end to end. Egress can be denied but not filtered by domain. Memory is not
 restored, so a wake starts processes cold. And **nobody outside its author has run this in
@@ -217,6 +222,7 @@ including where we lose.
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | the pieces, both data paths, addressing |
 | [COMPARISON.md](docs/COMPARISON.md) | against E2B, Daytona, Modal, Fly, Neon, Knative |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | every number, and the script that produced it |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | what to do about what you're seeing |
 | [DECISIONS.md](docs/DECISIONS.md) | why it's shaped this way — mostly things that broke |
 | [console/](console/) | metrics, health and a read-only API for a running daemon |
 

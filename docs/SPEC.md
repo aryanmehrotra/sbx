@@ -277,3 +277,73 @@ sbx create my-site --template nginx
 
 The templates are the [`examples/`](../examples/), embedded in the binary — so an agent asked
 to spin up a Postgres can do it in one line, with nothing on disk.
+
+---
+
+## Coming from docker-compose
+
+Most teams already declare their backing services in a `docker-compose.yml`, and a compose
+service is close to isomorphic to an sbx one. The mapping, field for field:
+
+| docker-compose | sandbox.json | note |
+|---|---|---|
+| `image` | `image` | the same, and pin it |
+| `build.context` / `build.dockerfile` | `build.context` / `build.dockerfile` | sbx tags by a hash of the context |
+| `ports: ["5432:5432"]` | `ports: [5432]` | **container side only** — the host side is assigned from the sandbox's slot |
+| `environment` | `env` | `${VAR}` works in both |
+| `command` | `args` | appended to the image's entrypoint |
+| `volumes: ["pgdata:/var/lib/postgresql/data"]` | `volume: "/var/lib/postgresql/data"` | one per service, named after the sandbox |
+| `volumes: ["./my.conf:/etc/my.conf:ro"]` | `files: {"./my.conf": "/etc/my.conf"}` | read-only, relative to the spec |
+| `healthcheck.test` | `health` | a shell command, run inside the container |
+| `depends_on` | `depends_on` | ordering only, as in compose without a condition |
+| `deploy.resources.limits` | `cpu`, `memory` | |
+| `profiles` | `optional` | created with `--optional` |
+| — | `exports` | the piece compose has no equivalent of, and the reason adoption is cheap |
+
+**The one that surprises people is `ports`.** Compose lets you choose the host port; sbx does
+not, because two repos that both chose 5432 collide the moment somebody opens both. You
+declare the container port and read the assigned one back through `exports`.
+
+A two-service compose file:
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    ports: ["5432:5432"]
+    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: app, POSTGRES_DB: app }
+    volumes: [ "pgdata:/var/lib/postgresql/data" ]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U app"] }
+  cache:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+```
+
+becomes:
+
+```json
+{
+  "version": 1,
+  "services": {
+    "db": {
+      "image": "postgres:16-alpine",
+      "ports": [5432],
+      "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
+      "volume": "/var/lib/postgresql/data",
+      "health": "pg_isready -U app"
+    },
+    "cache": { "image": "redis:7-alpine", "ports": [6379], "health": "redis-cli ping" }
+  },
+  "exports": { "DATABASE_PORT": "db:5432", "REDIS_PORT": "cache:6379" }
+}
+```
+
+Anything reading `DATABASE_PORT` keeps working; `docker compose up` had it on 5432 and sbx
+has it wherever this sandbox's slot puts it.
+
+**What does not carry over**: compose's `networks` (each sandbox gets its own), `restart`
+(the daemon owns lifecycle — there is no start and no stop), and `depends_on` *conditions*
+(sbx waits for health before creating a dependent, which is the `service_healthy` behaviour;
+there is no other condition to choose).
+
+`sbx validate` checks the result without creating anything.

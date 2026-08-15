@@ -210,6 +210,21 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 			abs = filepath.Join(specDir, hostPath)
 		}
 
+		// Absolute, always. Docker reads a RELATIVE `-v` source as a named volume, not a
+		// path — so it silently creates an empty volume and mounts that, and the container
+		// finds a directory where its config should be. `sbx create --spec sandbox.json`
+		// (relative, which is the normal way to type it) made specDir "." and left the
+		// source relative, so `files:` did not work at all from the working directory.
+		//
+		// The mount check downstream caught the symptom and blamed VM path sharing, which is
+		// a real cause of the same symptom and was the wrong one here.
+		resolved, err := filepath.Abs(abs)
+		if err != nil {
+			return fmt.Errorf("service %q: file %s: %w", service, hostPath, err)
+		}
+
+		abs = resolved
+
 		if _, err := os.Stat(abs); err != nil {
 			return fmt.Errorf("service %q: file %s: %w", service, hostPath, err)
 		}

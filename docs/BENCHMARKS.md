@@ -23,6 +23,12 @@ scripts/compare.sh 20                                # sbx against the field
 | docker | **191 ms** | n=20, p90 232 ms, stdev 24 ms |
 | kubernetes | **1534 ms** | n=5, min 1362, max 2060 — a pod must be scheduled |
 
+⚠️ **Both assume a declared `health` command.** Without one there is nothing to ask — docker
+binds a published port the instant the container starts, so dialling it proves nothing — and
+the daemon waits a flat **2 s** before letting the caller through. That is ten times the
+number above, on a configuration the spec permits, which is why every bundled template
+declares a health check and why SPEC.md calls it close to required.
+
 These are a laptop and a minikube. For scale against hosted platforms, see
 [against other platforms](#against-other-platforms) below — including why that comparison is
 weaker than it looks.

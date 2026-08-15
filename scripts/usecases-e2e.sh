@@ -449,6 +449,54 @@ JSON
   [ -n "$built" ] && docker rmi -f $built >/dev/null 2>&1
 fi
 
+# ── files, from a relative spec path ──────────────────────────────────────────
+if want "files"; then
+  case_ "files: a mounted file arrives as a file, however the spec path was typed"
+
+  # Under $HOME, not $WORK. A VM-backed docker shares some host paths and not others —
+  # macOS mktemp lands in /var/folders, which Colima and Docker Desktop do not share — and a
+  # bind mount whose source the VM cannot see produces exactly the empty directory this case
+  # exists to detect. Testing there would fail for the wrong reason.
+  FILESDIR="$HOME/.sbx/uctest-$TAG"
+  mkdir -p "$FILESDIR"
+  printf 'seeded-by-init\n' > "$FILESDIR/data.txt"
+  cat > "$FILESDIR/sandbox.json" <<'JSON'
+{ "version": 1, "services": { "web": { "image": "nginx:alpine", "ports": [80],
+  "health": "wget -qO- http://127.0.0.1/ >/dev/null",
+  "files": { "./data.txt": "/tmp/data.txt" } } }, "exports": { "WEB_PORT": "web:80" } }
+JSON
+
+  # Relative, which is how anybody actually types it — and which used to leave the mount
+  # source relative too. Docker reads a relative -v source as a NAMED VOLUME, so it created
+  # an empty one and the container found a directory where its file should be.
+  if ( cd "$FILESDIR" && "$SBX" create "$TAG-files" --spec sandbox.json >/dev/null 2>&1 ); then
+    ok "create with a relative --spec and a files: mount"
+
+    got=$(docker exec "sbx-$TAG-files-web" cat /tmp/data.txt 2>/dev/null | tr -d '\r\n')
+    [ "$got" = "seeded-by-init" ] \
+      && ok "the file arrived as a file with its contents" \
+      || bad "the mount produced something else" "got [$got]"
+
+    docker exec "sbx-$TAG-files-web" test -f /tmp/data.txt 2>/dev/null \
+      && ok "and not a directory" || bad "the destination is a directory, not a file"
+
+    "$SBX" rm "$TAG-files" >/dev/null 2>&1
+  else
+    bad "create with a relative --spec and files: failed"
+  fi
+
+  # An absolute spec path must keep working too.
+  if "$SBX" create "$TAG-files2" --spec "$FILESDIR/sandbox.json" >/dev/null 2>&1; then
+    docker exec "sbx-$TAG-files2-web" test -f /tmp/data.txt 2>/dev/null \
+      && ok "an absolute --spec still mounts a file" || bad "absolute --spec broke the mount"
+    "$SBX" rm "$TAG-files2" >/dev/null 2>&1
+  else
+    bad "create with an absolute --spec failed"
+  fi
+
+  rm -rf "$FILESDIR"
+fi
+
 # ── the most common first-run mistake ─────────────────────────────────────────
 if want "health"; then
   case_ "health: a command that is not in the image fails fast, and says so"
