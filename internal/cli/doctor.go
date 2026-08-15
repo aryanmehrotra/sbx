@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/daemon"
 )
 
 // Doctor answers the question you have before you trust a sandbox with anything: what can
@@ -107,6 +109,24 @@ func Doctor(ctx context.Context) Report {
 		rep.Capabilities = append(rep.Capabilities, Capability{
 			Name: "docker daemon", Have: up, Detail: detail,
 			Meaning: "nothing can be created until the daemon is running",
+		})
+	}
+
+	// The one capability whose absence breaks everything, and it was the one doctor did not
+	// report. README says the daemon "owns the ports sbx env hands out, so nothing works
+	// without it", and then doctor listed a missing redis-cli that only affects selftest
+	// while saying nothing about this. A daemon started with `sbx serve &` dies with the
+	// terminal, and the first thing anyone runs afterwards is doctor.
+	if p, running := daemon.Running(); running {
+		rep.Capabilities = append(rep.Capabilities, Capability{
+			Name: "sbx serve", Have: true,
+			Detail:  fmt.Sprintf("pid %d, since %s, provider %s", p.PID, p.Since.Format("15:04"), p.Provider),
+			Meaning: "the ports `sbx env` exports are being fronted",
+		})
+	} else {
+		rep.Capabilities = append(rep.Capabilities, Capability{
+			Name: "sbx serve", Have: false, Detail: "not running",
+			Meaning: "nothing accepts on the ports `sbx env` exports; start one: sbx serve --idle 5m &",
 		})
 	}
 

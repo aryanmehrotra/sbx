@@ -449,6 +449,37 @@ JSON
   [ -n "$built" ] && docker rmi -f $built >/dev/null 2>&1
 fi
 
+# ── the most common first-run mistake ─────────────────────────────────────────
+if want "health"; then
+  case_ "health: a command that is not in the image fails fast, and says so"
+
+  cat > "$WORK/badhealth.json" <<'JSON'
+{ "version": 1, "services": { "web": { "image": "nginx:alpine", "ports": [80],
+  "health": "pg_isready -U app" } }, "exports": { "WEB_PORT": "web:80" } }
+JSON
+
+  # Three docs call this the most common first-run failure, and it used to be two minutes of
+  # silence followed by "never became ready". The exit code says 127 on the first probe.
+  start=$(date +%s)
+  out=$("$SBX" create "$TAG-bh" --spec "$WORK/badhealth.json" 2>&1)
+  took=$(( $(date +%s) - start ))
+
+  echo "$out" | grep -q 'cannot run in this image' \
+    && ok "it says the command cannot run in the image" \
+    || bad "the failure does not explain itself" "$out"
+
+  echo "$out" | grep -q 'pg_isready' \
+    && ok "and names the command" || bad "the failing command is not named" "$out"
+
+  # Under 30s is generous — it is about a second — and does not pin a timing the way a
+  # tighter bound would. What is being asserted is that it no longer waits out the timeout.
+  [ "$took" -lt 30 ] \
+    && ok "fails in ${took}s rather than waiting out the 2m timeout" \
+    || bad "took ${took}s — it is still waiting for the timeout"
+
+  "$SBX" rm "$TAG-bh" >/dev/null 2>&1
+fi
+
 # ── it remembers what a sandbox was made from ─────────────────────────────────
 if want "remembers"; then
   case_ "remembers: name the spec once, not on every command"

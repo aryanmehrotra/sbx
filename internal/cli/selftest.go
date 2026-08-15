@@ -1,6 +1,6 @@
 package cli
 
-// Proof, on your machine, in about a minute.
+// Proof, on your machine, in about nine seconds once images are local.
 //
 //	sbx selftest
 //	sbx selftest --provider kubernetes

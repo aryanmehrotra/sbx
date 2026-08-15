@@ -130,11 +130,10 @@ func readiness(eps []provider.Endpoint) string {
 	// The ports are the ground truth, so they are asked first and the presence file is only
 	// consulted to decide WHICH message when they are dead.
 	//
-	// It matters because the presence file can be wrong in the safe-looking direction. sbx
-	// supports more than one daemon on a machine — one per worktree, per CI job — and they
-	// share one file: the second overwrites the first, and whichever exits last removes it.
-	// So a live daemon can be serving with no presence recorded. Dialling first means that
-	// costs nothing rather than an incorrect "no daemon is running".
+	// Dialling first because a refused connection is the fact, and the record is only ever
+	// evidence about the cause. One daemon serves the whole machine — `sbx serve` refuses to
+	// start a second — so the record is now reliable; asking the port anyway costs nothing
+	// and means a stale or unwritable record degrades the advice rather than the answer.
 	if waitReachable(local, 0) {
 		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
 	}
@@ -196,7 +195,7 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 	}
 
 	if svc.Health != "" {
-		if err := waitHealthy(ctx, p, ref, 120*time.Second); err != nil {
+		if err := waitHealthy(ctx, p, ref, svc.Health, 120*time.Second); err != nil {
 			return fmt.Errorf("service %q: %w", name, err)
 		}
 	}
@@ -258,8 +257,9 @@ func refFor(ctx context.Context, p provider.Provider, sandbox, service string) (
 // would report a clean run against a database that never came up.
 // It asks Probe, not Healthy, for the same reason the wake path does: the platform
 // republishes health on its own interval and that lag was 98% of the time spent here.
-func waitHealthy(ctx context.Context, p provider.Provider, ref string, timeout time.Duration) error {
+func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	checked := false
 
 	for time.Now().Before(deadline) {
 		if serving, declared := p.Probe(ctx, ref); serving {
@@ -269,10 +269,101 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref string, timeout t
 			return nil
 		}
 
+		// The first failure is the one worth looking at closely. A health command that is not
+		// in the image fails identically to one that is merely early — and waiting two
+		// minutes to say "never became ready" for a missing binary is the least useful
+		// message this tool can produce. The shell distinguishes them for us: 127 is "not
+		// found" and 126 is "found but not executable", and neither improves with time.
+		if !checked && command != "" {
+			checked = true
+
+			if why, fatal := healthWillNeverPass(ctx, p, ref, command); fatal {
+				return fmt.Errorf("the health command %q cannot run in this image: %s\n"+
+					"     The command has to exist inside the container. Check with:\n"+
+					"       docker run --rm --entrypoint sh <image> -c 'command -v <tool>'",
+					command, why)
+			}
+		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	// Two minutes of nothing, so say what the check actually returned rather than only that
+	// it kept returning it.
+	if command != "" {
+		if out, err := p.Exec(ctx, ref, []string{"sh", "-c", command}); err != nil {
+			return fmt.Errorf("%s never became ready within %s — the health command %q still "+
+				"fails: %s", ref, timeout, command, firstLine(out))
+		}
+	}
+
 	return fmt.Errorf("%s never became ready within %s", ref, timeout)
+}
+
+// healthWillNeverPass reports whether the health command failed in a way that waiting cannot
+// fix, and why.
+func healthWillNeverPass(ctx context.Context, p provider.Provider, ref, command string) (string, bool) {
+	out, err := p.Exec(ctx, ref, []string{"sh", "-c", command})
+	if err == nil {
+		return "", false
+	}
+
+	// The provider folds the command's output into its error rather than returning it, so
+	// the reason is in whichever of the two actually has it.
+	text := out + " " + err.Error()
+	detail := firstLine(out)
+
+	if detail == "no output" {
+		detail = shellReason(err.Error())
+	}
+
+	switch {
+	case strings.Contains(text, "exit status 127"), strings.Contains(text, "not found"):
+		return detail, true
+	case strings.Contains(text, "exit status 126"), strings.Contains(text, "Permission denied"):
+		return detail, true
+	}
+
+	return "", false
+}
+
+// shellReason pulls the shell's own complaint out of a wrapped exec error.
+//
+// The provider's error is the whole command line plus the exit status plus the output, which
+// is the right thing to have and the wrong thing to show. What a reader needs is the last
+// line: "sh: pg_isready: not found".
+func shellReason(s string) string {
+	s = strings.TrimSpace(s)
+
+	// Everything after the exit status is the command's own output. Before it is the command
+	// line sbx built, which the reader did not type and does not need.
+	if i := strings.Index(s, "exit status "); i >= 0 {
+		rest := s[i+len("exit status "):]
+		if j := strings.Index(rest, ": "); j >= 0 {
+			s = strings.TrimSpace(rest[j+2:])
+		}
+	}
+
+	return firstLine(s)
+}
+
+// firstLine keeps an error readable: a failing command's first line is the reason, and the
+// rest is usually a usage message nobody asked for.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+
+	if s == "" {
+		return "no output"
+	}
+
+	return s
 }
 
 func joinEndpoints(eps []provider.Endpoint) string {
@@ -547,7 +638,9 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 			continue
 		}
 
-		if err := waitHealthy(ctx, p, u.Ref, timeout); err != nil {
+		// No health command in hand here — Ready works from what the provider reports, not
+		// from a spec — so the fast-fail check is skipped and this behaves as it always did.
+		if err := waitHealthy(ctx, p, u.Ref, "", timeout); err != nil {
 			return err
 		}
 
@@ -664,7 +757,7 @@ func serviceRef(ctx context.Context, p provider.Provider, sandbox, service strin
 					return "", err
 				}
 
-				if err := waitHealthy(ctx, p, u.Ref, 90*time.Second); err != nil {
+				if err := waitHealthy(ctx, p, u.Ref, "", 90*time.Second); err != nil {
 					return "", err
 				}
 			}

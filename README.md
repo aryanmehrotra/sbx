@@ -12,7 +12,7 @@ at 0 B, awake in 191 ms the moment something connects to it.**
 
 ```sh
 sbx serve --idle 5m &                          # once per machine, not per sandbox
-sbx create my-branch --template postgres       # 492 ms, no spec file needed
+sbx create my-branch --template postgres       # 492 ms once the image is local
 eval "$(sbx env my-branch)"                    # it remembers what it was made from
 psql -U app -d app                             # this wakes it
 ```
@@ -35,7 +35,8 @@ windows on amd64 and arm64; Windows means WSL2.
 
 Then run the daemon once — it owns the ports `sbx env` hands out, so nothing works without
 it. [`deploy/`](deploy/) has a launchd plist and a systemd unit, both running as you, not
-root. Check the machine first, and prove the whole cycle on it in about nine seconds:
+root. Check the machine first, and prove the whole cycle on it — about 9 s once images are
+local, longer on a first run that has to pull them:
 
 ```sh
 sbx doctor       # what this host can and cannot do
@@ -150,11 +151,14 @@ other, wrong for anything public. →
 | `sbx add` | drop in a service nobody declared — the agent affordance |
 | `sbx url` | a public link that wakes it when opened |
 | `sbx snapshot` / `fork` | save every service's data, then make **as many sandboxes from it as you want** |
-| `sbx validate` | check `sandbox.json` without creating anything — the pre-commit hook |
+| `sbx init` | print a starter `sandbox.json` — `sbx init > sandbox.json` |
+| `sbx validate` | check it without creating anything — the pre-commit hook |
 | `sbx prewarm` | pull the images now, so the first create isn't a download |
 | `sbx gc` | reclaim volumes whose sandbox is gone — lists by default, deletes only with `--force` |
 | `sbx doctor` | what this machine can and cannot do, before you rely on it |
-| `sbx list` · `sbx selftest` | what exists and what's awake · the whole cycle, on your machine |
+| `sbx list` · `sbx templates` | what exists and what's awake · the built-in specs |
+| `sbx serve` | **the daemon** — it owns the ports and does all waking and sleeping; one per machine |
+| `sbx selftest` | the whole cycle, on your machine |
 
 ```
 INFO [14:16:40] my-branch/postgres  database system is ready to accept connections

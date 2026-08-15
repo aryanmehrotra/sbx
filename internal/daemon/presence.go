@@ -62,8 +62,9 @@ func MarkRunning(providerName string) func() {
 	}
 
 	return func() {
-		// Only clear it if it is still ours. A second daemon that replaced this file should
-		// not have its presence deleted by the first one exiting.
+		// Only clear it if it is still ours. `sbx serve` refuses to start while another is
+		// running, so this should not arise — but a record left by a killed daemon can be
+		// claimed by the next one, and that one exiting must not delete a third's.
 		if p, ok := Running(); ok && p.PID == os.Getpid() {
 			_ = os.Remove(path)
 		}

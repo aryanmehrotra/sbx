@@ -132,37 +132,6 @@ absence of a measurable property.
 **Rows in different categories are not ranked against each other.** Disk-warm and
 RAM-restored are different quantities; every row carries what comes back.
 
-### Network egress control needs a proxy, not a flag
-
-Every rival ships egress controls — E2B allows and denies by domain, CIDR and IP; Daytona
-calls it a firewall. sbx has none, and a first attempt to add one as a spec field was
-reverted rather than shipped, because docker's own network modes cannot provide it here.
-
-Measured, 2026-08-15:
-
-```
-   container on --internal network, with -p     no port mapping at all, curl 000
-   container on --network none,     with -p     no port mapping at all, curl 000
-   container on a normal bridge,    with -p     HTTP 200
-```
-
-Both modes do block egress. Both also stop docker publishing the port — and the published
-port is how the daemon reaches the service after waking it, so a sandbox with either mode
-set is one that can never be woken. A security control that silently breaks the thing it
-protects is worse than none, because it will be turned on by somebody who then trusts it.
-
-What it actually takes is one of:
-
-- **a filtering proxy in the sandbox's path**, which is a component with a lifecycle, not a
-  flag — and it has to be on the wake path, which is the one place this project refuses to
-  put anything that parses;
-- **rules in the `DOCKER-USER` chain** matched to the container's address. That works on
-  Linux and has to run inside the VM on macOS, so it is a capability that must degrade with
-  a reason where it is absent, exactly like `--isolation gvisor|kata`.
-
-Until one of those exists the honest position is the one in COMPARISON.md: this is a gap,
-it is a security property rather than a convenience, and no field pretends otherwise.
-
 ### A snapshot is the volume, not the container
 
 `docker commit` is the obvious way to save a sandbox and it is the wrong one: it does not
@@ -242,6 +211,19 @@ operating on the host behind its back.
 The kubernetes provider refuses the field rather than ignoring it. Its answer is a
 NetworkPolicy, only some CNIs enforce them, and a control that silently did nothing is worse
 than one that says no.
+
+**What it cannot do.** Every rival allows and denies **by domain, CIDR and IP** — E2B by
+wildcard, Daytona as a firewall. This is all-or-nothing, and closing that gap needs something
+that terminates or inspects connections:
+
+- a **filtering proxy** the sandbox is pointed at, which means TLS termination or SNI
+  inspection, a certificate the workload trusts, and a process that is not 0 B at rest;
+- or **rules in the `DOCKER-USER` chain** matched to the container's address, which works on
+  Linux and must run inside the VM on macOS — a capability that would have to degrade with a
+  reason where it is absent, exactly like `--isolation gvisor|kata`.
+
+Neither is a flag, which is why the first attempt at one was reverted rather than shipped.
+Coarse is a real control and a coarse one, and COMPARISON.md scores it that way.
 
 ### sbx is a tool people run, not a service anyone offers
 

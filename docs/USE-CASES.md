@@ -82,7 +82,7 @@ sbx url my-branch web
 #   https://….trycloudflare.com
 ```
 
-The tunnel points at the **wake port**, so the sandbox behind a shared link is asleep until
+The tunnel points at the **public port**, so the sandbox behind a shared link is asleep until
 somebody opens it. A reviewer clicks, waits about a second, sees the app.
 
 ---

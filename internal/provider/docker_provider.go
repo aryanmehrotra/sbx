@@ -396,15 +396,68 @@ func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, err
 // preserves ownership and permissions — postgres refuses to start on a data directory it
 // does not own — and never streams the bytes through this process.
 func (d *dockerProvider) CopyVolume(_ context.Context, src, dst string) error {
+	// Two things this deliberately does, both learned the hard way.
+	//
+	// It REPLACES rather than merges. `cp -a /from/.` on its own lands the snapshot on top of
+	// whatever Create just initialised, so files present only in the fresh data directory
+	// survive into what is supposed to be an exact copy — a database whose state is neither
+	// the snapshot's nor a fresh one's.
+	//
+	// And it lets the exit code mean something. This used to end in `2>/dev/null || true`,
+	// which made the container exit 0 unconditionally: a full disk, an unreadable source, a
+	// volume that did not exist — all reported success, on the one primitive in this project
+	// that moves user data. DECISIONS.md records what that failure looks like when it
+	// happens: a fork with a working server and an empty database, which looks like it
+	// worked. The mechanism changed; the shape was still reachable.
+	script := `set -e
+find /to -mindepth 1 -delete
+cp -a /from/. /to/
+echo "SBXCOUNT $(find /from -type f | wc -l) $(find /to -type f | wc -l)"`
+
 	out, err := d.docker("run", "--rm",
 		"-v", src+":/from:ro",
 		"-v", dst+":/to",
-		"alpine:3", "sh", "-c", "cp -a /from/. /to/ 2>/dev/null || true")
+		"alpine:3", "sh", "-c", script)
 	if err != nil {
-		return fmt.Errorf("copying volume %s to %s: %w: %s", src, dst, err, out)
+		return fmt.Errorf("copying volume %s to %s: %w: %s", src, dst, err, lastLines(out, 8))
+	}
+
+	// The copy is asserted, not assumed. Docker creates an empty volume for a name that does
+	// not exist rather than failing, so copying from a snapshot that was never made is
+	// otherwise a silent success that produces exactly nothing.
+	from, to, ok := parseCopyCount(out)
+	if !ok {
+		return fmt.Errorf("copying volume %s to %s: the copy did not report what it moved: %s",
+			src, dst, lastLines(out, 8))
+	}
+
+	if from != to {
+		return fmt.Errorf("copying volume %s to %s: %d files in the source and %d in the "+
+			"destination — the copy was incomplete", src, dst, from, to)
 	}
 
 	return nil
+}
+
+// parseCopyCount reads the file counts CopyVolume's script reports.
+func parseCopyCount(out string) (from, to int, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "SBXCOUNT" {
+			continue
+		}
+
+		f, err1 := strconv.Atoi(fields[1])
+
+		t, err2 := strconv.Atoi(fields[2])
+		if err1 != nil || err2 != nil {
+			return 0, 0, false
+		}
+
+		return f, t, true
+	}
+
+	return 0, 0, false
 }
 
 func (d *dockerProvider) Build(_ context.Context, tag, contextDir, dockerfile string) error {

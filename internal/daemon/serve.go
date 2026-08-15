@@ -111,6 +111,18 @@ func Serve(args []string) error {
 	refresh := fs.Duration("refresh", 15*time.Second, "how often to look for new or removed sandboxes")
 	_ = fs.Parse(args)
 
+	// One per machine. A second copy binds nothing — every listener fails with "address
+	// already in use", logged once per port with no retry — while the process stays up
+	// looking healthy, and on exit it removes the first daemon's presence record. That is a
+	// normal accident: a supervised unit from deploy/ plus a manual `sbx serve &`, or two
+	// terminal tabs.
+	if running, ok := Running(); ok && running.PID != os.Getpid() {
+		return fmt.Errorf("sbx serve is already running (pid %d, since %s). One per machine — "+
+			"it fronts every sandbox's ports.\n     Stop that one first, or leave it: it is "+
+			"already serving everything this would.",
+			running.PID, running.Since.Format("15:04:05"))
+	}
+
 	p, err := provider.For(*kind, *socket, *namespace)
 	if err != nil {
 		return err

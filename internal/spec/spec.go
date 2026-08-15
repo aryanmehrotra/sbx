@@ -9,7 +9,9 @@ package spec
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sort"
 	"strings"
@@ -172,6 +174,17 @@ const EgressDeny = "deny"
 func LoadSpec(path string) (*Spec, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		// A missing spec is the first thing anybody hits on a real repo, and `open
+		// sandbox.json: no such file or directory` mentions neither the built-in templates
+		// nor the flag that skips the file entirely — in a tool whose pitch is "no spec file
+		// needed". The bare error is right about what happened and useless about what to do.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("no %s here. Either start from a built-in:\n"+
+				"       sbx create my-branch --template postgres     (sbx templates lists them)\n"+
+				"     or write one:\n"+
+				"       sbx init > %s", path, path)
+		}
+
 		return nil, err
 	}
 

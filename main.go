@@ -410,6 +410,28 @@ func dispatch(cmd string, args []string) error {
 
 		return nil
 
+	case "init":
+		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		tmpl := fs.String("template", "postgres", "which built-in to start from: "+strings.Join(TemplateNames(), ", "))
+		_ = fs.Parse(args)
+
+		// To stdout, not to a file. `sbx init > sandbox.json` is explicit about what it
+		// overwrites, and a command that silently writes into the working directory is one
+		// people run once by accident and never trust again.
+		path, err := MaterializeTemplate(*tmpl)
+		if err != nil {
+			return err
+		}
+
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		_, err = os.Stdout.Write(body)
+
+		return err
+
 	case "validate":
 		fs := flag.NewFlagSet("validate", flag.ExitOnError)
 		specFlag := fs.String("spec", defaultSpec, "path to sandbox.json")
@@ -630,6 +652,7 @@ func usage() {
   sbx gc     [--older-than DURATION] [--snapshots] [--force]  lists; deletes only with --force
   sbx doctor [--json]                           what this machine can and cannot do
   sbx prewarm [--spec sandbox.json]             pull images now so a create is not a download
+  sbx init   [--template NAME]                  print a starter spec to stdout
   sbx validate [sandbox.json]                   check the spec; creates nothing
   sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
   sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named
@@ -638,7 +661,7 @@ func usage() {
   sbx list
   sbx rm     <sandbox>
   sbx serve  [--idle 5m] [--socket PATH]
-  sbx selftest [--provider ...] [--keep]     prove it works here, in about a minute
+  sbx selftest [--provider ...] [--keep]     prove it works here (~9s warm)
 
 Templates (no spec file needed): sbx templates
 
