@@ -295,6 +295,55 @@ func (d *dockerProvider) healthCommand(ref string) (string, bool) {
 	return cmd, cmd != ""
 }
 
+func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {
+	// --pause=true is docker's default and is what makes this crash-consistent rather than
+	// torn: the container is paused for the duration of the copy, so the filesystem does
+	// not move underneath it.
+	_, err := d.docker("commit", "--pause=true", ref, image)
+
+	return err
+}
+
+func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, error) {
+	out, err := d.docker("images", "--format", "{{.Repository}}:{{.Tag}}", "--filter",
+		"reference="+prefix+"*")
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+
+	return names, nil
+}
+
+// CopyVolume copies volume to volume through a throwaway container.
+//
+// `cp -a` inside a small image is docker's own recipe for this and it is the right one:
+// it stays in docker's storage, needs no host path (which colima would not share anyway),
+// preserves ownership and permissions — postgres refuses to start on a data directory it
+// does not own — and never streams the bytes through this process.
+func (d *dockerProvider) CopyVolume(_ context.Context, src, dst string) error {
+	out, err := d.docker("run", "--rm",
+		"-v", src+":/from:ro",
+		"-v", dst+":/to",
+		"alpine:3", "sh", "-c", "cp -a /from/. /to/ 2>/dev/null || true")
+	if err != nil {
+		return fmt.Errorf("copying volume %s to %s: %w: %s", src, dst, err, out)
+	}
+
+	return nil
+}
+
+func (d *dockerProvider) VolumeFor(sandbox, service string) string {
+	return volumeName(sandbox, service)
+}
+
 func (d *dockerProvider) ExecTTY(ctx context.Context, ref string, argv []string) error {
 	// -i always, -t only when stdin really is a terminal: asking docker for a TTY when
 	// stdin is a pipe makes it refuse outright, which would break `sbx exec -t` inside a

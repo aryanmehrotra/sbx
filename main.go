@@ -169,6 +169,57 @@ func dispatch(cmd string, args []string) error {
 	case "add":
 		return runAdd(args)
 
+	case "snapshot":
+		fs := flag.NewFlagSet("snapshot", flag.ExitOnError)
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 2)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 2 {
+			return fmt.Errorf("usage: sbx snapshot <sandbox> <name>")
+		}
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		_, err = cli.Snapshot(context.Background(), p, positional[0], positional[1])
+
+		return err
+
+	case "fork":
+		fs := flag.NewFlagSet("fork", flag.ExitOnError)
+		spec := fs.String("spec", defaultSpec, "path to the spec the snapshot came from")
+		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
+		optional := fs.Bool("optional", false, "include services marked optional")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 2)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 2 {
+			return fmt.Errorf("usage: sbx fork <snapshot> <new-sandbox>")
+		}
+
+		p, iso, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		path, err := specPath(*tmpl, *spec)
+		if err != nil {
+			return err
+		}
+
+		return cli.Fork(context.Background(), p, path, positional[0], positional[1], *optional, iso)
+
+	case "doctor":
+		fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+		asJSON := fs.Bool("json", false, "machine-readable")
+		_ = fs.Parse(args)
+
+		return cli.PrintReport(os.Stdout, cli.Doctor(context.Background()), *asJSON)
+
 	case "exec":
 		fs := flag.NewFlagSet("exec", flag.ExitOnError)
 		kind, socket, ns, isolation := backendFlags(fs)
@@ -420,6 +471,9 @@ func usage() {
   sbx ready  <sandbox> [--timeout 90s]
   sbx add    <sandbox> <service> --image IMG --port 5432[,...] [--health CMD]
                                  [--env K=V,...] [--volume PATH] [ARGS...]
+  sbx snapshot <sandbox> <name>                 save every service's filesystem
+  sbx fork   <snapshot> <new-sandbox> [--spec]  a new sandbox from that state
+  sbx doctor [--json]                           what this machine can and cannot do
   sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
   sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named
   sbx cp     <sandbox> <service> <src> <dst>    (inside path is prefixed with :)
