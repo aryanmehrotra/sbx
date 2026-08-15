@@ -62,6 +62,11 @@ type Service struct {
 	// Optional keeps a heavy service out of the default sandbox. A branch that never
 	// queries the analytics store should not pay for one.
 	Optional bool `json:"optional,omitempty"`
+
+	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
+	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
+	// on a shared machine is a bad neighbour.
+	GPUs string `json:"gpus,omitempty"`
 }
 
 func (s Service) validate(name string) error {

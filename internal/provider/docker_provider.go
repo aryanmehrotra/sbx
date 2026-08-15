@@ -154,6 +154,13 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--runtime", rt)
 	}
 
+	// Passed verbatim: "all", "1", "device=0". Docker refuses an unknown value itself,
+	// and its error names the runtime that is missing — better than anything we would
+	// paraphrase.
+	if svc.GPUs != "" {
+		args = append(args, "--gpus", svc.GPUs)
+	}
+
 	for i := range eps {
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%s:%d", backing[i], svc.Ports[i]))
 	}

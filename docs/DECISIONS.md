@@ -131,3 +131,34 @@ absence of a measurable property.
 
 **Rows in different categories are not ranked against each other.** Disk-warm and
 RAM-restored are different quantities; every row carries what comes back.
+
+### Network egress control needs a proxy, not a flag
+
+Every rival ships egress controls — E2B allows and denies by domain, CIDR and IP; Daytona
+calls it a firewall. sbx has none, and a first attempt to add one as a spec field was
+reverted rather than shipped, because docker's own network modes cannot provide it here.
+
+Measured, 2026-08-15:
+
+```
+   container on --internal network, with -p     no port mapping at all, curl 000
+   container on --network none,     with -p     no port mapping at all, curl 000
+   container on a normal bridge,    with -p     HTTP 200
+```
+
+Both modes do block egress. Both also stop docker publishing the port — and the published
+port is how the daemon reaches the service after waking it, so a sandbox with either mode
+set is one that can never be woken. A security control that silently breaks the thing it
+protects is worse than none, because it will be turned on by somebody who then trusts it.
+
+What it actually takes is one of:
+
+- **a filtering proxy in the sandbox's path**, which is a component with a lifecycle, not a
+  flag — and it has to be on the wake path, which is the one place this project refuses to
+  put anything that parses;
+- **rules in the `DOCKER-USER` chain** matched to the container's address. That works on
+  Linux and has to run inside the VM on macOS, so it is a capability that must degrade with
+  a reason where it is absent, exactly like `--isolation gvisor|kata`.
+
+Until one of those exists the honest position is the one in COMPARISON.md: this is a gap,
+it is a security property rather than a convenience, and no field pretends otherwise.
