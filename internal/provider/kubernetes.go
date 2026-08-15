@@ -244,6 +244,22 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc spe
 		container["volumeMounts"] = []any{map[string]any{"name": "data", "mountPath": svc.Volume}}
 	}
 
+	// A cluster expresses this as limits on the container. Requests are deliberately left
+	// alone: setting them would change how the scheduler places a sandbox, which is the
+	// cluster operator's business, not ours.
+	if svc.CPU != "" || svc.Memory != "" {
+		limits := map[string]any{}
+		if svc.CPU != "" {
+			limits["cpu"] = svc.CPU
+		}
+
+		if svc.Memory != "" {
+			limits["memory"] = svc.Memory
+		}
+
+		container["resources"] = map[string]any{"limits": limits}
+	}
+
 	podSpec := map[string]any{"containers": []any{container}}
 
 	if svc.Volume != "" {

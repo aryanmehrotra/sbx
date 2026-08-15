@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
@@ -226,4 +227,39 @@ func SnapshotterFor(p Provider) (Snapshotter, error) {
 	}
 
 	return s, nil
+}
+
+// Artifact is something a sandbox left behind.
+type Artifact struct {
+	Kind     string // "volume" or "image"
+	Name     string
+	Sandbox  string        // the sandbox it belonged to, where that is knowable
+	Age      time.Duration // since it was created
+	Snapshot bool          // made deliberately, by name, and outliving its sandbox is the point
+}
+
+// Collector finds and removes what sandboxes leave behind.
+//
+// Optional, like Snapshotter: a backend implements it if reclaiming is something it can do
+// natively. The kubernetes answer is a PVC and a storage class's reclaim policy, which is
+// the cluster operator's decision and not sbx's to make on their behalf.
+type Collector interface {
+	// Orphans lists artifacts whose sandbox no longer exists. It never returns anything
+	// belonging to a live sandbox, asleep or awake — asleep is the normal state here.
+	Orphans(ctx context.Context) ([]Artifact, error)
+
+	// Reclaim removes one artifact.
+	Reclaim(ctx context.Context, a Artifact) error
+}
+
+// CollectorFor returns the provider's reclamation support, or a refusal naming the backend.
+func CollectorFor(p Provider) (Collector, error) {
+	c, ok := p.(Collector)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot reclaim artifacts: on a cluster that is "+
+			"a PVC's reclaim policy and the storage class behind it, which is the operator's "+
+			"decision rather than something sbx should make for them", p.Name())
+	}
+
+	return c, nil
 }

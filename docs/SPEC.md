@@ -69,6 +69,8 @@ script that already knows a port.
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `optional` | | Not created unless `--optional` — but still reserves its ports |
 | `egress` | | `"deny"` — no routed egress. It can still be reached, and can still talk to its own sandbox |
+| `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
+| `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
 
 ### Why ports aren't yours to choose
@@ -95,6 +97,18 @@ docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
 
 Schemas, users, seed data. A woken container already has whatever this created, so re-running
 it would be at best wasted and at worst destructive.
+
+### `cpu` and `memory` are the ceiling a laptop needs
+
+```json
+{ "image": "postgres:16-alpine", "ports": [5432], "cpu": "0.5", "memory": "512m" }
+```
+
+Unset means unlimited, which is fine for one sandbox and stops being fine at twenty: a
+machine running a sandbox per branch otherwise has no ceiling at all, and the thing that
+fails is the machine rather than the sandbox. Docker gets `--cpus`/`--memory`; a cluster gets
+`resources.limits`. Requests are deliberately left alone in the cluster case — those change
+scheduling, which is the operator's business.
 
 ### `egress: "deny"` blocks the way out, not the way in
 

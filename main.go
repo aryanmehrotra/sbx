@@ -213,6 +213,21 @@ func dispatch(cmd string, args []string) error {
 
 		return cli.Fork(context.Background(), p, path, positional[0], positional[1], *optional, iso)
 
+	case "gc":
+		fs := flag.NewFlagSet("gc", flag.ExitOnError)
+		olderThan := fs.Duration("older-than", 0, "only offer artifacts older than this")
+		force := fs.Bool("force", false, "actually delete; without it this only lists")
+		snaps := fs.Bool("snapshots", false, "include snapshots, which are never swept by default")
+		kind, socket, ns, isolation := backendFlags(fs)
+		_ = fs.Parse(args)
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		return cli.GC(context.Background(), p, os.Stdout, *olderThan, *force, *snaps)
+
 	case "doctor":
 		fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 		asJSON := fs.Bool("json", false, "machine-readable")
@@ -473,6 +488,7 @@ func usage() {
                                  [--env K=V,...] [--volume PATH] [ARGS...]
   sbx snapshot <sandbox> <name>                 save every service's filesystem
   sbx fork   <snapshot> <new-sandbox> [--spec]  a new sandbox from that state
+  sbx gc     [--older-than 168h] [--snapshots] [--force]   lists; deletes only with --force
   sbx doctor [--json]                           what this machine can and cannot do
   sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
   sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named

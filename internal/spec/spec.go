@@ -79,6 +79,20 @@ type Service struct {
 	// not a flag. Claiming it with anything less would be a control that does not control.
 	Egress string `json:"egress,omitempty"`
 
+	// CPU and Memory cap what one service may take, passed to the runtime verbatim:
+	// CPU is cores ("0.5", "2"), Memory is a size ("512m", "2g").
+	//
+	// Unset means unlimited, which is what every sandbox had before this existed and is
+	// fine for one. It stops being fine at twenty: a laptop running a sandbox per branch
+	// has no ceiling at all, and the failure is the machine rather than the sandbox — the
+	// limit that binds first, long before any wake latency does.
+	//
+	// Not validated here. Docker and Kubernetes each reject their own malformed values
+	// with a better message than this could paraphrase, and unlike `egress` a typo here
+	// fails loudly at create rather than silently leaving something open.
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+
 	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.

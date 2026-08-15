@@ -165,6 +165,14 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	// Passed verbatim: "all", "1", "device=0". Docker refuses an unknown value itself,
 	// and its error names the runtime that is missing — better than anything we would
 	// paraphrase.
+	if svc.CPU != "" {
+		args = append(args, "--cpus", svc.CPU)
+	}
+
+	if svc.Memory != "" {
+		args = append(args, "--memory", svc.Memory)
+	}
+
 	if svc.GPUs != "" {
 		args = append(args, "--gpus", svc.GPUs)
 	}

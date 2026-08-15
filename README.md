@@ -146,6 +146,21 @@ said "no daemon to run" until a use-case test proved otherwise.
 On a persistent runner, leaving the sandbox behind is the interesting case: the next job on
 that branch reuses warm, migrated state and pays one wake instead of a create.
 
+### Housekeeping
+
+A sandbox's volume outlives it on purpose — that is what makes sleeping safe — but nothing
+used to reclaim one after the sandbox was gone, so a machine that has run a sandbox per
+branch for a month carries every branch it ever had.
+
+```sh
+sbx gc                          # lists what is reclaimable. Deletes nothing
+sbx gc --older-than 168h --force
+```
+
+It only ever offers artifacts whose sandbox **no longer exists** — a sleeping sandbox is the
+normal state here, not garbage. Snapshots are listed but never swept without `--snapshots`,
+because outliving their sandbox is the entire point of one.
+
 ### A team, on hardware you already have
 
 sbx is a tool you run, not a service anyone sells or offers. The team case is the same
@@ -179,6 +194,7 @@ the host can enforce before you rely on it.
 | `sbx snapshot` | save every service's data under a name |
 | `sbx fork` | **a new sandbox from that snapshot** — as many as you want |
 | `sbx list` | what exists, what's awake |
+| `sbx gc` | reclaim volumes and images whose sandbox is gone — lists by default |
 | `sbx doctor` | what this machine can and cannot do, before you rely on it |
 | `sbx selftest` | the whole cycle, on your machine |
 
