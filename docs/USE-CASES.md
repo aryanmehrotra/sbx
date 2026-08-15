@@ -1,6 +1,6 @@
 # Use cases
 
-Five shapes this fits, and the ones it does not.
+Six shapes this fits, and the ones it does not.
 
 ---
 
@@ -87,6 +87,34 @@ being a browser you pay to keep alive.
 
 ⚠️ Chrome images often ship without `wget` or `curl`, which makes the health command the
 thing that breaks. → [SPEC.md](SPEC.md#health-is-close-to-required)
+
+---
+
+## 6 · One seeded database, many agents
+
+The expensive part of a per-task sandbox is rarely the container — it is getting the data
+into it. A schema, a migration, a fixture set: doing that once per agent is what makes
+"a sandbox each" sound extravagant.
+
+```sh
+sbx exec main postgres psql -U app -d app -f schema.sql
+sbx snapshot main golden
+
+sbx fork golden agent-1
+sbx fork golden agent-2
+```
+
+Each fork has its own copy and its own ports; a write in one is invisible to the others and
+to the original. The migration runs once.
+
+⚠️ **Filesystem state, not memory.** A fork starts its services cold against warm data,
+exactly as a wake does. It is not a paused process resumed — E2B and zeropod do that, in
+tens of milliseconds, using Firecracker or CRIU. `sbx doctor` reports whether this machine
+has either.
+
+It snapshots the **volume**, which is worth knowing if you are reasoning about what is
+captured: `docker commit` does not include mounted volumes, and in sbx every byte worth
+saving is in one. → [DECISIONS.md](DECISIONS.md)
 
 ---
 

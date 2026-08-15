@@ -94,12 +94,15 @@ sbx selftest
 | `sbx create` / `rm` | make one from `sandbox.json` or `--template`, destroy it with its data |
 | `sbx env` | exports for your tooling — posix, fish, powershell, **json** |
 | `sbx ready` | wake it and block until it's serving — the CI one-liner |
-| `sbx exec` | run anything inside it |
+| `sbx exec [-t]` | run anything inside it; `-t` attaches a terminal for a shell or `psql` |
 | `sbx logs [-f]` | **every service on one stdout**, structured |
 | `sbx cp` | files in and out (`:` marks the inside path) |
 | `sbx add` | drop in a service nobody declared — the agent affordance |
 | `sbx url` | a public link that wakes it when opened |
+| `sbx snapshot` | save every service's data under a name |
+| `sbx fork` | **a new sandbox from that snapshot** — as many as you want |
 | `sbx list` | what exists, what's awake |
+| `sbx doctor` | what this machine can and cannot do, before you rely on it |
 | `sbx selftest` | the whole cycle, on your machine |
 
 ```
@@ -125,6 +128,38 @@ Aligned columns on a terminal, **JSON when piped**. Everything wakes what it tou
 
 Measured by [`scripts/bench.sh`](scripts/bench.sh), on the machine printed beside the results.
 → [BENCHMARKS.md](docs/BENCHMARKS.md)
+
+---
+
+## One seeded database, many copies
+
+Seed it once, then hand every branch or agent its own:
+
+```sh
+sbx exec main postgres psql -U app -d app -f schema.sql   # seed once
+sbx snapshot main golden                                  # save it
+
+sbx fork golden agent-1                                   # as many as you want
+sbx fork golden agent-2
+```
+
+Each fork gets its own copy of the data and its own ports. A write in one is invisible to
+the others and to the original. It's what makes a sandbox per task affordable: the
+migration runs once, not once per agent.
+
+⚠️ **Filesystem state only.** Processes start cold against warm data, exactly as a wake
+does — a fork is not a paused process resumed. E2B and zeropod restore memory too, in tens
+of milliseconds, and need Firecracker or CRIU to do it. `sbx doctor` tells you whether this
+machine has either.
+
+```sh
+sbx doctor          # ✗ docker checkpoint  daemon experimental=false
+                    #   memory-state sleep is unavailable
+```
+
+`doctor` is worth running before you rely on anything: sbx refuses rather than silently
+downgrading — asking for `--isolation gvisor` on a host without it fails — and the refusal
+shouldn't be the first time you hear about it.
 
 ---
 

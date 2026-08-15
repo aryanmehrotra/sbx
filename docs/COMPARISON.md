@@ -289,7 +289,7 @@ documentation leads with, and this is where sbx has nothing rather than somethin
 | | sbx | E2B | Daytona | Modal | Cloudflare | Northflank |
 |---|---|---|---|---|---|---|
 | **Network egress control** — allow/deny by IP, CIDR, domain | ○ **nothing** | ● wildcards | ● firewall | ● | ● | ● |
-| **Fork N sandboxes from one snapshot** | ○ **nothing** | ● 5–30 ms | ● | ● | ◐ | ○ |
+| **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, filesystem only | ● 5–30 ms, with RAM | ● | ● | ◐ | ○ |
 | **Prebuilt templates, versioned and cached** | ◐ five, embedded, not built | ● | ● 24 h cache | ● | ● | ● |
 | **Declarative image builder** | ○ bring your own image | ◐ | ● | ● | ◐ | ● |
 | **Interactive access: SSH · PTY · VNC** | ◐ `exec` only | ◐ | ● all three | ◐ | ◐ | ● |
@@ -299,7 +299,7 @@ documentation leads with, and this is where sbx has nothing rather than somethin
 
 ● yes · ◐ partial or conditional · ○ no
 
-**Read that table before the one above it.** Eight rows, and sbx scores nothing on five of
+**Read that table before the one above it.** Eight rows, and sbx scores nothing on four of
 them. The most serious is the first: sbx has **no network controls whatsoever** — a sandbox
 can reach anything the host can. For a tool that talks about agents running code, that is a
 gap, not a nuance, and it is the one row here that is a security property rather than a
@@ -308,6 +308,10 @@ convenience.
 The second is nearly as important and is not the same thing as CRIU: E2B can spawn *many*
 sandboxes from one snapshot in tens of milliseconds. That is a different capability from
 "resume the one you paused", and it is what makes per-task fan-out cheap for them.
+
+`sbx snapshot` / `sbx fork` now do the fan-out half — many sandboxes from one saved state,
+each with its own copy of the data — but the state is a filesystem, not a memory image. A
+fork starts cold. Half a row, marked as half.
 
 **Read the bottom two rows before the top two.** Every hosted platform on this table has real
 isolation and real users. This has neither. What it has is the first four rows, and whether

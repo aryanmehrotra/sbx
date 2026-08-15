@@ -68,6 +68,7 @@ script that already knows a port.
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `optional` | | Not created unless `--optional` — but still reserves its ports |
+| `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
 
 ### Why ports aren't yours to choose
 

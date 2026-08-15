@@ -162,3 +162,29 @@ What it actually takes is one of:
 
 Until one of those exists the honest position is the one in COMPARISON.md: this is a gap,
 it is a security property rather than a convenience, and no field pretends otherwise.
+
+### A snapshot is the volume, not the container
+
+`docker commit` is the obvious way to save a sandbox and it is the wrong one: it does not
+capture mounted volumes. Committing a seeded postgres produced an image whose data directory
+held **zero files** against the live container's twenty-four, and both forks came up blank
+with a working server and an empty database — the worst shape of failure, because it looks
+like it worked.
+
+Everything worth snapshotting in sbx is in a volume. `volume` is the field that makes
+sleeping safe, so it is by construction where state lives.
+
+So a snapshot copies volume to volume through a throwaway container, which is docker's own
+recipe and the right one here: it stays in docker's storage, needs no host path — colima
+would not share one anyway — preserves ownership, which postgres requires before it will
+start on a data directory at all, and never streams the bytes through the sbx process. The
+image is still committed, for services that keep state outside a volume.
+
+The restore happens **after** create and **with the service stopped**. Create starts each
+service to health-check it, so a database has already initialised an empty data directory by
+then; writing over that while it runs is replacing the floor underneath it. `init` is dropped
+from a forked spec for the same class of reason: it has already run in the state being
+forked, and running it again re-seeds a seeded database.
+
+And the fork keeps its own `volume` declaration. The first implementation deleted it, on the
+theory that the image carried the data — which is exactly the assumption that was wrong.
