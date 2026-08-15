@@ -73,3 +73,35 @@ func TestZeroDurationIsOmitted(t *testing.T) {
 		t.Errorf("the event tag is missing:\n%s", out)
 	}
 }
+
+// The last line of a container that was killed mid-write is very often the one somebody is
+// running `sbx logs` to read. It has no trailing newline, so it sits in the buffer waiting
+// for one that never comes.
+func TestFlushEmitsATrailingPartialLine(t *testing.T) {
+	var buf bytes.Buffer
+
+	l := New(&buf)
+	w := &LineWriter{Log: l, Sandbox: "s", Service: "svc", Level: LevelInfo}
+
+	if _, err := w.Write([]byte("first line\nPANIC: the useful bit")); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(buf.String(), "PANIC") {
+		t.Fatal("an unterminated line was emitted before Flush, so this test proves nothing")
+	}
+
+	w.Flush()
+
+	if !strings.Contains(buf.String(), "PANIC: the useful bit") {
+		t.Errorf("the final unterminated line was dropped:\n%s", buf.String())
+	}
+
+	// Flushing twice must not repeat it.
+	before := buf.String()
+	w.Flush()
+
+	if buf.String() != before {
+		t.Error("a second Flush emitted the line again")
+	}
+}

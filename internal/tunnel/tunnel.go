@@ -187,12 +187,14 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) err
 		return err
 	}
 
+	// Merged into stdout, because these binaries disagree about which stream the URL goes to
+	// and scanning one of them is the whole job.
+	//
+	// Nothing else is needed here. StderrPipe() used to be called straight after this and its
+	// error ignored — but Cmd.StderrPipe returns an error whenever Cmd.Stderr is already set,
+	// which it now is, so that goroutine never ran. Dead code that reads as working is worse
+	// than none: the next person to rely on it gets silence.
 	cmd.Stderr = cmd.Stdout.(io.Writer)
-
-	stderr, err := cmd.StderrPipe()
-	if err == nil {
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
-	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting %s: %w", b.bin, err)
@@ -200,6 +202,11 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) err
 
 	found := false
 	scanner := bufio.NewScanner(stdout)
+
+	// A tunnel binary announcing something long — a banner, a JSON blob — would otherwise
+	// exceed bufio's 64 KB default, end the scan silently, and leave the child blocked
+	// writing into a pipe nobody reads. `sbx url` would hang rather than fail.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -215,7 +222,15 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) err
 		}
 	}
 
+	// Checked, so a scan that stopped for a reason other than EOF says so rather than looking
+	// like a backend that simply never printed a URL.
+	scanErr := scanner.Err()
+
 	waitErr := cmd.Wait()
+
+	if !found && scanErr != nil {
+		return fmt.Errorf("reading %s output: %w", b.bin, scanErr)
+	}
 
 	// Announcing a URL is the definition of working. A backend that exits without one has
 	// not tunnelled anything, whatever its exit code said.

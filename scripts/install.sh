@@ -59,15 +59,28 @@ if curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUM
 
     [ "$want" = "$got" ] || fail "checksum mismatch for ${asset}: expected $want, got $got"
     echo "install: checksum ok"
+  else
+    echo "install: WARNING — ${asset} is not listed in SHA256SUMS, so it was not verified" >&2
   fi
+else
+  # Said out loud. Skipping verification silently means an outage — or anything that can
+  # block one small file while letting the binary through — defeats the check invisibly, and
+  # a verified install then looks identical to an unverified one.
+  echo "install: WARNING — could not fetch SHA256SUMS, so the binary was not verified" >&2
 fi
 
 chmod +x "$tmp/sbx"
 
-if [ -w "$DIR" ]; then
+# The destination may not exist yet — `DIR=~/bin`, which this script's own header suggests,
+# is a directory plenty of machines do not have. Without this the move fails with a message
+# about the file rather than about the directory.
+if [ -d "$DIR" ] && [ -w "$DIR" ]; then
+  mv "$tmp/sbx" "$DIR/sbx"
+elif [ ! -e "$DIR" ] && mkdir -p "$DIR" 2>/dev/null; then
   mv "$tmp/sbx" "$DIR/sbx"
 else
   echo "install: $DIR is not writable, using sudo"
+  sudo mkdir -p "$DIR"
   sudo mv "$tmp/sbx" "$DIR/sbx"
 fi
 

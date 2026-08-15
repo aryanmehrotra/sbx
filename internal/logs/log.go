@@ -281,6 +281,23 @@ func (w *LineWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Flush emits whatever is left when the stream ends without a final newline.
+//
+// A container that was killed, or crashed, or was stopped mid-write does not get to finish
+// its last line — and that line is very often the one somebody is running `sbx logs` to
+// read. Without this it is buffered and silently dropped.
+func (w *LineWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	line := strings.TrimRight(string(w.partial), "\r")
+	w.partial = nil
+
+	if strings.TrimSpace(line) != "" {
+		w.Log.Log(w.Level, w.Sandbox, w.Service, line)
+	}
+}
+
 func indexByte(b []byte, c byte) int {
 	for i, x := range b {
 		if x == c {

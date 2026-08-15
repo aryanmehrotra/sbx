@@ -25,6 +25,10 @@ import (
 // ── create ───────────────────────────────────────────────────────────────────
 
 func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation) error {
+	if err := ValidateName(sandbox); err != nil {
+		return err
+	}
+
 	sp, err := spec.LoadSpec(path)
 	if err != nil {
 		return err
@@ -718,9 +722,12 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 
 		logs.Default.Align(len(sandbox) + 1 + len(service))
 
-		return p.Logs(ctx, ref, lines, follow, &logs.LineWriter{
+		w := &logs.LineWriter{
 			Log: logs.Default, Sandbox: sandbox, Service: service, Level: logs.LevelInfo,
-		})
+		}
+		defer w.Flush()
+
+		return p.Logs(ctx, ref, lines, follow, w)
 	}
 
 	width := 0
@@ -747,12 +754,15 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 			// Sleeping services are read, not woken. Asking for logs is not using the
 			// sandbox, and waking three databases because somebody typed `logs` would be
 			// the opposite of the point.
-			if err := p.Logs(ctx, u.Ref, lines, follow, &logs.LineWriter{
+			w := &logs.LineWriter{
 				Log:     logs.Default,
 				Sandbox: sandbox,
 				Service: u.Service,
 				Level:   logs.LevelInfo,
-			}); err != nil {
+			}
+			defer w.Flush()
+
+			if err := p.Logs(ctx, u.Ref, lines, follow, w); err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", u.Service, err))
 				mu.Unlock()

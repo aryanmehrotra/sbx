@@ -62,13 +62,17 @@ func specPath(templateName, path string) (string, error) {
 // The fallback is why `--template postgres` no longer has to be repeated on every command
 // for the same sandbox. It is only ever a default: an explicit --template or --spec wins, and
 // if nothing was recorded this behaves exactly as it always did.
-func specFor(sandbox, templateName, path string) (string, error) {
+func specFor(fs *flag.FlagSet, sandbox, templateName, path string) (string, error) {
 	if templateName != "" {
 		return MaterializeTemplate(templateName)
 	}
 
-	if path != defaultSpec {
-		return path, nil // explicitly asked for
+	// Whether --spec was *set*, not whether it differs from the default. Someone who writes
+	// `--spec sandbox.json` for clarity has asked explicitly, and comparing the value would
+	// silently redirect them to whatever was remembered — breaking the one guarantee this
+	// feature makes.
+	if wasSet(fs, "spec") {
+		return path, nil
 	}
 
 	if o, ok := cli.Recall(sandbox); ok {
@@ -80,6 +84,19 @@ func specFor(sandbox, templateName, path string) (string, error) {
 	}
 
 	return path, nil
+}
+
+// wasSet reports whether a flag was given on the command line at all.
+func wasSet(fs *flag.FlagSet, name string) bool {
+	found := false
+
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+
+	return found
 }
 
 // version is stamped by scripts/release.sh. "dev" means somebody built it themselves,
@@ -175,7 +192,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specFor(positional[0], *tmpl, *spec)
+		path, err := specFor(fs, positional[0], *tmpl, *spec)
 		if err != nil {
 			return err
 		}
@@ -244,7 +261,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specFor(positional[0], *tmpl, *spec)
+		path, err := specFor(fs, positional[0], *tmpl, *spec)
 		if err != nil {
 			return err
 		}
@@ -253,7 +270,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		if *tmpl != "" || *spec != defaultSpec {
+		if *tmpl != "" || wasSet(fs, "spec") {
 			cli.Remember(positional[1], *tmpl, *spec)
 		} else {
 			cli.Inherit(positional[0], positional[1])
