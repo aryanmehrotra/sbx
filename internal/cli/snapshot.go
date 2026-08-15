@@ -177,7 +177,7 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 	// Before the snapshot lookup, not after. Create validates this too, but by then the
 	// snapshot has been resolved and a temporary spec written — work thrown away for
 	// something knowable from the argument itself.
-	if err := ValidateName(sandbox); err != nil {
+	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
 	}
 

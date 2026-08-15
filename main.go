@@ -595,7 +595,16 @@ func runAdd(args []string) error {
 		return err
 	}
 
-	return cli.Add(context.Background(), p, *spec, sandbox, service, *image, cps, *health, env, *volume, extra, iso)
+	// The same fallback env and fork use. Add reads the spec to respect ordinals reserved for
+	// declared-but-not-yet-created services, and a sandbox made from --template has no
+	// sandbox.json to find — so without this the reservations are silently not seen, and a
+	// later `--optional` create can collide with the port this just took.
+	specPath, err := specFor(fs, sandbox, "", *spec)
+	if err != nil {
+		return err
+	}
+
+	return cli.Add(context.Background(), p, specPath, sandbox, service, *image, cps, *health, env, *volume, extra, iso)
 }
 
 // splitPositional peels up to n leading non-flag arguments off the front.

@@ -25,7 +25,7 @@ import (
 // ── create ───────────────────────────────────────────────────────────────────
 
 func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation) error {
-	if err := ValidateName(sandbox); err != nil {
+	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
 	}
 
@@ -295,6 +295,14 @@ func joinEndpoints(eps []provider.Endpoint) string {
 func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, image string,
 	containerPorts []int, health string, env map[string]string, volume string, args []string, iso provider.Isolation,
 ) error {
+	// The service name becomes a container name, exactly as a sandbox name does. This is the
+	// agent-facing path, so it is also the one most likely to be handed something shaped like
+	// a branch or a task id — and without this it fails at docker, late, with a dump of the
+	// whole command instead of the name that was wrong.
+	if err := ValidateName("service", name); err != nil {
+		return err
+	}
+
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
