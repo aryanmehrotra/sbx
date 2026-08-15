@@ -123,6 +123,12 @@ type health struct {
 			Status string `json:"Status"`
 		} `json:"Health"`
 	} `json:"State"`
+
+	Config struct {
+		Healthcheck *struct {
+			Test []string `json:"Test"`
+		} `json:"Healthcheck"`
+	} `json:"Config"`
 }
 
 // healthy reports whether the container is serving, and whether it could tell us at all.
@@ -215,4 +221,35 @@ func (d *dockerClient) exec(ctx context.Context, id string, argv []string) (int,
 	}
 
 	return status.ExitCode, nil
+}
+
+// healthCommand returns the check a container declares, as a shell command.
+//
+// From the same endpoint healthy() already uses, so asking costs one request on a unix
+// socket rather than a `docker inspect` fork. That is why it is not cached: the previous
+// version cached by container NAME, and names are reused — `sbx rm x && sbx create x` with
+// an edited health command left the old one in the map, on the wake path, for the life of a
+// daemon designed to run for weeks. A cache whose invalidation was reasoned about against a
+// key that does not carry the property.
+func (d *dockerClient) healthCommand(ctx context.Context, id string) (string, bool) {
+	var h health
+	if err := d.do(ctx, http.MethodGet, "/containers/"+id+"/json", &h); err != nil {
+		return "", false
+	}
+
+	if h.Config.Healthcheck == nil || len(h.Config.Healthcheck.Test) < 2 {
+		return "", false
+	}
+
+	test := h.Config.Healthcheck.Test
+
+	// ["CMD-SHELL", "redis-cli ping"] or ["CMD", "redis-cli", "ping"].
+	switch test[0] {
+	case "CMD-SHELL":
+		return test[1], true
+	case "CMD":
+		return strings.Join(test[1:], " "), true
+	}
+
+	return "", false
 }

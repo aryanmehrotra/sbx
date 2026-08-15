@@ -27,12 +27,26 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 type kubeProvider struct {
 	namespace string
+
+	// The readiness command each deployment declares, which changes only when sbx recreates
+	// the deployment — so Create invalidates it and nothing else has to.
+	//
+	// Cached because Probe is the body of the wake poll loop and this was a `kubectl get`
+	// fork on every iteration, on top of the `kubectl exec` that follows it. kubectl startup
+	// dominates a cluster wake, and the docker provider had already learned this.
+	//
+	// Keyed by deployment name, which is reused — hence the invalidation. The docker side
+	// solved the same problem by reading the command from the response it was already
+	// fetching; there is no single call here that returns both.
+	mu    sync.Mutex
+	ready map[string]string
 }
 
 func newKube(namespace string) *kubeProvider {
@@ -40,7 +54,43 @@ func newKube(namespace string) *kubeProvider {
 		namespace = "sbx"
 	}
 
-	return &kubeProvider{namespace: namespace}
+	return &kubeProvider{namespace: namespace, ready: map[string]string{}}
+}
+
+// forgetReady drops a cached readiness command. Called wherever sbx changes a deployment,
+// which is the only way the declared command can change.
+func (k *kubeProvider) forgetReady(ref string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	delete(k.ready, ref)
+}
+
+// cachedReady returns the readiness command, asking kubectl only once per deployment.
+func (k *kubeProvider) cachedReady(ref string) (string, bool) {
+	k.mu.Lock()
+	cmd, seen := k.ready[ref]
+	k.mu.Unlock()
+
+	if seen {
+		return cmd, cmd != ""
+	}
+
+	out, err := k.kc("", "get", "deployment", ref, "-o",
+		"jsonpath={.spec.template.spec.containers[0].readinessProbe.exec.command[-1]}")
+	if err != nil {
+		// Not cached: an unreachable API server is not an answer about this deployment, and
+		// remembering it as "no command" would make every later probe wrong.
+		return "", false
+	}
+
+	cmd = strings.TrimSpace(out)
+
+	k.mu.Lock()
+	k.ready[ref] = cmd
+	k.mu.Unlock()
+
+	return cmd, cmd != ""
 }
 
 func (k *kubeProvider) Name() string { return "kubernetes/" + k.namespace }
@@ -155,6 +205,8 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 			return err
 		}
 	}
+
+	k.forgetReady(name)
 
 	if err := k.applyJSON(k.deployment(name, labels, svc, iso)); err != nil {
 		return err
@@ -384,9 +436,8 @@ func (k *kubeProvider) Healthy(_ context.Context, ref string) (bool, bool) {
 // does: on the wake path the caller is holding a connection, and readiness republished on a
 // probe interval is slower than asking.
 func (k *kubeProvider) Probe(ctx context.Context, ref string) (bool, bool) {
-	cmd, err := k.kc("", "get", "deployment", ref, "-o",
-		"jsonpath={.spec.template.spec.containers[0].readinessProbe.exec.command[-1]}")
-	if err != nil || strings.TrimSpace(cmd) == "" {
+	cmd, ok := k.cachedReady(ref)
+	if !ok {
 		return false, false
 	}
 

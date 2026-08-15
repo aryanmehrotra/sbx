@@ -1,6 +1,10 @@
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/spec"
+)
 
 // Two sandboxes on different slots must never be handed the same local address. This is the
 // property that hashing branch names into slots failed: two of the first six branch names
@@ -59,5 +63,23 @@ func TestIsolationMapsToARuntime(t *testing.T) {
 
 	if Isolation("none").Valid() {
 		t.Error("an unknown isolation tier must not validate — silently weaker isolation than asked for is the failure that matters")
+	}
+}
+
+// Two constants in two packages that must agree, with nothing linking them.
+//
+// spec.MaxOrdinals bounds how many ports one sandbox may claim; blockSize is how many the
+// provider reserves per slot. If MaxOrdinals ever exceeds blockSize, sandbox N's ordinals
+// land inside sandbox N+1's block and one sandbox answers with another's data — which is the
+// failure scripts/e2e.sh exists to rule out, produced by a one-line change to an apparently
+// local constant.
+//
+// The seam is right: the spec assigns ordinals, the provider assigns addresses. The invariant
+// that makes it safe was undocumented and unasserted.
+func TestOrdinalsFitInAPortBlock(t *testing.T) {
+	if spec.MaxOrdinals > blockSize {
+		t.Fatalf("spec.MaxOrdinals is %d and a provider slot reserves %d ports — a sandbox "+
+			"can now claim addresses inside the next sandbox's block",
+			spec.MaxOrdinals, blockSize)
 	}
 }

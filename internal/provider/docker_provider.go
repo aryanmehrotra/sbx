@@ -13,7 +13,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -24,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
-	"sync"
 	"time"
 )
 
@@ -38,13 +36,10 @@ const (
 type dockerProvider struct {
 	api      *dockerClient // hot path: start, stop, health
 	endpoint dockerEndpoint
-
-	mu     sync.Mutex
-	health map[string]string // ref -> declared health command
 }
 
 func newDocker(ep dockerEndpoint) *dockerProvider {
-	return &dockerProvider{api: newDockerClient(ep), endpoint: ep, health: map[string]string{}}
+	return &dockerProvider{api: newDockerClient(ep), endpoint: ep}
 }
 
 func (d *dockerProvider) Name() string { return "docker" }
@@ -302,7 +297,7 @@ func (d *dockerProvider) Healthy(ctx context.Context, ref string) (bool, bool) {
 // about 150ms, and the command is the one the spec declared — so this is faster without
 // being a different question.
 func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
-	cmd, ok := d.healthCommand(ref)
+	cmd, ok := d.api.healthCommand(ctx, ref)
 	if !ok {
 		return false, false
 	}
@@ -324,40 +319,6 @@ func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	}
 
 	return code == 0, true
-}
-
-// healthCommand reads the declared check off the container, cached: it cannot change
-// without the container being recreated.
-func (d *dockerProvider) healthCommand(ref string) (string, bool) {
-	d.mu.Lock()
-	if cmd, ok := d.health[ref]; ok {
-		d.mu.Unlock()
-		return cmd, cmd != ""
-	}
-	d.mu.Unlock()
-
-	raw, err := d.docker("inspect", ref, "--format", "{{json .Config.Healthcheck.Test}}")
-
-	cmd := ""
-
-	if err == nil {
-		var test []string
-		if json.Unmarshal([]byte(raw), &test) == nil && len(test) > 1 {
-			// ["CMD-SHELL", "redis-cli ping"] or ["CMD", "redis-cli", "ping"].
-			switch test[0] {
-			case "CMD-SHELL":
-				cmd = test[1]
-			case "CMD":
-				cmd = strings.Join(test[1:], " ")
-			}
-		}
-	}
-
-	d.mu.Lock()
-	d.health[ref] = cmd
-	d.mu.Unlock()
-
-	return cmd, cmd != ""
 }
 
 func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {

@@ -61,3 +61,47 @@ func TestKubernetesDoesNotRefuseAServiceWithoutEgressDeny(t *testing.T) {
 		t.Errorf("a service with no egress declaration was refused for egress: %v", err)
 	}
 }
+
+// The cache that keeps the wake poll from forking kubectl on every iteration, and the
+// invalidation that keeps it honest.
+//
+// Deployment names are reused — `sbx rm x && sbx create x` builds the same name with a
+// possibly different readiness command — so a cache keyed by name and never cleared would
+// probe a recreated deployment with the old command, on the wake path, for the life of the
+// process. Create is the only thing that changes it, so Create is what clears it.
+func TestReadinessCacheIsInvalidatedWhenTheDeploymentIsRecreated(t *testing.T) {
+	k := newKube("sbx")
+
+	// Standing in for a first lookup that found a command.
+	k.mu.Lock()
+	k.ready["sbx-b-redis"] = "redis-cli ping"
+	k.mu.Unlock()
+
+	if cmd, ok := k.cachedReady("sbx-b-redis"); !ok || cmd != "redis-cli ping" {
+		t.Fatalf("cachedReady = (%q, %v), want the cached command", cmd, ok)
+	}
+
+	k.forgetReady("sbx-b-redis")
+
+	k.mu.Lock()
+	_, still := k.ready["sbx-b-redis"]
+	k.mu.Unlock()
+
+	if still {
+		t.Error("the readiness command survived a recreate — a probe would use the old one")
+	}
+}
+
+// A deployment that genuinely declares no readiness command is remembered as such, so the
+// poll loop does not re-ask kubectl every 100 ms for an answer that will not change.
+func TestAnAbsentReadinessCommandIsRemembered(t *testing.T) {
+	k := newKube("sbx")
+
+	k.mu.Lock()
+	k.ready["sbx-b-web"] = ""
+	k.mu.Unlock()
+
+	if _, ok := k.cachedReady("sbx-b-web"); ok {
+		t.Error("an empty readiness command was reported as declared")
+	}
+}
