@@ -218,3 +218,22 @@ jobs:
         # Sleep and wake are the product; isolation that only survives a create is not a
         # tier anyone can use.
         run: ./sbx selftest -isolation gvisor
+
+  # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
+  # processes, where sbx restores a disk and starts the process cold. It went unmeasured for
+  # a reason that was honest and self-serving — its README calls arm64-in-a-VM-on-macOS
+  # flaky, which is the author's laptop. That is an argument for measuring it elsewhere.
+  #
+  # Not required to pass. It installs a containerd shim into a throwaway kind cluster and
+  # depends on an upstream project's manifests, so a red tick here would mean "their release
+  # moved", not "this repo is broken". It reports, and the report is read.
+  zeropod:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+      - name: measure zeropod
+        run: ./scripts/zeropod-probe.sh 5
