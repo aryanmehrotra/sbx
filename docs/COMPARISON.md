@@ -157,7 +157,10 @@ quadrantChart
     quadrant-2 your hardware, narrow trigger
     quadrant-3 hosted, SDK-triggered
     quadrant-4 hosted, open trigger
-    sbx: [0.92, 0.85]
+    sbx: [0.92, 0.80]
+    zeropod: [0.88, 0.62]
+    Lazytainer: [0.72, 0.90]
+    Sablier: [0.38, 0.88]
     Knative: [0.45, 0.72]
     Daytona: [0.12, 0.40]
     Fly Machines: [0.78, 0.15]
@@ -168,13 +171,79 @@ quadrantChart
     E2B: [0.09, 0.05]
 ```
 
-**The top-right is empty apart from us, and that emptiness is the entire product.** Fly is far
-right because its proxy wakes on a real connection, but it's their proxy in their cloud.
-Knative is high because you run it yourself, but it only wakes on HTTP. Neon sits mid-x
-because the Postgres wire protocol *is* the trigger — the right idea, one protocol wide.
+**The hosted platforms are all in the bottom-left, and the top-right is not ours alone.** Fly
+is far right because its proxy wakes on a real connection, but it's their proxy in their
+cloud. Knative is high because you run it yourself, but it only wakes on HTTP. Neon sits
+mid-x because the Postgres wire protocol *is* the trigger — the right idea, one protocol wide.
 
-Nobody else is in the corner where the wake needs neither an SDK nor an account. That is a
-small corner. It happens to be the one a branch on a laptop lives in.
+The three neighbours in that corner are the ones worth reading before this one, and they are
+covered next.
+
+---
+
+## The closest prior art
+
+Not the hosted platforms — three self-hosted Go projects that solve the same problem, and the
+ones to read before this one. Two of them predate it.
+
+### zeropod · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 939★
+
+A containerd shim. eBPF watches TCP activity; after an idle period CRIU checkpoints the
+container to disk; an activator holds the port and **restores on the first connection in tens
+to a few hundred milliseconds** — with memory, open files and processes intact.
+
+**This is the same mechanism as ours, done at a lower layer, and on the RAM question it beats
+us outright.** What we restore is a disk. What it restores is the process.
+
+Where it costs more: it replaces your container runtime. It needs a containerd shim installed
+on every node, CRIU, eBPF and a Kubernetes cluster — root-level infrastructure, configured per
+node. Its README calls arm64 workloads in a Linux VM on macOS "somewhat flaky", which is
+precisely Docker Desktop on an Apple Silicon laptop. It is a cluster technology; this is a
+userspace binary you run as yourself.
+
+### Sablier · [sablierapp/sablier](https://github.com/sablierapp/sablier) · 2,888★
+
+The most popular of the three, and the most different. An API server that reverse proxies
+(Traefik, Caddy, Nginx, Envoy, APISIX, Istio) call through middleware, with five providers:
+docker, swarm, podman, kubernetes, Proxmox LXC. Blocking strategy holds the request; dynamic
+strategy shows a themed waiting page.
+
+**It is HTTP-only.** The wake is a middleware hook on an HTTP request, so there is no path by
+which `psql` wakes anything — you would need a reverse proxy that speaks the Postgres wire
+protocol, which is the problem it declines to solve. Steady-state overhead is ~1.5–2 ms per
+request against our ~15 µs, because a proxy that parses is not a proxy that splices.
+
+Worth stealing: the waiting page. A human who clicks a link and sees a themed "starting…"
+page has a better time than one who watches a spinner, and `sbx url` currently offers the
+spinner.
+
+### Lazytainer · [vmorganp/Lazytainer](https://github.com/vmorganp/Lazytainer) · 754★
+
+Counts packets on a network interface and stops containers that fall below a threshold
+(default 30 packets). Protocol-agnostic like ours, and the closest in spirit.
+
+Where it costs more: containers must be labelled into a group **and have their traffic routed
+through the Lazytainer container**, so it owns your container networking. The signal is a
+packet count rather than a connection, so a chatty health check keeps things awake and a quiet
+long-lived session can look idle. There is no spec file, no per-service readiness, no exports.
+
+### What this means for the claim above
+
+| | wakes on any TCP | no runtime replacement | laptop-first | per-service spec | restores RAM |
+|---|---|---|---|---|---|
+| **sbx** | ● | ● | ● | ● | ○ |
+| zeropod | ● | ○ shim + CRIU + eBPF | ○ | ○ | ● |
+| Lazytainer | ● | ◐ owns networking | ● | ○ | ○ |
+| Sablier | ○ HTTP only | ● | ● | ◐ labels | ○ |
+
+The honest sentence is not "nobody does this". It is: **zeropod does it deeper and needs a
+cluster; Lazytainer does it cruder and needs your network; Sablier does it for HTTP and is the
+one most people actually run.** What is genuinely unoccupied is the intersection — arbitrary
+TCP, no runtime to replace, a committed spec file, and the same binary on a laptop and in a
+cluster.
+
+That is a narrower claim than the one this file made in its first version, and it is the true
+one.
 
 ---
 
@@ -238,6 +307,18 @@ Vendor documentation, read August 2026:
   from idle; scale-to-zero after 5 minutes by default.
 - [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), [Modal sandboxes](https://modal.com/docs/guide/sandbox),
   [Daytona](https://www.daytona.io/docs/), [Northflank preview environments](https://northflank.com/blog/preview-environment-platforms).
+
+The self-hosted prior art, read from the repositories themselves:
+
+- [ctrox/zeropod](https://github.com/ctrox/zeropod) — containerd shim, CRIU checkpoint, eBPF
+  activity tracking, restore "in tens to a few hundred milliseconds"; README notes arm64 in a
+  Linux VM on macOS is "somewhat flaky".
+- [sablierapp/sablier](https://github.com/sablierapp/sablier) — API server plus reverse-proxy
+  middleware; docker, swarm, podman, kubernetes and Proxmox providers; blocking and dynamic
+  strategies; ~1.5–2 ms steady-state overhead per request.
+- [vmorganp/Lazytainer](https://github.com/vmorganp/Lazytainer) — packet-count thresholds on a
+  monitored interface; "you must apply a label to them and proxy their traffic through the
+  Lazytainer container".
 
 Third-party benchmark figures (Daytona ~90 ms p99, Modal/E2B comparisons) come from published
 2026 roundups rather than a harness in this repo, and are marked "reported" wherever they

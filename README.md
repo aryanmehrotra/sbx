@@ -145,10 +145,17 @@ which decides who is allowed to be the client:
 | Fly Machines | a request through Fly Proxy | anything, incl. TCP | ✗ |
 | Knative | an HTTP request | HTTP/gRPC/WS only | ✓ cluster |
 | Neon | a Postgres connection | Postgres clients only | ✗ |
+| zeropod | any TCP connection | anything with a socket | ✓ CRIU + eBPF shim, per node |
+| Lazytainer | packets on an interface | anything with a socket | ✓ owns your networking |
+| Sablier | an HTTP request via a proxy | HTTP only | ✓ |
 
-**What you give up.** E2B pauses to a memory snapshot — processes and variables come back
-exactly as they were. This restores disk only: a wake is a cold process start against warm
-data. Worse guarantee, and it's why a sleeping sandbox is 0 B instead of "storage only".
+The last three are self-hosted Go projects doing the same job, and they're the ones to read
+before this one — the bottom half of that table is the honest competition, not the top.
+
+**What you give up.** E2B and zeropod both restore a **memory** snapshot: processes and
+variables come back exactly as they were. This restores disk only, so a wake is a cold process
+start against warm data. Worse guarantee — and it's why a sleeping sandbox here is 0 B rather
+than "storage only", and why sleeping costs nothing to enter.
 
 → [COMPARISON.md](docs/COMPARISON.md) — every claim sourced to vendor docs, plus the chart
 where we sit fast **and narrow**, and when to use E2B, Northflank, Testcontainers or Neon
