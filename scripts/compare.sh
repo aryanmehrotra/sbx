@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# sbx against the field, measured on one machine under identical targets.
+#
+#   scripts/compare.sh [runs]            # default 10
+#   CONTENDERS=sbx,lazytainer scripts/compare.sh 5
+#
+# The rivals are the self-hosted ones that do the same job: Sablier, Lazytainer and
+# zeropod. Hosted platforms are a different category and are not measurable here.
+#
+# Three rules make the numbers worth publishing, and each exists because of a specific
+# way a benchmark lies:
+#
+#   1. A sample counts only on a correct protocol reply. During development, Sablier's
+#      middleware failed to engage and returned 502 in 98 ms — faster than sbx's real
+#      wake. A status code is not evidence; a reply is.
+#   2. A sample is VOID unless the target was verifiably asleep when the clock started.
+#      A rival whose mechanism never engaged otherwise scores a spectacular wake for
+#      answering while awake.
+#   3. Every wake is paired with a baseline through the identical client and path, and
+#      the compared quantity is the difference. The arms do not share a network path,
+#      and pairing is what stops that asymmetry being credited to a contender.
+#
+# A contender that cannot do something by design reports N/A — that is a result.
+# A contender that could not be stood up here reports SKIPPED — that is not.
+set -uo pipefail
+
+RUNS="${1:-10}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SBX="$ROOT/sbx"
+CONTENDERS="${CONTENDERS:-sbx,sablier,lazytainer,zeropod}"
+TARGETS="${TARGETS:-nginx,postgres}"
+IDLE="${IDLE:-5s}"
+PGCLIENT=cmp-pg-client
+NET=cmp-net
+
+# shellcheck source=lib/measure.sh
+. "$ROOT/scripts/lib/measure.sh"
+
+ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
+
+say()  { printf '%s\n' "$*"; }
+note() { printf '  %-12s %s\n' "$1" "$2"; }
+
+# ── results ─────────────────────────────────────────────────────────────────────
+# One line per contender/target: status, then the numbers if there are any.
+RESULTS=()
+record() { RESULTS+=("$1|$2|$3|$4"); }   # contender, target, status, detail
+
+# ── client preflight ────────────────────────────────────────────────────────────
+# ef0993c was a client flag that existed on one platform and not another. Every client
+# this script needs is checked once, by name, before anything is stood up.
+preflight() {
+  local missing=""
+  command -v docker  >/dev/null 2>&1 || missing="$missing docker"
+  command -v curl    >/dev/null 2>&1 || missing="$missing curl"
+  command -v python3 >/dev/null 2>&1 || missing="$missing python3"
+  if [ -n "$missing" ]; then
+    say "compare: missing required tools:$missing" >&2
+    exit 2
+  fi
+  # psql is deliberately not required on the host: it is absent on plenty of machines,
+  # including the author's. It runs in a container so that "re-runnable by anyone"
+  # means anyone with docker.
+  docker rm -f "$PGCLIENT" >/dev/null 2>&1
+  # --add-host=host-gateway is the portable form. `host.docker.internal` resolves for
+  # free on Docker Desktop and colima and does NOT exist on native Linux docker, so
+  # relying on it would have failed in exactly the Linux CI where the zeropod probe has
+  # to run. Docker 20.10+ honours host-gateway on every platform.
+  docker run -d --name "$PGCLIENT" \
+    --add-host=host.docker.internal:host-gateway \
+    --entrypoint sleep postgres:16-alpine 86400 >/dev/null 2>&1 \
+    || { say "compare: could not start the postgres client container" >&2; exit 2; }
+}
+
+# ── validated clients ───────────────────────────────────────────────────────────
+# Each returns 0 only on a correct protocol reply, never on a mere connection.
+client_nginx() { # port
+  local body
+  body=$(curl -sf --max-time 90 "http://127.0.0.1:$1/" 2>/dev/null) || return 1
+  [ -n "$body" ] || return 1
+}
+
+client_postgres() { # port
+  docker exec -e PGPASSWORD=app "$PGCLIENT" \
+    psql -h host.docker.internal -p "$1" -U app -d app -tAc 'select 1' 2>/dev/null \
+    | grep -q '^1$'
+}
+
+# ── docker helpers shared by the container-hosted arms ──────────────────────────
+container_stopped() { # name
+  [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" != "true" ]
+}
+
+wait_stopped() { # name, seconds
+  local waited=0
+  until container_stopped "$1"; do
+    [ "$waited" -ge "$2" ] && return 1
+    sleep 1; waited=$((waited + 1))
+  done
+}
+
+image_for()  { [ "$1" = nginx ] && echo nginx:alpine || echo postgres:16-alpine; }
+client_for() { [ "$1" = nginx ] && echo client_nginx || echo client_postgres; }
+
+# ════════════════════════════════════════════════════════════════════════════════
+# adapters: available · up · asleep · wake · rss · down
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── sbx ─────────────────────────────────────────────────────────────────────────
+SBX_NAME=""
+sbx_available() {
+  [ -x "$SBX" ] || { REASON="no binary at $SBX — go build -o sbx ."; return 1; }
+}
+sbx_up() { # target
+  SBX_NAME="cmp-$1-$$"
+  "$SBX" create "$SBX_NAME" --spec "$ROOT/examples/$1/sandbox.json" >/dev/null 2>&1 || return 1
+  eval "$("$SBX" env "$SBX_NAME" --spec "$ROOT/examples/$1/sandbox.json" 2>/dev/null)"
+  PORT=$([ "$1" = nginx ] && echo "$WEB_PORT" || echo "$DATABASE_PORT")
+  "$SBX" serve --idle "$IDLE" --refresh 2s >/dev/null 2>&1 &
+  SBX_DAEMON=$!
+  sleep 3
+}
+sbx_asleep() { wait_stopped "sbx-${SBX_NAME}-$1" 60; }
+sbx_rss() {
+  # The daemon is a host process, not a container: docker stats cannot see it.
+  local pid rss
+  pid=$(pgrep -f "sbx serve" | head -1)
+  [ -n "$pid" ] && rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+  [ -n "${rss:-}" ] && echo "$rss (ps, host process)" || echo "n/a"
+}
+sbx_down() {
+  [ -n "${SBX_DAEMON:-}" ] && kill "$SBX_DAEMON" 2>/dev/null
+  [ -n "$SBX_NAME" ] && "$SBX" rm "$SBX_NAME" >/dev/null 2>&1
+  SBX_DAEMON=""
+}
+
+# ── sablier ─────────────────────────────────────────────────────────────────────
+# HTTP only, by design: the wake is a Traefik middleware hook on an HTTP request, so
+# nothing in it can wake a postgres client. That is N/A, not a failure.
+sablier_available() { # target
+  [ "$1" = postgres ] && { REASON="HTTP only — a middleware on an HTTP request cannot wake a postgres client"; return 2; }
+  docker image inspect sablierapp/sablier:1.8.1 >/dev/null 2>&1 || \
+    docker pull -q sablierapp/sablier:1.8.1 >/dev/null 2>&1 || { REASON="image unavailable"; return 1; }
+}
+sablier_up() {
+  docker network create "$NET" >/dev/null 2>&1
+  docker run -d --name cmp-sablier-web --network "$NET" \
+    -l sablier.enable=true -l sablier.group=cmp nginx:alpine >/dev/null 2>&1 || return 1
+  docker run -d --name cmp-sablier --network "$NET" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    sablierapp/sablier:1.8.1 start --provider.name=docker >/dev/null 2>&1 || return 1
+  sleep 4
+  cat > /tmp/cmp-sablier.yml <<YAML
+http:
+  routers:
+    web: { rule: "PathPrefix(\`/\`)", service: web, middlewares: [wake] }
+  services:
+    web: { loadBalancer: { servers: [ { url: "http://cmp-sablier-web:80" } ] } }
+  middlewares:
+    wake:
+      plugin:
+        sablier:
+          sablierUrl: "http://cmp-sablier:10000"
+          names: cmp-sablier-web
+          sessionDuration: 1m
+          blocking: { timeout: 60s }
+YAML
+  mkdir -p "$HOME/.cmp-sablier" && cp /tmp/cmp-sablier.yml "$HOME/.cmp-sablier/dynamic.yml"
+  docker run -d --name cmp-sablier-traefik --network "$NET" -p 18080:80 \
+    -v "$HOME/.cmp-sablier:/etc/traefik/dynamic" traefik:v3.3 \
+    --experimental.plugins.sablier.moduleName=github.com/sablierapp/sablier \
+    --experimental.plugins.sablier.version=v1.8.1 \
+    --providers.file.directory=/etc/traefik/dynamic \
+    --entrypoints.web.address=:80 >/dev/null 2>&1 || return 1
+  PORT=18080
+  # The middleware must demonstrably block before any number is taken from it.
+  local i
+  for i in $(seq 1 30); do client_nginx "$PORT" && break; sleep 1; done
+  client_nginx "$PORT" || return 1
+  docker stop cmp-sablier-web >/dev/null 2>&1
+  if client_nginx "$PORT"; then
+    return 0                      # blocked and woke it: the mechanism engaged
+  fi
+  REASON="middleware did not block: a request to a stopped target failed instead of waiting"
+  return 1
+}
+sablier_asleep() { wait_stopped cmp-sablier-web 60; }
+sablier_rss() {
+  local a b
+  a=$(docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null | measure_rss_kib cmp-sablier)
+  b=$(docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null | measure_rss_kib cmp-sablier-traefik)
+  echo "$a + $b (docker stats: sablier + traefik)"
+}
+sablier_down() {
+  docker rm -f cmp-sablier-traefik cmp-sablier cmp-sablier-web >/dev/null 2>&1
+  docker network rm "$NET" >/dev/null 2>&1
+  rm -rf "$HOME/.cmp-sablier"
+}
+
+# ── lazytainer ──────────────────────────────────────────────────────────────────
+lazytainer_available() {
+  docker image inspect ghcr.io/vmorganp/lazytainer:master >/dev/null 2>&1 || \
+    docker pull -q ghcr.io/vmorganp/lazytainer:master >/dev/null 2>&1 || { REASON="image unavailable"; return 1; }
+}
+lazytainer_up() { # target
+  local img port
+  img=$(image_for "$1")
+  port=$([ "$1" = nginx ] && echo 80 || echo 5432)
+  docker run -d --name cmp-lazy --cap-add NET_ADMIN -p 18081:"$port" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -e LAZYTAINER_GROUP_cmp_ports="$port" \
+    -e LAZYTAINER_GROUP_cmp_minPacketThreshold=5 \
+    -e LAZYTAINER_GROUP_cmp_inactiveTimeout=10 \
+    ghcr.io/vmorganp/lazytainer:master >/dev/null 2>&1 || return 1
+  # The target shares lazytainer's network namespace — that is how it intercepts.
+  local env_args=()
+  [ "$1" = postgres ] && env_args=(-e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app)
+  # ${a[@]+"${a[@]}"} — bash 3.2, which macOS still ships, calls an empty array unbound
+  # under `set -u`. This expands to nothing when empty instead of aborting the adapter.
+  docker run -d --name cmp-lazy-target --network "container:cmp-lazy" \
+    -l lazytainer.group=cmp ${env_args[@]+"${env_args[@]}"} "$img" >/dev/null 2>&1 || return 1
+  PORT=18081
+  sleep 6
+  local i
+  for i in $(seq 1 30); do $(client_for "$1") "$PORT" && break; sleep 1; done
+  $(client_for "$1") "$PORT" || { REASON="target never served through lazytainer"; return 1; }
+}
+lazytainer_asleep() { wait_stopped cmp-lazy-target 90; }
+lazytainer_rss() {
+  local a
+  a=$(docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null | measure_rss_kib cmp-lazy)
+  echo "$a (docker stats: lazytainer)"
+}
+lazytainer_down() { docker rm -f cmp-lazy-target cmp-lazy >/dev/null 2>&1; }
+
+# ── zeropod ─────────────────────────────────────────────────────────────────────
+# A containerd shim with CRIU, on Kubernetes. It does not stop the container: it
+# checkpoints while the pod stays Running, so neither `docker inspect` nor
+# `kubectl get pod` expresses "asleep". Until that observable is identified this arm
+# produces no table at all — not a SKIPPED row that reads as a bad day, and certainly
+# not a number taken without the gate.
+zeropod_available() {
+  command -v minikube >/dev/null 2>&1 || { REASON="minikube not installed"; return 1; }
+  minikube status >/dev/null 2>&1 || { REASON="no running minikube cluster"; return 1; }
+  REASON="no verified 'checkpointed' observable"
+  return 1
+}
+zeropod_up()     { return 1; }
+zeropod_asleep() { return 1; }
+zeropod_rss()    { echo "n/a"; }
+zeropod_down()   { :; }
+
+# ════════════════════════════════════════════════════════════════════════════════
+# the run
+# ════════════════════════════════════════════════════════════════════════════════
+cleanup() {
+  sbx_down; sablier_down; lazytainer_down; zeropod_down
+  docker rm -f "$PGCLIENT" >/dev/null 2>&1
+}
+trap cleanup EXIT
+
+measure_one() { # contender, target
+  local c="$1" t="$2" client port
+  client=$(client_for "$t")
+
+  # Called directly, never inside $(...): a command substitution is a subshell, and an
+  # adapter that sets PORT in a subshell sets it nowhere. That bug reported sbx itself as
+  # "failed" while bench.sh was measuring it fine on the same machine.
+  REASON=""
+  "${c}_available" "$t"; local rc=$?
+  if [ "$rc" = "2" ]; then record "$c" "$t" "N/A" "$REASON"; return; fi
+  if [ "$rc" != "0" ]; then record "$c" "$t" "SKIPPED" "${REASON:-unavailable}"; return; fi
+
+  PORT=""
+  if ! "${c}_up" "$t"; then
+    record "$c" "$t" "SKIPPED" "${REASON:-could not stand it up}"
+    "${c}_down"; return
+  fi
+  port="$PORT"
+
+  local samples="" pairs="" void=0 failed=0 i t0 t1 wake base
+  for i in $(seq 1 "$RUNS"); do
+    if ! "${c}_asleep" "$t"; then void=$((void + 1)); continue; fi
+
+    t0=$(ms); "$client" "$port"; local ok=$?; t1=$(ms)
+    if [ "$ok" != "0" ]; then failed=$((failed + 1)); continue; fi
+    wake=$((t1 - t0))
+
+    # Paired baseline: same client, same path, target now awake.
+    t0=$(ms); "$client" "$port" >/dev/null 2>&1; t1=$(ms)
+    base=$((t1 - t0))
+
+    samples="$samples $wake"
+    pairs="$pairs $wake:$base"
+    printf '    run %-3s wake %6s ms   baseline %5s ms\n' "$i" "$wake" "$base"
+  done
+
+  local n
+  n=$(printf '%s\n' $samples | measure_stat n)
+  if [ "$n" = "n/a" ] || [ "$n" = "0" ]; then
+    record "$c" "$t" "SKIPPED" "no valid samples (void $void, failed $failed)"
+  else
+    local med p90 sd dmed rss
+    med=$(printf '%s\n' $samples | measure_stat median)
+    p90=$(printf '%s\n' $samples | measure_stat p90)
+    sd=$(printf '%s\n' $samples | measure_stat stdev)
+    dmed=$(printf '%s\n' $pairs | measure_pairs | measure_stat median)
+    rss=$("${c}_rss")
+    record "$c" "$t" "OK" "n=$n median=${med}ms p90=${p90}ms stdev=${sd}ms delta=${dmed}ms void=$void failed=$failed rss=$rss"
+  fi
+  "${c}_down"
+}
+
+preflight
+measure_conditions "$SBX"
+note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
+note "runs" "$RUNS per contender per target"
+say
+
+for c in ${CONTENDERS//,/ }; do
+  for t in ${TARGETS//,/ }; do
+    say "── $c · $t ──────────────────────────────────────────────"
+    measure_one "$c" "$t"
+    say
+  done
+done
+
+say "── results ─────────────────────────────────────────────────"
+printf '  %-12s %-9s %-8s %s\n' CONTENDER TARGET STATUS DETAIL
+for r in "${RESULTS[@]}"; do
+  IFS='|' read -r c t s d <<< "$r"
+  printf '  %-12s %-9s %-8s %s\n' "$c" "$t" "$s" "$d"
+done
+say
+say "N/A = cannot do this by design, which is a result."
+say "SKIPPED = could not be stood up here, which is not."
