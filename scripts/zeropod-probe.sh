@@ -76,9 +76,17 @@ if ! kind create cluster --name "$CLUSTER" --config /tmp/zeropod-kind.yaml --wai
 fi
 say "  cluster up"
 
+# config/production, not config/kind. The kind overlay pins :dev images that are not
+# published — it is for zeropod's own development, where images are built locally and loaded
+# into the cluster — and using it here failed with
+#   ghcr.io/ctrox/zeropod-installer:dev: not found
+# after a ten-minute ImagePullBackOff. production pins released tags (v0.12.1) and the CRIU
+# image the installer needs. The kind-ness of this cluster is in the node label, not the
+# overlay.
+#
 # The installer restarts containerd on each targeted node, which is why this is a throwaway
 # cluster and not anybody's dev environment.
-if ! kubectl apply -k https://github.com/ctrox/zeropod/config/kind >/dev/null 2>&1; then
+if ! kubectl apply -k https://github.com/ctrox/zeropod/config/production >/dev/null 2>&1; then
   skip "zeropod manifests would not apply"
 fi
 
