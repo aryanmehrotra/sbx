@@ -281,7 +281,33 @@ reads as having, and it is stated here rather than left to be inferred.
 | GPU | ○ | ◐ | ◐ | ● | ○ | ● | n/a | ● |
 | Production-proven | ○ | ● | ● | ● | ● | ● | ● | ● |
 
+### Rows chosen by them, not by us
+
+The table above still asks "does everyone else do what we do". These are the ones their
+documentation leads with, and this is where sbx has nothing rather than something partial.
+
+| | sbx | E2B | Daytona | Modal | Cloudflare | Northflank |
+|---|---|---|---|---|---|---|
+| **Network egress control** — allow/deny by IP, CIDR, domain | ○ **nothing** | ● wildcards | ● firewall | ● | ● | ● |
+| **Fork N sandboxes from one snapshot** | ○ **nothing** | ● 5–30 ms | ● | ● | ◐ | ○ |
+| **Prebuilt templates, versioned and cached** | ◐ five, embedded, not built | ● | ● 24 h cache | ● | ● | ● |
+| **Declarative image builder** | ○ bring your own image | ◐ | ● | ● | ◐ | ● |
+| **Interactive access: SSH · PTY · VNC** | ◐ `exec` only | ◐ | ● all three | ◐ | ◐ | ● |
+| **Volumes shared between sandboxes** | ○ one per service | ● NFS/block | ● subpath mounts | ● | ◐ | ● |
+| **Language SDKs** (Python, JS) | ○ CLI only | ● | ● | ● | ● | ● |
+| **Multiple regions / hosts** | ○ one machine | ● | ● | ● | ● | ● |
+
 ● yes · ◐ partial or conditional · ○ no
+
+**Read that table before the one above it.** Eight rows, and sbx scores nothing on five of
+them. The most serious is the first: sbx has **no network controls whatsoever** — a sandbox
+can reach anything the host can. For a tool that talks about agents running code, that is a
+gap, not a nuance, and it is the one row here that is a security property rather than a
+convenience.
+
+The second is nearly as important and is not the same thing as CRIU: E2B can spawn *many*
+sandboxes from one snapshot in tens of milliseconds. That is a different capability from
+"resume the one you paused", and it is what makes per-task fan-out cheap for them.
 
 **Read the bottom two rows before the top two.** Every hosted platform on this table has real
 isolation and real users. This has neither. What it has is the first four rows, and whether
