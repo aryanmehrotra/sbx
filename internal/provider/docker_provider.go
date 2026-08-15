@@ -1,4 +1,4 @@
-package main
+package provider
 
 // The Docker provider: sandboxes as containers on one machine.
 //
@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/spec"
 	"sync"
 	"time"
 )
@@ -40,7 +42,7 @@ type dockerProvider struct {
 	health map[string]string // ref -> declared health command
 }
 
-func newDockerProvider(ep dockerEndpoint) *dockerProvider {
+func newDocker(ep dockerEndpoint) *dockerProvider {
 	return &dockerProvider{api: newDockerClient(ep), endpoint: ep, health: map[string]string{}}
 }
 
@@ -122,7 +124,7 @@ func (d *dockerProvider) slotOf(sandbox string) (int, bool) {
 func label(name string) string { return "{{index .Config.Labels \"" + name + "\"}}" }
 
 func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, service string,
-	svc Service, eps []Endpoint, specDir string, iso Isolation,
+	svc spec.Service, eps []Endpoint, specDir string, iso Isolation,
 ) error {
 	cn := containerName(sandbox, service)
 
@@ -171,7 +173,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		)
 	}
 
-	for _, k := range sortedKeys(svc.Env) {
+	for _, k := range SortedKeys(svc.Env) {
 		args = append(args, "-e", k+"="+svc.Env[k])
 	}
 
@@ -179,7 +181,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "-v", volumeName(sandbox, service)+":"+svc.Volume)
 	}
 
-	for _, hostPath := range sortedKeys(svc.Files) {
+	for _, hostPath := range SortedKeys(svc.Files) {
 		abs := hostPath
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(specDir, hostPath)
@@ -364,7 +366,7 @@ func (d *dockerProvider) List(_ context.Context, sandbox string) ([]Unit, error)
 
 		slot, _ := strconv.Atoi(p[2])
 
-		pairs, err := parsePorts(p[3])
+		pairs, err := ParsePorts(p[3])
 		if err != nil || len(pairs) == 0 {
 			continue
 		}
@@ -375,13 +377,13 @@ func (d *dockerProvider) List(_ context.Context, sandbox string) ([]Unit, error)
 			Slot:    slot,
 			Ref:     strings.TrimPrefix(p[5], "/"),
 			Running: p[4] == "true",
-			Index:   (pairs[0].public - publicBase) % blockSize,
+			Index:   (pairs[0].Public - publicBase) % blockSize,
 		}
 
 		for _, pr := range pairs {
-			u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pr.public})
-			u.Listen = append(u.Listen, pr.public)
-			u.Upstream = append(u.Upstream, Endpoint{Host: "127.0.0.1", Port: pr.backing})
+			u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pr.Public})
+			u.Listen = append(u.Listen, pr.Public)
+			u.Upstream = append(u.Upstream, Endpoint{Host: "127.0.0.1", Port: pr.Backing})
 		}
 
 		units = append(units, u)

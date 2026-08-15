@@ -1,4 +1,4 @@
-package main
+package provider
 
 // A provider is somewhere sandboxes can exist: this laptop's Docker, a cluster, later a
 // pool of microVMs. The seam is here because two things about a sandbox are not portable,
@@ -23,6 +23,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/aryanmehrotra/sbx/internal/spec"
+)
+
+const (
+	labelSandbox = "sbx.sandbox" // which sandbox a container belongs to
+	labelSlot    = "sbx.slot"    // its port block
+	labelService = "sbx.service" // its name within the sandbox
+	labelPorts   = "sbx.ports"   // public:backing pairs sbx serve should front
+
+	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
+	// names rather than risking a silently rejected manifest.
+	kubeLabelSandbox   = "sbx-sandbox"
+	kubeLabelService   = "sbx-service"
+	kubeLabelSlot      = "sbx-slot"
+	kubeLabelOrdinal   = "sbx-ordinal"
+	kubeLabelManagedBy = "sbx-managed-by"
 )
 
 // Endpoint is how a caller reaches one port of one service.
@@ -73,7 +90,7 @@ const (
 	IsolationKata Isolation = "kata"
 )
 
-func (i Isolation) valid() bool {
+func (i Isolation) Valid() bool {
 	switch i {
 	case IsolationContainer, IsolationGVisor, IsolationKata:
 		return true
@@ -89,7 +106,7 @@ type Provider interface {
 
 	// Create realises one service. It may run the workload briefly to initialise it; it
 	// must not otherwise manage run state, which belongs to the wake policy alone.
-	Create(ctx context.Context, sandbox string, slot, ordinal int, service string, svc Service, eps []Endpoint, specDir string, iso Isolation) error
+	Create(ctx context.Context, sandbox string, slot, ordinal int, service string, svc spec.Service, eps []Endpoint, specDir string, iso Isolation) error
 
 	// Start and Stop are the wake verbs: `docker start` here, `scale 1` there.
 	Start(ctx context.Context, ref string) error
@@ -143,7 +160,7 @@ type Provider interface {
 }
 
 // providerFor resolves the --provider flag.
-func providerFor(kind, socket, namespace string) (Provider, error) {
+func For(kind, socket, namespace string) (Provider, error) {
 	switch kind {
 	case "", "docker":
 		ep, err := resolveDockerHost(socket)
@@ -151,9 +168,9 @@ func providerFor(kind, socket, namespace string) (Provider, error) {
 			return nil, err
 		}
 
-		return newDockerProvider(ep), nil
+		return newDocker(ep), nil
 	case "kubernetes", "k8s":
-		return newKubeProvider(namespace), nil
+		return newKube(namespace), nil
 	default:
 		return nil, fmt.Errorf("unknown provider %q (want docker or kubernetes)", kind)
 	}

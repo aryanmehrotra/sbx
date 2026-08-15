@@ -1,4 +1,4 @@
-package main
+package cli
 
 // Proof, on your machine, in about a minute.
 //
@@ -26,14 +26,18 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // selftestSpec is deliberately Redis: small, fast, and its readiness check is unambiguous.
 // The point is to exercise sbx, not to benchmark a database.
-func selftestSpec() *Spec {
-	return &Spec{
+func selftestSpec() *spec.Spec {
+	return &spec.Spec{
 		Version: 1,
-		Services: map[string]Service{
+		Services: map[string]spec.Service{
 			"redis": {
 				Image:  "redis:7-alpine",
 				Ports:  []int{6379},
@@ -49,9 +53,9 @@ type step struct {
 	err  error
 }
 
-func runSelftest(ctx context.Context, p Provider, iso Isolation, keep bool) error {
+func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, keep bool) error {
 	name := fmt.Sprintf("selftest-%d", os.Getpid())
-	spec := selftestSpec()
+	sp := selftestSpec()
 
 	fmt.Printf("sbx selftest · provider %s · isolation %s · sandbox %q\n\n", p.Name(), iso, name)
 
@@ -89,7 +93,7 @@ func runSelftest(ctx context.Context, p Provider, iso Isolation, keep bool) erro
 		}
 	}()
 
-	layout, err := spec.assign()
+	layout, err := sp.Assign()
 	if err != nil {
 		return err
 	}
@@ -99,10 +103,10 @@ func runSelftest(ctx context.Context, p Provider, iso Isolation, keep bool) erro
 		return err
 	}
 
-	start, _ := spec.startIndex(layout, "redis")
+	start, _ := sp.StartIndex(layout, "redis")
 
 	if !record("create a sandbox from a spec", func() error {
-		return createOne(ctx, p, name, slot, start, "redis", spec.Services["redis"], ".", iso)
+		return createOne(ctx, p, name, slot, start, "redis", sp.Services["redis"], ".", iso)
 	}) {
 		return fmt.Errorf("selftest failed at create")
 	}
@@ -126,19 +130,12 @@ func runSelftest(ctx context.Context, p Provider, iso Isolation, keep bool) erro
 		return fmt.Errorf("selftest: provider does not list the sandbox it just created")
 	}
 
-	d := &daemon{
-		provider: p,
-		idle:     3 * time.Second,
-		ready:    90 * time.Second,
-		refresh:  1 * time.Second,
-		units:    map[string]*unit{},
-		stop:     map[string]context.CancelFunc{},
-	}
+	d := daemon.New(p, 3*time.Second, 90*time.Second, time.Second)
 
 	dctx, dcancel := context.WithCancel(ctx)
 	defer dcancel()
 
-	go d.run(dctx)
+	go d.Run(dctx)
 
 	if !record("sleep to zero when unused", func() error {
 		deadline := time.Now().Add(90 * time.Second)

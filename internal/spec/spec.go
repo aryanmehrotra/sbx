@@ -1,4 +1,4 @@
-package main
+package spec
 
 // The sandbox spec: what a repo declares so that anyone — a person, an agent, CI — can
 // have their own copy of its backing services.
@@ -8,28 +8,11 @@ package main
 // ports; if a spec could start something, the spec would eventually be what left it running.
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-)
-
-const (
-	labelSandbox = "sbx.sandbox" // which sandbox a container belongs to
-	labelSlot    = "sbx.slot"    // its port block
-	labelService = "sbx.service" // its name within the sandbox
-	labelPorts   = "sbx.ports"   // public:backing pairs sbx serve should front
-
-	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
-	// names rather than risking a silently rejected manifest.
-	kubeLabelSandbox   = "sbx-sandbox"
-	kubeLabelService   = "sbx-service"
-	kubeLabelSlot      = "sbx-slot"
-	kubeLabelOrdinal   = "sbx-ordinal"
-	kubeLabelManagedBy = "sbx-managed-by"
 )
 
 // Spec is the on-disk sandbox.json.
@@ -99,87 +82,6 @@ func (s Service) validate(name string) error {
 	return nil
 }
 
-// templates are the built-in specs, embedded so that `--template nginx` works on a machine
-// that has this binary and nothing else.
-//
-// A person adopting this should not have to author a spec before they can see it work, and
-// an agent asked to spin up a Postgres should not have to write JSON to a file first.
-//
-//go:embed examples
-var templates embed.FS
-
-// TemplateNames lists what --template accepts.
-func TemplateNames() []string {
-	entries, err := templates.ReadDir("examples")
-	if err != nil {
-		return nil
-	}
-
-	var out []string
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-
-		if _, err := templates.ReadFile("examples/" + e.Name() + "/sandbox.json"); err == nil {
-			out = append(out, e.Name())
-		}
-	}
-
-	sort.Strings(out)
-
-	return out
-}
-
-// MaterializeTemplate writes a built-in template to a directory on disk and returns the
-// path to its spec.
-//
-// Written out rather than parsed in memory because a spec can reference files beside it —
-// the analytics template mounts a ClickHouse config — and an embedded template has no
-// directory for those to live in. Extracting the whole thing means templates and on-disk
-// specs then travel exactly one code path, which is the only reason this is not two.
-func MaterializeTemplate(name string) (string, error) {
-	entries, err := templates.ReadDir("examples/" + name)
-	if err != nil {
-		return "", fmt.Errorf("no template %q (have: %s)", name, strings.Join(TemplateNames(), ", "))
-	}
-
-	// Under $HOME, not the system temp directory.
-	//
-	// A VM-backed Docker only shares some host paths — Colima shares $HOME and not
-	// /var/folders, which is where MkdirTemp puts things on macOS. A bind mount whose source
-	// the VM cannot see does not fail: docker creates an empty directory at the destination
-	// instead. ClickHouse then finds a directory where its config should be, and exits
-	// during startup with no mention of a mount anywhere in the message.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	dir := filepath.Join(home, ".sbx", "templates", name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-
-		body, err := templates.ReadFile("examples/" + name + "/" + e.Name())
-		if err != nil {
-			return "", err
-		}
-
-		if err := os.WriteFile(filepath.Join(dir, e.Name()), body, 0o644); err != nil {
-			return "", err
-		}
-	}
-
-	return filepath.Join(dir, "sandbox.json"), nil
-}
-
 // LoadSpec reads and validates a sandbox.json.
 func LoadSpec(path string) (*Spec, error) {
 	raw, err := os.ReadFile(path)
@@ -187,10 +89,10 @@ func LoadSpec(path string) (*Spec, error) {
 		return nil, err
 	}
 
-	return parseSpec(raw, path)
+	return ParseSpec(raw, path)
 }
 
-func parseSpec(raw []byte, path string) (*Spec, error) {
+func ParseSpec(raw []byte, path string) (*Spec, error) {
 	var s Spec
 	// DisallowUnknownFields: a typo in a spec should be a startup error, not a setting
 	// that silently did nothing for a week.
@@ -225,7 +127,7 @@ func parseSpec(raw []byte, path string) (*Spec, error) {
 			return nil, fmt.Errorf("%s: export %s refers to unknown service %q", path, env, svc)
 		}
 
-		if !hasPort(s.Services[svc], port) {
+		if !HasPort(s.Services[svc], port) {
 			return nil, fmt.Errorf("%s: export %s refers to port %s, which %s does not expose", path, env, port, svc)
 		}
 	}
@@ -233,7 +135,7 @@ func parseSpec(raw []byte, path string) (*Spec, error) {
 	return &s, nil
 }
 
-func hasPort(s Service, want string) bool {
+func HasPort(s Service, want string) bool {
 	for _, p := range s.Ports {
 		if fmt.Sprint(p) == want {
 			return true
@@ -245,7 +147,7 @@ func hasPort(s Service, want string) bool {
 
 // names returns service names in a stable order, so output and slot assignment do not
 // shuffle between runs for no reason.
-func (s *Spec) names() []string {
+func (s *Spec) Names() []string {
 	out := make([]string, 0, len(s.Services))
 	for n := range s.Services {
 		out = append(out, n)
@@ -262,7 +164,11 @@ func (s *Spec) names() []string {
 // decision: on one machine it indexes into a per-slot port block, and in a cluster it is
 // ignored entirely because a pod has its own address.
 
-type slotIndex struct {
+// MaxOrdinals bounds how many ports one sandbox may declare. It exists here because the
+// spec is where the limit is enforced; what an ordinal becomes is decided elsewhere.
+const MaxOrdinals = 20
+
+type SlotIndex struct {
 	Service   string
 	Container int // port inside the container
 	Index     int // ordinal within the sandbox
@@ -274,19 +180,19 @@ type slotIndex struct {
 // Reserving them costs nothing and keeps the layout stable: if skipping ClickHouse shifted
 // MySQL, then adding ClickHouse later would silently move the database out from under every
 // config that had already recorded where it was.
-func (s *Spec) assign() ([]slotIndex, error) {
+func (s *Spec) Assign() ([]SlotIndex, error) {
 	var (
-		out  []slotIndex
+		out  []SlotIndex
 		next = 0
 	)
 
-	for _, name := range s.names() {
+	for _, name := range s.Names() {
 		for _, cp := range s.Services[name].Ports {
-			if next >= blockSize {
-				return nil, fmt.Errorf("sandbox needs more than %d ports; raise blockSize", blockSize)
+			if next >= MaxOrdinals {
+				return nil, fmt.Errorf("a sandbox declares more than %d ports", MaxOrdinals)
 			}
 
-			out = append(out, slotIndex{Service: name, Container: cp, Index: next})
+			out = append(out, SlotIndex{Service: name, Container: cp, Index: next})
 			next++
 		}
 	}
@@ -295,7 +201,7 @@ func (s *Spec) assign() ([]slotIndex, error) {
 }
 
 // startIndex is the ordinal a service's first port takes.
-func (s *Spec) startIndex(layout []slotIndex, service string) (int, bool) {
+func (s *Spec) StartIndex(layout []SlotIndex, service string) (int, bool) {
 	for _, a := range layout {
 		if a.Service == service {
 			return a.Index, true

@@ -1,4 +1,4 @@
-package main
+package logs
 
 // Logging, in the shape a Go service already logs.
 //
@@ -101,10 +101,13 @@ type entry struct {
 	SbxVersion string    `json:"sbxVersion"`
 }
 
-// logger is the process-wide logger. A package-level variable rather than something
+// Version is stamped by main so that a JSON log line says which build produced it.
+var Version = "dev"
+
+// Default is the process-wide logger. A package-level variable rather than something
 // threaded through every call because every path here logs, and threading it changed more
 // lines than it clarified.
-var logger = NewLogger(os.Stdout)
+var Default = New(os.Stdout)
 
 type Logger struct {
 	out   io.Writer
@@ -117,7 +120,7 @@ type Logger struct {
 
 // NewLogger decides its own format. Attached to a terminal it prints columns; anything else
 // gets JSON — a pipe means a file, a shipper or a CI log, none of which want escape codes.
-func NewLogger(out io.Writer) *Logger {
+func New(out io.Writer) *Logger {
 	return &Logger{
 		out:   out,
 		level: parseLevel(os.Getenv("LOG_LEVEL")),
@@ -141,13 +144,13 @@ func isTerminal(w io.Writer) bool {
 
 // align reserves a column width for service names, so a sandbox with a postgres and a redis
 // in it does not jitter between lines.
-func (l *Logger) align(width int) {
+func (l *Logger) Align(width int) {
 	l.mu.Lock()
 	l.width = width
 	l.mu.Unlock()
 }
 
-func (l *Logger) log(lvl Level, sandbox, service, msg string) {
+func (l *Logger) Log(lvl Level, sandbox, service, msg string) {
 	if lvl < l.level {
 		return
 	}
@@ -164,7 +167,7 @@ func (l *Logger) log(lvl Level, sandbox, service, msg string) {
 			Sandbox:    sandbox,
 			Service:    service,
 			Message:    msg,
-			SbxVersion: version,
+			SbxVersion: Version,
 		})
 		if err != nil {
 			return
@@ -202,23 +205,23 @@ func source(sandbox, service string) string {
 }
 
 func (l *Logger) Debug(sandbox, service, format string, a ...any) {
-	l.log(LevelDebug, sandbox, service, fmt.Sprintf(format, a...))
+	l.Log(LevelDebug, sandbox, service, fmt.Sprintf(format, a...))
 }
 
 func (l *Logger) Info(sandbox, service, format string, a ...any) {
-	l.log(LevelInfo, sandbox, service, fmt.Sprintf(format, a...))
+	l.Log(LevelInfo, sandbox, service, fmt.Sprintf(format, a...))
 }
 
 func (l *Logger) Notice(sandbox, service, format string, a ...any) {
-	l.log(LevelNotice, sandbox, service, fmt.Sprintf(format, a...))
+	l.Log(LevelNotice, sandbox, service, fmt.Sprintf(format, a...))
 }
 
 func (l *Logger) Warn(sandbox, service, format string, a ...any) {
-	l.log(LevelWarn, sandbox, service, fmt.Sprintf(format, a...))
+	l.Log(LevelWarn, sandbox, service, fmt.Sprintf(format, a...))
 }
 
 func (l *Logger) Error(sandbox, service, format string, a ...any) {
-	l.log(LevelError, sandbox, service, fmt.Sprintf(format, a...))
+	l.Log(LevelError, sandbox, service, fmt.Sprintf(format, a...))
 }
 
 // lineWriter turns a container's raw output into log lines.
@@ -227,17 +230,17 @@ func (l *Logger) Error(sandbox, service, format string, a ...any) {
 // This attaches both, holds partial lines until they are whole, and passes the text through
 // unchanged — reformatting somebody else's log message is how you lose the detail you were
 // reading it for.
-type lineWriter struct {
-	log     *Logger
-	sandbox string
-	service string
-	level   Level
+type LineWriter struct {
+	Log     *Logger
+	Sandbox string
+	Service string
+	Level   Level
 
 	mu      sync.Mutex
 	partial []byte
 }
 
-func (w *lineWriter) Write(p []byte) (int, error) {
+func (w *LineWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -253,7 +256,7 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 		w.partial = w.partial[i+1:]
 
 		if strings.TrimSpace(line) != "" {
-			w.log.log(w.level, w.sandbox, w.service, line)
+			w.Log.Log(w.Level, w.Sandbox, w.Service, line)
 		}
 	}
 

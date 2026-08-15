@@ -1,4 +1,4 @@
-package main
+package daemon
 
 // Concurrency, under the race detector.
 //
@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 	"time"
 )
 
@@ -76,7 +78,7 @@ func TestConcurrentWakesStartOnce(t *testing.T) {
 	go func() {
 		_ = u.serve(ctx, p, leg{
 			Listen:   port,
-			Upstream: Endpoint{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port},
+			Upstream: provider.Endpoint{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port},
 		}, 10*time.Second)
 	}()
 
@@ -141,7 +143,7 @@ func TestConcurrentWakeAndReap(t *testing.T) {
 	go func() {
 		_ = u.serve(ctx, p, leg{
 			Listen:   port,
-			Upstream: Endpoint{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port},
+			Upstream: provider.Endpoint{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port},
 		}, 5*time.Second)
 	}()
 

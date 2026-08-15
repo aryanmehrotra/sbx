@@ -1,4 +1,4 @@
-package main
+package provider
 
 // Finding the Docker daemon without assuming which machine you are on.
 //
@@ -27,6 +27,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -168,4 +170,51 @@ func exists(path string) bool {
 // dial reaches the daemon, whichever kind of endpoint it turned out to be.
 func (e dockerEndpoint) dial(ctx context.Context) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, e.Network, e.Address)
+}
+
+func SortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
+// PortPair is one docker "wake:backing" pair from a container label.
+type PortPair struct {
+	Public  int
+	Backing int
+}
+
+// parsePorts reads "20002:30002,20003:30003".
+func ParsePorts(label string) ([]PortPair, error) {
+	if strings.TrimSpace(label) == "" {
+		return nil, fmt.Errorf("missing ports label")
+	}
+
+	var out []PortPair
+
+	for _, pair := range strings.Split(label, ",") {
+		pub, back, ok := strings.Cut(strings.TrimSpace(pair), ":")
+		if !ok {
+			return nil, fmt.Errorf("bad port pair %q", pair)
+		}
+
+		p, err := strconv.Atoi(pub)
+		if err != nil {
+			return nil, fmt.Errorf("bad public port %q: %w", pub, err)
+		}
+
+		b, err := strconv.Atoi(back)
+		if err != nil {
+			return nil, fmt.Errorf("bad backing port %q: %w", back, err)
+		}
+
+		out = append(out, PortPair{Public: p, Backing: b})
+	}
+
+	return out, nil
 }

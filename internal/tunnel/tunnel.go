@@ -1,4 +1,4 @@
-package main
+package tunnel
 
 // A public link to a sleeping sandbox.
 //
@@ -144,46 +144,18 @@ func pickTunnels(preferred string) ([]tunnelBackend, error) {
 			"Or pass --via ssh to route through localhost.run, a third party with no access control.")
 }
 
-// cmdURL points a tunnel at a service's wake port and blocks, printing the link.
-func cmdURL(ctx context.Context, p Provider, sandbox, service, preferred string) error {
-	units, err := p.List(ctx, sandbox)
-	if err != nil {
-		return err
-	}
-
-	var target Unit
-
-	for _, u := range units {
-		if u.Service == service {
-			target = u
-			break
-		}
-	}
-
-	if target.Service == "" {
-		return fmt.Errorf("no service %q in sandbox %q", service, sandbox)
-	}
-
-	if len(target.Client) == 0 {
-		return fmt.Errorf("service %q exposes no ports", service)
-	}
-
-	// Deliberately the wake port and not the workload's: a link that only works while the
-	// sandbox happens to be awake is a link that mostly does not work.
-	port := target.Client[0].Port
-
-	if !isLocal(target) {
-		return fmt.Errorf("in a cluster the link is an Ingress in front of %s, not a tunnel from here — "+
-			"see deploy/activator.yaml", target.Client[0].Host)
-	}
-
+// Open points a tunnel at a local port and blocks, printing the link.
+//
+// A port, not a sandbox. This package has no idea what a sandbox is, which is why it can be
+// read on its own and why nothing here has to change when the thing behind the port does.
+func Open(ctx context.Context, label string, port int, preferred string) error {
 	backends, err := pickTunnels(preferred)
 	if err != nil {
 		return err
 	}
 
 	for i, b := range backends {
-		err := runTunnel(ctx, b, sandbox, service, port)
+		err := runTunnel(ctx, b, label, port)
 		if err == nil || ctx.Err() != nil {
 			return nil
 		}
@@ -200,8 +172,8 @@ func cmdURL(ctx context.Context, p Provider, sandbox, service, preferred string)
 	return nil
 }
 
-func runTunnel(ctx context.Context, b tunnelBackend, sandbox, service string, port int) error {
-	fmt.Printf("sbx url · %s/%s · via %s · wake port %d\n", sandbox, service, b.name, port)
+func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) error {
+	fmt.Printf("sbx url · %s · via %s · wake port %d\n", label, b.name, port)
 
 	if b.note != "" {
 		fmt.Printf("  note: %s\n", b.note)

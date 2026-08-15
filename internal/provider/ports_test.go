@@ -1,4 +1,4 @@
-package main
+package provider
 
 import "testing"
 
@@ -6,12 +6,12 @@ func TestParsePorts(t *testing.T) {
 	cases := []struct {
 		name  string
 		label string
-		want  []portPair
+		want  []PortPair
 		fails bool
 	}{
-		{name: "single", label: "3306:13306", want: []portPair{{3306, 13306}}},
-		{name: "several", label: "3306:13306,6379:16379", want: []portPair{{3306, 13306}, {6379, 16379}}},
-		{name: "spaced", label: " 3306:13306 , 6379:16379 ", want: []portPair{{3306, 13306}, {6379, 16379}}},
+		{name: "single", label: "3306:13306", want: []PortPair{{Public: 3306, Backing: 13306}}},
+		{name: "several", label: "3306:13306,6379:16379", want: []PortPair{{Public: 3306, Backing: 13306}, {Public: 6379, Backing: 16379}}},
+		{name: "spaced", label: " 3306:13306 , 6379:16379 ", want: []PortPair{{Public: 3306, Backing: 13306}, {Public: 6379, Backing: 16379}}},
 		// An empty label must fail rather than yield a unit with no listeners: a sandbox
 		// that silently fronts nothing is the failure mode that looks like success.
 		{name: "empty", label: "", fails: true},
@@ -23,22 +23,22 @@ func TestParsePorts(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := parsePorts(c.label)
+			got, err := ParsePorts(c.label)
 
 			if c.fails {
 				if err == nil {
-					t.Fatalf("parsePorts(%q) = %v, want error", c.label, got)
+					t.Fatalf("ParsePorts(%q) = %v, want error", c.label, got)
 				}
 
 				return
 			}
 
 			if err != nil {
-				t.Fatalf("parsePorts(%q): %v", c.label, err)
+				t.Fatalf("ParsePorts(%q): %v", c.label, err)
 			}
 
 			if len(got) != len(c.want) {
-				t.Fatalf("parsePorts(%q) = %v, want %v", c.label, got, c.want)
+				t.Fatalf("ParsePorts(%q) = %v, want %v", c.label, got, c.want)
 			}
 
 			for i := range got {

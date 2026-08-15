@@ -1,4 +1,4 @@
-package main
+package daemon
 
 // The daemon. It owns the ports in front of every sandbox so that nothing else has to own
 // their lifecycle: a connection wakes what is behind a port, silence puts it back.
@@ -15,11 +15,24 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/logs"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
+
+// envOr is here rather than in main because the daemon is the only thing that reads
+// configuration from the environment, and a flag default is the wrong place to discover
+// that a variable existed.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+
+	return fallback
+}
 
 type errNotReady struct {
 	name    string
@@ -33,18 +46,34 @@ func (e errNotReady) Error() string {
 func itoa(i int) string { return strconv.Itoa(i) }
 
 // inCluster reports whether this process is a pod. Kubernetes always sets this.
-func inCluster() bool { return os.Getenv("KUBERNETES_SERVICE_HOST") != "" }
+func InCluster() bool { return os.Getenv("KUBERNETES_SERVICE_HOST") != "" }
 
 // knock opens and immediately closes a connection, purely to ask for a wake.
-func knock(port int) {
+func Knock(port int) {
 	c, err := net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 2*time.Second)
 	if err == nil {
 		_ = c.Close()
 	}
 }
 
+// New builds a daemon that can be run in-process. Selftest uses it: the honest way to test
+// the wake path is to run the real one, not a copy of its logic.
+func New(p provider.Provider, idle, ready, refresh time.Duration) *daemon {
+	return &daemon{
+		provider: p,
+		idle:     idle,
+		ready:    ready,
+		refresh:  refresh,
+		units:    map[string]*unit{},
+		stop:     map[string]context.CancelFunc{},
+	}
+}
+
+// Run drives discovery and reaping until ctx is done.
+func (d *daemon) Run(ctx context.Context) { d.run(ctx) }
+
 type daemon struct {
-	provider Provider
+	provider provider.Provider
 	idle     time.Duration
 	ready    time.Duration
 	refresh  time.Duration
@@ -56,7 +85,7 @@ type daemon struct {
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
 // fronts every sandbox's ports, so a second copy would fight the first for the listeners.
-func runServe(args []string) error {
+func Serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	kind := fs.String("provider", envOr("SBX_PROVIDER_KIND", "docker"), "docker | kubernetes")
 	socket := fs.String("socket", "", "docker endpoint; defaults to DOCKER_HOST, then the active docker context")
@@ -66,7 +95,7 @@ func runServe(args []string) error {
 	refresh := fs.Duration("refresh", 15*time.Second, "how often to look for new or removed sandboxes")
 	_ = fs.Parse(args)
 
-	p, err := providerFor(*kind, *socket, *namespace)
+	p, err := provider.For(*kind, *socket, *namespace)
 	if err != nil {
 		return err
 	}
@@ -83,13 +112,13 @@ func runServe(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	logger.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", version, p.Name(), d.idle, inCluster())
+	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, p.Name(), d.idle, InCluster())
 
 	d.run(ctx)
 
 	// Deliberately does not sleep anything on the way out. The daemon dying is not a reason
 	// to tear down a database somebody is mid-migration on.
-	logger.Info("", "", "stopped — sandboxes left as they are")
+	logs.Default.Info("", "", "stopped — sandboxes left as they are")
 
 	return nil
 }
@@ -124,7 +153,7 @@ func (d *daemon) run(ctx context.Context) {
 func (d *daemon) discover(ctx context.Context) {
 	found, err := d.provider.List(ctx, "")
 	if err != nil {
-		logger.Error("", "", "discovery failed: %v", err)
+		logs.Default.Error("", "", "discovery failed: %v", err)
 		return
 	}
 
@@ -145,7 +174,7 @@ func (d *daemon) discover(ctx context.Context) {
 		if len(legs) == 0 {
 			// A unit with nothing to front is not something to guess about: fronting the
 			// wrong port would splice a caller into silence.
-			logger.Warn(f.Sandbox, f.Service, "no ports to front, skipping")
+			logs.Default.Warn(f.Sandbox, f.Service, "no ports to front, skipping")
 			continue
 		}
 
@@ -161,7 +190,7 @@ func (d *daemon) discover(ctx context.Context) {
 		for _, l := range legs {
 			go func(l leg) {
 				if err := u.serve(uctx, d.provider, l, d.ready); err != nil {
-					logger.Error(u.sandbox, u.service, "stopped serving :%d: %v", l.Listen, err)
+					logs.Default.Error(u.sandbox, u.service, "stopped serving :%d: %v", l.Listen, err)
 				}
 			}(l)
 		}
@@ -173,7 +202,7 @@ func (d *daemon) discover(ctx context.Context) {
 			continue
 		}
 
-		logger.Info(u.sandbox, u.service, "gone")
+		logs.Default.Info(u.sandbox, u.service, "gone")
 		d.stop[ref]()
 		delete(d.units, ref)
 		delete(d.stop, ref)
@@ -197,7 +226,7 @@ func reapEvery(idle time.Duration) time.Duration {
 	return every
 }
 
-func legsOf(u Unit) []leg {
+func legsOf(u provider.Unit) []leg {
 	n := min(len(u.Listen), len(u.Upstream))
 
 	legs := make([]leg, 0, n)
@@ -225,40 +254,4 @@ func (d *daemon) reap(ctx context.Context) {
 
 		u.sleep(ctx, d.provider)
 	}
-}
-
-// portPair is one docker "wake:backing" pair from a container label.
-type portPair struct {
-	public  int
-	backing int
-}
-
-// parsePorts reads "20002:30002,20003:30003".
-func parsePorts(label string) ([]portPair, error) {
-	if strings.TrimSpace(label) == "" {
-		return nil, fmt.Errorf("missing ports label")
-	}
-
-	var out []portPair
-
-	for _, pair := range strings.Split(label, ",") {
-		pub, back, ok := strings.Cut(strings.TrimSpace(pair), ":")
-		if !ok {
-			return nil, fmt.Errorf("bad port pair %q", pair)
-		}
-
-		p, err := strconv.Atoi(pub)
-		if err != nil {
-			return nil, fmt.Errorf("bad public port %q: %w", pub, err)
-		}
-
-		b, err := strconv.Atoi(back)
-		if err != nil {
-			return nil, fmt.Errorf("bad backing port %q: %w", back, err)
-		}
-
-		out = append(out, portPair{public: p, backing: b})
-	}
-
-	return out, nil
 }

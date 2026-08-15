@@ -1,4 +1,4 @@
-package main
+package daemon
 
 // What the proxy costs once a sandbox is awake.
 //
@@ -19,6 +19,9 @@ import (
 	"net"
 	"os"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 	"time"
 )
 
@@ -27,19 +30,19 @@ import (
 type alwaysServing struct{}
 
 func (alwaysServing) Name() string { return "bench" }
-func (alwaysServing) Create(context.Context, string, int, int, string, Service, []Endpoint, string, Isolation) error {
+func (alwaysServing) Create(context.Context, string, int, int, string, spec.Service, []provider.Endpoint, string, provider.Isolation) error {
 	return nil
 }
 func (alwaysServing) Start(context.Context, string) error                      { return nil }
 func (alwaysServing) Stop(context.Context, string) error                       { return nil }
 func (alwaysServing) Healthy(context.Context, string) (bool, bool)             { return true, true }
 func (alwaysServing) Probe(context.Context, string) (bool, bool)               { return true, true }
-func (alwaysServing) List(context.Context, string) ([]Unit, error)             { return nil, nil }
+func (alwaysServing) List(context.Context, string) ([]provider.Unit, error)    { return nil, nil }
 func (alwaysServing) Remove(context.Context, string) error                     { return nil }
 func (alwaysServing) Exec(context.Context, string, []string) (string, error)   { return "", nil }
 func (alwaysServing) Logs(context.Context, string, int, bool, io.Writer) error { return nil }
 func (alwaysServing) Copy(context.Context, string, string, string) error       { return nil }
-func (alwaysServing) Endpoints(string, string, int, int, []int) []Endpoint {
+func (alwaysServing) Endpoints(string, string, int, int, []int) []provider.Endpoint {
 	return nil
 }
 func (alwaysServing) AllocSlot(context.Context, string) (int, error) { return 0, nil }
@@ -147,7 +150,7 @@ func BenchmarkRoundTripProxied(b *testing.B) {
 	go func() {
 		_ = u.serve(ctx, alwaysServing{}, leg{
 			Listen:   port,
-			Upstream: Endpoint{Host: "127.0.0.1", Port: upAddr.Port},
+			Upstream: provider.Endpoint{Host: "127.0.0.1", Port: upAddr.Port},
 		}, 5*time.Second)
 	}()
 

@@ -1,8 +1,9 @@
-package main
+package spec
 
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -35,7 +36,7 @@ func TestAssignIsStableAcrossOptionalServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := spec.assign()
+	got, err := spec.Assign()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,71 +48,11 @@ func TestAssignIsStableAcrossOptionalServices(t *testing.T) {
 	}
 
 	for _, a := range got {
-		key := a.Service + ":" + itoa(a.Container)
+		key := a.Service + ":" + strconv.Itoa(a.Container)
 
 		if want[key] != a.Index {
 			t.Errorf("%s ordinal = %d, want %d", key, a.Index, want[key])
 		}
-	}
-}
-
-// Two sandboxes on different slots must never be handed the same local address. This is
-// the property that hashing names into slots failed: `auth-flow` and `naveen-reveiw`
-// collided on the first six branch names tried, and the two then fought over ports.
-func TestDockerSlotsDoNotCollide(t *testing.T) {
-	d := newDockerProvider(dockerEndpoint{Network: "unix", Address: "/x"})
-
-	zero := d.Endpoints("a", "mysql", 0, 0, []int{3306})
-	one := d.Endpoints("b", "mysql", 1, 0, []int{3306})
-
-	if zero[0] == one[0] {
-		t.Fatalf("slots 0 and 1 both got %s", zero[0])
-	}
-
-	if one[0].Port-zero[0].Port != blockSize {
-		t.Errorf("slots are %d apart, want %d", one[0].Port-zero[0].Port, blockSize)
-	}
-}
-
-// The point of the provider seam: the same spec addresses differently, and the cluster
-// needs no port arithmetic at all because a pod has its own address.
-func TestKubeAddressesByNameOnTheRealPort(t *testing.T) {
-	k := newKubeProvider("sbx")
-
-	eps := k.Endpoints("feature-x", "mysql", 7, 3, []int{3306})
-
-	if eps[0].Port != 3306 {
-		t.Errorf("port = %d, want the container port 3306 — no remapping in a cluster", eps[0].Port)
-	}
-
-	if want := "sbx-feature-x-mysql.sbx.svc.cluster.local"; eps[0].Host != want {
-		t.Errorf("host = %q, want %q", eps[0].Host, want)
-	}
-}
-
-// Isolation is a declared choice that has to reach the runtime, or it is decoration.
-func TestIsolationMapsToARuntime(t *testing.T) {
-	cases := []struct {
-		iso          Isolation
-		docker, kube string
-	}{
-		{IsolationContainer, "", ""},
-		{IsolationGVisor, "runsc", "gvisor"},
-		{IsolationKata, "kata-runtime", "kata"},
-	}
-
-	for _, c := range cases {
-		if got := dockerRuntime(c.iso); got != c.docker {
-			t.Errorf("docker runtime for %s = %q, want %q", c.iso, got, c.docker)
-		}
-
-		if got := kubeRuntimeClass(c.iso); got != c.kube {
-			t.Errorf("kube runtimeClass for %s = %q, want %q", c.iso, got, c.kube)
-		}
-	}
-
-	if Isolation("none").valid() {
-		t.Error("an unknown isolation tier must not validate — silently weaker isolation than asked for is the failure that matters")
 	}
 }
 
@@ -151,7 +92,7 @@ func TestAssignRefusesToOverflowTheBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := spec.assign(); err == nil {
+	if _, err := spec.Assign(); err == nil {
 		t.Fatal("assign accepted more ports than the block holds")
 	}
 }

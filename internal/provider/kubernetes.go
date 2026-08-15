@@ -1,4 +1,4 @@
-package main
+package provider
 
 // The Kubernetes provider: the same sandboxes, somewhere they can outlive a laptop.
 //
@@ -26,13 +26,15 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 type kubeProvider struct {
 	namespace string
 }
 
-func newKubeProvider(namespace string) *kubeProvider {
+func newKube(namespace string) *kubeProvider {
 	if namespace == "" {
 		namespace = "sbx"
 	}
@@ -100,7 +102,7 @@ func activatorPort(slot, ordinal, i int) int {
 }
 
 func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal int, service string,
-	svc Service, _ []Endpoint, _ string, iso Isolation,
+	svc spec.Service, _ []Endpoint, _ string, iso Isolation,
 ) error {
 	name := kubeName(sandbox, service)
 
@@ -187,7 +189,7 @@ func (k *kubeProvider) pvc(name string, labels map[string]string) map[string]any
 	}
 }
 
-func (k *kubeProvider) deployment(name string, labels map[string]string, svc Service, iso Isolation) map[string]any {
+func (k *kubeProvider) deployment(name string, labels map[string]string, svc spec.Service, iso Isolation) map[string]any {
 	container := map[string]any{
 		"name":  "app",
 		"image": svc.Image,
@@ -206,7 +208,7 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc Ser
 
 	var env []any
 
-	for _, key := range sortedKeys(svc.Env) {
+	for _, key := range SortedKeys(svc.Env) {
 		env = append(env, map[string]any{"name": key, "value": svc.Env[key]})
 	}
 
@@ -264,7 +266,7 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc Ser
 }
 
 // clientService keeps the natural address — mysql on :3306 — and sends it to the activator.
-func (k *kubeProvider) clientService(name string, labels map[string]string, svc Service, slot, ordinal int) map[string]any {
+func (k *kubeProvider) clientService(name string, labels map[string]string, svc spec.Service, slot, ordinal int) map[string]any {
 	var ports []any
 
 	for i, p := range svc.Ports {
@@ -287,7 +289,7 @@ func (k *kubeProvider) clientService(name string, labels map[string]string, svc 
 }
 
 // workloadService is what the activator forwards to once the pods are up. Internal only.
-func (k *kubeProvider) workloadService(name string, labels map[string]string, svc Service) map[string]any {
+func (k *kubeProvider) workloadService(name string, labels map[string]string, svc spec.Service) map[string]any {
 	var ports []any
 
 	for _, p := range svc.Ports {

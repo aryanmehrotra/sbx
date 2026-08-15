@@ -21,6 +21,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -30,6 +31,12 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/cli"
+	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/logs"
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/tunnel"
 )
 
 const defaultSpec = "sandbox.json"
@@ -54,31 +61,23 @@ var version = "dev"
 // Every command that touches a backend takes these, so a sandbox can be created on this
 // laptop and the identical spec realised in a cluster without editing anything.
 func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string) {
-	kind = fs.String("provider", envOr("SBX_PROVIDER_KIND", "docker"), "docker | kubernetes")
+	kind = fs.String("provider", cmp.Or(os.Getenv("SBX_PROVIDER_KIND"), "docker"), "docker | kubernetes")
 	socket = fs.String("socket", "", "docker endpoint; defaults to DOCKER_HOST, then the active docker context")
-	namespace = fs.String("namespace", envOr("SBX_NAMESPACE", "sbx"), "kubernetes namespace")
-	isolation = fs.String("isolation", envOr("SBX_ISOLATION", string(IsolationContainer)),
+	namespace = fs.String("namespace", cmp.Or(os.Getenv("SBX_NAMESPACE"), "sbx"), "kubernetes namespace")
+	isolation = fs.String("isolation", cmp.Or(os.Getenv("SBX_ISOLATION"), string(provider.IsolationContainer)),
 		"container | gvisor | kata")
 
 	return kind, socket, namespace, isolation
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-
-	return fallback
-}
-
 // resolve turns the backend flags into a provider and a validated isolation tier.
-func resolve(kind, socket, namespace, isolation string) (Provider, Isolation, error) {
-	iso := Isolation(isolation)
-	if !iso.valid() {
+func resolve(kind, socket, namespace, isolation string) (provider.Provider, provider.Isolation, error) {
+	iso := provider.Isolation(isolation)
+	if !iso.Valid() {
 		return nil, "", fmt.Errorf("unknown isolation %q (want container, gvisor or kata)", isolation)
 	}
 
-	p, err := providerFor(kind, socket, namespace)
+	p, err := provider.For(kind, socket, namespace)
 
 	return p, iso, err
 }
@@ -88,6 +87,8 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+
+	logs.Version = version
 
 	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "sbx: %v\n", err)
@@ -115,7 +116,12 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdCreate(context.Background(), p, *spec, *tmpl, positional[0], *optional, iso)
+		path, err := specPath(*tmpl, *spec)
+		if err != nil {
+			return err
+		}
+
+		return cli.Create(context.Background(), p, path, positional[0], *optional, iso)
 
 	case "env":
 		fs := flag.NewFlagSet("env", flag.ExitOnError)
@@ -135,7 +141,12 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdEnv(context.Background(), p, *spec, *tmpl, positional[0], *shell)
+		path, err := specPath(*tmpl, *spec)
+		if err != nil {
+			return err
+		}
+
+		return cli.Env(context.Background(), p, path, positional[0], *shell)
 
 	case "ready":
 		fs := flag.NewFlagSet("ready", flag.ExitOnError)
@@ -153,7 +164,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdReady(context.Background(), p, positional[0], *timeout)
+		return cli.Ready(context.Background(), p, positional[0], *timeout)
 
 	case "add":
 		return runAdd(args)
@@ -173,7 +184,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdExec(context.Background(), p, positional[0], positional[1], fs.Args())
+		return cli.Exec(context.Background(), p, positional[0], positional[1], fs.Args())
 
 	case "logs":
 		fs := flag.NewFlagSet("logs", flag.ExitOnError)
@@ -200,7 +211,7 @@ func dispatch(cmd string, args []string) error {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
-		return cmdLogs(ctx, p, positional[0], svc, *lines, *follow)
+		return cli.Logs(ctx, p, positional[0], svc, *lines, *follow)
 
 	case "cp":
 		fs := flag.NewFlagSet("cp", flag.ExitOnError)
@@ -217,7 +228,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdCopy(context.Background(), p, positional[0], positional[1], positional[2], positional[3])
+		return cli.Copy(context.Background(), p, positional[0], positional[1], positional[2], positional[3])
 
 	case "url":
 		fs := flag.NewFlagSet("url", flag.ExitOnError)
@@ -238,7 +249,14 @@ func dispatch(cmd string, args []string) error {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
-		return cmdURL(ctx, p, positional[0], positional[1], *via)
+		// main resolves the sandbox to a port; the tunnel package never learns what a
+		// sandbox is, which is why it stays readable on its own.
+		port, err := cli.WakePort(ctx, p, positional[0], positional[1])
+		if err != nil {
+			return err
+		}
+
+		return tunnel.Open(ctx, positional[0]+"/"+positional[1], port, *via)
 
 	case "templates":
 		for _, t := range TemplateNames() {
@@ -257,7 +275,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdList(context.Background(), p)
+		return cli.List(context.Background(), p)
 
 	case "rm":
 		fs := flag.NewFlagSet("rm", flag.ExitOnError)
@@ -274,7 +292,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cmdRemove(context.Background(), p, positional[0])
+		return cli.Remove(context.Background(), p, positional[0])
 
 	case "selftest":
 		fs := flag.NewFlagSet("selftest", flag.ExitOnError)
@@ -287,10 +305,10 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return runSelftest(context.Background(), p, iso, *keep)
+		return cli.Selftest(context.Background(), p, iso, *keep)
 
 	case "serve":
-		return runServe(args)
+		return daemon.Serve(args)
 
 	case "version", "--version", "-v":
 		fmt.Println(version)
@@ -374,7 +392,7 @@ func runAdd(args []string) error {
 		return err
 	}
 
-	return cmdAdd(context.Background(), p, *spec, sandbox, service, *image, cps, *health, env, *volume, extra, iso)
+	return cli.Add(context.Background(), p, *spec, sandbox, service, *image, cps, *health, env, *volume, extra, iso)
 }
 
 // splitPositional peels up to n leading non-flag arguments off the front.

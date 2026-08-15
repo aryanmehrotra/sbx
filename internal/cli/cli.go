@@ -1,4 +1,4 @@
-package main
+package cli
 
 // The commands. Everything here is provider-agnostic: it decides *what* a sandbox is and
 // *when* it is serving, and asks a Provider where that lives.
@@ -11,25 +11,26 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/logs"
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // ── create ───────────────────────────────────────────────────────────────────
 
-func cmdCreate(ctx context.Context, p Provider, path, template, sandbox string, withOptional bool, iso Isolation) error {
-	path, err := specPath(template, path)
+func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation) error {
+	sp, err := spec.LoadSpec(path)
 	if err != nil {
 		return err
 	}
 
-	spec, err := LoadSpec(path)
-	if err != nil {
-		return err
-	}
-
-	layout, err := spec.assign()
+	layout, err := sp.Assign()
 	if err != nil {
 		return err
 	}
@@ -43,15 +44,15 @@ func cmdCreate(ctx context.Context, p Provider, path, template, sandbox string, 
 
 	specDir := filepath.Dir(path)
 
-	for _, name := range spec.names() {
-		svc := spec.Services[name]
+	for _, name := range sp.Names() {
+		svc := sp.Services[name]
 
 		if svc.Optional && !withOptional {
 			fmt.Printf("  %-12s skipped (optional)\n", name)
 			continue
 		}
 
-		start, _ := spec.startIndex(layout, name)
+		start, _ := sp.StartIndex(layout, name)
 
 		if err := createOne(ctx, p, sandbox, slot, start, name, svc, specDir, iso); err != nil {
 			return err
@@ -63,8 +64,8 @@ func cmdCreate(ctx context.Context, p Provider, path, template, sandbox string, 
 	return nil
 }
 
-func createOne(ctx context.Context, p Provider, sandbox string, slot, start int,
-	name string, svc Service, specDir string, iso Isolation,
+func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, start int,
+	name string, svc spec.Service, specDir string, iso provider.Isolation,
 ) error {
 	eps := p.Endpoints(sandbox, name, slot, start, svc.Ports)
 
@@ -108,7 +109,7 @@ func createOne(ctx context.Context, p Provider, sandbox string, slot, start int,
 // directory, and the resulting error talks about config parsing or a missing file rather
 // than about a mount. This turns the most expensive silent failure in the project into one
 // line naming the path.
-func checkMounts(ctx context.Context, p Provider, ref, name string, svc Service) error {
+func checkMounts(ctx context.Context, p provider.Provider, ref, name string, svc spec.Service) error {
 	for host, dest := range svc.Files {
 		if _, err := p.Exec(ctx, ref, []string{"test", "-f", dest}); err != nil {
 			return fmt.Errorf(
@@ -123,7 +124,7 @@ func checkMounts(ctx context.Context, p Provider, ref, name string, svc Service)
 	return nil
 }
 
-func refFor(ctx context.Context, p Provider, sandbox, service string) (string, error) {
+func refFor(ctx context.Context, p provider.Provider, sandbox, service string) (string, error) {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return "", err
@@ -144,7 +145,7 @@ func refFor(ctx context.Context, p Provider, sandbox, service string) (string, e
 // would report a clean run against a database that never came up.
 // It asks Probe, not Healthy, for the same reason the wake path does: the platform
 // republishes health on its own interval and that lag was 98% of the time spent here.
-func waitHealthy(ctx context.Context, p Provider, ref string, timeout time.Duration) error {
+func waitHealthy(ctx context.Context, p provider.Provider, ref string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -161,24 +162,13 @@ func waitHealthy(ctx context.Context, p Provider, ref string, timeout time.Durat
 	return fmt.Errorf("%s never became ready within %s", ref, timeout)
 }
 
-func joinEndpoints(eps []Endpoint) string {
+func joinEndpoints(eps []provider.Endpoint) string {
 	parts := make([]string, 0, len(eps))
 	for _, e := range eps {
 		parts = append(parts, e.String())
 	}
 
 	return strings.Join(parts, " ")
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-
-	sort.Strings(out)
-
-	return out
 }
 
 // ── add ──────────────────────────────────────────────────────────────────────
@@ -189,8 +179,8 @@ func sortedKeys(m map[string]string) []string {
 // mid-task wants a Postgres to try a migration against, and should be able to have one
 // inside its own sandbox — addressed, sleeping when idle, destroyed with the sandbox —
 // rather than reaching for a stray container that outlives the task and belongs to nobody.
-func cmdAdd(ctx context.Context, p Provider, specPath, sandbox, name, image string,
-	containerPorts []int, health string, env map[string]string, volume string, args []string, iso Isolation,
+func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, image string,
+	containerPorts []int, health string, env map[string]string, volume string, args []string, iso provider.Isolation,
 ) error {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
@@ -212,7 +202,7 @@ func cmdAdd(ctx context.Context, p Provider, specPath, sandbox, name, image stri
 		return fmt.Errorf("sandbox %q: %w", sandbox, err)
 	}
 
-	svc := Service{Image: image, Ports: containerPorts, Health: health, Env: env, Volume: volume, Args: args}
+	svc := spec.Service{Image: image, Ports: containerPorts, Health: health, Env: env, Volume: volume, Args: args}
 
 	return createOne(ctx, p, sandbox, units[0].Slot, start, name, svc, filepath.Dir(specPath), iso)
 }
@@ -222,11 +212,11 @@ func cmdAdd(ctx context.Context, p Provider, specPath, sandbox, name, image stri
 // Reserved matters as much as taken: the spec assigns an ordinal to every declared service
 // including optional ones nobody created, so an ad-hoc service that ignored those would sit
 // where ClickHouse is going to want to be the first time somebody passes --optional.
-func freeIndex(specPath string, units []Unit, n int) (int, error) {
+func freeIndex(specPath string, units []provider.Unit, n int) (int, error) {
 	used := map[int]bool{}
 
-	if spec, err := LoadSpec(specPath); err == nil {
-		layout, err := spec.assign()
+	if sp, err := spec.LoadSpec(specPath); err == nil {
+		layout, err := sp.Assign()
 		if err != nil {
 			return 0, err
 		}
@@ -242,7 +232,7 @@ func freeIndex(specPath string, units []Unit, n int) (int, error) {
 		}
 	}
 
-	for i := range blockSize {
+	for i := range spec.MaxOrdinals {
 		ok := true
 
 		for j := range n {
@@ -252,7 +242,7 @@ func freeIndex(specPath string, units []Unit, n int) (int, error) {
 			}
 		}
 
-		if ok && i+n <= blockSize {
+		if ok && i+n <= spec.MaxOrdinals {
 			return i, nil
 		}
 	}
@@ -311,13 +301,8 @@ func detectShell() string {
 	return "posix"
 }
 
-func cmdEnv(ctx context.Context, p Provider, path, template, sandbox, shell string) error {
-	path, err := specPath(template, path)
-	if err != nil {
-		return err
-	}
-
-	spec, err := LoadSpec(path)
+func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) error {
+	sp, err := spec.LoadSpec(path)
 	if err != nil {
 		return err
 	}
@@ -331,17 +316,17 @@ func cmdEnv(ctx context.Context, p Provider, path, template, sandbox, shell stri
 		return fmt.Errorf("no sandbox %q — create it first", sandbox)
 	}
 
-	layout, err := spec.assign()
+	layout, err := sp.Assign()
 	if err != nil {
 		return err
 	}
 
 	slot := units[0].Slot
-	index := map[string]Endpoint{}
+	index := map[string]provider.Endpoint{}
 
-	for _, name := range spec.names() {
-		svc := spec.Services[name]
-		start, _ := spec.startIndex(layout, name)
+	for _, name := range sp.Names() {
+		svc := sp.Services[name]
+		start, _ := sp.StartIndex(layout, name)
 
 		for i, e := range p.Endpoints(sandbox, name, slot, start, svc.Ports) {
 			index[fmt.Sprintf("%s:%d", name, svc.Ports[i])] = e
@@ -353,17 +338,17 @@ func cmdEnv(ctx context.Context, p Provider, path, template, sandbox, shell stri
 		{"SBX_PROVIDER", p.Name()},
 	}
 
-	for _, env := range sortedKeys(spec.Exports) {
-		ep, ok := index[spec.Exports[env]]
+	for _, env := range provider.SortedKeys(sp.Exports) {
+		ep, ok := index[sp.Exports[env]]
 		if !ok {
-			return fmt.Errorf("export %s: %s is not assigned an endpoint", env, spec.Exports[env])
+			return fmt.Errorf("export %s: %s is not assigned an endpoint", env, sp.Exports[env])
 		}
 
 		base := strings.TrimSuffix(env, "_PORT")
 
 		vars = append(vars,
 			[2]string{base + "_HOST", ep.Host},
-			[2]string{env, itoa(ep.Port)},
+			[2]string{env, strconv.Itoa(ep.Port)},
 		)
 	}
 
@@ -408,7 +393,7 @@ func cmdEnv(ctx context.Context, p Provider, path, template, sandbox, shell stri
 //
 // This is the whole reason a harness needs no "up" command. Waiting is enough, because
 // asking is what starts things.
-func cmdReady(ctx context.Context, p Provider, sandbox string, timeout time.Duration) error {
+func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout time.Duration) error {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
@@ -426,7 +411,7 @@ func cmdReady(ctx context.Context, p Provider, sandbox string, timeout time.Dura
 		// serve", neither is a lifecycle command anyone else may issue.
 		if isLocal(u) {
 			for _, e := range u.Client {
-				knock(e.Port)
+				daemon.Knock(e.Port)
 			}
 		} else if !u.Running {
 			if err := p.Start(ctx, u.Ref); err != nil {
@@ -462,7 +447,7 @@ func cmdReady(ctx context.Context, p Provider, sandbox string, timeout time.Dura
 	return nil
 }
 
-func isLocal(u Unit) bool {
+func isLocal(u provider.Unit) bool {
 	return len(u.Client) > 0 && u.Client[0].Host == "127.0.0.1"
 }
 
@@ -474,7 +459,7 @@ func isLocal(u Unit) bool {
 //
 // Each of them wakes what it touches, because doing anything to a sandbox is using it.
 
-func serviceRef(ctx context.Context, p Provider, sandbox, service string) (string, error) {
+func serviceRef(ctx context.Context, p provider.Provider, sandbox, service string) (string, error) {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return "", err
@@ -511,7 +496,7 @@ func serviceRef(ctx context.Context, p Provider, sandbox, service string) (strin
 		sandbox, service, strings.Join(names, ", "))
 }
 
-func cmdExec(ctx context.Context, p Provider, sandbox, service string, argv []string) error {
+func Exec(ctx context.Context, p provider.Provider, sandbox, service string, argv []string) error {
 	ref, err := serviceRef(ctx, p, sandbox, service)
 	if err != nil {
 		return err
@@ -530,7 +515,7 @@ func cmdExec(ctx context.Context, p Provider, sandbox, service string, argv []st
 // With no service named it interleaves every service on stdout, each line prefixed with
 // where it came from — a sandbox is a set of processes, and watching it should feel like
 // watching one server rather than opening N terminals.
-func cmdLogs(ctx context.Context, p Provider, sandbox, service string, lines int, follow bool) error {
+func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lines int, follow bool) error {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
@@ -546,10 +531,10 @@ func cmdLogs(ctx context.Context, p Provider, sandbox, service string, lines int
 			return err
 		}
 
-		logger.align(len(sandbox) + 1 + len(service))
+		logs.Default.Align(len(sandbox) + 1 + len(service))
 
-		return p.Logs(ctx, ref, lines, follow, &lineWriter{
-			log: logger, sandbox: sandbox, service: service, level: LevelInfo,
+		return p.Logs(ctx, ref, lines, follow, &logs.LineWriter{
+			Log: logs.Default, Sandbox: sandbox, Service: service, Level: logs.LevelInfo,
 		})
 	}
 
@@ -560,7 +545,7 @@ func cmdLogs(ctx context.Context, p Provider, sandbox, service string, lines int
 		}
 	}
 
-	logger.align(width)
+	logs.Default.Align(width)
 
 	var (
 		wg   sync.WaitGroup
@@ -571,17 +556,17 @@ func cmdLogs(ctx context.Context, p Provider, sandbox, service string, lines int
 	for _, u := range units {
 		wg.Add(1)
 
-		go func(u Unit) {
+		go func(u provider.Unit) {
 			defer wg.Done()
 
 			// Sleeping services are read, not woken. Asking for logs is not using the
 			// sandbox, and waking three databases because somebody typed `logs` would be
 			// the opposite of the point.
-			if err := p.Logs(ctx, u.Ref, lines, follow, &lineWriter{
-				log:     logger,
-				sandbox: sandbox,
-				service: u.Service,
-				level:   LevelInfo,
+			if err := p.Logs(ctx, u.Ref, lines, follow, &logs.LineWriter{
+				Log:     logs.Default,
+				Sandbox: sandbox,
+				Service: u.Service,
+				Level:   logs.LevelInfo,
 			}); err != nil {
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", u.Service, err))
@@ -595,7 +580,7 @@ func cmdLogs(ctx context.Context, p Provider, sandbox, service string, lines int
 	return errors.Join(errs...)
 }
 
-func cmdCopy(ctx context.Context, p Provider, sandbox, service, src, dst string) error {
+func Copy(ctx context.Context, p provider.Provider, sandbox, service, src, dst string) error {
 	if strings.HasPrefix(src, ":") == strings.HasPrefix(dst, ":") {
 		return fmt.Errorf("exactly one of src and dst must be inside the sandbox, written as \":path\"")
 	}
@@ -608,9 +593,40 @@ func cmdCopy(ctx context.Context, p Provider, sandbox, service, src, dst string)
 	return p.Copy(ctx, ref, src, dst)
 }
 
+// WakePort is the port a tunnel should point at for one service.
+//
+// Deliberately the wake port and not the workload's: a link that only works while the
+// sandbox happens to be awake is a link that mostly does not work.
+func WakePort(ctx context.Context, p provider.Provider, sandbox, service string) (int, error) {
+	units, err := p.List(ctx, sandbox)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, u := range units {
+		if u.Service != service {
+			continue
+		}
+
+		if len(u.Client) == 0 {
+			return 0, fmt.Errorf("service %q exposes no ports", service)
+		}
+
+		if !isLocal(u) {
+			return 0, fmt.Errorf(
+				"in a cluster the link is an Ingress in front of %s, not a tunnel from here — "+
+					"see deploy/activator.yaml", u.Client[0].Host)
+		}
+
+		return u.Client[0].Port, nil
+	}
+
+	return 0, fmt.Errorf("no service %q in sandbox %q", service, sandbox)
+}
+
 // ── list ─────────────────────────────────────────────────────────────────────
 
-func cmdList(ctx context.Context, p Provider) error {
+func List(ctx context.Context, p provider.Provider) error {
 	units, err := p.List(ctx, "")
 	if err != nil {
 		return err
@@ -645,7 +661,7 @@ func cmdList(ctx context.Context, p Provider) error {
 
 // ── rm ───────────────────────────────────────────────────────────────────────
 
-func cmdRemove(ctx context.Context, p Provider, sandbox string) error {
+func Remove(ctx context.Context, p provider.Provider, sandbox string) error {
 	if err := p.Remove(ctx, sandbox); err != nil {
 		return err
 	}

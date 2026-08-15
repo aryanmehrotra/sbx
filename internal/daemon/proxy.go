@@ -1,4 +1,4 @@
-package main
+package daemon
 
 import (
 	"context"
@@ -6,6 +6,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/logs"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // unit is one wakeable service and the ports that front it.
@@ -45,8 +48,8 @@ type unit struct {
 
 // leg is one port this daemon listens on and where it forwards.
 type leg struct {
-	Listen   int      // bound locally by the daemon
-	Upstream Endpoint // dialled once the workload is serving
+	Listen   int               // bound locally by the daemon
+	Upstream provider.Endpoint // dialled once the workload is serving
 }
 
 func newUnit(sandbox, service, ref, name string, legs []leg, running bool) *unit {
@@ -70,7 +73,7 @@ func (u *unit) touch() { u.lastByte.Store(time.Now().UnixNano()) }
 //
 // The first time it is seen serving, the clock is restarted from that moment: a unit that
 // took two minutes to come up has not been idle for two minutes, it has been starting.
-func (u *unit) sleepable(ctx context.Context, p Provider) bool {
+func (u *unit) sleepable(ctx context.Context, p provider.Provider) bool {
 	u.mu.Lock()
 	served := u.served
 	u.mu.Unlock()
@@ -96,7 +99,7 @@ func (u *unit) idleFor() time.Duration {
 }
 
 // serve accepts on one port for the lifetime of ctx.
-func (u *unit) serve(ctx context.Context, p Provider, l leg, readyTimeout time.Duration) error {
+func (u *unit) serve(ctx context.Context, p provider.Provider, l leg, readyTimeout time.Duration) error {
 	ln, err := net.Listen("tcp", listenAddr(l.Listen))
 	if err != nil {
 		return err
@@ -107,7 +110,7 @@ func (u *unit) serve(ctx context.Context, p Provider, l leg, readyTimeout time.D
 		_ = ln.Close()
 	}()
 
-	logger.Info(u.sandbox, u.service, "listening on :%d, forwards to %s", l.Listen, l.Upstream)
+	logs.Default.Info(u.sandbox, u.service, "listening on :%d, forwards to %s", l.Listen, l.Upstream)
 
 	for {
 		c, err := ln.Accept()
@@ -124,7 +127,7 @@ func (u *unit) serve(ctx context.Context, p Provider, l leg, readyTimeout time.D
 	}
 }
 
-func (u *unit) handle(ctx context.Context, p Provider, client net.Conn, l leg, readyTimeout time.Duration) {
+func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn, l leg, readyTimeout time.Duration) {
 	defer client.Close()
 
 	u.touch()
@@ -132,13 +135,13 @@ func (u *unit) handle(ctx context.Context, p Provider, client net.Conn, l leg, r
 	if err := u.wake(ctx, p, readyTimeout); err != nil {
 		// Hanging up is the honest failure. A caller that gets a closed connection retries
 		// or reports; one that gets a silently empty stream does neither.
-		logger.Error(u.sandbox, u.service, "could not wake: %v", err)
+		logs.Default.Error(u.sandbox, u.service, "could not wake: %v", err)
 		return
 	}
 
 	upstream, err := net.DialTimeout("tcp", l.Upstream.String(), 10*time.Second)
 	if err != nil {
-		logger.Error(u.sandbox, u.service, "awake but not reachable at %s: %v", l.Upstream, err)
+		logs.Default.Error(u.sandbox, u.service, "awake but not reachable at %s: %v", l.Upstream, err)
 		return
 	}
 	defer upstream.Close()
@@ -182,7 +185,7 @@ func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
 
 // wake starts the workload if needed and blocks until it reports serving. The caller's
 // first query pays this; nothing else ever does.
-func (u *unit) wake(ctx context.Context, p Provider, readyTimeout time.Duration) error {
+func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
 	u.waking.Lock()
 	defer u.waking.Unlock()
 
@@ -208,7 +211,7 @@ func (u *unit) wake(ctx context.Context, p Provider, readyTimeout time.Duration)
 		if !declared {
 			time.Sleep(2 * time.Second)
 			u.setAwake(true)
-			logger.Warn(u.sandbox, u.service,
+			logs.Default.Warn(u.sandbox, u.service,
 				"woke in %dms, unverified — no health check declared",
 				time.Since(start).Milliseconds())
 
@@ -222,7 +225,7 @@ func (u *unit) wake(ctx context.Context, p Provider, readyTimeout time.Duration)
 			u.served = true
 			u.mu.Unlock()
 
-			logger.Info(u.sandbox, u.service, "woke in %dms", time.Since(start).Milliseconds())
+			logs.Default.Info(u.sandbox, u.service, "woke in %dms", time.Since(start).Milliseconds())
 
 			return nil
 		}
@@ -236,7 +239,7 @@ func (u *unit) wake(ctx context.Context, p Provider, readyTimeout time.Duration)
 // sleep stops the workload and closes anything still attached to it. Closing the live
 // connections is not rudeness: the client reconnects, the reconnect wakes the unit, and the
 // alternative is a pool holding a sandbox up for a branch nobody is working on.
-func (u *unit) sleep(ctx context.Context, p Provider) {
+func (u *unit) sleep(ctx context.Context, p provider.Provider) {
 	u.mu.Lock()
 	for c := range u.live {
 		_ = c.Close()
@@ -246,12 +249,12 @@ func (u *unit) sleep(ctx context.Context, p Provider) {
 	u.mu.Unlock()
 
 	if err := p.Stop(ctx, u.ref); err != nil {
-		logger.Error(u.sandbox, u.service, "could not sleep: %v", err)
+		logs.Default.Error(u.sandbox, u.service, "could not sleep: %v", err)
 		return
 	}
 
 	u.setAwake(false)
-	logger.Info(u.sandbox, u.service, "slept — idle for %s", u.idleFor().Round(time.Second))
+	logs.Default.Info(u.sandbox, u.service, "slept — idle for %s", u.idleFor().Round(time.Second))
 }
 
 func (u *unit) track(c net.Conn) {
@@ -283,7 +286,7 @@ func (u *unit) setAwake(v bool) {
 // listenAddr binds loopback on a laptop and every interface in a pod, because there the
 // connection arrives from a Service on the pod network rather than from this machine.
 func listenAddr(port int) string {
-	if inCluster() {
+	if InCluster() {
 		return "0.0.0.0:" + itoa(port)
 	}
 

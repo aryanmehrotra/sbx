@@ -1,4 +1,4 @@
-package main
+package provider
 
 // A hand-rolled Docker Engine API client over the unix socket.
 //
