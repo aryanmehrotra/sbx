@@ -195,6 +195,7 @@ the host can enforce before you rely on it.
 | `sbx fork` | **a new sandbox from that snapshot** — as many as you want |
 | `sbx list` | what exists, what's awake |
 | `sbx gc` | reclaim volumes and images whose sandbox is gone — lists by default |
+| `sbx prewarm` | pull the images now, so the first create isn't a download — the CI cache step |
 | `sbx doctor` | what this machine can and cannot do, before you rely on it |
 | `sbx selftest` | the whole cycle, on your machine |
 

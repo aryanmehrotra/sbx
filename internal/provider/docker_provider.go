@@ -409,6 +409,15 @@ func (d *dockerProvider) HasImage(_ context.Context, tag string) (bool, error) {
 	return true, nil
 }
 
+func (d *dockerProvider) Pull(_ context.Context, image string) error {
+	out, err := d.docker("pull", "-q", image)
+	if err != nil {
+		return fmt.Errorf("pulling %s: %w: %s", image, err, lastLines(out, 6))
+	}
+
+	return nil
+}
+
 // lastLines keeps a build failure readable. Docker's output is long and the reason is at
 // the end; printing all of it buries the line someone needs.
 func lastLines(s string, n int) string {

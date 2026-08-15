@@ -2,7 +2,7 @@
   "version": 1,
   "services": {
     "postgres": {
-      "image": "postgres:16-alpine",
+      "image": "postgres:16-alpine@sha256:44c4ee9810eff91f7eab4d822642e01115b1a9eccce4bcbdde7604752d68eac6",
       "ports": [
         5432
       ],

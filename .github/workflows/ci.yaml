@@ -111,6 +111,11 @@ jobs:
         # in a job that does produce logs.
         run: bash scripts/lint-workflows.sh
 
+      - name: templates are pinned by digest
+        # A floating tag means the first thing anybody runs can break without a commit
+        # touching this repo. Refresh with scripts/pin-templates.sh.
+        run: bash scripts/pin-templates.sh --check
+
       - name: measurement maths
         run: bash scripts/lib/measure_test.sh
 

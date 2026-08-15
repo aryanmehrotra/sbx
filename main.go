@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,6 +37,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/daemon"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 	"github.com/aryanmehrotra/sbx/internal/tunnel"
 )
 
@@ -336,7 +338,46 @@ func dispatch(cmd string, args []string) error {
 			fmt.Println(t)
 		}
 
+		// The age of the pins, not just the names. Every template image is pinned to a
+		// digest so the sandbox you create is the one CI tested — which also means these
+		// images stop getting updates until somebody refreshes them.
+		if d := TemplatesRefreshed(); d != "" {
+			fmt.Printf("\nimages pinned by digest, last refreshed %s\n", d)
+		}
+
 		return nil
+
+	case "prewarm":
+		fs := flag.NewFlagSet("prewarm", flag.ExitOnError)
+		kind, socket, ns, isolation := backendFlags(fs)
+		specPath := fs.String("spec", "", "pull the images this spec needs instead of every template's")
+		_ = fs.Parse(args)
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		images := TemplateImages()
+
+		if *specPath != "" {
+			s, err := spec.LoadSpec(*specPath)
+			if err != nil {
+				return err
+			}
+
+			images = images[:0]
+
+			for _, svc := range s.Services {
+				if svc.Image != "" {
+					images = append(images, svc.Image)
+				}
+			}
+
+			sort.Strings(images)
+		}
+
+		return cli.Prewarm(context.Background(), p, os.Stdout, images)
 
 	case "list":
 		fs := flag.NewFlagSet("list", flag.ExitOnError)
@@ -490,6 +531,7 @@ func usage() {
   sbx fork   <snapshot> <new-sandbox> [--spec]  a new sandbox from that state
   sbx gc     [--older-than 168h] [--snapshots] [--force]   lists; deletes only with --force
   sbx doctor [--json]                           what this machine can and cannot do
+  sbx prewarm [--spec sandbox.json]             pull images now so a create is not a download
   sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
   sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named
   sbx cp     <sandbox> <service> <src> <dst>    (inside path is prefixed with :)

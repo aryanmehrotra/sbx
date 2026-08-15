@@ -289,3 +289,28 @@ func BuilderFor(p Provider) (Builder, error) {
 
 	return b, nil
 }
+
+// Puller fetches an image ahead of time, so the first create is not a download.
+//
+// Optional for the same reason as the rest: on docker this is one command against the local
+// daemon, and in a cluster there is no "local" — the image has to land on whichever node the
+// scheduler later picks, which means a DaemonSet whose only job is to pull. That is a
+// workload sbx would be creating in the operator's cluster without being asked, so it
+// refuses and says so.
+type Puller interface {
+	// Pull fetches image, and is a no-op if it is already present.
+	Pull(ctx context.Context, image string) error
+}
+
+// PullerFor returns the provider's prewarm support, or a refusal naming the backend.
+func PullerFor(p Provider) (Puller, error) {
+	pl, ok := p.(Puller)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot prewarm: there is no local image store "+
+			"to warm — an image has to be on whichever node the scheduler picks, which means "+
+			"a DaemonSet sbx would be creating in your cluster uninvited. Prewarm the nodes "+
+			"with your own tooling, or let the kubelet pull on first create", p.Name())
+	}
+
+	return pl, nil
+}

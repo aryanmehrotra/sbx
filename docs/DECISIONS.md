@@ -323,3 +323,45 @@ would force every existing spec file to be edited even when it uses nothing new.
 So `version` is reserved for a change that would be **silently misread**: a field that
 changes meaning, a default that flips, a structure that is re-shaped. Optional additions are
 not that, and the decoder already refuses them by name.
+
+---
+
+### Template images are pinned by digest, and the pin has a visible date
+
+`zenika/alpine-chrome:latest` meant the first thing a new user ran could break without a
+commit touching this repo, and the failure would read as "sbx is broken" rather than "the
+upstream image moved". Every template image is now `name:tag@sha256:…`.
+
+The tag is kept beside the digest deliberately. Docker resolves by digest and ignores the
+tag, so the tag costs nothing and tells a reader what they are running; a bare digest tells
+them nothing.
+
+**A digest is only accepted if it names a manifest list covering linux/amd64 and
+linux/arm64.** `scripts/pin-templates.sh` refuses otherwise. Pinning an arch-specific
+manifest resolved on a laptop produces templates that pull there and fail in CI, and that
+failure looks like a broken template rather than a bad pin — which is the worst kind, because
+it sends whoever hits it to the wrong file.
+
+Pinning buys reproducibility and pays for it in staleness: these images stop receiving
+updates until somebody refreshes them. That is only an honest trade if the age is visible,
+so `sbx templates` prints the refresh date and `examples/pinned.json` carries it. A pin whose
+age nobody can see is a pin nobody ever refreshes.
+
+There is no `make templates-refresh` because there is no Makefile — this repo puts its
+tooling in `scripts/`, and adding a build system for one target would be the second way to
+do something.
+
+### `prewarm` is a separate command, not something `create` does
+
+The first create on a cold machine is mostly a download. Folding a pull into create would
+make every create's timing depend on whether the machine happened to be warm, which is
+exactly the ambiguity the wake measurements exist to avoid.
+
+`sbx prewarm` is instead a step CI can cache, and it reports what it skipped rather than
+showing a spinner: a warm cache should print `0 pulled, 5 already present`, and a run that
+pulls when it should not is the cache being broken. That line is the only thing worth
+reading in the step's log.
+
+Docker only, via a `Puller` capability. In a cluster there is no local image store to warm —
+the image has to be on whichever node the scheduler later picks, which means a DaemonSet sbx
+would be creating in somebody's cluster uninvited.

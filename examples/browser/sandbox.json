@@ -2,7 +2,7 @@
   "version": 1,
   "services": {
     "chrome": {
-      "image": "zenika/alpine-chrome:latest",
+      "image": "zenika/alpine-chrome:latest@sha256:20cddfa693fe823aa45c93739ed3b4f500dcb81c559d71fd67e2a5a786ac24be",
       "ports": [9222],
       "health": "wget -qO- http://127.0.0.1:9222/json/version >/dev/null",
       "args": [

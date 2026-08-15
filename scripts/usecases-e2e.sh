@@ -432,7 +432,12 @@ JSON
     || ok "image and build together are refused rather than ranked"
 
   for s in "$TAG-b1" "$TAG-b2" "$TAG-b3" "$TAG-b4"; do "$SBX" rm "$s" >/dev/null 2>&1; done
-  docker rmi -f $(docker images -q 'sbx-build-*' 2>/dev/null) >/dev/null 2>&1
+  # Guarded rather than quoted: rmi takes many ids, so the split is wanted, and "$(...)"
+  # would pass one empty argument when there is nothing to remove. `xargs -r` is the other
+  # answer and is GNU-only, which this suite also runs on macOS.
+  built=$(docker images -q 'sbx-build-*' 2>/dev/null)
+  # shellcheck disable=SC2086 # word splitting is the point: one argument per image id
+  [ -n "$built" ] && docker rmi -f $built >/dev/null 2>&1
 fi
 
 # ── templates ─────────────────────────────────────────────────────────────────
@@ -443,6 +448,35 @@ if want "templates"; then
   for t in postgres nginx browser analytics web-stack; do
     echo "$list" | grep -q "$t" && ok "template $t is offered" || bad "template $t is missing"
   done
+
+  # Pinned, so the sandbox somebody creates today is the one CI tested — and dated, so the
+  # staleness that pinning buys is visible rather than silent.
+  echo "$list" | grep -qE 'refreshed [0-9]{4}-[0-9]{2}-[0-9]{2}' \
+    && ok "templates say when their images were pinned" \
+    || bad "no refresh date in sbx templates" "$list"
+
+  bash "$ROOT/scripts/pin-templates.sh" --check >/dev/null 2>&1 \
+    && ok "every template image is pinned by digest" \
+    || bad "a template image is on a floating tag"
+fi
+
+# ── prewarm ───────────────────────────────────────────────────────────────────
+if want "prewarm"; then
+  case_ "prewarm: pull now, so the first create is not a download"
+
+  # Everything is already present after the cases above, which is the case worth asserting:
+  # a warm cache must pull nothing, or the CI step this exists for is not cheap.
+  out=$("$SBX" prewarm 2>&1)
+  echo "$out" | grep -qE '^[0-9]+ pulled, [0-9]+ already present' \
+    && ok "reports what it pulled and what it skipped" || bad "no summary line" "$out"
+
+  # A spec, not just the templates — the shape CI actually uses.
+  out=$("$SBX" prewarm --spec "$ROOT/examples/postgres/sandbox.json" 2>&1)
+  echo "$out" | grep -q 'postgres' && ok "--spec warms that spec's images" || bad "--spec warmed nothing" "$out"
+
+  # Twice in a row must be free the second time, or it is not a cache.
+  out=$("$SBX" prewarm --spec "$ROOT/examples/postgres/sandbox.json" 2>&1)
+  echo "$out" | grep -q '^0 pulled' && ok "a warm cache pulls nothing" || bad "it re-pulled a present image" "$out"
 fi
 
 echo
