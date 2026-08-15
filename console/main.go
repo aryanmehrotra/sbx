@@ -13,9 +13,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 
 	"gofr.dev/pkg/gofr"
 )
@@ -73,6 +75,52 @@ func sandboxes(ctx *gofr.Context) (any, error) {
 	return map[string]any{"sandboxes": state.Snapshot()}, nil
 }
 
+// discovery is what a scrape config reads to find a console that chose its own ports.
+type discovery struct {
+	HTTP    int    `json:"http"`
+	Metrics int    `json:"metrics"`
+	PID     int    `json:"pid"`
+	Health  string `json:"health"`
+	Scrape  string `json:"scrape"`
+}
+
+// StateDir is where the file lands: $SBX_STATE if set, else the user's cache dir, else the
+// working directory. Per-PID, because several consoles run at once by design and one file
+// per machine would mean the last one started hid all the others.
+func StateDir() string {
+	if d := os.Getenv("SBX_STATE"); d != "" {
+		return d
+	}
+
+	if d, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(d, "sbx")
+	}
+
+	return "."
+}
+
+func writeDiscovery(http, metrics int) (string, error) {
+	dir := StateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(dir, fmt.Sprintf("console-%d.json", os.Getpid()))
+
+	body, err := json.Marshal(discovery{
+		HTTP:    http,
+		Metrics: metrics,
+		PID:     os.Getpid(),
+		Health:  fmt.Sprintf("http://127.0.0.1:%d/.well-known/health", http),
+		Scrape:  fmt.Sprintf("http://127.0.0.1:%d/metrics", metrics),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return path, os.WriteFile(path, append(body, '\n'), 0o644)
+}
+
 func main() {
 	http, metrics, err := ports()
 	if err != nil {
@@ -80,10 +128,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Printed before Run, because Run does not return. A scrape config needs these and
-	// grepping a log for them is not an interface.
+	// Printed before Run, because Run does not return.
 	fmt.Printf("console  http :%d  metrics :%d/metrics  health :%d/.well-known/health\n",
 		http, metrics, http)
+
+	// And written down, because grepping a log is not an interface a scrape config can use.
+	// Discovered ports are only useful if something other than a human can find them.
+	if path, err := writeDiscovery(http, metrics); err != nil {
+		fmt.Fprintln(os.Stderr, "console: could not record ports:", err)
+	} else {
+		fmt.Println("console  ports recorded in", path)
+	}
 
 	app := gofr.New()
 

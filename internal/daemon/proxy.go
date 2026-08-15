@@ -211,7 +211,8 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 		if !declared {
 			time.Sleep(2 * time.Second)
 			u.setAwake(true)
-			logs.Default.Warn(u.sandbox, u.service,
+			logs.Default.Event(logs.LevelWarn, u.sandbox, u.service, "woke",
+				time.Since(start).Milliseconds(),
 				"woke in %dms, unverified — no health check declared",
 				time.Since(start).Milliseconds())
 
