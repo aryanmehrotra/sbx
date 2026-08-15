@@ -263,11 +263,18 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 
 	deadline := time.Now().Add(readyTimeout)
 
-	// Backoff, not a flat interval. Redis is serving within a few milliseconds of start, and
-	// a fixed 100 ms sleep meant a wake carried up to a full interval of pure waiting for a
-	// workload that was already up. Starting at 5 ms costs a few extra cheap probes on a slow
-	// workload and stops rounding a fast one up to the interval.
-	wait := 5 * time.Millisecond
+	// A flat interval, after a backoff was tried and refuted.
+	//
+	// The argument for backing off from 5 ms is good on paper: a fixed 100 ms sleep rounds a
+	// fast workload up to the interval, and a counting test agreed — an 8 ms workload was
+	// declared awake in 102 ms with a flat poll and about 20 ms with a backoff.
+	//
+	// It is not what happens, because that test assumed probes are free and they are not.
+	// Each one is an Engine API exec, so probing at 5 ms does not sample sooner than the
+	// probe itself costs, and a real workload is not ready in 8 ms anyway. Measured
+	// end-to-end, interleaved with the order alternating, n=14: 162 ms flat against 166 ms
+	// backing off — no difference, with more traffic to produce it.
+	wait := 100 * time.Millisecond
 
 	for time.Now().Before(deadline) {
 		serving, declared := p.Probe(ctx, u.ref)
@@ -300,12 +307,6 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 		}
 
 		time.Sleep(wait)
-
-		// Up to 100 ms, which is where it started: a database that needs thirty seconds
-		// should not be probed three hundred times a second for all of them.
-		if wait < 100*time.Millisecond {
-			wait *= 2
-		}
 	}
 
 	return errNotReady{u.name, readyTimeout}

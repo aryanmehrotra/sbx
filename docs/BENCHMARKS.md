@@ -33,30 +33,36 @@ These are a laptop and a minikube. For scale against hosted platforms, see
 [against other platforms](#against-other-platforms) below — including why that comparison is
 weaker than it looks.
 
-### The poll interval was most of what was left
+### One thing removed, and one thing tried and refuted
 
-Two things came out of the wake path after the per-connection fix, and neither is visible in
-a wall-clock number taken on a busy machine — measured during this work at load average 9,
-the same wake ranged 883 ms to 3457 ms, and an A/B of the two implementations differed by
-less than the noise. So the improvement is stated in work rather than milliseconds, which is
-deterministic and says the same thing on any hardware:
+Two changes were made to the wake path after the per-connection fix. Only one of them is real,
+and the way the other one failed is worth more than the one that worked.
 
-- **A probe that could only fail.** The wake asked the workload whether it was serving
-  *before* starting it, to catch a container somebody had started outside sbx. But the unit
-  being asleep is the reason wake was called, so on its actual path that probe could only
-  fail — and starting an already-running container is a 304 the provider already treats as
-  success, so it was answering a question Start answers for free. One round trip per cold
-  wake, removed.
+**Removed: a probe that could only fail.** The wake asked the workload whether it was serving
+*before* starting it, to catch a container somebody had started outside sbx. But the unit being
+asleep is the reason wake was called, so on its actual path that probe could only fail — and
+starting an already-running container is a 304 the provider already treats as success, so it
+answered a question `Start` answers for free. One round trip per cold wake, gone. Held by a
+test that counts probes rather than timing them: a cold wake costs exactly one.
 
-- **A flat 100 ms poll.** Redis is serving within a few milliseconds of `docker start`, and a
-  fixed interval meant the wake carried up to a whole one of pure waiting for a workload that
-  was already up. It backs off from 5 ms instead, and is capped at 100 ms so a database that
-  needs thirty seconds is not probed three hundred times a second for all of them.
+**Refuted: backing the poll off from 5 ms.** The argument is good on paper — a flat 100 ms
+interval rounds a fast workload up to the interval — and a counting test agreed emphatically:
+an 8 ms workload was declared awake in 102 ms flat and about 20 ms backing off. It is worth
+nothing:
 
-Measured deterministically in `internal/daemon/wakecost_test.go`: a workload that becomes
-ready 8 ms after start was declared awake in **102 ms** by the old path and about **20 ms** by
-this one. That is the poll interval being paid instead of the workload. Against a published
-191 ms median, it is most of what remained after `docker start`'s own ~110 ms.
+```
+  100 ms flat   n=14   median 162 ms   min 143   max 264
+  5 ms backoff  n=14   median 166 ms   min 128   max 295
+```
+
+The counting test was measuring a model, not the system. It treats a probe as free; a probe is
+an Engine API exec, so polling at 5 ms cannot sample sooner than the probe itself costs, and a
+real workload is not ready in 8 ms anyway. The interval stayed at 100 ms.
+
+⚠️ **And the harness had a bias that reversed the sign.** Running A then B in every round hands
+B a docker daemon that A has just finished hammering. Under that harness the change looked
+8–12% *slower*; with the order alternating it is +3%, which is to say nothing. Both readings
+were noise, but only one of them looked like a result.
 
 ### How it got there
 

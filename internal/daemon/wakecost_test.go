@@ -1,12 +1,17 @@
 package daemon
 
-// What a cold wake costs in work, rather than in wall-clock milliseconds.
+// What a cold wake costs in work.
 //
-// Wall-clock on a loaded machine says nothing — measured during this work at load average 9,
-// the same wake ranged 883 ms to 3457 ms and an A/B of the two implementations differed by
-// less than the noise. Counting the calls is deterministic and says the same thing on any
-// machine: a probe is a round trip to the container runtime, so fewer probes is less work
-// whatever the hardware is doing.
+// With a caveat this file exists to record. Counting calls is deterministic where wall-clock
+// on a loaded machine is not, but it answers a different question: it treats every call as
+// free. A backoff from 5 ms looked like a large win by this measure — an 8 ms workload
+// declared awake in 102 ms flat against about 20 ms backing off — and was worth nothing
+// end-to-end, because each probe is an Engine API exec and probing at 5 ms cannot sample
+// faster than the probe costs. Measured, order alternating, n=14: 162 ms flat, 166 ms
+// backing off.
+//
+// So what is asserted here is the change that is less work by construction and cannot be
+// paid for elsewhere: not probing before starting a container that is stopped.
 
 import (
 	"context"
@@ -44,38 +49,37 @@ func (r *readyAfter) Probe(context.Context, string) (bool, bool) {
 	return time.Since(time.Unix(0, at)) >= r.delay, true
 }
 
-// A workload that is ready almost immediately must not be rounded up to a poll interval, and
-// must not be probed before it has even been started.
-func TestAFastWorkloadIsNotRoundedUpToThePollInterval(t *testing.T) {
+// Nothing is asked before the container is started.
+//
+// The unit being asleep is why wake was called, so a probe before Start could only fail —
+// and starting an already-running container is a 304 the provider treats as success, so the
+// case that probe existed for costs nothing without it. One round trip per cold wake.
+func TestAColdWakeDoesNotProbeBeforeStarting(t *testing.T) {
 	log.SetOutput(io.Discard)
 
-	p := &readyAfter{delay: 8 * time.Millisecond}
+	// Ready the moment it starts, so the poll loop needs exactly one probe. Any second probe
+	// is the pre-Start one, which is what this test is for.
+	p := &readyAfter{delay: 0}
 	u := newUnit("s", "svc", "ref", "s/svc", nil, false)
-
-	start := time.Now()
 
 	if err := u.wake(context.Background(), p, 10*time.Second); err != nil {
 		t.Fatalf("wake: %v", err)
 	}
 
-	took := time.Since(start)
-
-	// With a flat 100 ms poll this could not come in under 100 ms; with a backoff from 5 ms
-	// it should land close to the workload's own 8 ms. Generous, because CI machines are
-	// slow, and still far below the interval it replaced.
-	if took > 60*time.Millisecond {
-		t.Errorf("an 8 ms workload took %s to be declared awake — the poll interval is being "+
-			"paid rather than the workload", took.Round(time.Millisecond))
+	if p.starts.Load() != 1 {
+		t.Fatalf("the container was started %d times, want once", p.starts.Load())
 	}
 
-	// And nothing was asked before the container was started: that probe could only ever
-	// fail, because the unit being asleep is why wake was called.
-	if p.probes.Load() > 3 {
-		t.Errorf("a cold wake cost %d probes; each is a round trip to the runtime", p.probes.Load())
+	// One probe: the poll loop's first iteration, after Start. Two would mean the pre-Start
+	// probe is back.
+	if got := p.probes.Load(); got != 1 {
+		t.Errorf("a cold wake cost %d probes, want 1 — each is a round trip to the runtime, "+
+			"and a probe before Start can only fail", got)
 	}
 }
 
-// The other end: a workload that takes a while must not be hammered for the whole of it.
+// And a workload that takes a while is not hammered for the whole of it: the interval bounds
+// how much traffic a slow start costs.
 func TestASlowWorkloadIsNotProbedHundredsOfTimes(t *testing.T) {
 	log.SetOutput(io.Discard)
 
@@ -86,9 +90,8 @@ func TestASlowWorkloadIsNotProbedHundredsOfTimes(t *testing.T) {
 		t.Fatalf("wake: %v", err)
 	}
 
-	// 5,10,20,40,80,100,100… over 900 ms is on the order of a dozen. A backoff that never
-	// grew would be 180 at 5 ms flat.
-	if got := p.probes.Load(); got > 25 {
-		t.Errorf("a 900 ms wake cost %d probes — the backoff is not growing", got)
+	if got := p.probes.Load(); got > 15 {
+		t.Errorf("a 900 ms wake cost %d probes at a 100 ms interval — that is more than the "+
+			"interval allows, so something is polling faster than it says", got)
 	}
 }
