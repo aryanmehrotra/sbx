@@ -166,6 +166,36 @@ jobs:
       - name: seed, snapshot, fork twice, and prove the forks are independent
         run: ./scripts/fork-e2e.sh
 
+  # The daemon dying is the one failure nobody schedules. This kills it and asserts a running
+  # sandbox is untouched, that a restarted daemon re-adopts sandboxes from container labels,
+  # and that data survives — claims that were only ever checked when a human remembered to
+  # run the script, which is not a regression barrier.
+  recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go build -o sbx .
+      - name: kill the daemon and prove nothing was lost
+        run: ./scripts/recovery.sh
+
+  # What a new connection costs on a sandbox that is already awake. This is the number that
+  # was missing: the daemon re-ran the health command through `docker exec` on every accepted
+  # connection, costing 68 ms each, and no benchmark in the repo could see it.
+  connections:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: sudo apt-get update && sudo apt-get install -y redis-tools
+      - run: go build -o sbx .
+      - name: a new connection to an awake sandbox is not a docker exec
+        run: ./scripts/connbench.sh 20
+
   # Every case the README tells someone to do. A failure here means the documentation is
   # lying, which is how this suite found `ready` reporting a sandbox as serving on an
   # address that accepted nothing.

@@ -141,8 +141,26 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 
 	upstream, err := net.DialTimeout("tcp", l.Upstream.String(), 10*time.Second)
 	if err != nil {
-		logs.Default.Error(u.sandbox, u.service, "awake but not reachable at %s: %v", l.Upstream, err)
-		return
+		// This is where the fast path in wake() gets corrected. The daemon believed this
+		// unit was awake and skipped asking the workload; the dial says otherwise, so the
+		// belief was wrong — something outside sbx stopped or killed the container.
+		//
+		// Revoke it and wake properly, once. Without this the optimism would be permanent:
+		// a container removed by hand, or a docker daemon restart, would leave every future
+		// connection failing against a unit sbx still thought was up.
+		u.setAwake(false)
+
+		if err := u.wake(ctx, p, readyTimeout); err != nil {
+			logs.Default.Event(logs.LevelError, u.sandbox, u.service, "wakeFailed", 0,
+				"could not wake after an unreachable upstream: %v", err)
+			return
+		}
+
+		upstream, err = net.DialTimeout("tcp", l.Upstream.String(), 10*time.Second)
+		if err != nil {
+			logs.Default.Error(u.sandbox, u.service, "awake but not reachable at %s: %v", l.Upstream, err)
+			return
+		}
 	}
 	defer upstream.Close()
 
@@ -186,8 +204,29 @@ func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
 // wake starts the workload if needed and blocks until it reports serving. The caller's
 // first query pays this; nothing else ever does.
 func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+	// A unit the daemon woke and has not slept is awake, and the daemon is the only thing
+	// that sleeps one. Asking the workload again costs a `docker exec` — measured at 68 ms
+	// median per connection against 0.8 ms straight to docker — and it was being paid on
+	// every new connection for the life of the sandbox, not just the first.
+	//
+	// That made the docstring above false and the published proxy overhead (~33 µs) true
+	// only of bytes on an already-open connection. Anything that opens a connection per
+	// operation — psql, a CLI, a client with no pool — paid the exec every time.
+	//
+	// Optimistic, and corrected rather than trusted: if the container died underneath us the
+	// dial in handle() fails, and that is where this belief gets revoked and retried.
+	if u.isAwake() {
+		return nil
+	}
+
 	u.waking.Lock()
 	defer u.waking.Unlock()
+
+	// Re-check under the lock. A burst of connections to one sleeping unit blocks here, and
+	// without this every one of them would go on to probe and start in turn.
+	if u.isAwake() {
+		return nil
+	}
 
 	if serving, declared := p.Probe(ctx, u.ref); serving && declared {
 		u.setAwake(true)

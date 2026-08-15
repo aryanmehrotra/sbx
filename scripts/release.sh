@@ -25,6 +25,8 @@ linux/amd64
 linux/arm64
 windows/amd64
 windows/arm64
+freebsd/amd64
+freebsd/arm64
 "
 
 rm -rf "$DIST"

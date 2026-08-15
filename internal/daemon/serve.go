@@ -128,6 +128,10 @@ func Serve(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Say so, in a file, so `sbx create` can tell "no daemon" from "the daemon has not
+	// noticed this sandbox yet" — those need opposite advice.
+	defer MarkRunning(p.Name())()
+
 	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, p.Name(), d.idle, InCluster())
 
 	d.run(ctx)

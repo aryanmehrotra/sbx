@@ -44,6 +44,8 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 
 	specDir := filepath.Dir(path)
 
+	var created []provider.Endpoint
+
 	for _, name := range sp.Names() {
 		svc := sp.Services[name]
 
@@ -64,11 +66,78 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		if err := createOne(ctx, p, sandbox, slot, start, name, svc, specDir, iso); err != nil {
 			return err
 		}
+
+		created = append(created, p.Endpoints(sandbox, name, slot, start, svc.Ports)...)
 	}
 
-	fmt.Println("\nready. Nothing needs starting again — connecting wakes it, idleness sleeps it.")
+	fmt.Println()
+	fmt.Println(readiness(created))
 
 	return nil
+}
+
+// readiness says what is actually true, which is not always the same sentence.
+//
+// The ports `sbx env` exports are the daemon's, not docker's — `sbx serve` is what accepts on
+// them. Create used to print "connecting wakes it" unconditionally, and on a machine with no
+// daemon that is simply false: the sandbox exists, the exports look right, and the first
+// connection is refused with nothing anywhere saying why. That is the worst shape a first run
+// can take, because everything reports success.
+//
+// So it is checked rather than asserted. `sbx ready` already refuses on the same evidence;
+// this is the same question asked one step earlier, where it is a warning rather than an
+// error — the sandbox really was created, and starting the daemon afterwards fixes it.
+func readiness(eps []provider.Endpoint) string {
+	var local []provider.Endpoint
+
+	for _, e := range eps {
+		// A remote docker host: the daemon fronting those ports is not this machine's to
+		// check, and its absence is not something this process can conclude anything about.
+		if e.Host == "127.0.0.1" {
+			local = append(local, e)
+		}
+	}
+
+	if len(local) == 0 {
+		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
+	}
+
+	// Two different problems that look identical from a refused connection, and they need
+	// opposite advice: start a daemon, versus wait a moment for the one you have.
+	if _, ok := daemon.Running(); !ok {
+		return "no `sbx serve` is running, so nothing accepts on the ports `sbx env` exports.\n" +
+			"Start one — once per machine, not once per sandbox:\n\n" +
+			"    sbx serve --idle 5m &\n\n" +
+			"deploy/ has a launchd plist and a systemd unit for running it supervised."
+	}
+
+	// There is a daemon, and it finds new sandboxes on its refresh tick — so for a moment
+	// after create, the exported ports are still dead. Waiting here rather than handing back
+	// an address that is about to work is the difference between the README's three-line
+	// quickstart being true and being true-eventually.
+	if waitReachable(local, 30*time.Second) {
+		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
+	}
+
+	return "created, but the running `sbx serve` has not picked it up yet.\n" +
+		"It looks for new sandboxes on its --refresh interval; give it one, or restart it."
+}
+
+// waitReachable blocks until every endpoint accepts, or the deadline passes.
+func waitReachable(eps []provider.Endpoint, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+
+	for _, e := range eps {
+		for !daemon.Reachable(e.Port) {
+			if time.Now().After(deadline) {
+				return false
+			}
+
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	return true
 }
 
 func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, start int,
@@ -351,10 +420,8 @@ func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) 
 			return fmt.Errorf("export %s: %s is not assigned an endpoint", env, sp.Exports[env])
 		}
 
-		base := strings.TrimSuffix(env, "_PORT")
-
 		vars = append(vars,
-			[2]string{base + "_HOST", ep.Host},
+			[2]string{hostVar(env), ep.Host},
 			[2]string{env, strconv.Itoa(ep.Port)},
 		)
 	}
@@ -480,6 +547,27 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 	return nil
 }
 
+// hostVar is the companion variable for a declared port export.
+//
+// `DATABASE_PORT` gets `DATABASE_HOST`, which is the convention most application config
+// already reads. `PGPORT` gets `PGHOST` — no underscore — because that is what libpq itself
+// reads, and it is the difference between the README's `psql` example working and not: with
+// PGHOST and PGPORT set, `psql` with no arguments connects to the sandbox. The same shape
+// covers MYSQL_HOST/MYSQL_PORT and REDIS_HOST/REDIS_PORT without special-casing any of them.
+func hostVar(portVar string) string {
+	if base := strings.TrimSuffix(portVar, "_PORT"); base != portVar && base != "" {
+		return base + "_HOST"
+	}
+
+	// PGPORT → PGHOST. Guarded on a non-empty base so a bare "PORT" export does not become
+	// "_HOST", which would be neither useful nor obviously wrong to whoever wrote it.
+	if base := strings.TrimSuffix(portVar, "PORT"); base != portVar && base != "" {
+		return base + "HOST"
+	}
+
+	return portVar + "_HOST"
+}
+
 func isLocal(u provider.Unit) bool {
 	return len(u.Client) > 0 && u.Client[0].Host == "127.0.0.1"
 }
@@ -491,6 +579,26 @@ func isLocal(u provider.Unit) bool {
 // rather than somewhere you can work.
 //
 // Each of them wakes what it touches, because doing anything to a sandbox is using it.
+
+// sleepingRef finds a service's container without waking it.
+//
+// The counterpart to serviceRef, and the distinction is the whole point: exec, cp and the
+// rest are using the sandbox, so they wake it. Reading its logs is not, so this does not.
+func sleepingRef(_ context.Context, units []provider.Unit, sandbox, service string) (string, error) {
+	for _, u := range units {
+		if u.Service == service {
+			return u.Ref, nil
+		}
+	}
+
+	have := make([]string, 0, len(units))
+	for _, u := range units {
+		have = append(have, u.Service)
+	}
+
+	return "", fmt.Errorf("sandbox %q has no service %q (it has: %s)",
+		sandbox, service, strings.Join(have, ", "))
+}
 
 func serviceRef(ctx context.Context, p provider.Provider, sandbox, service string) (string, error) {
 	units, err := p.List(ctx, sandbox)
@@ -566,7 +674,11 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 	}
 
 	if service != "" {
-		ref, err := serviceRef(ctx, p, sandbox, service)
+		// Deliberately NOT serviceRef: that wakes what it touches, which is right for exec
+		// and cp and wrong here. Asking what a sandbox said is not using it, and a `sbx logs
+		// -f my-branch postgres` left open would otherwise hold a sandbox awake for as long
+		// as somebody was watching it — the one command where that is exactly backwards.
+		ref, err := sleepingRef(ctx, units, sandbox, service)
 		if err != nil {
 			return err
 		}

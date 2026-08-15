@@ -19,6 +19,7 @@
     }
   },
   "exports": {
-    "DATABASE_PORT": "postgres:5432"
+    "DATABASE_PORT": "postgres:5432",
+    "PGPORT": "postgres:5432"
   }
 }

@@ -62,6 +62,46 @@ loopback echo it doubles the round trip. Against a real query that already cross
 boundary at 426 µs it disappears. Quoting only the flattering number was a mistake this
 table exists to prevent.
 
+⚠️ **This measures round trips on a connection that is already open.** It is not what a
+client pays to *open* one. That is the next section, and for a long time it was the missing
+number.
+
+---
+
+## A new connection to an awake sandbox
+
+Two numbers were measured here for a long time — the wake, and the round-trip tax above —
+and between them sat the case that turns out to be the common one. A client that opens a
+connection per operation (`psql`, `redis-cli`, any CLI, anything without a pool) pays
+neither: the sandbox is already awake, so there is no wake, and every operation is a new
+connection, so the round-trip figure does not describe it.
+
+`scripts/connbench.sh`, interleaved against the same awake container, n=20 each side:
+
+```
+  through the daemon     median   0.79 ms   min 0.67   max 5.60
+  straight to docker     median   0.69 ms   min 0.56   max 1.47
+
+  per-connection cost   +0.10 ms  → below the 4.93 ms jitter: indistinguishable from zero
+```
+
+**It was 68 ms.** The daemon re-ran the health command through `docker exec` on every
+accepted connection — including connections to a sandbox it had woken minutes earlier and
+never slept. So the honest reading of this project's own published overhead, before the fix,
+was: 33 µs if you hold one connection open, and 68 ms per operation if you do not.
+
+```
+  before   through the daemon   median  68.47 ms   (straight to docker 0.79 ms)
+  after    through the daemon   median   0.79 ms   (straight to docker 0.99 ms)
+```
+
+The fix is one branch: a unit the daemon woke and has not slept is awake, and asking the
+workload again tells it nothing it does not know. It is optimistic, so it is corrected rather
+than trusted — if the container was stopped from outside, the upstream dial fails, the belief
+is revoked and the wake runs properly. Both halves are held by tests in
+`internal/daemon/awake_test.go`, and both were confirmed by deleting the code and watching
+them fail.
+
 ---
 
 ## Build cache

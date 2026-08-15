@@ -24,7 +24,7 @@ case "$arch" in
 esac
 
 case "$os" in
-  darwin|linux) ;;
+  darwin|linux|freebsd) ;;
   msys*|mingw*|cygwin*)
     # Named pipes need a dialer outside Go's standard library, so a native Windows build
     # cannot reach Docker Desktop. Saying so here is kinder than installing something that

@@ -33,6 +33,7 @@ type countingProvider struct {
 
 	starts  atomic.Int32
 	stops   atomic.Int32
+	probes  atomic.Int32
 	serving atomic.Bool
 }
 
@@ -51,6 +52,10 @@ func (c *countingProvider) Stop(context.Context, string) error {
 }
 
 func (c *countingProvider) Probe(context.Context, string) (bool, bool) {
+	// Counted: a probe is a `docker exec` in the real provider, and awake_test.go asserts
+	// that connections to an already-awake unit cost none.
+	c.probes.Add(1)
+
 	return c.serving.Load(), true
 }
 
