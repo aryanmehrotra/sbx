@@ -84,6 +84,38 @@ client_postgres() { # port
     | grep -q '^1$'
 }
 
+# ── steady-state overhead ───────────────────────────────────────────────────────
+# One connection, N requests, so the number is the per-request tax and not N process
+# starts. A curl invocation per request has a millisecond floor; the tax being measured
+# is ~15 us (internal/daemon/proxy_bench_test.go), which is three orders of magnitude
+# below it — that measurement would print "about zero" no matter what the proxy did.
+#
+# The floor is measured, not assumed: the same client against a directly published
+# nginx. Anything that does not clear the floor is reported as below resolution rather
+# than as a number, because a delta smaller than the instrument is not a measurement.
+keepalive_us_per_req() { # url, count -> median microseconds per request, or n/a
+  local url="$1" count="$2" urls=""
+  local i
+  for i in $(seq 1 "$count"); do urls="$urls $url"; done
+  # shellcheck disable=SC2086
+  curl -s -o /dev/null -w '%{time_total}\n' --keepalive-time 60 $urls 2>/dev/null \
+    | python3 -c '
+import sys, statistics
+xs = [float(l) for l in sys.stdin if l.strip()]
+print("n/a" if not xs else f"{statistics.median(xs) * 1e6:.0f}")
+'
+}
+
+NOISE_FLOOR_US=""
+measure_noise_floor() {
+  docker rm -f cmp-floor >/dev/null 2>&1
+  docker run -d --name cmp-floor -p 18090:80 nginx:alpine >/dev/null 2>&1 || return 1
+  local i
+  for i in $(seq 1 30); do client_nginx 18090 && break; sleep 1; done
+  NOISE_FLOOR_US=$(keepalive_us_per_req "http://127.0.0.1:18090/" 50)
+  docker rm -f cmp-floor >/dev/null 2>&1
+}
+
 # ── docker helpers shared by the container-hosted arms ──────────────────────────
 container_stopped() { # name — stopped OR paused counts as asleep
   local st
@@ -338,33 +370,84 @@ measure_one() { # contender, target
       dspread="dp90=$(echo "$deltas" | measure_stat p90)ms"
     fi
     rss=$("${c}_rss")
-    record "$c" "$t" "OK" "n=$n median=${med}ms $spread stdev=${sd}ms | delta median=${dmed}ms $dspread stdev=${dsd}ms | void=$void failed=$failed rss=$rss"
+    local ovh="n/a"
+    if [ "$t" = nginx ] && [ -n "$NOISE_FLOOR_US" ] && [ "$NOISE_FLOOR_US" != "n/a" ]; then
+      local through
+      through=$(keepalive_us_per_req "http://127.0.0.1:$port/" 50)
+      if [ "$through" != "n/a" ]; then
+        local d=$((through - NOISE_FLOOR_US))
+        # A delta at or below the floor is not a measurement of the proxy.
+        if [ "$d" -le "$NOISE_FLOOR_US" ] && [ "$d" -lt 2000 ]; then
+          ovh="below harness resolution (through=${through}us floor=${NOISE_FLOOR_US}us) — see proxy_bench_test.go"
+        else
+          ovh="${d}us/req over floor"
+        fi
+      fi
+    fi
+    record "$c" "$t" "OK" "n=$n median=${med}ms $spread stdev=${sd}ms | delta median=${dmed}ms $dspread stdev=${dsd}ms | void=$void failed=$failed rss=$rss overhead=$ovh"
   fi
   "${c}_down"
 }
 
-preflight
-measure_conditions "$SBX" extended
-note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
-note "runs" "$RUNS per contender per target"
-say
+# WINDOW_CHECK=1 runs the sbx arm at two very different idle windows and prints both
+# medians. If wake depends on how long the target slept, every cross-contender number is
+# biased by an experimental parameter that differs per arm — so this is measured rather
+# than assumed.
+window_independence() {
+  local short=5s long=45s a b
+  say "── window independence (sbx · nginx) ───────────────────────"
+  IDLE="$short"; RESULTS=(); measure_one sbx nginx >/dev/null 2>&1
+  a=$(detail_field "median")
+  IDLE="$long";  RESULTS=(); measure_one sbx nginx >/dev/null 2>&1
+  b=$(detail_field "median")
+  printf '  idle %-5s median %s\n' "$short" "${a:-n/a}"
+  printf '  idle %-5s median %s\n' "$long"  "${b:-n/a}"
+  say "  If these differ materially, wake is not window-independent and every"
+  say "  cross-contender comparison inherits that bias — bench.sh:64 assumes it does not."
+  say
+}
 
-for c in ${CONTENDERS//,/ }; do
-  for t in ${TARGETS//,/ }; do
-    say "── $c · $t ──────────────────────────────────────────────"
-    measure_one "$c" "$t"
-    say
+detail_field() { # key -> value from the first recorded result
+  local d
+  IFS='|' read -r _ _ _ d <<< "${RESULTS[0]:-|||}"
+  echo "$d" | tr ' ' '\n' | grep "^$1=" | cut -d= -f2
+}
+
+main() {
+  preflight
+  measure_noise_floor
+  measure_conditions "$SBX" extended
+  note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
+  note "runs" "$RUNS per contender per target"
+  note "noise floor" "${NOISE_FLOOR_US:-n/a} us/req — same client, nginx published directly"
+  note "idle windows" "sbx $IDLE · sablier sessionDuration=1m · lazytainer inactiveTimeout=10s"
+  say
+
+  [ "${WINDOW_CHECK:-0}" = "1" ] && window_independence
+
+  for c in ${CONTENDERS//,/ }; do
+    for t in ${TARGETS//,/ }; do
+      say "── $c · $t ──────────────────────────────────────────────"
+      measure_one "$c" "$t"
+      say
+    done
   done
-done
 
-say "── results ─────────────────────────────────────────────────"
-printf '  %-12s %-9s %-8s %s\n' CONTENDER TARGET STATUS DETAIL
-# ${a[@]+...} again: bash 3.2 calls an empty array unbound under `set -u`, and a run where
-# every contender was omitted is exactly when this loop is empty.
-for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
-  IFS='|' read -r c t s d <<< "$r"
-  printf '  %-12s %-9s %-8s %s\n' "$c" "$t" "$s" "$d"
-done
-say
-say "N/A = cannot do this by design, which is a result."
-say "SKIPPED = could not be stood up here, which is not."
+  say "── results ─────────────────────────────────────────────────"
+  printf '  %-12s %-9s %-8s %s\n' CONTENDER TARGET STATUS DETAIL
+  # ${a[@]+...} again: bash 3.2 calls an empty array unbound under `set -u`, and a run where
+  # every contender was omitted is exactly when this loop is empty.
+  for r in ${RESULTS[@]+"${RESULTS[@]}"}; do
+    IFS='|' read -r c t s d <<< "$r"
+    printf '  %-12s %-9s %-8s %s\n' "$c" "$t" "$s" "$d"
+  done
+  say
+  say "N/A = cannot do this by design, which is a result."
+  say "SKIPPED = could not be stood up here, which is not."
+}
+
+# Sourced by scripts/compare_test.sh, which replaces the adapters with stubs to prove
+# that a failing one can never become a number. Only run when executed.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main
+fi

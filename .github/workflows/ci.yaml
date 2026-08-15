@@ -94,3 +94,5 @@ jobs:
           shellcheck -S warning scripts/*.sh scripts/lib/*.sh deploy/entrypoint.sh
       - name: measurement maths
         run: bash scripts/lib/measure_test.sh
+      - name: harness gating (injected failures)
+        run: bash scripts/compare_test.sh
