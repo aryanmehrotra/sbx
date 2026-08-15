@@ -68,7 +68,7 @@ ok "daemon running (pid $DAEMON)"
 
 echo
 echo "── 1. killing the daemon must not stop a live sandbox ──────"
-redis-cli -h 127.0.0.1 -p "$REDIS_PORT" -t 60 ping >/dev/null 2>&1
+redis-cli -h 127.0.0.1 -p "$REDIS_PORT" ping >/dev/null 2>&1
 running && ok "sandbox awake before the kill" || bad "sandbox was not awake"
 
 kill -9 "$DAEMON" 2>/dev/null
@@ -103,7 +103,7 @@ ok "daemon killed while the sandbox was asleep"
 start_daemon
 
 t0=$(python3 -c 'import time;print(int(time.time()*1000))')
-got=$(redis-cli -h 127.0.0.1 -p "$REDIS_PORT" -t 90 get survived 2>&1)
+got=$(redis-cli -h 127.0.0.1 -p "$REDIS_PORT" get survived 2>&1)
 t1=$(python3 -c 'import time;print(int(time.time()*1000))')
 
 if [ "$got" = "yes" ]; then

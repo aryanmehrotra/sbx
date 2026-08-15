@@ -81,7 +81,7 @@ for i in $(seq 1 "$RUNS"); do
   done
 
   t0=$(ms)
-  out=$(redis-cli -h 127.0.0.1 -p "$REDIS_PORT" -t 120 ping 2>&1)
+  out=$(redis-cli -h 127.0.0.1 -p "$REDIS_PORT" ping 2>&1)
   t1=$(ms)
 
   if [ "$out" != "PONG" ]; then

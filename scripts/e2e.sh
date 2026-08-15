@@ -118,7 +118,12 @@ for n in $NAMES; do
   p=$(echo "$ports" | tr ' ' '\n' | grep -v '^$' | sed -n "${i}p")
   # Concurrently on purpose: a shared reaper, a shared docker daemon and N wakes at once is
   # the state a machine with several branches open is actually in.
-  ( redis-cli -h 127.0.0.1 -p "$p" -t 120 get owner > "$tmp/$n" 2>&1 ) &
+  #
+  # No -t: Homebrew's redis-cli takes it as a timeout and Ubuntu's redis-tools rejects it
+  # outright, which turned every read here into "Unrecognized option" on CI while the
+  # sandboxes themselves were fine. None is needed — sbx holds the connection open during a
+  # wake, so the client is connected and waiting for a reply, not waiting to connect.
+  ( redis-cli -h 127.0.0.1 -p "$p" get owner > "$tmp/$n" 2>&1 ) &
   clients="$clients $!"
 done
 
