@@ -161,6 +161,20 @@ jobs:
       - name: seed, snapshot, fork twice, and prove the forks are independent
         run: ./scripts/fork-e2e.sh
 
+  # Every case the README tells someone to do. A failure here means the documentation is
+  # lying, which is how this suite found `ready` reporting a sandbox as serving on an
+  # address that accepted nothing.
+  usecases:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go build -o sbx .
+      - name: the documented use cases, end to end
+        run: ./scripts/usecases-e2e.sh
+
   # "--isolation gvisor is declarable" was a claim with nothing behind it: the flag existed,
   # it failed closed when the runtime was absent, and no machine in this project had ever
   # run a sandbox under it. A runtime nobody has exercised is a runtime that does not work.

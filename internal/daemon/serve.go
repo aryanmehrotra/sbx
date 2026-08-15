@@ -56,6 +56,22 @@ func Knock(port int) {
 	}
 }
 
+// Reachable reports whether anything accepts on a port.
+//
+// Knock deliberately discards its error — it is a wake signal, and a sandbox that is asleep
+// with no daemon in front is not an error condition to knock on. This is the other question:
+// can the address a caller was handed actually be connected to.
+func Reachable(port int) bool {
+	c, err := net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 2*time.Second)
+	if err != nil {
+		return false
+	}
+
+	_ = c.Close()
+
+	return true
+}
+
 // New builds a daemon that can be run in-process. Selftest uses it: the honest way to test
 // the wake path is to run the real one, not a copy of its logic.
 func New(p provider.Provider, idle, ready, refresh time.Duration) *daemon {

@@ -56,7 +56,8 @@ eval "$(sbx env "$BRANCH")"
 ./run-tests.sh
 ```
 
-No daemon needed for a one-shot run: `ready` starts what it needs and blocks until it is
+`sbx serve` has to be running: `env` exports the public ports and the daemon is what answers
+on them. `ready` starts what it needs and blocks until it is
 serving. On a persistent runner, leaving the sandbox behind is the interesting case — the
 next job on that branch reuses warm, migrated state and pays one wake instead of a create.
 

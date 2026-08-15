@@ -129,15 +129,20 @@ shouldn't be the first time you hear about it.
 
 ### CI
 
-One line, and no daemon to run:
-
 ```sh
+sbx serve --idle 30m &                        # fronts the ports `env` exports
 sbx create "$BRANCH" && sbx ready "$BRANCH"   # blocks until it is actually serving
 eval "$(sbx env "$BRANCH")"
 ./run-tests.sh
 ```
 
 `ready` starts what it needs and waits — asking *is* starting, which is why there is no `up`.
+It also refuses if nothing is answering on the ports `env` exports, rather than reporting a
+sandbox as serving on an address that accepts nothing.
+
+⚠️ **The daemon is not optional here.** `env` exports the *public* ports and `sbx serve` is
+what answers on them; without it your tests get a port with nothing behind it. This README
+said "no daemon to run" until a use-case test proved otherwise.
 On a persistent runner, leaving the sandbox behind is the interesting case: the next job on
 that branch reuses warm, migrated state and pays one wake instead of a create.
 

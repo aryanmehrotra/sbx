@@ -442,6 +442,32 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 			strings.Join(unverifiable, ", "))
 	}
 
+	// The services are healthy. That is not the same as the sandbox being usable, and the
+	// difference is what a caller trips over: `sbx env` hands out the PUBLIC port, and only
+	// the daemon answers on it. Without one running, this used to print "is serving" while
+	// the address it had just exported accepted nothing — a green light on a dead address,
+	// which is worse than a red one.
+	var unreachable []string
+
+	for _, u := range units {
+		if !isLocal(u) {
+			continue
+		}
+
+		for _, e := range u.Client {
+			if !daemon.Reachable(e.Port) {
+				unreachable = append(unreachable, fmt.Sprintf("%s (:%d)", u.Service, e.Port))
+			}
+		}
+	}
+
+	if len(unreachable) > 0 {
+		return fmt.Errorf("%s serving, but nothing answers on %s — those are the ports\n"+
+			"     `sbx env` exports, and `sbx serve` is what fronts them. Start the daemon,\n"+
+			"     or connect to the backing ports directly if you do not want one",
+			sandbox, strings.Join(unreachable, ", "))
+	}
+
 	fmt.Printf("sandbox %q is serving\n", sandbox)
 
 	return nil
