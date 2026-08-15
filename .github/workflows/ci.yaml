@@ -154,3 +154,62 @@ jobs:
       - run: go build -o sbx .
       - name: seed, snapshot, fork twice, and prove the forks are independent
         run: ./scripts/fork-e2e.sh
+
+  # "--isolation gvisor is declarable" was a claim with nothing behind it: the flag existed,
+  # it failed closed when the runtime was absent, and no machine in this project had ever
+  # run a sandbox under it. A runtime nobody has exercised is a runtime that does not work.
+  #
+  # This installs gVisor and proves three things: the sandbox runs under runsc rather than
+  # runc, the whole sleep/wake cycle still works there, and the kernel it sees is gVisor's
+  # rather than the host's — which is the actual claim isolation makes.
+  isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: install gVisor
+        run: |
+          set -eux
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
+            | sudo tee /etc/apt/sources.list.d/gvisor.list > /dev/null
+          sudo apt-get update && sudo apt-get install -y runsc
+          sudo runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}'
+
+      - name: sbx reports the runtime as available
+        # doctor exists so nobody learns this from a failed create. If it says no here, it
+        # is wrong, and that is worth failing on.
+        run: |
+          go build -o sbx .
+          ./sbx doctor
+          ./sbx doctor --json | grep -q '"name": "isolation gvisor"'
+          ./sbx doctor --json | python3 -c '
+import json,sys
+r = json.load(sys.stdin)
+for c in r["capabilities"]:
+    if c["name"] == "isolation gvisor" and not c["have"]:
+        raise SystemExit("doctor says gvisor is unavailable after installing it: " + c["detail"])
+'
+
+      - name: a sandbox actually runs under gVisor
+        run: |
+          set -eux
+          ./sbx create iso-check --template postgres -isolation gvisor
+          # The container's runtime, from docker rather than from our own claim.
+          runtime=$(docker inspect -f '{{.HostConfig.Runtime}}' sbx-iso-check-postgres)
+          test "$runtime" = "runsc"
+          # And the kernel it sees is gVisor's, not this host's. This is the isolation.
+          uname_in=$(docker exec sbx-iso-check-postgres uname -a)
+          echo "$uname_in"
+          echo "$uname_in" | grep -qi gvisor
+          ./sbx rm iso-check
+
+      - name: the whole cycle works under gVisor, not just create
+        # Sleep and wake are the product; isolation that only survives a create is not a
+        # tier anyone can use.
+        run: ./sbx selftest -isolation gvisor
