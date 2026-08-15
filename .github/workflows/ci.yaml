@@ -1,0 +1,94 @@
+# What has to be true before a change lands.
+#
+# The unit tests, the race detector and the build matrix run everywhere. The end-to-end
+# tests need a Docker daemon and are therefore Linux-only here — which is also the first
+# time any of this runs on a machine that is not the author's Mac, and the whole reason
+# "nobody else has run it" was the honest weakness.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: vet
+        run: go vet ./...
+
+      - name: gofmt
+        # Not cosmetic: a diff that reformats unrelated lines hides the change inside it.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: test with the race detector
+        # The daemon is the only genuinely concurrent thing here, so -race is not optional.
+        run: go test -race ./...
+
+  # Cross-compilation is a claim this project makes out loud, so it is checked rather than
+  # assumed. It caught nothing yet; it exists so that the first import of something
+  # platform-specific fails here rather than in someone's install.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [darwin, linux, windows, freebsd]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: freebsd
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o /dev/null .
+
+  # The claims that only a real daemon can settle: a sandbox is created, sleeps to zero,
+  # wakes on a plain socket, and remembers what it was told.
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go build -o sbx .
+      - name: selftest
+        run: ./sbx selftest
+
+  # Several at once, which is the actual premise: independent state, independent sleep, and
+  # no sandbox answering with another's data.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: sudo apt-get update && sudo apt-get install -y redis-tools
+      - run: go build -o sbx .
+      - name: three sandboxes, concurrently
+        run: ./scripts/e2e.sh 3
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -S warning scripts/*.sh deploy/entrypoint.sh

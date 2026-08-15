@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "services": {
+    "postgres": {
+      "image": "postgres:16-alpine",
+      "ports": [5432],
+      "health": "pg_isready -U app -d app",
+      "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
+      "volume": "/var/lib/postgresql/data",
+      "init": [
+        "psql -U app -d app -c 'CREATE TABLE IF NOT EXISTS todo (id serial primary key, title text)'"
+      ]
+    }
+  },
+  "exports": { "DATABASE_PORT": "postgres:5432" }
+}

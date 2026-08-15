@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "services": {
+    "chrome": {
+      "image": "zenika/alpine-chrome:latest",
+      "ports": [9222],
+      "health": "wget -qO- http://127.0.0.1:9222/json/version >/dev/null",
+      "args": [
+        "--no-sandbox",
+        "--headless",
+        "--disable-gpu",
+        "--remote-debugging-address=0.0.0.0",
+        "--remote-debugging-port=9222",
+        "--remote-allow-origins=*",
+        "about:blank"
+      ]
+    }
+  },
+  "exports": { "CDP_PORT": "chrome:9222" }
+}

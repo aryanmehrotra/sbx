@@ -1,0 +1,95 @@
+# Cutting a release, on a tag and nothing else.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Everything below is what a person would otherwise do by hand and eventually do
+# inconsistently: build every target, checksum them, attach them to a release, and publish
+# the activator image. The binaries are built by scripts/release.sh — the same script used
+# locally — so a release is never the first time that path runs.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the release and upload binaries
+  packages: write   # push the activator image
+
+jobs:
+  # The gate. A tag that does not pass the same checks as a pull request is not a release,
+  # and finding that out after the binaries are published is finding out too late.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build -o sbx .
+      - name: selftest
+        run: ./sbx selftest
+      - name: several sandboxes at once
+        run: sudo apt-get update && sudo apt-get install -y redis-tools && ./scripts/e2e.sh 3
+
+  binaries:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: build every target
+        run: ./scripts/release.sh "${GITHUB_REF_NAME}"
+
+      # The checksums are published beside the binaries because install.sh verifies them.
+      # A download nobody can check is a download nobody should run.
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/sbx_*
+            dist/SHA256SUMS
+          generate_release_notes: true
+
+  # The activator only exists as an image, so a cluster user has nothing to install without
+  # this. Multi-arch because clusters are not all amd64 any more.
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile copies a binary rather than building one, so that the image and the
+      # published binaries come from the same compilation.
+      - name: build the linux binaries the image needs
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o deploy/sbx.amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o deploy/sbx.arm64 .
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: deploy
+          file: deploy/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-activator:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}-activator:latest

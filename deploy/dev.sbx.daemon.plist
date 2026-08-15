@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The daemon, supervised by launchd.
+
+    cp deploy/dev.sbx.daemon.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/dev.sbx.daemon.plist
+
+  A LaunchAgent, not a LaunchDaemon: this runs as you, because the only thing it touches is
+  a Docker socket you can already reach. Nothing here needs root, and a thing that holds
+  your database ports should not have it.
+
+  KeepAlive restarts it if it dies. That is safe precisely because the daemon does not
+  own any state — it rediscovers every sandbox from container labels on startup, and it
+  deliberately does not sleep anything on the way out.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.sbx.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/sbx</string>
+    <string>serve</string>
+    <string>--idle=5m</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <!--
+    PATH matters: the docker provider shells out to `docker` for creation, and launchd
+    starts with a minimal environment that does not include Homebrew.
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/sbx.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/sbx.log</string>
+</dict>
+</plist>

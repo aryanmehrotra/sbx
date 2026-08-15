@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "services": {
+    "nginx": {
+      "image": "nginx:alpine",
+      "ports": [80],
+      "health": "wget -qO- http://127.0.0.1/ >/dev/null"
+    }
+  },
+  "exports": { "WEB_PORT": "nginx:80" }
+}

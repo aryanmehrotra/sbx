@@ -1,0 +1,39 @@
+# The daemon, supervised by systemd.
+#
+#   cp deploy/sbx.service ~/.config/systemd/user/
+#   systemctl --user enable --now sbx
+#
+# A user unit, not a system one: the only thing it touches is a Docker socket you can
+# already reach, and a process holding your database ports has no business being root.
+#
+# If your Docker is rootless, this already works. If it is the system daemon, your user
+# needs to be in the docker group — which is the same permission `docker ps` needs, so if
+# that works, this will.
+
+[Unit]
+Description=sbx — wakes per-branch sandboxes on demand, sleeps them when idle
+Documentation=https://github.com/aryanmehrotra/sbx
+After=docker.service
+Wants=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/sbx serve --idle=5m
+
+# Restarting is safe because the daemon owns no state: it rediscovers every sandbox from
+# container labels at startup, and deliberately sleeps nothing on the way out. A crash
+# costs one rediscovery, not a database.
+Restart=always
+RestartSec=5
+
+# It holds connections and copies bytes. Sized so the thing that saves memory is not
+# itself worth measuring.
+MemoryMax=128M
+
+# Nothing it does needs more than its own process and a socket.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

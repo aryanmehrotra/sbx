@@ -1,0 +1,87 @@
+# The activator: the daemon, as a Deployment.
+#
+# It is the same binary and the same policy as `sbx serve` on a laptop. What changes is that
+# every sandbox's client-facing Service points here instead of at the workload, so a
+# connection can arrive — and be held — while the workload has zero replicas. The activator
+# scales it up, waits for the readiness probe, and splices the bytes through.
+#
+# Because it splices rather than parses, this works for MySQL, Redis, gRPC and anything else
+# over TCP. That is the gap: Knative, KEDA's HTTP add-on and Sablier are all HTTP-shaped.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sbx-activator
+  namespace: sbx
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sbx-activator
+  namespace: sbx
+rules:
+  # Read what exists and whether it is ready.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  # Scale it up on demand and back down when idle. This is the only thing the activator
+  # mutates, and deliberately so: it can wake and sleep a sandbox, and it can never create
+  # or destroy one.
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sbx-activator
+  namespace: sbx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sbx-activator
+subjects:
+  - kind: ServiceAccount
+    name: sbx-activator
+    namespace: sbx
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sbx-activator
+  namespace: sbx
+  labels:
+    app: sbx-activator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sbx-activator
+  template:
+    metadata:
+      labels:
+        # Every sandbox's client-facing Service selects this label. It is the join between
+        # "where clients connect" and "what can answer while the workload is asleep".
+        app: sbx-activator
+    spec:
+      serviceAccountName: sbx-activator
+      containers:
+        - name: activator
+          image: sbx-activator:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --provider=kubernetes
+            - --namespace=sbx
+            - --idle=30s
+            - --refresh=5s
+          resources:
+            # It holds connections and copies bytes. Sized so that the thing that saves
+            # memory is not itself worth measuring.
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

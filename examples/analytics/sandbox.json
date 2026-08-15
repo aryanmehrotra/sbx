@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "services": {
+    "postgres": {
+      "image": "postgres:16-alpine",
+      "ports": [5432],
+      "health": "pg_isready -U app -d app",
+      "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
+      "volume": "/var/lib/postgresql/data"
+    },
+    "clickhouse": {
+      "image": "clickhouse/clickhouse-server:24.3-alpine",
+      "ports": [9000, 8123],
+      "health": "clickhouse-client -q 'SELECT 1'",
+      "volume": "/var/lib/clickhouse",
+      "files": { "clickhouse-low-mem.xml": "/etc/clickhouse-server/config.d/low-mem.xml" },
+      "optional": true
+    }
+  },
+  "exports": {
+    "DATABASE_PORT": "postgres:5432",
+    "CLICKHOUSE_PORT": "clickhouse:9000",
+    "CLICKHOUSE_HTTP_PORT": "clickhouse:8123"
+  }
+}
