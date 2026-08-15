@@ -163,6 +163,96 @@ shouldn't be the first time you hear about it.
 
 ---
 
+## How you'd actually use it
+
+Four situations, and they differ mostly in *who types the commands*. This is the **how**;
+[USE-CASES.md](docs/USE-CASES.md) is the **why** — the problem each shape solves and the
+numbers behind it.
+
+### You, with three branches open
+
+The case it was built for. One spec in the repo, one sandbox per branch:
+
+```sh
+git switch feature-x
+sbx create feature-x                  # reads ./sandbox.json
+eval "$(sbx env feature-x)"           # DATABASE_PORT=20002, REDIS_PORT=20003…
+npm test                              # your tooling, unchanged
+```
+
+Switch away and it sleeps to 0 B on its own. Switch back and the first query wakes it. You
+never type `start` or `stop` because there isn't one.
+
+### An agent, mid-task
+
+**No SDK, no client library, no wrapper.** An agent already runs shell commands, and that is
+the whole integration:
+
+```sh
+sbx create task-4711 --template postgres    # nothing on disk needed
+sbx env task-4711 --template postgres --shell json
+```
+
+```json
+{
+  "DATABASE_HOST": "127.0.0.1",
+  "DATABASE_PORT": "20000",
+  "SBX_PROVIDER": "docker",
+  "SBX_SANDBOX": "task-4711"
+}
+```
+
+It parses that, connects with whatever tool it was going to use anyway — `psql`, a migration
+runner, a test suite — and the connection itself is what wakes the sandbox. Nothing in the
+agent's toolchain has to know sbx exists.
+
+Needs something the spec never declared? It can add one mid-task:
+
+```sh
+sbx add task-4711 cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'
+#   cache        ✓ 127.0.0.1:20001
+```
+
+That service sleeps like the rest and is destroyed with the sandbox — rather than a stray
+container that outlives the task and belongs to nobody.
+
+**Give each agent its own copy of a seeded database** with `snapshot` and `fork`, so the
+migration runs once instead of once per agent — see [above](#one-seeded-database-many-copies).
+
+Worth saying plainly: if the agent is running code *you did not write*, add
+`"egress": "deny"` to the spec, and read [where to use something else](#how-it-compares)
+first — a container shares your kernel, and E2B or Vercel Sandbox give you a real one.
+
+### CI
+
+One line, and no daemon to run:
+
+```sh
+sbx create "$BRANCH" && sbx ready "$BRANCH"   # blocks until it is actually serving
+eval "$(sbx env "$BRANCH")"
+./run-tests.sh
+```
+
+`ready` starts what it needs and waits — asking *is* starting, which is why there is no `up`.
+On a persistent runner, leaving the sandbox behind is the interesting case: the next job on
+that branch reuses warm, migrated state and pays one wake instead of a create.
+
+### On a shared box, for a team
+
+Run the daemon on a host everyone can reach and point clients at it:
+
+```sh
+sbx serve --idle 30m &                  # deploy/ has a systemd unit and a launchd plist
+sbx url my-branch web                   # https://….trycloudflare.com, wakes on open
+```
+
+⚠️ **This is a shared box, not a multi-tenant service.** There is no authentication, no
+per-user isolation and no quota — anyone who can reach the ports can use any sandbox on that
+host. It is the right shape for a team that already trusts each other and the wrong one for
+anything public. `sbx doctor` tells you what the host can enforce before you rely on it.
+
+---
+
 ## How it compares
 
 Two different products get called "sandbox". Most are **a place to run code**, where the

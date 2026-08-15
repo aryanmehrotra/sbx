@@ -1,6 +1,7 @@
 # Use cases
 
-Six shapes this fits, and the ones it does not.
+Six shapes this fits, and the ones it does not — the problem each one solves.
+The commands per situation are in the [README](../README.md#how-youd-actually-use-it).
 
 ---
 
