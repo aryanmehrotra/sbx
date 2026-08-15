@@ -41,7 +41,15 @@ func (alwaysServing) Healthy(context.Context, string) (bool, bool)          { re
 func (alwaysServing) Probe(context.Context, string) (bool, bool)            { return true, true }
 func (alwaysServing) List(context.Context, string) ([]provider.Unit, error) { return nil, nil }
 func (alwaysServing) Remove(context.Context, string) error                  { return nil }
-func (alwaysServing) ExecTTY(context.Context, string, []string) error       { return nil }
+func (alwaysServing) Commit(context.Context, string, string) error          { return nil }
+
+func (alwaysServing) Images(context.Context, string) ([]string, error) { return nil, nil }
+
+func (alwaysServing) CopyVolume(context.Context, string, string) error { return nil }
+
+func (alwaysServing) VolumeFor(string, string) string { return "" }
+
+func (alwaysServing) ExecTTY(context.Context, string, []string) error { return nil }
 
 func (alwaysServing) Exec(context.Context, string, []string) (string, error)   { return "", nil }
 func (alwaysServing) Logs(context.Context, string, int, bool, io.Writer) error { return nil }
