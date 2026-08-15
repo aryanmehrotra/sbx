@@ -33,6 +33,31 @@ These are a laptop and a minikube. For scale against hosted platforms, see
 [against other platforms](#against-other-platforms) below — including why that comparison is
 weaker than it looks.
 
+### The poll interval was most of what was left
+
+Two things came out of the wake path after the per-connection fix, and neither is visible in
+a wall-clock number taken on a busy machine — measured during this work at load average 9,
+the same wake ranged 883 ms to 3457 ms, and an A/B of the two implementations differed by
+less than the noise. So the improvement is stated in work rather than milliseconds, which is
+deterministic and says the same thing on any hardware:
+
+- **A probe that could only fail.** The wake asked the workload whether it was serving
+  *before* starting it, to catch a container somebody had started outside sbx. But the unit
+  being asleep is the reason wake was called, so on its actual path that probe could only
+  fail — and starting an already-running container is a 304 the provider already treats as
+  success, so it was answering a question Start answers for free. One round trip per cold
+  wake, removed.
+
+- **A flat 100 ms poll.** Redis is serving within a few milliseconds of `docker start`, and a
+  fixed interval meant the wake carried up to a whole one of pure waiting for a workload that
+  was already up. It backs off from 5 ms instead, and is capped at 100 ms so a database that
+  needs thirty seconds is not probed three hundred times a second for all of them.
+
+Measured deterministically in `internal/daemon/wakecost_test.go`: a workload that becomes
+ready 8 ms after start was declared awake in **102 ms** by the old path and about **20 ms** by
+this one. That is the poll interval being paid instead of the workload. Against a published
+191 ms median, it is most of what remained after `docker start`'s own ~110 ms.
+
 ### How it got there
 
 The first honest measurement was **5282 ms, stdev 22 ms**, and the consistency was the

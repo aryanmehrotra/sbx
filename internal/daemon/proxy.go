@@ -248,18 +248,26 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 		return nil
 	}
 
-	if serving, declared := p.Probe(ctx, u.ref); serving && declared {
-		u.setAwake(true)
-		return nil
-	}
-
 	start := time.Now()
 
+	// Straight to Start, with no probe first.
+	//
+	// There used to be one, to catch a container someone had started outside sbx. It cost a
+	// round trip on every cold wake to answer a question Start answers for free: starting an
+	// already-running container is a 304 the provider treats as success. So on the path it
+	// was actually on — the unit is asleep, which is why we are here — it could only fail,
+	// and the poll loop below reaches the same conclusion one iteration later.
 	if err := p.Start(ctx, u.ref); err != nil {
 		return err
 	}
 
 	deadline := time.Now().Add(readyTimeout)
+
+	// Backoff, not a flat interval. Redis is serving within a few milliseconds of start, and
+	// a fixed 100 ms sleep meant a wake carried up to a full interval of pure waiting for a
+	// workload that was already up. Starting at 5 ms costs a few extra cheap probes on a slow
+	// workload and stops rounding a fast one up to the interval.
+	wait := 5 * time.Millisecond
 
 	for time.Now().Before(deadline) {
 		serving, declared := p.Probe(ctx, u.ref)
@@ -291,7 +299,13 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 			return nil
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(wait)
+
+		// Up to 100 ms, which is where it started: a database that needs thirty seconds
+		// should not be probed three hundred times a second for all of them.
+		if wait < 100*time.Millisecond {
+			wait *= 2
+		}
 	}
 
 	return errNotReady{u.name, readyTimeout}
