@@ -68,6 +68,7 @@ script that already knows a port.
 | `volume` | | One container path to persist. What makes sleeping safe |
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
 | `init` | | Commands run **once**, after the service first reports healthy |
+| `depends_on` | | Services that must be healthy before this one is created |
 | `optional` | | Not created unless `--optional` — but still reserves its ports |
 | `egress` | | `"deny"` — no routed egress. It can still be reached, and can still talk to its own sandbox |
 | `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
@@ -128,6 +129,72 @@ first:
 ```sh
 docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
 ```
+
+### `depends_on` orders creation, and nothing else
+
+```json
+{ "api":      { "build": { "context": "." }, "ports": [3000], "depends_on": ["postgres"] },
+  "postgres": { "image": "postgres:16-alpine", "ports": [5432], "health": "pg_isready -U app" } }
+```
+
+Without it, services are created alphabetically — so `api` comes up before `postgres`, and an
+app that dials its database at boot fails for a reason that is nowhere in the file. This
+mattered much less before `build:` existed, when everything in a spec was a backing service
+that waited for nobody.
+
+Two things it deliberately does **not** do:
+
+**It does not change ports.** Ordinals stay alphabetical, so adding `depends_on` to a spec
+never moves an existing sandbox's addresses. Somebody's `DATABASE_PORT` changing because a
+colleague declared a dependency would be a worse bug than the race it fixes.
+
+**It does not order wakes.** The daemon wakes what is connected to, and after a sleep there is
+no "startup" for an ordering rule to attach to. A service that needs another at runtime should
+retry — which it has to anyway, because that is what waking looks like from the inside.
+
+A dependency on a service the spec does not declare is refused, rather than being a rule that
+silently never applied. So is a cycle.
+
+### `${VAR}` keeps a secret out of a committed file
+
+```json
+{ "env": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" } }
+```
+
+`sandbox.json` is meant to be committed. For `POSTGRES_PASSWORD: "app"` on a throwaway local
+database that is fine and will stay fine; for a private registry credential or a real key some
+fixture seeding needs, it means a secret in git. A value in `env` may instead reference the
+environment sbx was invoked with.
+
+Deliberately the smallest version of this:
+
+- **`env` values only.** Not images, not health commands, not init steps — expansion inside a
+  command is where this stops being substitution and starts being a shell.
+- **No defaults or nesting.** No `${VAR:-fallback}`. Each of those is a small syntax nobody
+  asked for and everyone has to learn, and your shell already has all of them.
+- **An unset variable is an error**, reported before anything is created, listing every
+  missing name at once. A database that came up with an empty password because a variable was
+  not exported is a failure that looks like success.
+- **`${...}` only** — a bare `$NAME` is left alone, so a password containing a dollar sign
+  survives.
+
+Anything further — Vault, 1Password, a cloud secret manager — stays out: a dependency, a
+network call, and a credential needed to fetch the credential, in a binary whose whole claim
+is that it has none of those.
+
+### Check it without creating it
+
+```sh
+sbx validate                    # ./sandbox.json
+sbx validate path/to/spec.json
+```
+
+Reads the file, resolves ports and ordering, and creates nothing — so a pre-commit hook or a
+lint job can check a change to a committed spec without a docker daemon. It runs the same
+loader `create` does, which is the only way it is worth having: a separate validator would
+drift, and a spec that passes lint and fails create is worse than no lint.
+
+It also names anything it merely dislikes, like a service with no `health`.
 
 ### `init` runs once, not on every wake
 

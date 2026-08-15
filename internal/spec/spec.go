@@ -78,6 +78,15 @@ type Service struct {
 	// Not on every start: a woken container already has whatever this created.
 	Init []string `json:"init,omitempty"`
 
+	// DependsOn names services that must be healthy before this one is created.
+	//
+	// Only creation order. It deliberately does not affect which port a service gets:
+	// ordinals stay alphabetical, so adding a dependency never moves an existing
+	// sandbox's addresses. And it says nothing about wake order — the daemon wakes what
+	// is connected to, and a service that needs another at runtime should retry, because
+	// after a sleep there is no "startup" for an ordering rule to attach to.
+	DependsOn []string `json:"depends_on,omitempty"`
+
 	// Optional keeps a heavy service out of the default sandbox. A branch that never
 	// queries the analytics store should not pay for one.
 	Optional bool `json:"optional,omitempty"`
@@ -192,6 +201,14 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		if err := svc.validate(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+	}
+
+	if err := s.checkDependencies(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	if err := s.expandEnv(osLookup); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
 	for env, ref := range s.Exports {

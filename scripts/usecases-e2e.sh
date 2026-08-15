@@ -440,6 +440,69 @@ JSON
   [ -n "$built" ] && docker rmi -f $built >/dev/null 2>&1
 fi
 
+# ── validate, depends_on and ${VAR} ───────────────────────────────────────────
+if want "spec"; then
+  case_ "spec: check it without creating it, order it, and keep secrets out of git"
+
+  mkdir -p "$WORK/dep"
+  cat > "$WORK/dep/sandbox.json" <<'JSON'
+{
+  "version": 1,
+  "services": {
+    "api":      { "image": "nginx:alpine", "ports": [80], "depends_on": ["postgres"],
+                  "health": "wget -qO- http://127.0.0.1/ >/dev/null" },
+    "postgres": { "image": "postgres:16-alpine", "ports": [5432],
+                  "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "${UC_PW}", "POSTGRES_DB": "app" },
+                  "health": "psql -U app -d app -c 'select 1'" }
+  },
+  "exports": { "API_PORT": "api:80", "DATABASE_PORT": "postgres:5432" }
+}
+JSON
+
+  # A committed file that a pre-commit hook or a lint job can check, with no docker and
+  # nothing created.
+  UC_PW=x "$SBX" validate "$WORK/dep/sandbox.json" >/dev/null 2>&1 \
+    && ok "validate accepts a good spec" || bad "validate rejected a valid spec"
+
+  # The referenced variable is not set: this must refuse rather than start a database with
+  # an empty password, which is a failure that looks like success.
+  out=$("$SBX" validate "$WORK/dep/sandbox.json" 2>&1)
+  echo "$out" | grep -q 'UC_PW' \
+    && ok "an unset \${VAR} is refused, and named" || bad "an unset variable was accepted" "$out"
+
+  # Order, not ports: postgres is created first even though "api" sorts before it.
+  order=$(UC_PW=x "$SBX" validate "$WORK/dep/sandbox.json" 2>/dev/null | grep -nE '^  (api|postgres) ' | tr '\n' ' ')
+  case "$order" in
+    *postgres*api*) ok "depends_on creates the dependency first" ;;
+    *) bad "creation order ignored depends_on" "$order" ;;
+  esac
+
+  if UC_PW=uc-secret "$SBX" create "$TAG-dep" --spec "$WORK/dep/sandbox.json" >/dev/null 2>&1; then
+    ok "a spec with depends_on and \${VAR} creates"
+
+    # The point of the indirection: the value is in the environment, never in the file.
+    docker exec "sbx-$TAG-dep-postgres" printenv POSTGRES_PASSWORD 2>/dev/null | grep -q 'uc-secret' \
+      && ok "the referenced value reached the container" || bad "the variable did not expand"
+
+    grep -q 'uc-secret' "$WORK/dep/sandbox.json" \
+      && bad "the secret is in the committed spec" || ok "and it is not in the spec file"
+
+    "$SBX" rm "$TAG-dep" >/dev/null 2>&1
+  else
+    bad "create with depends_on failed"
+  fi
+
+  # A dependency naming something that does not exist is a rule that silently never applies,
+  # which looks exactly like the race it was added to prevent.
+  cat > "$WORK/badorder.json" <<'JSON'
+{ "version": 1, "services": { "api": { "image": "nginx:alpine", "ports": [80],
+  "depends_on": ["nope"] } }, "exports": { "API_PORT": "api:80" } }
+JSON
+  "$SBX" validate "$WORK/badorder.json" >/dev/null 2>&1 \
+    && bad "a dependency on an undeclared service was accepted" \
+    || ok "a dependency on an undeclared service is refused"
+fi
+
 # ── templates ─────────────────────────────────────────────────────────────────
 if want "templates"; then
   case_ "templates: an agent can start one with nothing on disk"

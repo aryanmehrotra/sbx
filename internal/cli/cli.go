@@ -46,7 +46,12 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 
 	var created []provider.Endpoint
 
-	for _, name := range sp.Names() {
+	order, err := sp.CreationOrder()
+	if err != nil {
+		return err
+	}
+
+	for _, name := range order {
 		svc := sp.Services[name]
 
 		if svc.Optional && !withOptional {

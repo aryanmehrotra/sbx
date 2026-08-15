@@ -347,6 +347,26 @@ func dispatch(cmd string, args []string) error {
 
 		return nil
 
+	case "validate":
+		fs := flag.NewFlagSet("validate", flag.ExitOnError)
+		specFlag := fs.String("spec", defaultSpec, "path to sandbox.json")
+		tmpl := fs.String("template", "", "check a built-in template instead")
+		positional, rest := splitPositional(args, 1)
+		_ = fs.Parse(rest)
+
+		// A bare path is the shape a linter is invoked with: `sbx validate ./sandbox.json`.
+		path := *specFlag
+		if len(positional) > 0 {
+			path = positional[0]
+		}
+
+		path, err := specPath(*tmpl, path)
+		if err != nil {
+			return err
+		}
+
+		return cli.Validate(os.Stdout, path)
+
 	case "prewarm":
 		fs := flag.NewFlagSet("prewarm", flag.ExitOnError)
 		kind, socket, ns, isolation := backendFlags(fs)
@@ -532,6 +552,7 @@ func usage() {
   sbx gc     [--older-than 168h] [--snapshots] [--force]   lists; deletes only with --force
   sbx doctor [--json]                           what this machine can and cannot do
   sbx prewarm [--spec sandbox.json]             pull images now so a create is not a download
+  sbx validate [sandbox.json]                   check the spec; creates nothing
   sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
   sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named
   sbx cp     <sandbox> <service> <src> <dst>    (inside path is prefixed with :)
