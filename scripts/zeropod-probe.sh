@@ -162,13 +162,16 @@ say
 # ── the gate ───────────────────────────────────────────────────────────────────
 # zeropod_running is 0 when checkpointed. Without this the pod reads Running throughout and
 # every "wake" would be a warm request.
+# Scraped from the client pod rather than by exec'ing into zeropod's own container: that
+# container is a Go image with no shell tools, so `kubectl exec ... wget` fails for a reason
+# that has nothing to do with whether the metric exists. The client pod already has curl and
+# is already in the cluster, which is also how a real scraper would reach it.
 metrics() {
-  local node
-  node=$(kubectl -n zeropod-system get pod -l app.kubernetes.io/name=zeropod-node \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-  [ -n "$node" ] || return 1
-  kubectl -n zeropod-system exec "$node" -- \
-    wget -qO- http://127.0.0.1:8080/metrics 2>/dev/null
+  local ip
+  ip=$(kubectl -n zeropod-system get pod -l app.kubernetes.io/name=zeropod-node \
+    -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+  [ -n "$ip" ] || return 1
+  kubectl exec probe-client -- curl -s -m 10 "http://$ip:8080/metrics" 2>/dev/null
 }
 
 checkpointed() {
@@ -176,6 +179,17 @@ checkpointed() {
 }
 
 if ! metrics | grep -q '^zeropod_running'; then
+  # Say what was actually found. "not exposed" could be a wrong port, a wrong path, TLS, or
+  # a metric that simply is not there, and those need different fixes.
+  say
+  say "  ── what the metrics endpoint returned ────────────────────"
+  kubectl -n zeropod-system get pods -o wide 2>&1 | sed 's/^/    /' | head -4
+  say "    first 15 lines of the scrape:"
+  metrics 2>&1 | head -15 | sed 's/^/      /'
+  say "    zeropod_ metrics found:"
+  metrics 2>&1 | grep -c '^zeropod_' | sed 's/^/      /'
+  say
+
   skip "zeropod_running is not exposed, so asleep cannot be told from awake — and a wake timed without that gate is a warm request"
 fi
 say "  gate available: zeropod_running is exposed"
