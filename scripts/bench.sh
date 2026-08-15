@@ -16,6 +16,8 @@ set -uo pipefail
 RUNS="${1:-10}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SBX="$ROOT/sbx"
+# shellcheck source=lib/measure.sh
+. "$ROOT/scripts/lib/measure.sh"
 NAME="bench-$$"
 SPEC="$(mktemp -d)/sandbox.json"
 
@@ -45,12 +47,7 @@ trap cleanup EXIT
 
 ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
 
-echo "── conditions ──────────────────────────────────────────────"
-printf '  host load      %s\n' "$(uptime | sed 's/.*averages*: *//')"
-if command -v colima >/dev/null 2>&1; then
-  printf '  vm memory      %s\n' "$(colima ssh -- free -m 2>/dev/null | awk 'NR==2{print $3" MB used, "$4" MB free of "$2" MB"}')"
-fi
-printf '  sbx            %s\n' "$("$SBX" version)"
+measure_conditions "$SBX"
 echo
 
 echo "── setup ───────────────────────────────────────────────────"
@@ -96,18 +93,15 @@ done
 
 echo
 echo "── distribution ────────────────────────────────────────────"
-echo "$samples" | tr ' ' '\n' | grep -v '^$' | python3 -c '
-import sys, statistics
-xs = sorted(int(l) for l in sys.stdin if l.strip())
-if not xs:
-    print("  no successful samples"); sys.exit(1)
-def pct(p):
-    return xs[min(len(xs) - 1, int(round((p / 100) * (len(xs) - 1))))]
-print(f"  n              {len(xs)}")
-print(f"  min            {xs[0]} ms")
-print(f"  median         {statistics.median(xs):.0f} ms")
-print(f"  p90            {pct(90)} ms")
-print(f"  max            {xs[-1]} ms")
-if len(xs) > 1:
-    print(f"  stdev          {statistics.stdev(xs):.0f} ms")
-'
+xs=$(echo "$samples" | tr ' ' '\n' | grep -v '^$')
+if [ -z "$xs" ]; then
+  echo "  no successful samples"
+  exit 1
+fi
+printf '  n              %s\n'    "$(echo "$xs" | measure_stat n)"
+printf '  min            %s ms\n' "$(echo "$xs" | measure_stat min)"
+printf '  median         %s ms\n' "$(echo "$xs" | measure_stat median)"
+printf '  p90            %s ms\n' "$(echo "$xs" | measure_stat p90)"
+printf '  max            %s ms\n' "$(echo "$xs" | measure_stat max)"
+printf '  stdev          %s ms\n' "$(echo "$xs" | measure_stat stdev)"
+
