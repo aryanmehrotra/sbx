@@ -1,7 +1,7 @@
 # Use cases
 
 Six shapes this fits, and the ones it does not — the problem each one solves.
-The commands per situation are in the [README](../README.md#how-youd-actually-use-it).
+The commands per situation are in the [README](../README.md#use-it).
 
 ---
 
@@ -9,7 +9,18 @@ The commands per situation are in the [README](../README.md#how-youd-actually-us
 
 **The problem.** Every branch shares one database, so a migration on one is a migration on
 all. The alternative — a stack per branch — costs full memory for every branch you ever
-opened. ([the picture is in the README](../README.md#why).)
+opened.
+
+```
+   TODAY                              WITH sbx
+   ─────────────────────────          ─────────────────────────────
+   branch A ─┐                        branch A ─▶ own db   ● awake
+   branch B ─┼─▶ ONE database         branch B ─▶ own db   ○ 0 B
+   branch C ─┘   shared state         branch C ─▶ own db   ○ 0 B
+
+   a migration on one                 nothing shared, and you only
+   is a migration on all              pay for what you're looking at
+```
 
 Only what you are looking at is resident. **Three attached sandboxes ≈ 2.2 GB against 5.7 GB
 for three copies of an untuned stack**, and the three that nobody has queried cost nothing at

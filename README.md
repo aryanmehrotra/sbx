@@ -21,52 +21,6 @@ a connection pool, Playwright and a test runner all wake it without knowing it e
 
 ---
 
-## Why
-
-```
-   TODAY                              WITH sbx
-   ─────────────────────────          ─────────────────────────────
-   branch A ─┐                        branch A ─▶ own db   ● awake
-   branch B ─┼─▶ ONE database         branch B ─▶ own db   ○ 0 B
-   branch C ─┘   shared state         branch C ─▶ own db   ○ 0 B
-
-   a migration on one                 nothing shared, and you only
-   is a migration on all              pay for what you're looking at
-```
-
-The usual fix — a stack per branch — costs full memory for **every branch you ever opened**.
-This costs zero for the ones you're not using. → [USE-CASES.md](docs/USE-CASES.md)
-
----
-
-## How it works
-
-```
-   your client                              sbx serve
-   (psql, redis-cli, a pool,             ┌──────────────┐
-    Playwright, curl)                    │  always up   │
-        │                                │   ~9.1 MB    │
-        │  :20002  ── PUBLIC ────────────▶              │
-        │            (owned by sbx)      └──────┬───────┘
-        │                                       │
-        │                              ┌────────▼────────┐
-        │                              │ start it,       │
-        │                              │ wait for ready  │
-        │                              └────────┬────────┘
-        │                                       │
-        │                          :30002 ── BACKING ──▶ ┌──────────┐
-        │                          (only exists          │ postgres │
-        │                           while awake)         │  :5432   │
-        └◀────────────── bytes spliced ──────────────────┴──────────┘
-```
-
-**Two ports, because something has to answer while nothing is running.** It splices bytes
-rather than parsing a protocol, which is why Postgres, Redis, gRPC and CDP all work
-unchanged. The same spec runs on Docker or Kubernetes.
-→ [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
----
-
 ## Install
 
 ```sh
@@ -87,87 +41,10 @@ sbx selftest
 
 ---
 
-## Commands
+## Use it
 
-| | |
-|---|---|
-| `sbx create` / `rm` | make one from `sandbox.json` or `--template`, destroy it with its data |
-| `sbx env` | exports for your tooling — posix, fish, powershell, **json** |
-| `sbx ready` | wake it and block until it's serving — the CI one-liner |
-| `sbx exec [-t]` | run anything inside it; `-t` attaches a terminal for a shell or `psql` |
-| `sbx logs [-f]` | **every service on one stdout**, structured |
-| `sbx cp` | files in and out (`:` marks the inside path) |
-| `sbx add` | drop in a service nobody declared — the agent affordance |
-| `sbx url` | a public link that wakes it when opened |
-| `sbx snapshot` | save every service's data under a name |
-| `sbx fork` | **a new sandbox from that snapshot** — as many as you want |
-| `sbx list` | what exists, what's awake |
-| `sbx doctor` | what this machine can and cannot do, before you rely on it |
-| `sbx selftest` | the whole cycle, on your machine |
-
-```
-INFO [14:16:40] my-branch/postgres  database system is ready to accept connections
-INFO [14:16:40] my-branch/redis     Ready to accept connections tcp
-```
-
-Aligned columns on a terminal, **JSON when piped**. Everything wakes what it touches —
-**except `logs`**, because asking what a sandbox said isn't using it.
-
-**What a sandbox is** is one committed file. → [SPEC.md](docs/SPEC.md)
-
----
-
-## Numbers
-
-| | |
-|---|---|
-| wake, docker | **191 ms** · n=20, p90 232 ms |
-| wake, kubernetes | **1534 ms** · n=5 |
-| a sleeping sandbox | **0 B** |
-| the daemon | **9.1 MB** at rest · 9.6 MB fronting one sandbox |
-
-Measured by [`scripts/bench.sh`](scripts/bench.sh), on the machine printed beside the results.
-→ [BENCHMARKS.md](docs/BENCHMARKS.md)
-
----
-
-## One seeded database, many copies
-
-Seed it once, then hand every branch or agent its own:
-
-```sh
-sbx exec main postgres psql -U app -d app -f schema.sql   # seed once
-sbx snapshot main golden                                  # save it
-
-sbx fork golden agent-1                                   # as many as you want
-sbx fork golden agent-2
-```
-
-Each fork gets its own copy of the data and its own ports. A write in one is invisible to
-the others and to the original. It's what makes a sandbox per task affordable: the
-migration runs once, not once per agent.
-
-⚠️ **Filesystem state only.** Processes start cold against warm data, exactly as a wake
-does — a fork is not a paused process resumed. E2B and zeropod restore memory too, in tens
-of milliseconds, and need Firecracker or CRIU to do it. `sbx doctor` tells you whether this
-machine has either.
-
-```sh
-sbx doctor          # ✗ docker checkpoint  daemon experimental=false
-                    #   memory-state sleep is unavailable
-```
-
-`doctor` is worth running before you rely on anything: sbx refuses rather than silently
-downgrading — asking for `--isolation gvisor` on a host without it fails — and the refusal
-shouldn't be the first time you hear about it.
-
----
-
-## How you'd actually use it
-
-Four situations, and they differ mostly in *who types the commands*. This is the **how**;
-[USE-CASES.md](docs/USE-CASES.md) is the **why** — the problem each shape solves and the
-numbers behind it.
+Five situations, and they differ mostly in *who types the commands*. This is the **how**;
+[USE-CASES.md](docs/USE-CASES.md) is the **why** — the problem each solves, and the numbers.
 
 ### You, with three branches open
 
@@ -216,12 +93,39 @@ sbx add task-4711 cache --image redis:7-alpine --port 6379 --health 'redis-cli p
 That service sleeps like the rest and is destroyed with the sandbox — rather than a stray
 container that outlives the task and belongs to nobody.
 
-**Give each agent its own copy of a seeded database** with `snapshot` and `fork`, so the
-migration runs once instead of once per agent — see [above](#one-seeded-database-many-copies).
-
 Worth saying plainly: if the agent is running code *you did not write*, add
-`"egress": "deny"` to the spec, and read [where to use something else](#how-it-compares)
+`"egress": "deny"` to the spec, and read [is it for you?](#is-it-for-you)
 first — a container shares your kernel, and E2B or Vercel Sandbox give you a real one.
+
+### One seeded database, many agents
+
+Seed it once, then hand every branch or agent its own:
+
+```sh
+sbx exec main postgres psql -U app -d app -f schema.sql   # seed once
+sbx snapshot main golden                                  # save it
+
+sbx fork golden agent-1                                   # as many as you want
+sbx fork golden agent-2
+```
+
+Each fork gets its own copy of the data and its own ports. A write in one is invisible to
+the others and to the original. It's what makes a sandbox per task affordable: the
+migration runs once, not once per agent.
+
+⚠️ **Filesystem state only.** Processes start cold against warm data, exactly as a wake
+does — a fork is not a paused process resumed. E2B and zeropod restore memory too, in tens
+of milliseconds, and need Firecracker or CRIU to do it. `sbx doctor` tells you whether this
+machine has either.
+
+```sh
+sbx doctor          # ✗ docker checkpoint  daemon experimental=false
+                    #   memory-state sleep is unavailable
+```
+
+`doctor` is worth running before you rely on anything: sbx refuses rather than silently
+downgrading — asking for `--isolation gvisor` on a host without it fails — and the refusal
+shouldn't be the first time you hear about it.
 
 ### CI
 
@@ -255,43 +159,66 @@ the host can enforce before you rely on it.
 
 ---
 
-## How it compares
+## Commands
 
-Two different products get called "sandbox". Most are **a place to run code**, where the
-client is an SDK and isolation is what's sold. This is **a place to run the services a branch
-needs**, where the client is `psql` and cost at rest is what's sold.
+| | |
+|---|---|
+| `sbx create` / `rm` | make one from `sandbox.json` or `--template`, destroy it with its data |
+| `sbx env` | exports for your tooling — posix, fish, powershell, **json** |
+| `sbx ready` | wake it and block until it's serving — the CI one-liner |
+| `sbx exec [-t]` | run anything inside it; `-t` attaches a terminal for a shell or `psql` |
+| `sbx logs [-f]` | **every service on one stdout**, structured |
+| `sbx cp` | files in and out (`:` marks the inside path) |
+| `sbx add` | drop in a service nobody declared — the agent affordance |
+| `sbx url` | a public link that wakes it when opened |
+| `sbx snapshot` | save every service's data under a name |
+| `sbx fork` | **a new sandbox from that snapshot** — as many as you want |
+| `sbx list` | what exists, what's awake |
+| `sbx doctor` | what this machine can and cannot do, before you rely on it |
+| `sbx selftest` | the whole cycle, on your machine |
 
-Everyone scales to zero. What separates them is **what has to happen to bring it back** —
-which decides who is allowed to be the client:
+```
+INFO [14:16:40] my-branch/postgres  database system is ready to accept connections
+INFO [14:16:40] my-branch/redis     Ready to accept connections tcp
+```
 
-| | wakes on | so the client can be | off-cloud |
-|---|---|---|---|
-| **sbx** | **any TCP connection** | anything with a socket | **laptop + cluster** |
-| E2B · Daytona · Modal · Vercel | an SDK call | only your own code | ✗ |
-| Cloudflare Sandbox SDK | an SDK call over RPC | only your own code | ✗ |
-| Fly Machines | a request through Fly Proxy | anything, incl. TCP | ✗ |
-| Knative | an HTTP request | HTTP/gRPC/WS only | ✓ cluster |
-| Neon | a Postgres connection | Postgres clients only | ✗ |
-| zeropod | any TCP connection | anything with a socket | ✓ CRIU + eBPF shim, per node |
-| Lazytainer | packets on an interface | anything with a socket | ✓ owns your networking |
-| Sablier | an HTTP request via a proxy | HTTP only | ✓ |
+Aligned columns on a terminal, **JSON when piped**. Everything wakes what it touches —
+**except `logs`**, because asking what a sandbox said isn't using it.
 
-The last three are self-hosted Go projects doing the same job, and they're the ones to read
-before this one — the bottom half of that table is the honest competition, not the top.
+**What a sandbox is** is one committed file. → [SPEC.md](docs/SPEC.md)
 
-**What you give up.** E2B and zeropod both restore a **memory** snapshot: processes and
-variables come back exactly as they were. This restores disk only, so a wake is a cold process
-start against warm data. Worse guarantee — and it's why a sleeping sandbox here is 0 B rather
-than "storage only", and why sleeping costs nothing to enter.
+---
 
-→ [COMPARISON.md](docs/COMPARISON.md) — every claim sourced to vendor docs, plus the chart
-where we sit fast **and narrow**, and when to use E2B, Northflank, Testcontainers or Neon
-instead.
+## Is it for you?
 
-⚠️ **Honest limits.** A container shares the host kernel; `--isolation gvisor|kata` is
-declarable and fails closed when absent, but operating a hardened cluster is yours. Every
-hosted platform above has real isolation and real users. **Nobody outside its author has run
-this in production.**
+**Yes, if** your branches share one database and a migration on one is a migration on all;
+if an agent needs somewhere to work that dies with the task; if CI spends longer waiting for
+a stack than running tests.
+
+**No, if** you need to run code you did not write — a container shares your kernel, and E2B,
+Vercel Sandbox or Modal give you a real one. Or if you want somebody else to operate it:
+that's Neon, and always will be.
+
+The one thing that makes this different from every other tool here: **nothing has to call an
+SDK to wake a sandbox.** A connection pool can't call `sandbox.connect()`, and neither can
+`pg_dump`, a migration tool or a test runner somebody else wrote.
+
+| | wakes on | so the client can be |
+|---|---|---|
+| **sbx** | **any TCP connection** | anything with a socket |
+| E2B · Daytona · Modal · Vercel · Cloudflare | an SDK call | only your own code |
+| Fly Machines | a request through Fly Proxy | anything, incl. TCP |
+| Knative | an HTTP request | HTTP/gRPC/WS only |
+| Lazytainer | packets crossing a threshold | anything that **retries** — 0/5 first attempts served |
+
+→ [COMPARISON.md](docs/COMPARISON.md) for the full field, every claim sourced or measured,
+including where we lose.
+
+⚠️ **Honest limits.** A container shares the host kernel unless you run `--isolation gvisor`,
+which CI now proves works end to end. Egress can be denied but not filtered by domain. And
+**nobody outside its author has run this in production** — [what *is* tested](docs/BENCHMARKS.md)
+is every push on Linux and macOS, including a real daemon, three concurrent sandboxes and a
+snapshot/fork cycle.
 
 ---
 
