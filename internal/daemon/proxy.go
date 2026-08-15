@@ -135,7 +135,7 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 	if err := u.wake(ctx, p, readyTimeout); err != nil {
 		// Hanging up is the honest failure. A caller that gets a closed connection retries
 		// or reports; one that gets a silently empty stream does neither.
-		logs.Default.Error(u.sandbox, u.service, "could not wake: %v", err)
+		logs.Default.Event(logs.LevelError, u.sandbox, u.service, "wakeFailed", 0, "could not wake: %v", err)
 		return
 	}
 
@@ -211,7 +211,8 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 		if !declared {
 			time.Sleep(2 * time.Second)
 			u.setAwake(true)
-			logs.Default.Warn(u.sandbox, u.service,
+			logs.Default.Event(logs.LevelWarn, u.sandbox, u.service, "woke",
+				time.Since(start).Milliseconds(),
 				"woke in %dms, unverified — no health check declared",
 				time.Since(start).Milliseconds())
 
@@ -225,7 +226,8 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 			u.served = true
 			u.mu.Unlock()
 
-			logs.Default.Info(u.sandbox, u.service, "woke in %dms", time.Since(start).Milliseconds())
+			logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "woke",
+				time.Since(start).Milliseconds(), "woke in %dms", time.Since(start).Milliseconds())
 
 			return nil
 		}
@@ -254,7 +256,8 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider) {
 	}
 
 	u.setAwake(false)
-	logs.Default.Info(u.sandbox, u.service, "slept — idle for %s", u.idleFor().Round(time.Second))
+	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",
+		u.idleFor().Milliseconds(), "slept — idle for %s", u.idleFor().Round(time.Second))
 }
 
 func (u *unit) track(c net.Conn) {
