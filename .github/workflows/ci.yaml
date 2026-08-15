@@ -105,6 +105,12 @@ jobs:
           fi
           shellcheck -S warning scripts/*.sh scripts/lib/*.sh deploy/entrypoint.sh
 
+      - name: workflows parse
+        # A workflow with a syntax error is rejected by GitHub in under a second with no
+        # logs, while the previous run's green tick stays on the branch. This catches it
+        # in a job that does produce logs.
+        run: bash scripts/lint-workflows.sh
+
       - name: measurement maths
         run: bash scripts/lib/measure_test.sh
 
@@ -182,19 +188,18 @@ jobs:
           docker info --format '{{json .Runtimes}}'
 
       - name: sbx reports the runtime as available
-        # doctor exists so nobody learns this from a failed create. If it says no here, it
-        # is wrong, and that is worth failing on.
+        # doctor exists so nobody learns this from a failed create. If it still says the
+        # runtime is missing after an install, doctor is wrong and that is worth failing on.
+        #
+        # Checked with grep rather than an inline script: an embedded multi-line python
+        # block inside `run: |` ends the YAML scalar at its first column-0 line, which
+        # rejected this whole workflow in 0s the first time it was pushed.
         run: |
+          set -eux
           go build -o sbx .
           ./sbx doctor
-          ./sbx doctor --json | grep -q '"name": "isolation gvisor"'
-          ./sbx doctor --json | python3 -c '
-import json,sys
-r = json.load(sys.stdin)
-for c in r["capabilities"]:
-    if c["name"] == "isolation gvisor" and not c["have"]:
-        raise SystemExit("doctor says gvisor is unavailable after installing it: " + c["detail"])
-'
+          ./sbx doctor --json > doctor.json
+          grep -A 1 '"name": "isolation gvisor"' doctor.json | grep -q '"have": true'
 
       - name: a sandbox actually runs under gVisor
         run: |
