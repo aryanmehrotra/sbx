@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -191,6 +192,11 @@ func LoadSpec(path string) (*Spec, error) {
 	return ParseSpec(raw, path)
 }
 
+// ServiceName is what a service may be called: the container-name rule, because that is what
+// the name becomes. Exported so the CLI's own name check and this one cannot drift apart —
+// they are the same rule, asserted equal by a test.
+var ServiceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
 func ParseSpec(raw []byte, path string) (*Spec, error) {
 	var s Spec
 	// DisallowUnknownFields: a typo in a spec should be a startup error, not a setting
@@ -211,6 +217,16 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 	}
 
 	for name, svc := range s.Services {
+		// The name becomes part of a container name, so a spec that names a service something
+		// the runtime will not accept cannot be created — and `sbx validate` exists to say so
+		// before a commit, not after. Its own docstring sets the standard: a spec that passes
+		// lint and fails create is worse than no lint at all.
+		if !ServiceName.MatchString(name) {
+			return nil, fmt.Errorf("%s: service name %q is not usable: start with a letter or "+
+				"digit, then letters, digits, dot, dash or underscore — it becomes part of a "+
+				"container name", path, name)
+		}
+
 		if err := svc.validate(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}

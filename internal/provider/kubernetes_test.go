@@ -15,6 +15,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
@@ -74,7 +75,7 @@ func TestReadinessCacheIsInvalidatedWhenTheDeploymentIsRecreated(t *testing.T) {
 
 	// Standing in for a first lookup that found a command.
 	k.mu.Lock()
-	k.ready["sbx-b-redis"] = "redis-cli ping"
+	k.ready["sbx-b-redis"] = readyEntry{command: "redis-cli ping", at: time.Now()}
 	k.mu.Unlock()
 
 	if cmd, ok := k.cachedReady("sbx-b-redis"); !ok || cmd != "redis-cli ping" {
@@ -98,10 +99,32 @@ func TestAnAbsentReadinessCommandIsRemembered(t *testing.T) {
 	k := newKube("sbx")
 
 	k.mu.Lock()
-	k.ready["sbx-b-web"] = ""
+	k.ready["sbx-b-web"] = readyEntry{command: "", at: time.Now()}
 	k.mu.Unlock()
 
 	if _, ok := k.cachedReady("sbx-b-web"); ok {
 		t.Error("an empty readiness command was reported as declared")
+	}
+}
+
+// The cache expires, which is what makes it safe in the process that actually probes.
+//
+// Create calls forgetReady, but Create runs in the `sbx create` process while this cache
+// lives in the long-running `sbx serve` daemon — so explicit invalidation never reaches the
+// prober. Without a TTL, `sbx rm x && sbx create x` with an edited health command would leave
+// the daemon probing with the old one for the life of the process.
+func TestTheReadinessCacheExpires(t *testing.T) {
+	k := newKube("sbx")
+
+	k.mu.Lock()
+	k.ready["sbx-b-redis"] = readyEntry{command: "old-command", at: time.Now().Add(-readyTTL - time.Second)}
+	k.mu.Unlock()
+
+	// Stale, so it must go back to kubectl rather than answering from the map. There is no
+	// cluster here, so that lookup fails — and failing is the correct observable: what must
+	// not happen is the stale command being returned.
+	if cmd, ok := k.cachedReady("sbx-b-redis"); ok && cmd == "old-command" {
+		t.Error("an expired entry was served — a recreated deployment would be probed with " +
+			"the command it used to declare")
 	}
 }

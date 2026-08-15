@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"regexp"
+
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // What a sandbox may be called.
@@ -15,7 +17,10 @@ import (
 // Stating it here makes two things true instead of one. The message names the problem, and
 // the constraint that keeps `~/.sbx/origins/<name>.json` inside its directory is written down
 // rather than inherited from whatever docker happens to allow.
-var sandboxName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+// The same rule the spec loader applies to service names, shared so the two cannot drift:
+// `sbx validate` refusing what `sbx create` accepts, or the reverse, is the failure both
+// exist to prevent.
+var sandboxName = spec.ServiceName
 
 // A snapshot name is stricter, because it becomes part of an image tag rather than a
 // container name — and image repositories must be lowercase. `sbx snapshot db GOLDEN` failed

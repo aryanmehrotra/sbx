@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
@@ -35,18 +36,24 @@ import (
 type kubeProvider struct {
 	namespace string
 
-	// The readiness command each deployment declares, which changes only when sbx recreates
-	// the deployment — so Create invalidates it and nothing else has to.
+	// The readiness command each deployment declares, cached with a short TTL.
 	//
 	// Cached because Probe is the body of the wake poll loop and this was a `kubectl get`
-	// fork on every iteration, on top of the `kubectl exec` that follows it. kubectl startup
-	// dominates a cluster wake, and the docker provider had already learned this.
+	// fork on every iteration, on top of the `kubectl exec` that follows it — and kubectl
+	// startup dominates a cluster wake.
 	//
-	// Keyed by deployment name, which is reused — hence the invalidation. The docker side
-	// solved the same problem by reading the command from the response it was already
-	// fetching; there is no single call here that returns both.
+	// TTL rather than explicit invalidation, which is what the first version got wrong.
+	// Create does call forgetReady, but Create runs in the `sbx create` process while the
+	// cache lives in the long-running `sbx serve` daemon — so the invalidation never reached
+	// the process that actually probes. `sbx rm x && sbx create x` with an edited health
+	// command would have left the daemon probing with the old one for weeks. Exactly the
+	// mistake the docker docstring one file over describes: reasoning about invalidation
+	// against something the cache cannot see.
+	//
+	// A few seconds collapses a 100 ms poll loop to one lookup per wake, which is the whole
+	// point, and bounds staleness to a single wake, which is the whole safety.
 	mu    sync.Mutex
-	ready map[string]string
+	ready map[string]readyEntry
 }
 
 func newKube(namespace string) *kubeProvider {
@@ -54,8 +61,19 @@ func newKube(namespace string) *kubeProvider {
 		namespace = "sbx"
 	}
 
-	return &kubeProvider{namespace: namespace, ready: map[string]string{}}
+	return &kubeProvider{namespace: namespace, ready: map[string]readyEntry{}}
 }
+
+// readyEntry is a cached readiness command and when it was read.
+type readyEntry struct {
+	command string
+	at      time.Time
+}
+
+// readyTTL bounds how stale a cached readiness command can be: long enough that one wake's
+// poll loop does a single lookup, short enough that a recreated deployment is picked up on
+// the next wake rather than never.
+const readyTTL = 5 * time.Second
 
 // forgetReady drops a cached readiness command. Called wherever sbx changes a deployment,
 // which is the only way the declared command can change.
@@ -69,11 +87,11 @@ func (k *kubeProvider) forgetReady(ref string) {
 // cachedReady returns the readiness command, asking kubectl only once per deployment.
 func (k *kubeProvider) cachedReady(ref string) (string, bool) {
 	k.mu.Lock()
-	cmd, seen := k.ready[ref]
+	e, seen := k.ready[ref]
 	k.mu.Unlock()
 
-	if seen {
-		return cmd, cmd != ""
+	if seen && time.Since(e.at) < readyTTL {
+		return e.command, e.command != ""
 	}
 
 	out, err := k.kc("", "get", "deployment", ref, "-o",
@@ -84,10 +102,10 @@ func (k *kubeProvider) cachedReady(ref string) (string, bool) {
 		return "", false
 	}
 
-	cmd = strings.TrimSpace(out)
+	cmd := strings.TrimSpace(out)
 
 	k.mu.Lock()
-	k.ready[ref] = cmd
+	k.ready[ref] = readyEntry{command: cmd, at: time.Now()}
 	k.mu.Unlock()
 
 	return cmd, cmd != ""

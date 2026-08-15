@@ -403,10 +403,23 @@ func (d *dockerProvider) CopyVolume(_ context.Context, src, dst string) error {
 	// that moves user data. DECISIONS.md records what that failure looks like when it
 	// happens: a fork with a working server and an empty database, which looks like it
 	// worked. The mechanism changed; the shape was still reachable.
+	// The source is checked BEFORE the destination is touched, which the first version of
+	// this got wrong: it counted both sides afterwards and compared them, so an empty source
+	// gave 0 == 0 and passed — after the delete had already wiped a freshly initialised data
+	// directory. Reachable in practice, because `sbx gc --snapshots --force` collects a
+	// snapshot's image and its volume as two separate artifacts, so an interrupted sweep can
+	// leave an image that SnapshotsOf still resolves with no volume behind it.
+	//
+	// Counting counts every entry, not just regular files: a copy that silently dropped every
+	// symlink or empty directory would otherwise still report the same number on both sides.
 	script := `set -e
+if [ -z "$(find /from -mindepth 1 -print -quit)" ]; then
+  echo "SBXEMPTY"
+  exit 0
+fi
 find /to -mindepth 1 -delete
 cp -a /from/. /to/
-echo "SBXCOUNT $(find /from -type f | wc -l) $(find /to -type f | wc -l)"`
+echo "SBXCOUNT $(find /from -mindepth 1 | wc -l) $(find /to -mindepth 1 | wc -l)"`
 
 	out, err := d.docker("run", "--rm",
 		"-v", src+":/from:ro",
@@ -416,9 +429,16 @@ echo "SBXCOUNT $(find /from -type f | wc -l) $(find /to -type f | wc -l)"`
 		return fmt.Errorf("copying volume %s to %s: %w: %s", src, dst, err, lastLines(out, 8))
 	}
 
-	// The copy is asserted, not assumed. Docker creates an empty volume for a name that does
-	// not exist rather than failing, so copying from a snapshot that was never made is
-	// otherwise a silent success that produces exactly nothing.
+	// Docker creates an empty volume for a name that does not exist rather than failing, so
+	// "the source has nothing in it" and "the source is not there" look identical from here.
+	// Both are refused, because neither is a snapshot worth restoring and the alternative is
+	// a fork with a working server and an empty database.
+	if strings.Contains(out, "SBXEMPTY") {
+		return fmt.Errorf("copying volume %s to %s: the source is empty or does not exist — "+
+			"nothing was changed", src, dst)
+	}
+
+	// The copy is asserted, not assumed.
 	from, to, ok := parseCopyCount(out)
 	if !ok {
 		return fmt.Errorf("copying volume %s to %s: the copy did not report what it moved: %s",

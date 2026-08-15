@@ -69,14 +69,14 @@ different is that this runs on your laptop, with no account, on any protocol.
 |---|---|---|---|
 | **sbx** | **0 B** | **191 ms** docker · 1534 ms k8s | disk. processes cold-start |
 | E2B | storage only | **~1 s** | **disk + RAM + running processes** |
-| Daytona | storage only | ~90 ms p99 reported | disk, persistent volume |
+| Daytona | storage only | *no wake figure published* | disk, persistent volume |
 | Fly (suspended) | storage only | a few hundred ms | RAM snapshot |
 | Fly (stopped) | storage only | ~2 s+ | disk |
 | Neon | storage only | a few hundred ms | Postgres data |
 | Knative | 0 pods | pod schedule, seconds | volume, if you attached one |
 
 **The honest weakness, stated plainly.** E2B pauses to a memory snapshot: loaded variables and
-running processes come back exactly as they were, at roughly 4 s per GiB to pause and ~1 s to
+running processes come back exactly as they were, at roughly 4 s per GiB of RAM to pause and ~1 s to
 resume. sbx does not snapshot RAM. A sleeping sandbox is a stopped container with its volume
 intact, so a wake is a **cold process start against warm data** — Postgres replays its WAL and
 comes up, it doesn't resume mid-transaction.
@@ -125,7 +125,7 @@ would put us top-right, which is exactly why the score doesn't use them.
 
 | | wake, ms | source | breadth | of 8 |
 |---|---|---|---|---|
-| Daytona | ~90 *reported* | third-party roundup | 0.81 | 6.5 |
+| Daytona | *none published* | — | 0.81 | 6.5 |
 | **sbx** docker | **191** | `scripts/bench.sh 20`, this repo | **0.25** | **2** |
 | Fly, suspended | a few hundred | [vendor][fly] | 0.95 | 7.5 |
 | Neon | a few hundred | [vendor][neon] | 0.60 | 4.8 |
@@ -189,7 +189,7 @@ ones to read before this one. Two of them predate it.
 ### zeropod · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 939★ · **measured**
 
 A containerd shim. eBPF watches TCP activity; after an idle period CRIU checkpoints the
-container to disk; an activator holds the port and **restores on the first connection in tens
+container to disk; eBPF redirects traffic to an activator, which **restores on the first connection in tens
 to a few hundred milliseconds** — with memory, open files and processes intact.
 
 **This is the same mechanism as ours, done at a lower layer, and on the RAM question it beats
@@ -267,6 +267,10 @@ state of that attempt:
 | the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
 | Neon wakes in 300–800 ms | **quoted and wrong** — the [vendor page][neon] says "a few hundred milliseconds" and publishes no range. The 300–800 was ours, attributed to them. Corrected here and in BENCHMARKS.md |
 | an E2B fork takes 5–30 ms | **quoted and wrong** — [their page][e2b-fork] gives no figure at all. It says a fork carries files, processes and memory, and that the pause scales with disk changes since the last snapshot. Corrected |
+| E2B spawns many sandboxes from a snapshot "in tens of milliseconds" | **quoted and wrong** — E2B publishes ~1 s to resume a paused sandbox and no fan-out figure at all. Off by roughly 20×, and it survived the correction above by ninety lines because the sweep that found the first one stopped at the table. Corrected here and in a Go comment that carried the same number |
+| Daytona wakes in ~90 ms p99 | **quoted and wrong twice over** — Daytona advertises a *cold start* "in under 90ms" and publishes no percentile and no wake figure. The "p99" was ours, and a cold start is not a wake. The row is now blank, on the same rule that keeps Modal and Cloudflare out |
+| E2B scales to zero after 5 minutes by default | **quoted and wrong** — the timeout is 5 minutes and `onTimeout` defaults to **kill**. Auto-pause is opt-in, and "scale to zero" appears nowhere in their docs. It credited a competitor with a default they do not have |
+| the Fly citation | **a 404** — both Fly figures were right and the link was dead, which for a document whose argument is "check it yourself" is the same failure as inventing them. `scripts/lint-docs.sh` now fetches every external URL |
 
 **Two of those are worse than being wrong about ourselves.** A number invented and hung on a
 vendor's link is the one thing a reader cannot check without doing the work themselves, and
@@ -358,7 +362,7 @@ All-or-nothing is a real control and a coarse one, and the gap between it and a 
 allow-list is where a filtering proxy would have to go.
 
 The second is nearly as important and is not the same thing as CRIU: E2B can spawn *many*
-sandboxes from one snapshot in tens of milliseconds. That is a different capability from
+sandboxes from one snapshot, copy-on-write. That is a different capability from
 "resume the one you paused", and it is what makes per-task fan-out cheap for them.
 
 `sbx snapshot` / `sbx fork` now do the fan-out half — many sandboxes from one saved state,
@@ -391,7 +395,7 @@ somebody else's code.
 Vendor documentation, read August 2026:
 
 - [E2B — sandbox persistence](https://docs.e2b.dev/sandbox/persistence): `sandbox.connect()` to
-  resume; ~4 s per GiB to pause, ~1 s to resume; filesystem *and* memory state preserved.
+  resume; ~4 s per GiB of RAM to pause, ~1 s to resume; filesystem *and* memory state preserved.
 - [Fly Proxy autostop/autostart](https://fly.io/docs/reference/fly-proxy-autostop-autostart/):
   "The proxy waits for a request to your app… starts a stopped or suspended Machine". Also:
   "only works on existing Machines and never creates or destroys Machines for you."
@@ -404,7 +408,8 @@ Vendor documentation, read August 2026:
   and [the activator on the data path](https://knative.dev/blog/articles/demystifying-activator-on-path/).
 - [Neon — connection latency](https://neon.com/docs/connect/connection-latency): a few hundred ms
 - [E2B — forking a sandbox](https://docs.e2b.dev/sandbox/fork): files, processes and memory; no latency published
-  from idle; scale-to-zero after 5 minutes by default.
+  from idle; default timeout 5 minutes, with `onTimeout` defaulting to **kill** —
+  auto-pause is opt-in.
 - [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), [Modal sandboxes](https://modal.com/docs/guide/sandbox),
   [Daytona](https://www.daytona.io/docs/), [Northflank preview environments](https://northflank.com/blog/preview-environment-platforms).
 
@@ -420,9 +425,14 @@ The self-hosted prior art, read from the repositories themselves:
   monitored interface; "you must apply a label to them and proxy their traffic through the
   Lazytainer container".
 
-Third-party benchmark figures (Daytona ~90 ms p99, Modal/E2B comparisons) come from published
-2026 roundups rather than a harness in this repo, and are marked "reported" wherever they
-appear. **They were not reproduced here**, and cross-platform latency numbers taken on
+Third-party roundup figures are **no longer quoted here at all.** Daytona advertises a cold
+start "in under 90ms"; it publishes no percentile and no wake figure, and a cold start is not
+a wake. That number used to appear in this file as "~90 ms p99" in a column headed *wake* —
+a percentile this repo added and a measurement Daytona never made. It is gone, on the same
+rule that keeps Modal and Cloudflare out: a blank is better than a guess.
+
+Where a figure is still attributed to a vendor it is on their page, in their words. **They
+were not reproduced here**, and cross-platform latency numbers taken on
 different hardware, in different regions, against different images are not a like-for-like
 measurement. Ours are in [BENCHMARKS.md](BENCHMARKS.md) with the machine and the script beside
 them; theirs are on their own machines.
@@ -431,6 +441,6 @@ them; theirs are on their own machines.
      the page itself; two that were not are recorded in the corrections table. -->
 
 [neon]: https://neon.com/docs/connect/connection-latency
-[e2b]: https://e2b.dev/docs/sandbox/persistence
+[e2b]: https://docs.e2b.dev/sandbox/persistence
 [e2b-fork]: https://docs.e2b.dev/sandbox/fork
-[fly]: https://fly.io/docs/machines/guides-examples/machine-sleep/
+[fly]: https://fly.io/docs/reference/suspend-resume/

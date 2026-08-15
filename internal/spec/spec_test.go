@@ -96,3 +96,29 @@ func TestAssignRefusesToOverflowTheBlock(t *testing.T) {
 		t.Fatal("assign accepted more ports than the block holds")
 	}
 }
+
+// `sbx validate` is billed as the pre-commit gate for a committed file, so a spec it accepts
+// must be one `sbx create` can realise. A service name becomes part of a container name, and
+// validate used to accept names the runtime refuses — the one path where a false pass costs
+// most, and the exact thing validate.go's own docstring says must not happen.
+func TestServiceNamesMustBeUsable(t *testing.T) {
+	bad := []string{"BAD NAME", "has space", "../evil", "-leading", ".hidden", ""}
+
+	for _, name := range bad {
+		raw := []byte(`{"version":1,"services":{"` + name +
+			`":{"image":"nginx","ports":[80]}},"exports":{}}`)
+
+		if _, err := ParseSpec(raw, "spec.json"); err == nil {
+			t.Errorf("a service named %q was accepted, but it cannot become a container name", name)
+		}
+	}
+
+	for _, name := range []string{"web", "postgres", "a", "svc-1", "a.b_c"} {
+		raw := []byte(`{"version":1,"services":{"` + name +
+			`":{"image":"nginx","ports":[80]}},"exports":{}}`)
+
+		if _, err := ParseSpec(raw, "spec.json"); err != nil {
+			t.Errorf("a usable service name %q was refused: %v", name, err)
+		}
+	}
+}

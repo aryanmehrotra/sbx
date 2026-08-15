@@ -19,7 +19,8 @@ import (
 //
 // This is a FILESYSTEM snapshot. Processes and memory are not in it: a fork starts its
 // services cold against a warm disk, exactly as a wake does. E2B and zeropod restore memory
-// too, in tens of milliseconds, and they need Firecracker or CRIU to do it — neither of
+// too — about a second for E2B, tens of milliseconds for zeropod — using Firecracker or
+// CRIU, neither of
 // which exists on a machine that only has docker, and `sbx doctor` will tell you whether
 // yours does.
 //

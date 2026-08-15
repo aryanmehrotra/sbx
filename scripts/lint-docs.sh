@@ -36,5 +36,54 @@ for f in "$ROOT"/docs/*.md "$ROOT"/README.md; do
   done
 done
 
+# And the external ones must actually be there.
+#
+# Six rounds of review produced five separate vendor-sourcing defects in these files —
+# invented ranges, a percentile nobody published, a cold start quoted as a wake, an inverted
+# default, and a citation that 404s. It is the only defect class here with no automated gate,
+# and it is the one this project can least afford: an unsourced number does not just mislead
+# about the vendor, it discredits every measured number sitting beside it.
+#
+# This catches the dead-link half. The other half — a live URL whose page no longer says what
+# is attributed to it — a linter cannot check, and the corrections table in COMPARISON.md is
+# where that is tracked by hand.
+#
+# Skipped without a network rather than failing: a lint that fails on a plane is a lint people
+# learn to bypass.
+if [ "${SKIP_LINK_CHECK:-0}" = "1" ]; then
+  echo "  – external links not checked (SKIP_LINK_CHECK=1)"
+elif ! curl -fsS -m 10 -o /dev/null https://example.com 2>/dev/null; then
+  echo "  – external links not checked (no network)"
+else
+  urls=$(grep -ho 'https://[A-Za-z0-9._~:/?#@!$&*+,;=%-]*' \
+           "$ROOT"/docs/*.md "$ROOT"/README.md 2>/dev/null \
+         | sed 's/[.,)]*$//' | grep -E '^https://[A-Za-z0-9.-]+\.[A-Za-z]{2,}' | sort -u)
+
+  for u in $urls; do
+    # This project's own URLs 404 until it is published, which says nothing about whether the
+    # link is right. The point of this check is other people's pages.
+    case "$u" in
+      *aryanmehrotra/sbx*) continue ;;
+    esac
+
+    # HEAD first; some hosts refuse it, so fall back to a ranged GET before believing a 404.
+    code=$(curl -s -o /dev/null -w '%{http_code}' -I -L -m 20 "$u" 2>/dev/null)
+
+    case "$code" in
+      2*|3*) continue ;;
+    esac
+
+    code=$(curl -s -o /dev/null -w '%{http_code}' -L -m 20 -r 0-0 "$u" 2>/dev/null)
+
+    case "$code" in
+      2*|3*) continue ;;
+      000)   printf '  – %s could not be reached (network, not a bad link)\n' "$u" ;;
+      *)     printf '  ✗ %s returns %s\n' "$u" "$code"; fail=1 ;;
+    esac
+  done
+
+  [ "$fail" = 0 ] && echo "  ✓ every external link resolves"
+fi
+
 [ "$fail" = 0 ] && echo "  ✓ every documentation link resolves"
 exit "$fail"

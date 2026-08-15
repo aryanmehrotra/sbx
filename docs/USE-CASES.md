@@ -158,7 +158,8 @@ to the original. The migration runs once.
 
 ⚠️ **Filesystem state, not memory.** A fork starts its services cold against warm data,
 exactly as a wake does. It is not a paused process resumed — E2B and zeropod do that, in
-tens of milliseconds, using Firecracker or CRIU. `sbx doctor` reports whether this machine
+about a second for E2B, and tens of milliseconds for zeropod's CRIU restore. `sbx doctor`
+reports whether this machine
 has either.
 
 It snapshots the **volume**, which is worth knowing if you are reasoning about what is

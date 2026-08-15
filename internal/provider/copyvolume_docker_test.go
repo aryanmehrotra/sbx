@@ -107,22 +107,29 @@ func TestCopyVolumeMovesEveryFile(t *testing.T) {
 }
 
 // Docker creates an empty volume for a name that does not exist rather than failing, so a
-// copy from a snapshot that was never made used to be a silent success producing nothing.
-func TestCopyVolumeRefusesWhenTheSourceIsEmpty(t *testing.T) {
+// copy from a snapshot that was never made used to be a silent success producing nothing —
+// and worse, producing it by first deleting whatever the destination held.
+//
+// Reachable: `sbx gc --snapshots --force` collects a snapshot's image and its volume as two
+// separate artifacts, so an interrupted sweep leaves an image SnapshotsOf still resolves with
+// no volume behind it.
+func TestCopyVolumeRefusesAnEmptySource(t *testing.T) {
 	d := dockerOrSkip(t)
 
 	dst := "sbx-cvtest-dst2"
-	volume(t, d, dst, 2) // the destination has real content, which must not be lost silently
-
-	err := d.CopyVolume(context.Background(), "sbx-cvtest-nothing-here", dst)
+	volume(t, d, dst, 2) // freshly initialised, as Create leaves it
 
 	t.Cleanup(func() { _, _ = d.docker("volume", "rm", "-f", "sbx-cvtest-nothing-here") })
 
-	// An empty source copying to an empty destination is a legitimate zero-file copy, so what
-	// is asserted is the counts matching — not that it refuses. What must never happen is a
-	// destination that still claims to hold the source's data.
-	if err == nil && countFiles(t, d, dst) != 0 {
-		t.Error("reported success but the destination is not what the source was")
+	err := d.CopyVolume(context.Background(), "sbx-cvtest-nothing-here", dst)
+	if err == nil {
+		t.Fatal("reported success copying from a source that does not exist")
+	}
+
+	// And it refused before touching anything: the destination still holds what it held.
+	if got := countFiles(t, d, dst); got != 2 {
+		t.Errorf("the destination has %d files, want the 2 it started with — it was wiped "+
+			"before the copy was found to be impossible", got)
 	}
 }
 

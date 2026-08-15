@@ -285,7 +285,7 @@ next section explains why it would be dishonest to present it as one.
 | Neon | a few hundred ms | Postgres data | [vendor docs][neon] |
 | Fly, suspended | a few hundred ms | RAM snapshot | [vendor docs][fly] |
 | Fly, stopped | ~2000 ms+ | disk | [vendor docs][fly] |
-| Daytona | ~90 ms p99 *reported* | disk, persistent volume | third-party 2026 roundup |
+| Daytona | *none published* | disk, persistent volume | — |
 | Knative | pod schedule, seconds | volume if attached | — |
 
 [e2b]: https://docs.e2b.dev/sandbox/persistence
