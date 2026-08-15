@@ -265,6 +265,42 @@ if want "reachable"; then
   fi
 fi
 
+# ── a remote docker host ──────────────────────────────────────────────────────
+if want "remote"; then
+  case_ "remote: drive a docker daemon that is not this machine's default"
+
+  # A socat container in front of the socket, which is a remote endpoint as far as sbx is
+  # concerned: it dials tcp and never touches the local socket path.
+  docker rm -f "$TAG-proxy" >/dev/null 2>&1
+  if docker run -d --name "$TAG-proxy" -p 127.0.0.1:23751:2375 \
+       -v /var/run/docker.sock:/var/run/docker.sock \
+       alpine/socat tcp-listen:2375,fork,reuseaddr unix-connect:/var/run/docker.sock >/dev/null 2>&1; then
+    sleep 3
+    remote="tcp://127.0.0.1:23751"
+
+    DOCKER_HOST="$remote" "$SBX" list >/dev/null 2>&1 \
+      && ok "list works against a tcp endpoint" || bad "list failed over tcp"
+
+    if DOCKER_HOST="$remote" "$SBX" create "$TAG-remote" --template nginx >/dev/null 2>&1; then
+      ok "create works against a tcp endpoint"
+      DOCKER_HOST="$remote" "$SBX" rm "$TAG-remote" >/dev/null 2>&1
+    else
+      bad "create failed over tcp"
+    fi
+
+    docker rm -f "$TAG-proxy" >/dev/null 2>&1
+  else
+    skip "tcp endpoint" "could not start the socat proxy"
+  fi
+
+  # The narrow part of the capability, which the docs must not oversell: TLS is refused
+  # rather than silently dialled without client certificates.
+  err=$(DOCKER_HOST=https://docker.example.com:2376 "$SBX" list 2>&1)
+  echo "$err" | grep -qi 'TLS' \
+    && ok "a TLS endpoint is refused with a reason, not attempted" \
+    || bad "https was not refused clearly" "$err"
+fi
+
 # ── egress control ────────────────────────────────────────────────────────────
 if want "egress"; then
   case_ "egress: denied service cannot reach out, and is still reachable"

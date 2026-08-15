@@ -263,6 +263,7 @@ state of that attempt:
 | Lazytainer wakes on any TCP | **measured** — it does, but it never holds the connection: attempts 1–5 refused, served on the 6th, 5150 ms later. 0/5 first attempts served against sbx's 5/5 |
 | sbx wakes on raw TCP (postgres) | **measured** — 5/5 first attempts served, median 931 ms |
 | sbx's proxy tax | **measured** — 33 µs/req over a same-container floor, ±21 µs, alongside benchstat's ~15 µs by a different method |
+| sbx drives a remote docker host | **measured** — `DOCKER_HOST=tcp://` creates and lists against a daemon reached over the network; `https://` is refused because sbx carries no client certificates, so the supported shape is a trusted network |
 | the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
 
 One of seven is still read rather than run — Sablier's overhead, because its middleware
@@ -307,12 +308,18 @@ documentation leads with, and this is where sbx has nothing rather than somethin
 | **Interactive access: SSH · PTY · VNC** | ◐ `exec -t` gives a PTY; no SSH, no VNC | ◐ | ● all three | ◐ | ◐ | ● |
 | **Volumes shared between sandboxes** | ○ one per service | ● NFS/block | ● subpath mounts | ● | ◐ | ● |
 | **Language SDKs** (Python, JS) | ○ CLI only | ● | ● | ● | ● | ● |
-| **Multiple regions / hosts** | ○ one machine | ● | ● | ● | ● | ● |
+| **Multiple regions / hosts** | ◐ any docker host over `tcp://`, no TLS | ● | ● | ● | ● | ● |
+| **Per-sandbox CPU / RAM limit** | ○ **nothing** — only `gpus` | ● tiers | ● | ● | ● | ● |
+| **Expiry / reclamation of artifacts** | ○ **nothing** | ● | ● 7-day cleanup | ● | ● | ● |
 
 ● yes · ◐ partial or conditional · ○ no
 
-**Read that table before the one above it.** Eight rows, and sbx scores nothing on three of
-them.
+**Read that table before the one above it.** Ten rows, and sbx scores nothing on four of
+them — two of which were missing from this table entirely until an architecture review of the
+parity plan asked what binds first at twenty sandboxes on one laptop. The answer is not wake
+latency. It is that **nothing limits a sandbox's CPU or memory, and nothing ever reclaims a
+volume**: sbx sleeps a sandbox and has no concept of expiring one, so merged branches
+accumulate disk forever.
 
 The first row was the most serious and is now half closed. `egress: "deny"` gives a service
 no route off the host while leaving it reachable and wakeable — verified in both directions.
