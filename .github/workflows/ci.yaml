@@ -1,9 +1,13 @@
 # What has to be true before a change lands.
 #
-# The unit tests, the race detector and the build matrix run everywhere. The end-to-end
-# tests need a Docker daemon and are therefore Linux-only here — which is also the first
-# time any of this runs on a machine that is not the author's Mac, and the whole reason
-# "nobody else has run it" was the honest weakness.
+# The unit tests, the race detector and the shell tests run on Linux AND macOS, because
+# "one static binary, anywhere" is a claim this project makes out loud and testing it on
+# one platform proves nothing. That is not theoretical: two bugs in this repo were macOS
+# only — bash 3.2, which macOS still ships, treats an empty array as unbound under `set -u`
+# — and both were found by hand on a laptop rather than here.
+#
+# The end-to-end tests need a Docker daemon and stay Linux-only. GitHub's macOS runners
+# have no daemon, and skipping them there is honest; pretending otherwise is not.
 name: ci
 
 on:
@@ -16,7 +20,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # one platform failing should not hide the other's result
+      matrix:
+        os: [ubuntu-latest, macos-latest] # macos-latest is arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,9 +47,25 @@ jobs:
         # The daemon is the only genuinely concurrent thing here, so -race is not optional.
         run: go test -race ./...
 
+      - name: console module
+        # Its own module, so nothing else in the repo ever compiles it.
+        run: |
+          cd console
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: the root module has no dependencies
+        # A product claim, a README badge, and the reason the console is a separate module.
+        # Asserted here as well as in a Go test, because this is the one that gates a merge.
+        run: |
+          if grep -q '^require' go.mod; then
+            echo "the root go.mod gained a dependency:"; grep '^require' -A 20 go.mod; exit 1
+          fi
+
   # Cross-compilation is a claim this project makes out loud, so it is checked rather than
-  # assumed. It caught nothing yet; it exists so that the first import of something
-  # platform-specific fails here rather than in someone's install.
+  # assumed. It exists so that the first import of something platform-specific fails here
+  # rather than in someone's install.
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -56,6 +81,38 @@ jobs:
         with:
           go-version: '1.26'
       - run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o /dev/null .
+
+  # The shell that runs on a developer's machine is not the shell in CI. macOS ships bash
+  # 3.2 from 2007 and every script here has to work on it: both empty-array bugs in this
+  # repo were exactly that, and both reached main.
+  shell:
+    name: shell (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash version, for the record
+        run: bash --version | head -1
+
+      - name: shellcheck
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install shellcheck; else
+            sudo apt-get update && sudo apt-get install -y shellcheck
+          fi
+          shellcheck -S warning scripts/*.sh scripts/lib/*.sh deploy/entrypoint.sh
+
+      - name: measurement maths
+        run: bash scripts/lib/measure_test.sh
+
+      - name: harness gating (injected failures)
+        # The teardown-after-kill case needs docker and skips itself where there is none,
+        # which is most of the point of running this on macOS at all: the gating logic is
+        # shell, and shell is what differs between these two machines.
+        run: bash scripts/compare_test.sh
 
   # The claims that only a real daemon can settle: a sandbox is created, sleeps to zero,
   # wakes on a plain socket, and remembers what it was told.
@@ -84,21 +141,16 @@ jobs:
       - name: three sandboxes, concurrently
         run: ./scripts/e2e.sh 3
 
-  shell:
+  # Snapshot and fork touch volumes, images and a stopped container's data directory, and
+  # every one of those is a place where "it worked on my machine" has already been wrong
+  # once here: docker commit silently excludes volumes.
+  snapshot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: shellcheck
-        run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck -S warning scripts/*.sh scripts/lib/*.sh deploy/entrypoint.sh
-      - name: console module
-        run: |
-          cd console
-          go build ./...
-          go vet ./...
-          go test ./...
-      - name: measurement maths
-        run: bash scripts/lib/measure_test.sh
-      - name: harness gating (injected failures)
-        run: bash scripts/compare_test.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go build -o sbx .
+      - name: seed, snapshot, fork twice, and prove the forks are independent
+        run: ./scripts/fork-e2e.sh
