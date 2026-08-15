@@ -1,6 +1,6 @@
 # Use cases
 
-Four shapes this fits, and the ones it does not.
+Five shapes this fits, and the ones it does not.
 
 ---
 
@@ -8,18 +8,11 @@ Four shapes this fits, and the ones it does not.
 
 **The problem.** Every branch shares one database, so a migration on one is a migration on
 all. The alternative — a stack per branch — costs full memory for every branch you ever
-opened.
-
-```
-   before                          after
-   ──────────────────────          ──────────────────────
-   branch A ─┐                     branch A ─▶ own db  ● awake
-   branch B ─┼─▶ one db            branch B ─▶ own db  ○ asleep  0 B
-   branch C ─┘   shared state      branch C ─▶ own db  ○ asleep  0 B
-```
+opened. ([the picture is in the README](../README.md#why).)
 
 Only what you are looking at is resident. **Three attached sandboxes ≈ 2.2 GB against 5.7 GB
-for three copies of an untuned stack.**
+for three copies of an untuned stack**, and the three that nobody has queried cost nothing at
+all rather than a third each.
 
 ---
 
@@ -37,10 +30,9 @@ It gets a port from the sandbox's block, sleeps when idle like everything else, 
 destroyed with the sandbox — instead of a stray container that outlives the task and belongs
 to nobody.
 
-**Why this matters more than it sounds:** the hosted sandbox platforms expose
-create/pause/resume through an SDK, so *something has to call resume*. An agent's clients
-here are `psql`, a connection pool, a test runner — none of which can call an SDK. They open
-a socket, and the socket is the wake signal.
+**Why this matters more than it sounds:** an agent's clients here are `psql`, a connection
+pool, a test runner — none of which can call an SDK to wake anything. They open a socket, and
+the socket is the wake signal. → [COMPARISON.md](COMPARISON.md#the-axis-that-actually-separates-them)
 
 ---
 
@@ -75,6 +67,26 @@ sbx url my-branch web
 
 The tunnel points at the **wake port**, so the sandbox behind a shared link is asleep until
 somebody opens it. A reviewer clicks, waits about a second, sees the app.
+
+---
+
+## 5 · A browser, on the same terms
+
+Nothing about this is database-shaped. A headless Chrome is a container that speaks TCP, so
+it sleeps and wakes like everything else:
+
+```sh
+sbx create my-branch --spec examples/browser/sandbox.json
+curl "http://$CDP_HOST:$CDP_PORT/json/version"
+# {"Browser": "HeadlessChrome/124.0.6367.78", ...}
+```
+
+Asleep at 0 B → woken by that request in **624 ms** → then driven over CDP by Playwright or
+Puppeteer, which never learn they started something. A scrape job that runs twice a day stops
+being a browser you pay to keep alive.
+
+⚠️ Chrome images often ship without `wget` or `curl`, which makes the health command the
+thing that breaks. → [SPEC.md](SPEC.md#health-is-close-to-required)
 
 ---
 

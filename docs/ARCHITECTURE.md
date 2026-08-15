@@ -157,6 +157,29 @@ name. The port arithmetic is a workaround for one shared loopback.
 
 ---
 
+## The same spec, either backend
+
+```sh
+sbx create my-branch                        # docker, this machine
+sbx create my-branch --provider kubernetes  # the same spec, a cluster
+```
+
+Everything the spec declares maps onto both. Nothing in `sandbox.json` names a backend:
+
+| | docker | kubernetes |
+|---|---|---|
+| address | `127.0.0.1:20002` | `sbx-x-pg.sbx.svc:5432` |
+| wake | `docker start` | scale → 1 |
+| sleep | `docker stop` | scale → 0 |
+| health | HEALTHCHECK | readinessProbe |
+| storage | named volume | PVC |
+| isolation | `--runtime` | `runtimeClassName` |
+
+The right-hand column is the reason the provider is an interface rather than a flag: the wake
+policy above doesn't know which of these it is driving.
+
+---
+
 ## What is deliberately not here
 
 | | why |
