@@ -104,10 +104,10 @@ Asleep at 0 B → woken by that request → then driven over CDP by Playwright o
 which never learn they started something. A scrape job that runs twice a day stops being a
 browser you pay to keep alive.
 
-**Measured: 3030 ms median** (n=5, min 703 ms, max 4356 ms, macOS arm64), against 191 ms for
-Redis. Chrome is simply a much heavier thing to start, and the spread is wide — this doc
-carried an unsourced "624 ms" until somebody actually ran it. The wake is the browser's own
-startup, not sbx's: the same Chrome started by hand costs the same.
+**Measured: about 4.4 s cold, about 0.75 s warm** (n=5, macOS arm64), against 191 ms for
+Redis. Chrome is simply a much heavier thing to start, and the first touch pays for warming
+caches — this doc carried an unsourced "624 ms" until somebody ran it. The wake is the
+browser's own startup, not sbx's: the same Chrome started by hand costs the same.
 
 ⚠️ Chrome images often ship without `wget` or `curl`, which makes the health command the
 thing that breaks. → [SPEC.md](SPEC.md#health-is-close-to-required)

@@ -72,7 +72,7 @@ different is that this runs on your laptop, with no account, on any protocol.
 | Daytona | storage only | ~90 ms p99 reported | disk, persistent volume |
 | Fly (suspended) | storage only | a few hundred ms | RAM snapshot |
 | Fly (stopped) | storage only | ~2 s+ | disk |
-| Neon | storage only | 300–800 ms | Postgres data |
+| Neon | storage only | a few hundred ms | Postgres data |
 | Knative | 0 pods | pod schedule, seconds | volume, if you attached one |
 
 **The honest weakness, stated plainly.** E2B pauses to a memory snapshot: loaded variables and
@@ -128,7 +128,7 @@ would put us top-right, which is exactly why the score doesn't use them.
 | Daytona | ~90 *reported* | third-party roundup | 0.81 | 6.5 |
 | **sbx** docker | **191** | `scripts/bench.sh 20`, this repo | **0.25** | **2** |
 | Fly, suspended | a few hundred | [vendor][fly] | 0.95 | 7.5 |
-| Neon | 300–800 | [vendor][neon] | 0.60 | 4.8 |
+| Neon | a few hundred | [vendor][neon] | 0.60 | 4.8 |
 | E2B | ~1000 | [vendor][e2b] | 0.88 | 7 |
 | **sbx** kubernetes | **1534** | `scripts/bench.sh`, minikube | **0.30** | 2.5 |
 | Fly, stopped | ~2000+ | [vendor][fly] | 0.95 | 7.5 |
@@ -265,6 +265,21 @@ state of that attempt:
 | sbx's proxy tax | **measured** — 33 µs/req over a same-container floor, ±21 µs, alongside benchstat's ~15 µs by a different method |
 | sbx drives a remote docker host | **measured** — `DOCKER_HOST=tcp://` creates and lists against a daemon reached over the network; `https://` is refused because sbx carries no client certificates, so the supported shape is a trusted network |
 | the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
+| Neon wakes in 300–800 ms | **quoted and wrong** — the [vendor page][neon] says "a few hundred milliseconds" and publishes no range. The 300–800 was ours, attributed to them. Corrected here and in BENCHMARKS.md |
+| an E2B fork takes 5–30 ms | **quoted and wrong** — [their page][e2b-fork] gives no figure at all. It says a fork carries files, processes and memory, and that the pause scales with disk changes since the last snapshot. Corrected |
+
+**Two of those are worse than being wrong about ourselves.** A number invented and hung on a
+vendor's link is the one thing a reader cannot check without doing the work themselves, and
+it is exactly what this document claims never to do. Both ran in directions that flattered
+this table — a fabricated 800 ms upper bound put Neon behind sbx on the chart below, and a
+fabricated 5 ms put E2B's fork somewhere no vendor claimed. They were found by a review that
+opened the linked pages, which is the check that should have happened before either was
+written.
+
+The real difference on the fork row survives the correction and is sharper than the number
+was: an E2B fork is copy-on-write from a snapshot, so it is O(1) in dataset size, while
+`sbx fork` copies the volume byte for byte and is O(n). For the 8 GB fixture this document
+names two sections later, that is the whole story, and it does not need a number from anyone.
 
 One of eight is still read rather than run — Sablier's overhead, because its middleware
 would not engage. Everything else has been run, and one of the measurements refuted a claim
@@ -302,7 +317,7 @@ documentation leads with — the rows the competition would choose.
 | | sbx | E2B | Daytona | Modal | Cloudflare | Northflank |
 |---|---|---|---|---|---|---|
 | **Network egress control** — allow/deny by IP, CIDR, domain | ◐ `egress: deny`, all-or-nothing | ● wildcards | ● firewall | ● | ● | ● |
-| **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, filesystem only | ● 5–30 ms, with RAM | ● | ● | ◐ | ○ |
+| **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, copies the volume | ● files, processes and memory | ● | ● | ◐ | ○ |
 | **Prebuilt templates, versioned and cached** | ● five, embedded, digest-pinned, `sbx prewarm` | ● | ● 24 h cache | ● | ● | ● |
 | **Declarative image builder** | ● `build:`, cached by content hash | ◐ | ● | ● | ◐ | ● |
 | **Interactive access: SSH · PTY · VNC** | ◐ `exec -t` gives a PTY; no SSH, no VNC | ◐ | ● all three | ◐ | ◐ | ● |
@@ -388,6 +403,7 @@ Vendor documentation, read August 2026:
 - [Knative — configuring scale to zero](https://knative.dev/docs/serving/autoscaling/scale-to-zero/)
   and [the activator on the data path](https://knative.dev/blog/articles/demystifying-activator-on-path/).
 - [Neon — connection latency](https://neon.com/docs/connect/connection-latency): a few hundred ms
+- [E2B — forking a sandbox](https://docs.e2b.dev/sandbox/fork): files, processes and memory; no latency published
   from idle; scale-to-zero after 5 minutes by default.
 - [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), [Modal sandboxes](https://modal.com/docs/guide/sandbox),
   [Daytona](https://www.daytona.io/docs/), [Northflank preview environments](https://northflank.com/blog/preview-environment-platforms).
@@ -410,3 +426,11 @@ appear. **They were not reproduced here**, and cross-platform latency numbers ta
 different hardware, in different regions, against different images are not a like-for-like
 measurement. Ours are in [BENCHMARKS.md](BENCHMARKS.md) with the machine and the script beside
 them; theirs are on their own machines.
+
+<!-- Vendor pages the tables above cite. Every figure attributed to one of these was read on
+     the page itself; two that were not are recorded in the corrections table. -->
+
+[neon]: https://neon.com/docs/connect/connection-latency
+[e2b]: https://e2b.dev/docs/sandbox/persistence
+[e2b-fork]: https://docs.e2b.dev/sandbox/fork
+[fly]: https://fly.io/docs/machines/guides-examples/machine-sleep/

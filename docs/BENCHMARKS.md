@@ -82,8 +82,19 @@ connection, so the round-trip figure does not describe it.
   through the daemon     median   0.79 ms   min 0.67   max 5.60
   straight to docker     median   0.69 ms   min 0.56   max 1.47
 
-  per-connection cost   +0.10 ms  → below the 4.93 ms jitter: indistinguishable from zero
+  per-connection cost   median +0.10 ms   IQR [-0.03, +0.21]   slower in 13/20 pairs
 ```
+
+⚠️ **The first version of this gate was wrong, and in the flattering direction.** It compared
+a difference of *medians* against `max - min` of the raw samples — a threshold set by whichever
+single outlier was worst, which any small delta passes automatically. It then reported
+"indistinguishable from zero" about the number that verifies this project's own headline fix.
+
+The samples are collected in interleaved pairs, so the pairing was there and thrown away.
+`connbench.sh` now subtracts pair by pair, as `measure.sh`'s own doctrine has always required,
+and reports the median delta with its IQR. The honest reading is: on a quiet machine the cost
+is a fraction of a millisecond and the IQR straddles zero, so it is not resolvable — and on a
+busy one it is not resolvable either, just noisier. What is claimed is that it is not 68 ms.
 
 **It was 68 ms.** The daemon re-ran the health command through `docker exec` on every
 accepted connection — including connections to a sandbox it had woken minutes earlier and
@@ -111,20 +122,50 @@ startup. That makes it the right measurement and a misleading one to generalise 
 here is the other end of the range — the browser template, woken by a plain CDP request:
 
 ```
-  run 1   4356 ms      run 4    703 ms
-  run 2   3744 ms      run 5    829 ms
-  run 3   3030 ms
-
-  n=5   median 3030 ms   min 703 ms   max 4356 ms      macOS arm64
+  cold   run 1  4356 ms    run 2  3744 ms    run 3  3030 ms
+  warm   run 4   703 ms    run 5   829 ms
 ```
 
-**Three seconds, not the 624 ms this project's own use-case doc claimed** before anybody ran
-it. That number had no script behind it and was wrong by a factor of five; it is the reason
+**Two regimes, not one number.** Reporting `median 3030 ms` over that series was wrong in a
+quieter way than the 624 ms it replaced: the samples fall monotonically until they plateau,
+which is layer and page-cache warming, and a median over a warming series is a statistic of
+nothing. Cold is about 4.4 s, warm about 0.75 s, n=5, macOS arm64. The honest summary is that
+a browser costs seconds on first touch and well under a second thereafter — which is better
+than the single number suggested, and is the shape a caller should plan for.
+
+**Neither is the 624 ms this project's own use-case doc claimed** before anybody ran it. That number had no script behind it and was wrong by a factor of five; it is the reason
 every figure in these docs now names the script that produced it.
 
 The spread is real and wide, and the wake is Chrome's own startup rather than sbx's — the
 same image started by hand costs the same. Which is the honest framing for the whole feature:
 sbx removes the cost of a browser nobody is using, not the cost of starting one.
+
+---
+
+## Listing sandboxes
+
+Not a user-facing number, and that is exactly why it went unmeasured for so long. `List` is
+called by the daemon's discovery on every refresh tick, by `AllocSlot` on every create, and by
+nine CLI commands — so its cost is paid on a timer, for ever, and grows with the number of
+sandboxes on the machine.
+
+It ran one `docker ps` plus one `docker inspect` **per container**. Interleaved A/B of `sbx
+list` against 13 containers, paired because the runs alternate:
+
+```
+  ps + inspect per container   median  330.7 ms   min 233.4   max 1021.2
+  one Engine API request       median   78.8 ms   min  56.2   max  514.5
+
+  paired delta                 median +237.6 ms
+```
+
+**Four times faster at 13 containers, and O(1) process spawns instead of O(n).** At twenty
+sandboxes the old path was spawning dozens of docker CLI processes every fifteen seconds,
+contending for the same daemon that wakes are trying to use — so discovery cost landed on the
+wake path exactly when the machine was busiest.
+
+The Engine API client this now uses was already in the repo, written for precisely this, with
+no callers.
 
 ---
 
@@ -195,7 +236,7 @@ next section explains why it would be dishonest to present it as one.
 | **sbx** docker | **191 ms** | disk warm, process cold | `scripts/bench.sh 20`, this repo |
 | **sbx** kubernetes | **1534 ms** | disk warm, process cold | `scripts/bench.sh`, minikube |
 | E2B resume | ~1000 ms | **RAM + processes** | [vendor docs][e2b] |
-| Neon | 300–800 ms | Postgres data | [vendor docs][neon] |
+| Neon | a few hundred ms | Postgres data | [vendor docs][neon] |
 | Fly, suspended | a few hundred ms | RAM snapshot | [vendor docs][fly] |
 | Fly, stopped | ~2000 ms+ | disk | [vendor docs][fly] |
 | Daytona | ~90 ms p99 *reported* | disk, persistent volume | third-party 2026 roundup |
@@ -213,7 +254,8 @@ four things make the column non-comparable, and all four favour us:
 1. **Different hardware.** Ours is one laptop with nothing else running. Theirs is a
    multi-tenant fleet serving other people at the same time.
 2. **No network.** 191 ms is loopback. Every hosted figure is a client somewhere else on the
-   internet, and the [Neon docs are explicit][neon] that physical distance dominates.
+   internet, and the [Neon docs][neon] name cold start as the primary cause with physical
+   distance as a further factor on top.
 3. **Different work.** E2B's ~1 s restores a memory image with your processes inside it. Our
    191 ms starts a process against a warm disk. **Theirs is the harder problem**, and a
    like-for-like row would compare their number to a cold `docker start` plus a health check

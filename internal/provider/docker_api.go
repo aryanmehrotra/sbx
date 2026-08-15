@@ -2,10 +2,11 @@ package provider
 
 // A hand-rolled Docker Engine API client over the unix socket.
 //
-// The official SDK pulls in most of Moby to call four endpoints, and this binary's whole
-// argument is that it stays small enough to run unconditionally. Four endpoints it is.
+// The official SDK pulls in most of Moby to call a handful of endpoints, and this binary's
+// whole argument is that it stays small enough to run unconditionally. A handful it is.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -35,9 +36,29 @@ func newDockerClient(ep dockerEndpoint) *dockerClient {
 }
 
 func (d *dockerClient) do(ctx context.Context, method, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+path, nil)
+	return d.send(ctx, method, path, nil, out)
+}
+
+// send is do with a JSON body, which the exec endpoints need.
+func (d *dockerClient) send(ctx context.Context, method, path string, body, out any) error {
+	var rdr io.Reader
+
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+
+		rdr = bytes.NewReader(raw)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+path, rdr)
 	if err != nil {
 		return err
+	}
+
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := d.http.Do(req)
@@ -139,4 +160,59 @@ func (d *dockerClient) stop(ctx context.Context, id string, timeout time.Duratio
 	}
 
 	return err
+}
+
+// exec runs a command inside a container over the API and returns its exit code.
+//
+// This is on the wake path. Probe used to shell out to `docker exec`, which is a process
+// spawn plus the docker CLI's own startup — measured at about 150 ms — and the wake loop
+// calls it repeatedly until the workload answers. So the published 191 ms wake was mostly
+// this: not the container starting, but a CLI being started to ask whether it had.
+//
+// Three calls, because that is what the API requires: create the exec, start it, then read
+// the exit code. The output is read and discarded — the exit code is the whole answer, and
+// a health command's stdout is not something sbx has any business interpreting.
+func (d *dockerClient) exec(ctx context.Context, id string, argv []string) (int, error) {
+	var created struct {
+		ID string `json:"Id"`
+	}
+
+	body := map[string]any{
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Cmd":          argv,
+	}
+
+	if err := d.send(ctx, http.MethodPost, "/containers/"+id+"/exec", body, &created); err != nil {
+		return 0, err
+	}
+
+	if created.ID == "" {
+		return 0, fmt.Errorf("docker exec create returned no id")
+	}
+
+	// Detach=false, so this returns once the command has finished and its output is drained.
+	// Detaching would mean polling for completion, which is the cost this is removing.
+	if err := d.send(ctx, http.MethodPost, "/exec/"+created.ID+"/start",
+		map[string]any{"Detach": false, "Tty": false}, nil); err != nil {
+		return 0, err
+	}
+
+	var status struct {
+		ExitCode int  `json:"ExitCode"`
+		Running  bool `json:"Running"`
+	}
+
+	if err := d.do(ctx, http.MethodGet, "/exec/"+created.ID+"/json", &status); err != nil {
+		return 0, err
+	}
+
+	// Running should be false by the time the start call returned. If docker says otherwise,
+	// treat it as "not finished, so not yet a success" rather than reading a zero exit code
+	// that has not been decided.
+	if status.Running {
+		return -1, nil
+	}
+
+	return status.ExitCode, nil
 }

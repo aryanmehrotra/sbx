@@ -268,3 +268,89 @@ func TestWakeTakesTheLockEvenWhenAwake(t *testing.T) {
 		t.Errorf("an awake unit was probed %d times — the 68 ms per connection is back", got)
 	}
 }
+
+// A client that half-closes must still get its whole response.
+//
+// handle() waited on one of two pipe goroutines, so whichever direction finished first tore
+// down both — undoing the CloseWrite that pipe() performs one line earlier. A client that
+// signals end-of-input with shutdown(SHUT_WR) and then reads (`nc -N`, several HTTP clients,
+// pipe-mode bulk loaders) got a truncated response and no error.
+func TestAHalfClosedClientStillGetsTheWholeResponse(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	// An upstream that reads to EOF, then writes a reply larger than one pipe buffer.
+	const replySize = 256 * 1024
+
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+
+	go func() {
+		c, err := up.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+
+		_, _ = io.Copy(io.Discard, c) // read until the client half-closes
+		_, _ = c.Write(make([]byte, replySize))
+
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+	}()
+
+	front, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer front.Close()
+
+	p := &countingProvider{}
+	p.serving.Store(true)
+
+	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+
+	l := leg{
+		Listen:   front.Addr().(*net.TCPAddr).Port,
+		Upstream: provider.Endpoint{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port},
+	}
+
+	go func() {
+		c, err := front.Accept()
+		if err != nil {
+			return
+		}
+
+		u.handle(context.Background(), p, c, l, 5*time.Second)
+	}()
+
+	client, err := net.Dial("tcp", listenAddr(l.Listen))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+
+	// "That is all I am sending" — and now the whole reply must come back.
+	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+
+	if len(got) != replySize {
+		t.Errorf("got %d bytes of a %d byte response — the response was truncated when the "+
+			"client half-closed", len(got), replySize)
+	}
+}

@@ -98,24 +98,34 @@ for _ in range(n):
     direct.append(one(back))
 
 def show(label, xs):
-    xs = sorted(xs)
-    print(f"  {label:<22} median {statistics.median(xs):7.2f} ms   "
-          f"min {xs[0]:6.2f}   max {xs[-1]:6.2f}")
-    return statistics.median(xs)
+    ys = sorted(xs)
+    print(f"  {label:<22} median {statistics.median(ys):7.2f} ms   "
+          f"min {ys[0]:6.2f}   max {ys[-1]:6.2f}")
+    return statistics.median(ys)
 
-t = show("through the daemon", through)
-d = show("straight to docker", direct)
+show("through the daemon", through)
+show("straight to docker", direct)
 
-delta = t - d
-jitter = max(max(through) - min(through), max(direct) - min(direct))
+# PAIRED, because the samples are collected in pairs and throwing that away is what makes a
+# difference look like noise. measure.sh's own doctrine says so: an unpaired subtraction has
+# undefined spread. The first version of this script compared a difference of medians against
+# max-minus-min of the raw samples — a gate set by whichever single outlier was worst, which
+# any small delta passes automatically. That is the one statistical test in this repo that was
+# chosen in the flattering direction, defending the repo's most load-bearing number.
+deltas = sorted(t - d for t, d in zip(through, direct))
+n = len(deltas)
+med = statistics.median(deltas)
+q1, q3 = deltas[n // 4], deltas[(3 * n) // 4]
+wins = sum(1 for x in deltas if x > 0)
 
 print()
-print(f"  per-connection cost   {delta:+.2f} ms")
+print(f"  per-connection cost   median {med:+.2f} ms   IQR [{q1:+.2f}, {q3:+.2f}]   "
+      f"slower in {wins}/{n} pairs")
 
-# The same refusal the rest of the harness makes: a delta smaller than the run-to-run
-# spread is not a measurement, and reporting it as one is how a number becomes folklore.
-if abs(delta) < jitter:
-    print(f"  → below the {jitter:.2f} ms jitter on this machine: indistinguishable from zero.")
+# Consistency, not magnitude: a cost that shows up in nearly every pair is real even when it
+# is small, and one that flips sign across the IQR is not resolvable here.
+if q1 <= 0 <= q3:
+    print("  → the IQR spans zero: not resolvable on this machine, and not claimed.")
 else:
-    print(f"  → above the {jitter:.2f} ms jitter: a real cost, and it should not be here.")
+    print(f"  → consistent across pairs. This is a real {med:+.2f} ms, and small is not zero.")
 PY

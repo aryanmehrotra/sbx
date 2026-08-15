@@ -146,6 +146,7 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 		kubeLabelSandbox:   sandbox,
 		kubeLabelService:   service,
 		kubeLabelSlot:      strconv.Itoa(slot),
+		kubeLabelOrdinal:   strconv.Itoa(ordinal),
 		kubeLabelManagedBy: "sbx",
 	}
 

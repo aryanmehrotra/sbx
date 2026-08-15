@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -306,11 +307,23 @@ func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 		return false, false
 	}
 
-	if _, err := d.Exec(ctx, ref, []string{"sh", "-c", cmd}); err != nil {
+	// Over the Engine API, not `docker exec`. This is the wake path and it is asked
+	// repeatedly until the workload answers, so every poll used to be a process spawn plus
+	// the docker CLI's own startup.
+	//
+	// Honestly: this did NOT measurably improve wake latency. Interleaved A/B on the same
+	// machine, n=8 each: 228 ms median via the CLI against 252 ms via the API, spreads of
+	// 210–754 and 155–452 — a difference well inside the noise, in the unflattering
+	// direction. The reason to keep it is the same one that took `docker ps` + N ×
+	// `docker inspect` out of List: it removes a process spawn from a path the daemon walks
+	// on its own schedule, which is what stops cost growing with the number of sandboxes.
+	// The wake budget is dominated by `docker start`, not by how the health check is asked.
+	code, err := d.api.exec(ctx, ref, []string{"sh", "-c", cmd})
+	if err != nil {
 		return false, true
 	}
 
-	return true, true
+	return code == 0, true
 }
 
 // healthCommand reads the declared check off the container, cached: it cannot change
@@ -503,13 +516,23 @@ func qualify(ref, path string) string {
 	return path
 }
 
-func (d *dockerProvider) List(_ context.Context, sandbox string) ([]Unit, error) {
-	filter := "label=" + labelSandbox
+// List rebuilds every sandbox from the labels docker is already holding.
+//
+// One HTTP request over the socket, not one `docker ps` plus one `docker inspect` per
+// container. That mattered more than it looks: List is called by discover() on every refresh
+// tick, by AllocSlot on every create, and by nine CLI commands — so on a machine with twenty
+// sandboxes the daemon was spawning dozens of docker CLI processes every fifteen seconds,
+// for ever, and `sbx create` got slower the more sandboxes already existed. The Engine API
+// returns labels, state and names in the same response the filter already needs.
+//
+// The API client this uses was written for exactly this and had no callers.
+func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, error) {
+	filter := labelSandbox
 	if sandbox != "" {
 		filter += "=" + sandbox
 	}
 
-	out, err := d.docker("ps", "-aq", "--filter", filter)
+	cs, err := d.api.list(ctx, filter)
 	if err != nil {
 		// Returning (nil, nil) here reported "no sandboxes" whenever docker was unreachable,
 		// which is the same lie as a collector that cannot run and exits 0. An unreachable
@@ -517,37 +540,24 @@ func (d *dockerProvider) List(_ context.Context, sandbox string) ([]Unit, error)
 		return nil, fmt.Errorf("listing sandboxes via %s: %w", d.endpoint, err)
 	}
 
-	if strings.TrimSpace(out) == "" {
-		return nil, nil
-	}
-
 	var units []Unit
 
-	for _, id := range strings.Fields(out) {
-		f, err := d.docker("inspect", id, "--format",
-			label(labelSandbox)+"\t"+label(labelService)+"\t"+label(labelSlot)+"\t"+label(labelPorts)+"\t{{.State.Running}}\t{{.Name}}")
-		if err != nil {
-			continue
-		}
-
-		p := strings.Split(f, "\t")
-		if len(p) != 6 {
-			continue
-		}
-
-		slot, _ := strconv.Atoi(p[2])
-
-		pairs, err := ParsePorts(p[3])
+	for _, c := range cs {
+		pairs, err := ParsePorts(c.Labels[labelPorts])
 		if err != nil || len(pairs) == 0 {
+			// A container carrying the sandbox label but no parseable ports is not something
+			// sbx can front. Skipping it keeps `sbx list` working rather than failing whole.
 			continue
 		}
+
+		slot, _ := strconv.Atoi(c.Labels[labelSlot])
 
 		u := Unit{
-			Sandbox: p[0],
-			Service: p[1],
+			Sandbox: c.Labels[labelSandbox],
+			Service: c.Labels[labelService],
 			Slot:    slot,
-			Ref:     strings.TrimPrefix(p[5], "/"),
-			Running: p[4] == "true",
+			Ref:     c.name(),
+			Running: c.State == "running",
 			Index:   (pairs[0].Public - publicBase) % blockSize,
 		}
 
@@ -559,6 +569,16 @@ func (d *dockerProvider) List(_ context.Context, sandbox string) ([]Unit, error)
 
 		units = append(units, u)
 	}
+
+	// Deterministic, because the API returns creation order and half a dozen callers render
+	// this to a terminal. `sbx list` reordering itself between runs reads as churn.
+	sort.Slice(units, func(i, j int) bool {
+		if units[i].Sandbox != units[j].Sandbox {
+			return units[i].Sandbox < units[j].Sandbox
+		}
+
+		return units[i].Service < units[j].Service
+	})
 
 	return units, nil
 }

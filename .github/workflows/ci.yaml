@@ -111,6 +111,12 @@ jobs:
         # in a job that does produce logs.
         run: bash scripts/lint-workflows.sh
 
+      - name: documentation links resolve
+        # `[vendor][neon]` with no definition renders as literal text and reads like a
+        # citation. Four sat in the vendor table of the document whose whole claim is that
+        # every figure is measured here or quoted with a link.
+        run: bash scripts/lint-docs.sh
+
       - name: templates are pinned by digest
         # A floating tag means the first thing anybody runs can break without a commit
         # touching this repo. Refresh with scripts/pin-templates.sh.

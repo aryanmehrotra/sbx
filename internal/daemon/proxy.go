@@ -167,9 +167,22 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 	u.track(client)
 	defer u.untrack(client)
 
+	// Both directions, not the first to finish.
+	//
+	// Waiting on one made the CloseWrite in pipe() dead: the moment either side saw EOF,
+	// handle() returned and the deferred Closes killed the other direction mid-flight. A
+	// client that says "that is all I am sending" by shutting down its write side — `nc -N`,
+	// several HTTP clients, any pipe-mode bulk loader — then had its response truncated
+	// rather than completed. Silently, which is the worst shape for a proxy whose job is to
+	// be invisible.
+	//
+	// This cannot hang on a peer that stays open: the half-close gives it EOF, and a
+	// connection nobody ever closes is torn down when the sandbox sleeps, which closes every
+	// tracked client.
 	done := make(chan struct{}, 2)
 	go u.pipe(upstream, client, done)
 	go u.pipe(client, upstream, done)
+	<-done
 	<-done
 }
 
