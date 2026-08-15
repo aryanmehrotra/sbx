@@ -252,6 +252,6 @@ func (d *daemon) reap(ctx context.Context) {
 			continue
 		}
 
-		u.sleep(ctx, d.provider)
+		u.sleep(ctx, d.provider, d.idle)
 	}
 }

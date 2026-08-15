@@ -241,7 +241,25 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 // sleep stops the workload and closes anything still attached to it. Closing the live
 // connections is not rudeness: the client reconnects, the reconnect wakes the unit, and the
 // alternative is a pool holding a sandbox up for a branch nobody is working on.
-func (u *unit) sleep(ctx context.Context, p provider.Provider) {
+// sleep stops the unit. It takes the same lock wake() does, because the two drive one
+// container in opposite directions and the interleaving is visible to a client.
+//
+// Without the lock a connection arriving mid-stop found Probe still reporting the old
+// state, was told the sandbox was awake, and was handed a connection to a container that
+// was in the process of stopping. The daemon then recorded it asleep, so the daemon and
+// the caller disagreed about the same sandbox.
+//
+// idle is re-checked here rather than trusted from the reaper: between the reaper deciding
+// and this acquiring the lock a client may have arrived and touched the unit, and stopping
+// then is stopping something in use.
+func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duration) {
+	u.waking.Lock()
+	defer u.waking.Unlock()
+
+	if u.idleFor() < idle {
+		return
+	}
+
 	u.mu.Lock()
 	for c := range u.live {
 		_ = c.Close()
@@ -250,12 +268,14 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider) {
 	u.live = map[net.Conn]struct{}{}
 	u.mu.Unlock()
 
+	// Marked asleep before the stop returns, so anything blocked on the lock behind this
+	// takes the wake path instead of believing a stale "awake".
+	u.setAwake(false)
+
 	if err := p.Stop(ctx, u.ref); err != nil {
 		logs.Default.Error(u.sandbox, u.service, "could not sleep: %v", err)
 		return
 	}
-
-	u.setAwake(false)
 	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",
 		u.idleFor().Milliseconds(), "slept — idle for %s", u.idleFor().Round(time.Second))
 }
