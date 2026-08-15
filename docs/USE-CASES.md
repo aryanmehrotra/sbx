@@ -95,7 +95,7 @@ it sleeps and wakes like everything else:
 ```sh
 sbx serve --idle 5m &                                        # once per machine
 sbx create my-branch --spec examples/browser/sandbox.json
-eval "$(sbx env my-branch --spec examples/browser/sandbox.json)"
+eval "$(sbx env my-branch)"
 curl "http://$CDP_HOST:$CDP_PORT/json/version"
 # {"Browser": "HeadlessChrome/124.0.6367.78", ...}
 ```
@@ -126,8 +126,8 @@ sbx cp main postgres ./schema.sql :/tmp/schema.sql        # your own migration f
 sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
 sbx snapshot main golden
 
-sbx fork golden agent-1 --template postgres      # the spec the snapshot came from
-sbx fork golden agent-2 --template postgres
+sbx fork golden agent-1                          # the spec is remembered
+sbx fork golden agent-2
 ```
 
 Each fork has its own copy and its own ports; a write in one is invisible to the others and

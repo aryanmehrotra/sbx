@@ -15,6 +15,8 @@ package daemon
 
 import (
 	"context"
+	"io"
+	"log"
 	"net"
 	"testing"
 	"time"
@@ -138,5 +140,131 @@ func TestHandleDoesNotHangOnADeadUpstream(t *testing.T) {
 	// And the belief was revoked rather than kept: a second connection must probe again.
 	if u.isAwake() && p.probes.Load() == 0 {
 		t.Error("still believed awake with a dead upstream, and never re-checked")
+	}
+}
+
+// slowStopper holds a sleep open long enough for a racing connection to be observed.
+type slowStopper struct {
+	countingProvider
+
+	stopping chan struct{} // closed once Stop has begun
+	release  chan struct{} // Stop returns when this is closed
+}
+
+func (s *slowStopper) Stop(_ context.Context, _ string) error {
+	close(s.stopping)
+	<-s.release
+	s.stops.Add(1)
+	s.serving.Store(false)
+
+	return nil
+}
+
+// A connection that arrives while a sleep is committed must not be told the unit is awake.
+//
+// The first version of the awake fast path checked `isAwake()` BEFORE taking `u.waking`,
+// which made it cheap and wrong: sleep() holds that lock across `p.Stop()`, so a connection
+// could see "awake", skip straight to dialling, and reach a container that was already being
+// stopped. The client got a connection reset for a sandbox it had just woken — reached twice
+// in one run of the concurrent-wake suite on a busy machine.
+//
+// Only the probe was ever expensive. The lock costs nanoseconds, and taking it is what makes
+// "awake" mean anything.
+func TestWakeWaitsForACommittedSleep(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	p := &slowStopper{stopping: make(chan struct{}), release: make(chan struct{})}
+	p.serving.Store(true)
+
+	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+	u.lastByte.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	go u.sleep(context.Background(), p, time.Minute)
+
+	<-p.stopping // the sleep is now past the point of no return, holding u.waking
+
+	woke := make(chan error, 1)
+
+	go func() {
+		// Fresh activity, exactly as handle() records it before waking.
+		u.touch()
+		woke <- u.wake(context.Background(), p, 10*time.Second)
+	}()
+
+	select {
+	case <-woke:
+		t.Fatal("wake returned while a sleep was mid-Stop — it did not take the lock, so a " +
+			"caller would dial a container that is being stopped")
+	case <-time.After(200 * time.Millisecond):
+		// Correct: blocked behind the sleep.
+	}
+
+	close(p.release)
+
+	select {
+	case err := <-woke:
+		if err != nil {
+			t.Fatalf("wake after the sleep finished: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("wake never completed after the sleep released the lock")
+	}
+
+	if !u.isAwake() {
+		t.Error("not awake after waking behind a sleep")
+	}
+
+	if p.starts.Load() == 0 {
+		t.Error("the unit was reported awake without ever being started — the stale 'awake' " +
+			"survived the sleep that cleared it")
+	}
+}
+
+// The structural assertion behind the test above: wake() decides nothing until it holds
+// u.waking, even when the unit is already believed awake.
+//
+// This is stated directly because the racing version cannot reach the window on demand —
+// sleep() clears `awake` before it calls Stop, so a racing wake almost always sees the
+// cleared flag and blocks anyway. The gap is between sleep's idle re-check and that clear,
+// and it is real but too narrow to hit deterministically from a test.
+//
+// So: hold the lock, as sleep() does through its critical section, and require that a wake
+// on an awake unit waits rather than answering from the flag alone. An implementation that
+// checks isAwake() before locking returns immediately here and fails.
+func TestWakeTakesTheLockEvenWhenAwake(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	p := &countingProvider{}
+	p.serving.Store(true)
+
+	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+
+	u.waking.Lock()
+
+	woke := make(chan error, 1)
+	go func() { woke <- u.wake(context.Background(), p, 5*time.Second) }()
+
+	select {
+	case <-woke:
+		u.waking.Unlock()
+		t.Fatal("wake answered from the awake flag without taking u.waking — sleep() holds " +
+			"that lock across p.Stop(), so this caller would dial a container being stopped")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	u.waking.Unlock()
+
+	select {
+	case err := <-woke:
+		if err != nil {
+			t.Fatalf("wake: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("wake never returned after the lock was released")
+	}
+
+	// And it still cost no probe: the lock is the fix, not a return to asking docker.
+	if got := p.probes.Load(); got != 0 {
+		t.Errorf("an awake unit was probed %d times — the 68 ms per connection is back", got)
 	}
 }

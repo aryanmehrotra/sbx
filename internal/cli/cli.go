@@ -51,12 +51,28 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		return err
 	}
 
+	skipped := map[string]bool{}
+
 	for _, name := range order {
 		svc := sp.Services[name]
 
 		if svc.Optional && !withOptional {
 			fmt.Printf("  %-12s skipped (optional)\n", name)
+
+			skipped[name] = true
+
 			continue
+		}
+
+		// A service being created that depends on one that was just skipped would be exactly
+		// the failure depends_on exists to prevent, with the cause moved from "alphabetical
+		// accident" to "optional accident" — and it would look like success, because the
+		// ordering ran and every service that was created came up.
+		for _, dep := range svc.DependsOn {
+			if skipped[dep] {
+				return fmt.Errorf("service %q depends on %q, which is optional and was not "+
+					"created — pass --optional, or drop the dependency", name, dep)
+			}
 		}
 
 		start, _ := sp.StartIndex(layout, name)
@@ -104,6 +120,18 @@ func readiness(eps []provider.Endpoint) string {
 	}
 
 	if len(local) == 0 {
+		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
+	}
+
+	// The ports are the ground truth, so they are asked first and the presence file is only
+	// consulted to decide WHICH message when they are dead.
+	//
+	// It matters because the presence file can be wrong in the safe-looking direction. sbx
+	// supports more than one daemon on a machine — one per worktree, per CI job — and they
+	// share one file: the second overwrites the first, and whichever exits last removes it.
+	// So a live daemon can be serving with no presence recorded. Dialling first means that
+	// costs nothing rather than an incorrect "no daemon is running".
+	if waitReachable(local, 0) {
 		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
 	}
 

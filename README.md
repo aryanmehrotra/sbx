@@ -13,7 +13,7 @@ at 0 B, awake in 191 ms the moment something connects to it.**
 ```sh
 sbx serve --idle 5m &                          # once per machine, not per sandbox
 sbx create my-branch --template postgres       # 492 ms, no spec file needed
-eval "$(sbx env my-branch --template postgres)"
+eval "$(sbx env my-branch)"                    # it remembers what it was made from
 psql -U app -d app                             # this wakes it
 ```
 
@@ -69,7 +69,7 @@ the whole integration:
 
 ```sh
 sbx create task-4711 --template postgres          # nothing on disk needed
-sbx env task-4711 --template postgres --shell json
+sbx env task-4711 --shell json
 # {"DATABASE_HOST":"127.0.0.1","DATABASE_PORT":"20000","SBX_SANDBOX":"task-4711", …}
 ```
 
@@ -91,8 +91,11 @@ Seed once, then hand every branch or agent its own copy. The migration runs once
 once per agent, which is what makes a sandbox each affordable:
 
 ```sh
+sbx create main --template postgres
+sbx cp   main postgres ./schema.sql :/tmp/schema.sql           # your own migration file
 sbx exec main postgres psql -U app -d app -f /tmp/schema.sql   # seed once
 sbx snapshot main golden
+
 sbx fork golden agent-1                                        # as many as you want
 sbx fork golden agent-2
 ```
@@ -123,6 +126,7 @@ you already own:
 
 ```sh
 sbx serve --idle 30m &
+sbx create my-branch --template web-stack
 sbx url my-branch web                   # https://….trycloudflare.com, wakes on open
 ```
 
@@ -159,9 +163,10 @@ INFO [14:16:40] my-branch/redis     Ready to accept connections tcp
 
 Aligned columns on a terminal, **JSON when piped**.
 
-Any command takes `--provider docker|kubernetes`, `--namespace` and `--isolation
-container|gvisor|kata`. `SBX_PROVIDER_KIND`, `SBX_NAMESPACE` and `SBX_ISOLATION` set those
-defaults, and `DOCKER_HOST` is honoured.
+Every command that touches a sandbox takes `--provider docker|kubernetes`, `--namespace` and
+`--isolation container|gvisor|kata` — `serve` takes the first two. `doctor`, `validate` and
+`templates` need none of them. `SBX_PROVIDER_KIND`, `SBX_NAMESPACE` and `SBX_ISOLATION` set
+the defaults, and `DOCKER_HOST` is honoured.
 
 **What a sandbox is** is one committed file. → [SPEC.md](docs/SPEC.md)
 

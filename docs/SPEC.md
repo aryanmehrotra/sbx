@@ -182,6 +182,30 @@ Anything further — Vault, 1Password, a cloud secret manager — stays out: a d
 network call, and a credential needed to fetch the credential, in a binary whose whole claim
 is that it has none of those.
 
+### sbx remembers which spec a sandbox came from
+
+`--template postgres` had to be repeated on `create`, then `env`, then `fork`. Forgetting it
+gave you one of two things, and the second is worse: `open sandbox.json: no such file` if the
+directory had none, or — if an unrelated `sandbox.json` happened to be there — a clean success
+against the wrong spec. Ordinals are assigned alphabetically over the declared service names,
+so a different-but-valid spec shifts them and `sbx env` prints a plausible, wrong port.
+
+So sbx writes it down, under `~/.sbx/origins/`, and uses it when nothing was asked for:
+
+```sh
+sbx create main --template postgres
+sbx env    main                  # no flag needed
+sbx snapshot main golden         # the snapshot inherits it
+sbx fork   golden agent-1        # and so does the fork
+sbx env    agent-1               # still no flag
+```
+
+Always a **default**, never a source of truth: an explicit `--spec` or `--template` wins, a
+missing or unreadable record changes nothing, and no command fails because of it. The
+containers and their labels remain the only place the truth about a sandbox lives. A recorded
+path that has since been deleted is ignored rather than used, because sending every later
+command at a path that no longer exists is worse than falling back to the working directory.
+
 ### Check it without creating it
 
 ```sh

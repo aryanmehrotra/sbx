@@ -213,17 +213,24 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 	// only of bytes on an already-open connection. Anything that opens a connection per
 	// operation — psql, a CLI, a client with no pool — paid the exec every time.
 	//
-	// Optimistic, and corrected rather than trusted: if the container died underneath us the
-	// dial in handle() fails, and that is where this belief gets revoked and retried.
-	if u.isAwake() {
-		return nil
-	}
-
+	// The lock is still taken on every connection — only the probe is skipped. That
+	// distinction is the whole fix: the 68 ms was `docker exec`, not the mutex, which is
+	// uncontended and costs nanoseconds.
+	//
+	// Taking it matters because sleep() holds the same lock. Checking awake outside it let a
+	// connection arrive, see "awake", and dial a container that sleep() was already
+	// committed to stopping — the client got a connection reset for a sandbox it had just
+	// woken. Rare, and reached twice in one run of the concurrent-wake suite on a busy
+	// machine. Serialising against sleep() is what makes "awake" mean anything.
 	u.waking.Lock()
 	defer u.waking.Unlock()
 
-	// Re-check under the lock. A burst of connections to one sleeping unit blocks here, and
-	// without this every one of them would go on to probe and start in turn.
+	// Awake, and now known to be so for as long as this lock is held: nothing can sleep it
+	// between here and the caller's dial. A burst of connections to one sleeping unit blocks
+	// here too, so only the first of them starts the container.
+	//
+	// Optimistic, and corrected rather than trusted: if the container died underneath us the
+	// dial in handle() fails, and that is where this belief gets revoked and retried.
 	if u.isAwake() {
 		return nil
 	}

@@ -148,3 +148,30 @@ func TestDependenciesDoNotChangeOrdinals(t *testing.T) {
 		}
 	}
 }
+
+// A required service depending on an optional one is only a problem when the optional one is
+// skipped — which is the default. Create refuses it there rather than bringing up a service
+// without the dependency it declared, because that would be the exact failure depends_on
+// exists to prevent with the cause moved from "alphabetical accident" to "optional accident".
+//
+// Ordering itself stays neutral: it returns every declared service, and whether one is
+// actually created is not something a topological sort should be deciding.
+func TestOrderingIncludesOptionalServices(t *testing.T) {
+	s := &Spec{Version: 1, Services: map[string]Service{
+		"api":       {Image: "x", Ports: []int{1}, DependsOn: []string{"analytics"}},
+		"analytics": {Image: "y", Ports: []int{2}, Optional: true},
+	}}
+
+	order, err := s.CreationOrder()
+	if err != nil {
+		t.Fatalf("CreationOrder: %v", err)
+	}
+
+	if len(order) != 2 {
+		t.Fatalf("order dropped a service: %v", order)
+	}
+
+	if indexIn(order, "analytics") > indexIn(order, "api") {
+		t.Errorf("an optional dependency was not ordered first: %v", order)
+	}
+}

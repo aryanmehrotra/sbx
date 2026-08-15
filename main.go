@@ -56,6 +56,32 @@ func specPath(templateName, path string) (string, error) {
 	return MaterializeTemplate(templateName)
 }
 
+// specFor resolves which spec a command should read, preferring what the user asked for and
+// falling back to what the sandbox was created from.
+//
+// The fallback is why `--template postgres` no longer has to be repeated on every command
+// for the same sandbox. It is only ever a default: an explicit --template or --spec wins, and
+// if nothing was recorded this behaves exactly as it always did.
+func specFor(sandbox, templateName, path string) (string, error) {
+	if templateName != "" {
+		return MaterializeTemplate(templateName)
+	}
+
+	if path != defaultSpec {
+		return path, nil // explicitly asked for
+	}
+
+	if o, ok := cli.Recall(sandbox); ok {
+		if o.Template != "" {
+			return MaterializeTemplate(o.Template)
+		}
+
+		return o.Spec, nil
+	}
+
+	return path, nil
+}
+
 // version is stamped by scripts/release.sh. "dev" means somebody built it themselves,
 // which is worth knowing when a bug report says the wake behaved oddly.
 var version = "dev"
@@ -123,7 +149,13 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cli.Create(context.Background(), p, path, positional[0], *optional, iso)
+		if err := cli.Create(context.Background(), p, path, positional[0], *optional, iso); err != nil {
+			return err
+		}
+
+		cli.Remember(positional[0], *tmpl, *spec)
+
+		return nil
 
 	case "env":
 		fs := flag.NewFlagSet("env", flag.ExitOnError)
@@ -143,7 +175,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specPath(*tmpl, *spec)
+		path, err := specFor(positional[0], *tmpl, *spec)
 		if err != nil {
 			return err
 		}
@@ -186,9 +218,13 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		_, err = cli.Snapshot(context.Background(), p, positional[0], positional[1])
+		if _, err := cli.Snapshot(context.Background(), p, positional[0], positional[1]); err != nil {
+			return err
+		}
 
-		return err
+		cli.Inherit(positional[0], positional[1])
+
+		return nil
 
 	case "fork":
 		fs := flag.NewFlagSet("fork", flag.ExitOnError)
@@ -208,12 +244,22 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specPath(*tmpl, *spec)
+		path, err := specFor(positional[0], *tmpl, *spec)
 		if err != nil {
 			return err
 		}
 
-		return cli.Fork(context.Background(), p, path, positional[0], positional[1], *optional, iso)
+		if err := cli.Fork(context.Background(), p, path, positional[0], positional[1], *optional, iso); err != nil {
+			return err
+		}
+
+		if *tmpl != "" || *spec != defaultSpec {
+			cli.Remember(positional[1], *tmpl, *spec)
+		} else {
+			cli.Inherit(positional[0], positional[1])
+		}
+
+		return nil
 
 	case "gc":
 		fs := flag.NewFlagSet("gc", flag.ExitOnError)
@@ -426,7 +472,13 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cli.Remove(context.Background(), p, positional[0])
+		if err := cli.Remove(context.Background(), p, positional[0]); err != nil {
+			return err
+		}
+
+		cli.Forget(positional[0])
+
+		return nil
 
 	case "selftest":
 		fs := flag.NewFlagSet("selftest", flag.ExitOnError)
@@ -549,7 +601,7 @@ func usage() {
                                  [--env K=V,...] [--volume PATH] [ARGS...]
   sbx snapshot <sandbox> <name>                 save every service's filesystem
   sbx fork   <snapshot> <new-sandbox> [--spec]  a new sandbox from that state
-  sbx gc     [--older-than 168h] [--snapshots] [--force]   lists; deletes only with --force
+  sbx gc     [--older-than DURATION] [--snapshots] [--force]  lists; deletes only with --force
   sbx doctor [--json]                           what this machine can and cannot do
   sbx prewarm [--spec sandbox.json]             pull images now so a create is not a download
   sbx validate [sandbox.json]                   check the spec; creates nothing
@@ -564,8 +616,8 @@ func usage() {
 
 Templates (no spec file needed): sbx templates
 
-Backend (any command): --provider docker|kubernetes  --namespace NS
-                       --isolation container|gvisor|kata
+Backend (any command touching a sandbox): --provider docker|kubernetes  --namespace NS
+                                          --isolation container|gvisor|kata
 
 There is no start and no stop: connecting to a sandbox port wakes it, and idleness
 sleeps it. Run one "sbx serve" per machine.

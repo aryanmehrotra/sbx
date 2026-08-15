@@ -440,6 +440,45 @@ JSON
   [ -n "$built" ] && docker rmi -f $built >/dev/null 2>&1
 fi
 
+# ── it remembers what a sandbox was made from ─────────────────────────────────
+if want "remembers"; then
+  case_ "remembers: name the spec once, not on every command"
+
+  name="$TAG-mem"
+
+  # Created with --template; every later command must work without repeating it, from a
+  # directory that has no sandbox.json at all.
+  if "$SBX" create "$name" --template postgres >/dev/null 2>&1; then
+    ok "create with --template"
+
+    ( cd "$WORK" && "$SBX" env "$name" 2>/dev/null | grep -q 'DATABASE_PORT=' ) \
+      && ok "env with no flags, from a directory with no sandbox.json" \
+      || bad "env could not resolve the spec it was created from"
+
+    # The seed-and-fan-out lineage: the snapshot inherits it, and so does the fork.
+    "$SBX" snapshot "$name" "$TAG-golden" >/dev/null 2>&1 && ok "snapshot" || bad "snapshot failed"
+
+    if ( cd "$WORK" && "$SBX" fork "$TAG-golden" "$TAG-child" >/dev/null 2>&1 ); then
+      ok "fork with no flags"
+
+      ( cd "$WORK" && "$SBX" env "$TAG-child" 2>/dev/null | grep -q 'DATABASE_PORT=' ) \
+        && ok "and the fork remembers it too" || bad "the fork did not inherit the spec"
+
+      "$SBX" rm "$TAG-child" >/dev/null 2>&1
+    else
+      bad "fork with no flags failed"
+    fi
+
+    # An explicit flag still wins over what was recorded.
+    "$SBX" env "$name" --template postgres 2>/dev/null | grep -q 'DATABASE_PORT=' \
+      && ok "an explicit --template still wins" || bad "an explicit flag was ignored"
+
+    "$SBX" rm "$name" >/dev/null 2>&1
+  else
+    bad "create --template failed"
+  fi
+fi
+
 # ── validate, depends_on and ${VAR} ───────────────────────────────────────────
 if want "spec"; then
   case_ "spec: check it without creating it, order it, and keep secrets out of git"

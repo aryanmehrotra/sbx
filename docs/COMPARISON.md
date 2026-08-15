@@ -266,7 +266,7 @@ state of that attempt:
 | sbx drives a remote docker host | **measured** — `DOCKER_HOST=tcp://` creates and lists against a daemon reached over the network; `https://` is refused because sbx carries no client certificates, so the supported shape is a trusted network |
 | the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
 
-One of seven is still read rather than run — Sablier's overhead, because its middleware
+One of eight is still read rather than run — Sablier's overhead, because its middleware
 would not engage. Everything else has been run, and one of the measurements refuted a claim
 of our own rather than a rival's.
 
