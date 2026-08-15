@@ -88,6 +88,96 @@ an agent's half-finished Python REPL, it isn't, and E2B is the better tool.
 
 ---
 
+## Where this sits
+
+Two charts, because one of them flatters us and the other one doesn't, and only showing the
+first would be the kind of comparison this file exists to avoid.
+
+### 1 · Speed against breadth — the chart everyone draws
+
+```mermaid
+quadrantChart
+    title Wake latency against platform breadth
+    x-axis Slower to wake --> Faster to wake
+    y-axis Narrow platform --> Broad platform
+    quadrant-1 fast and broad
+    quadrant-2 broad but slower
+    quadrant-3 narrow and slow
+    quadrant-4 fast and narrow
+    sbx docker: [0.76, 0.25]
+    sbx k8s: [0.31, 0.32]
+    E2B: [0.40, 0.80]
+    Daytona: [0.90, 0.74]
+    Fly suspended: [0.68, 0.90]
+    Fly stopped: [0.22, 0.86]
+    Neon: [0.55, 0.58]
+    Knative: [0.09, 0.42]
+```
+
+**We are in the bottom-right, and that is the correct place for us to be.** Fast, and narrow.
+Anything claiming to be top-right on its own comparison page has chosen its own axes.
+
+The breadth score deliberately excludes everything sbx is good at. It counts eight things we
+mostly don't do — VM-grade isolation, RAM snapshotting, GPU, arbitrary stateful services, a
+public URL, somebody else operating it, multi-tenant security, production-proven — at 1 for
+yes and ½ for partial. Scored on the rows *we* would have picked, every one of these charts
+would put us top-right, which is exactly why the score doesn't use them.
+
+| | wake, ms | source | breadth | of 8 |
+|---|---|---|---|---|
+| Daytona | ~90 *reported* | third-party roundup | 0.81 | 6.5 |
+| **sbx** docker | **191** | `scripts/bench.sh 20`, this repo | **0.25** | **2** |
+| Fly, suspended | a few hundred | [vendor][fly] | 0.95 | 7.5 |
+| Neon | 300–800 | [vendor][neon] | 0.60 | 4.8 |
+| E2B | ~1000 | [vendor][e2b] | 0.88 | 7 |
+| **sbx** kubernetes | **1534** | `scripts/bench.sh`, minikube | **0.30** | 2.5 |
+| Fly, stopped | ~2000+ | [vendor][fly] | 0.95 | 7.5 |
+| Knative | seconds, pod schedule | — | 0.50 | 4 |
+
+Point positions are those scores, rounded a little so the labels don't sit on top of each
+other; the table is the data, the chart is the shape.
+
+⚠️ **The x-axis is not a fair race and is on a log scale.** Ours is loopback on an idle laptop;
+theirs is a multi-tenant fleet across a network, and E2B's second restores a RAM image while
+our 191 ms starts a process. [BENCHMARKS.md](BENCHMARKS.md#against-other-platforms) lists all
+four reasons, and they all favour us. Modal and Cloudflare are absent because we could not
+find a vendor-documented wake figure for either — a blank is better than a guess.
+
+### 2 · The chart that explains why this exists
+
+Same platforms, the two axes that are structural rather than measured — so no hardware,
+network or region can flatter anybody.
+
+```mermaid
+quadrantChart
+    title What can wake it, and where it can run
+    x-axis Only your own code --> Any client with a socket
+    y-axis Someone elses cloud --> Your machine and your cluster
+    quadrant-1 any client, your hardware
+    quadrant-2 your hardware, narrow trigger
+    quadrant-3 hosted, SDK-triggered
+    quadrant-4 hosted, open trigger
+    sbx: [0.92, 0.85]
+    Knative: [0.45, 0.72]
+    Daytona: [0.12, 0.40]
+    Fly Machines: [0.78, 0.15]
+    Neon: [0.50, 0.10]
+    Modal: [0.10, 0.23]
+    Cloudflare: [0.16, 0.17]
+    Vercel Sandbox: [0.13, 0.11]
+    E2B: [0.09, 0.05]
+```
+
+**The top-right is empty apart from us, and that emptiness is the entire product.** Fly is far
+right because its proxy wakes on a real connection, but it's their proxy in their cloud.
+Knative is high because you run it yourself, but it only wakes on HTTP. Neon sits mid-x
+because the Postgres wire protocol *is* the trigger — the right idea, one protocol wide.
+
+Nobody else is in the corner where the wake needs neither an SDK nor an account. That is a
+small corner. It happens to be the one a branch on a laptop lives in.
+
+---
+
 ## Feature by feature
 
 | | sbx | E2B | Daytona | Modal | Cloudflare | Fly | Neon | Northflank |

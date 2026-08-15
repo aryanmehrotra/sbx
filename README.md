@@ -243,7 +243,28 @@ is the other kind: **a place to run the services a branch needs**, where the cli
 or a connection pool and the thing being sold is cost at rest.
 
 Everyone scales to zero. The question that separates them is **what has to happen to bring it
-back:**
+back** — which decides who is allowed to be the client:
+
+```
+    WHERE IT RUNS
+          ▲
+   your   │  Knative                                        ●  sbx
+   own    │  └ HTTP only                                  any socket,
+   metal  │                                              your hardware
+          │  Daytona
+          │  └ OSS core                                    ↑ this corner
+          │                                                  was empty
+   some-  │  E2B  Modal  Vercel  Cloudflare    Neon      Fly Machines
+   body   │  └ every one SDK-triggered         └ pg      └ their proxy
+   else's │                                      wire
+          └────────────────────────────────────────────────────────────▶
+            only your own code                   any client with a socket
+                              WHAT CAN WAKE IT
+```
+
+Both axes are structural, not measured, so no hardware or network flatters anybody. For the
+speed-against-breadth chart — where we sit **fast and narrow**, not top-right —
+see [COMPARISON.md](docs/COMPARISON.md#where-this-sits).
 
 | | wakes on | so the client can be | off-cloud |
 |---|---|---|---|
