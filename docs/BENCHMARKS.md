@@ -104,6 +104,30 @@ them fail.
 
 ---
 
+## A heavier workload: headless Chrome
+
+Redis is the wake benchmark because it isolates the wake path from the workload's own
+startup. That makes it the right measurement and a misleading one to generalise from, so
+here is the other end of the range — the browser template, woken by a plain CDP request:
+
+```
+  run 1   4356 ms      run 4    703 ms
+  run 2   3744 ms      run 5    829 ms
+  run 3   3030 ms
+
+  n=5   median 3030 ms   min 703 ms   max 4356 ms      macOS arm64
+```
+
+**Three seconds, not the 624 ms this project's own use-case doc claimed** before anybody ran
+it. That number had no script behind it and was wrong by a factor of five; it is the reason
+every figure in these docs now names the script that produced it.
+
+The spread is real and wide, and the wake is Chrome's own startup rather than sbx's — the
+same image started by hand costs the same. Which is the honest framing for the whole feature:
+sbx removes the cost of a browser nobody is using, not the cost of starting one.
+
+---
+
 ## Build cache
 
 `build:` tags an image by a hash of its context, so the question is what a cache hit actually

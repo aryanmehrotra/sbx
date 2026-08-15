@@ -297,31 +297,46 @@ only one of them works for a client that does not retry.
 ### Rows chosen by them, not by us
 
 The table above still asks "does everyone else do what we do". These are the ones their
-documentation leads with, and this is where sbx has nothing rather than something partial.
+documentation leads with — the rows the competition would choose.
 
 | | sbx | E2B | Daytona | Modal | Cloudflare | Northflank |
 |---|---|---|---|---|---|---|
 | **Network egress control** — allow/deny by IP, CIDR, domain | ◐ `egress: deny`, all-or-nothing | ● wildcards | ● firewall | ● | ● | ● |
 | **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, filesystem only | ● 5–30 ms, with RAM | ● | ● | ◐ | ○ |
-| **Prebuilt templates, versioned and cached** | ◐ five, embedded, not built | ● | ● 24 h cache | ● | ● | ● |
-| **Declarative image builder** | ○ bring your own image | ◐ | ● | ● | ◐ | ● |
+| **Prebuilt templates, versioned and cached** | ● five, embedded, digest-pinned, `sbx prewarm` | ● | ● 24 h cache | ● | ● | ● |
+| **Declarative image builder** | ● `build:`, cached by content hash | ◐ | ● | ● | ◐ | ● |
 | **Interactive access: SSH · PTY · VNC** | ◐ `exec -t` gives a PTY; no SSH, no VNC | ◐ | ● all three | ◐ | ◐ | ● |
 | **Volumes shared between sandboxes** | ○ one per service | ● NFS/block | ● subpath mounts | ● | ◐ | ● |
 | **Language SDKs** (Python, JS) | ○ CLI only | ● | ● | ● | ● | ● |
 | **Multiple regions / hosts** | ◐ any docker host over `tcp://`, no TLS | ● | ● | ● | ● | ● |
-| **Per-sandbox CPU / RAM limit** | ○ **nothing** — only `gpus` | ● tiers | ● | ● | ● | ● |
-| **Expiry / reclamation of artifacts** | ○ **nothing** | ● | ● 7-day cleanup | ● | ● | ● |
+| **Per-sandbox CPU / RAM limit** | ● `cpu`, `memory`, `gpus` | ● tiers | ● | ● | ● | ● |
+| **Expiry / reclamation of artifacts** | ● `sbx gc`, lists by default | ● | ● 7-day cleanup | ● | ● | ● |
+| **Service dependency ordering** | ● `depends_on` | ○ | ○ | ○ | ○ | ◐ |
+| **Secrets kept out of the committed spec** | ● `${VAR}` from the environment | ● | ● | ● | ● | ● |
 
 ● yes · ◐ partial or conditional · ○ no
 
-**Read that table before the one above it.** Ten rows, and sbx scores nothing on four of
-them — two of which were missing from this table entirely until an architecture review of the
-parity plan asked what binds first at twenty sandboxes on one laptop. The answer is not wake
-latency. It is that **nothing limits a sandbox's CPU or memory, and nothing ever reclaims a
-volume**: sbx sleeps a sandbox and has no concept of expiring one, so merged branches
-accumulate disk forever.
+**Read that table before the one above it.** Twelve rows, chosen by the competition. Four of
+them have closed since this table was first written, and two more were missing from it
+entirely until an architecture review asked what binds first at twenty sandboxes on one
+laptop. The answer was not wake latency: it was that nothing limited a sandbox's CPU or
+memory and nothing ever reclaimed a volume, so merged branches accumulated disk forever.
+`cpu`/`memory` and `sbx gc` closed both.
 
-The first row was the most serious and is now half closed. `egress: "deny"` gives a service
+What is still open, honestly:
+
+- **Egress by domain.** `egress: "deny"` is all-or-nothing. The rivals allow and deny by
+  domain, CIDR and IP.
+- **Shared volumes.** One volume per service, and no way to mount a dataset read-only into
+  many sandboxes — which is the natural answer to "every agent needs the same 8 GB fixture".
+- **Language SDKs.** Deliberate, and the whole thesis of this document: a sandbox that only
+  wakes for code you wrote is a sandbox `pg_dump` cannot use. See
+  [the axis that actually separates them](#the-axis-that-actually-separates-them). The `○` is
+  a choice, not a gap — but it is a real difference for anyone who wants `Sandbox.create()`.
+- **SSH and VNC.** `exec -t` is a PTY; neither of the other two is there.
+- **Memory restore**, which is the row above and the one sbx loses outright.
+
+The egress row was the most serious and is now half closed. `egress: "deny"` gives a service
 no route off the host while leaving it reachable and wakeable — verified in both directions.
 What it is not is what the rivals actually ship: allow and deny **by domain, CIDR and IP**.
 All-or-nothing is a real control and a coarse one, and the gap between it and a wildcard

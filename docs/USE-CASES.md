@@ -1,6 +1,6 @@
 # Use cases
 
-Six shapes this fits, and the ones it does not — the problem each one solves.
+Seven shapes this fits, and the ones it does not — the problem each one solves.
 The commands per situation are in the [README](../README.md#use-it).
 
 ---
@@ -34,6 +34,7 @@ An agent mid-task wants a Postgres to try a migration against, or a second Redis
 reproduce a cache bug.
 
 ```sh
+sbx create my-task --template postgres          # the sandbox it adds to
 sbx add my-task pg --image postgres:16-alpine --port 5432 \
   --health "pg_isready -U postgres" --env POSTGRES_PASSWORD=pw
 ```
@@ -61,10 +62,13 @@ on them. `ready` starts what it needs and blocks until it is
 serving. On a persistent runner, leaving the sandbox behind is the interesting case — the
 next job on that branch reuses warm, migrated state and pays one wake instead of a create.
 
-A harness can gate on it without ever starting anything:
+A harness can gate on it without ever starting anything. In *its own* config — this is not
+sandbox.json, which would reject these fields:
 
-```json
-"env": { "ready": "sbx ready $SANDBOX", "readyTimeout": 120 }
+```yaml
+# .gitlab-ci.yml, a Makefile target, whatever your runner reads
+before_script:
+  - sbx ready "$SANDBOX" --timeout 120s
 ```
 
 Asking *is* starting, which is why there is no `up`.
@@ -89,14 +93,21 @@ Nothing about this is database-shaped. A headless Chrome is a container that spe
 it sleeps and wakes like everything else:
 
 ```sh
+sbx serve --idle 5m &                                        # once per machine
 sbx create my-branch --spec examples/browser/sandbox.json
+eval "$(sbx env my-branch --spec examples/browser/sandbox.json)"
 curl "http://$CDP_HOST:$CDP_PORT/json/version"
 # {"Browser": "HeadlessChrome/124.0.6367.78", ...}
 ```
 
-Asleep at 0 B → woken by that request in **624 ms** → then driven over CDP by Playwright or
-Puppeteer, which never learn they started something. A scrape job that runs twice a day stops
-being a browser you pay to keep alive.
+Asleep at 0 B → woken by that request → then driven over CDP by Playwright or Puppeteer,
+which never learn they started something. A scrape job that runs twice a day stops being a
+browser you pay to keep alive.
+
+**Measured: 3030 ms median** (n=5, min 703 ms, max 4356 ms, macOS arm64), against 191 ms for
+Redis. Chrome is simply a much heavier thing to start, and the spread is wide — this doc
+carried an unsourced "624 ms" until somebody actually ran it. The wake is the browser's own
+startup, not sbx's: the same Chrome started by hand costs the same.
 
 ⚠️ Chrome images often ship without `wget` or `curl`, which makes the health command the
 thing that breaks. → [SPEC.md](SPEC.md#health-is-close-to-required)
@@ -110,11 +121,13 @@ into it. A schema, a migration, a fixture set: doing that once per agent is what
 "a sandbox each" sound extravagant.
 
 ```sh
-sbx exec main postgres psql -U app -d app -f schema.sql
+sbx create main --template postgres              # the one you seed
+sbx cp main postgres ./schema.sql :/tmp/schema.sql        # your own migration file
+sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
 sbx snapshot main golden
 
-sbx fork golden agent-1
-sbx fork golden agent-2
+sbx fork golden agent-1 --template postgres      # the spec the snapshot came from
+sbx fork golden agent-2 --template postgres
 ```
 
 Each fork has its own copy and its own ports; a write in one is invisible to the others and
@@ -128,6 +141,34 @@ has either.
 It snapshots the **volume**, which is worth knowing if you are reasoning about what is
 captured: `docker commit` does not include mounted volumes, and in sbx every byte worth
 saving is in one. → [DECISIONS.md](DECISIONS.md)
+
+---
+
+## 7 · The same spec, in a cluster
+
+Everything above is a laptop. The spec does not change:
+
+```sh
+sbx create my-branch --provider kubernetes --namespace sbx
+sbx env    my-branch --provider kubernetes
+```
+
+Services become Deployments and Services in that namespace; `exports` resolves to
+cluster-internal addresses instead of `127.0.0.1`, so what your tooling reads is the same
+variable pointing somewhere else. `deploy/` has the activator that plays the daemon's part
+inside the cluster.
+
+Two things behave differently on purpose, and both say so rather than half-working:
+
+- **`build:` is refused.** Building in a cluster means pushing to a registry the nodes can
+  pull from — credentials, an address, a retention policy — none of which sbx can assume
+  without becoming an opinionated CI system. Build it yourself and name it with `image`.
+- **`egress: "deny"` is refused.** The cluster equivalent is a NetworkPolicy, and a
+  NetworkPolicy is only enforced by some CNIs. Applying one and reporting success would leave
+  a service wide open on a cluster whose CNI ignores it, while the spec said deny.
+
+`sbx url` also refuses and points at an Ingress, because a tunnel to a pod is not a thing sbx
+should be inventing on your cluster's behalf.
 
 ---
 
