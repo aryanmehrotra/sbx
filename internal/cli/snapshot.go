@@ -59,6 +59,13 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 		return nil, fmt.Errorf("a snapshot needs a name: sbx snapshot <sandbox> <name>")
 	}
 
+	// Asked once, at the top, so a backend that cannot do this says so before anything is
+	// half done rather than failing on the third service.
+	snap, err := provider.SnapshotterFor(p)
+	if err != nil {
+		return nil, err
+	}
+
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return nil, err
@@ -73,16 +80,16 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 	for _, u := range units {
 		img := snapshotImage(name, u.Service)
 
-		if err := p.Commit(ctx, u.Ref, img); err != nil {
+		if err := snap.Commit(ctx, u.Ref, img); err != nil {
 			return nil, fmt.Errorf("snapshotting %s: %w", u.Service, err)
 		}
 
 		// The part that actually carries the data.
-		src := p.VolumeFor(sandbox, u.Service)
+		src := snap.VolumeFor(sandbox, u.Service)
 		dst := snapshotVolume(name, u.Service)
 
 		if src != "" {
-			if err := p.CopyVolume(ctx, src, dst); err != nil {
+			if err := snap.CopyVolume(ctx, src, dst); err != nil {
 				return nil, fmt.Errorf("snapshotting %s's data: %w", u.Service, err)
 			}
 		}
@@ -129,7 +136,12 @@ func ForkSpec(sp map[string]any, name string, refs []SnapshotRef) error {
 // SnapshotsOf lists the images belonging to a snapshot name, so a fork can find them again
 // without being told which services existed.
 func SnapshotsOf(ctx context.Context, p provider.Provider, name string) ([]SnapshotRef, error) {
-	images, err := p.Images(ctx, "sbx-snap-"+name+"-")
+	snap, err := provider.SnapshotterFor(p)
+	if err != nil {
+		return nil, err
+	}
+
+	images, err := snap.Images(ctx, "sbx-snap-"+name+"-")
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +174,11 @@ func SnapshotsOf(ctx context.Context, p provider.Provider, name string) ([]Snaps
 func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox string,
 	withOptional bool, iso provider.Isolation,
 ) error {
+	snap, err := provider.SnapshotterFor(p)
+	if err != nil {
+		return err
+	}
+
 	refs, err := SnapshotsOf(ctx, p, snapshot)
 	if err != nil {
 		return err
@@ -206,15 +223,15 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 	}
 
 	for _, u := range units {
-		var snap string
+		var from string
 
 		for _, r := range refs {
 			if r.Service == u.Service {
-				snap = r.Volume
+				from = r.Volume
 			}
 		}
 
-		if snap == "" {
+		if from == "" {
 			continue
 		}
 
@@ -222,11 +239,11 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 			return fmt.Errorf("stopping %s before restoring its data: %w", u.Service, err)
 		}
 
-		if err := p.CopyVolume(ctx, snap, p.VolumeFor(sandbox, u.Service)); err != nil {
+		if err := snap.CopyVolume(ctx, from, snap.VolumeFor(sandbox, u.Service)); err != nil {
 			return fmt.Errorf("restoring %s's data: %w", u.Service, err)
 		}
 
-		fmt.Printf("  %-12s restored from %s\n", u.Service, snap)
+		fmt.Printf("  %-12s restored from %s\n", u.Service, from)
 	}
 
 	fmt.Printf("\n  forked from snapshot %q — filesystem state only, processes start cold.\n", snapshot)

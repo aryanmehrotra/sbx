@@ -141,25 +141,6 @@ type Provider interface {
 	// one by passing {"sh", "-c", ...}.
 	Exec(ctx context.Context, ref string, argv []string) (string, error)
 
-	// Commit saves a unit's filesystem as an image. Filesystem only — memory and running
-	// processes are not in it, and no name here pretends otherwise.
-	Commit(ctx context.Context, ref, image string) error
-
-	// Images lists image names beginning with prefix, so a fork can find a snapshot's
-	// pieces without being told which services it had.
-	Images(ctx context.Context, prefix string) ([]string, error)
-
-	// CopyVolume replicates one volume's contents into another, creating the destination.
-	//
-	// This exists because Commit does NOT capture volumes — a committed image of a postgres
-	// container has an empty data directory — and in sbx every byte worth snapshotting is
-	// in a volume, since that is the field that makes sleeping safe.
-	CopyVolume(ctx context.Context, src, dst string) error
-
-	// VolumeFor names the volume a service's data lives in, so a snapshot can find it
-	// without reimplementing the provider's naming.
-	VolumeFor(sandbox, service string) string
-
 	// ExecTTY is Exec with a terminal attached, wired straight to this process's stdio.
 	// It is a separate method rather than a flag because the two have different shapes:
 	// Exec captures output and returns it, this one hands the terminal over and returns
@@ -200,4 +181,49 @@ func For(kind, socket, namespace string) (Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown provider %q (want docker or kubernetes)", kind)
 	}
+}
+
+// Capabilities beyond the core.
+//
+// Not every backend can do everything, and the ones that cannot should not be made to write
+// stubs that return errors — a method on the core interface is a promise that every provider
+// keeps, and four methods that only docker implements is not an interface, it is a docker
+// client with a kubernetes-shaped hole in it.
+//
+// These are optional interfaces instead. A provider implements one if it can do the thing
+// natively; the CLI asks with a type assertion and reports a single clear refusal if not.
+// It is the same negotiation --isolation already uses: declare what you want, and be told
+// plainly when this backend cannot give it to you.
+//
+// The rule for adding one: the capability is named for what the USER wants, never for how a
+// backend happens to do it. Snapshotter, not Committer — because the kubernetes answer is a
+// volume snapshot through its own CSI, not `docker commit`, and an interface named after
+// docker's verb would have made that implementation look like a workaround.
+
+// Snapshotter saves and restores a service's state. Filesystem state — memory and running
+// processes are not included, and the docs say so wherever the word snapshot appears.
+type Snapshotter interface {
+	// Commit saves a unit's filesystem as a named image.
+	Commit(ctx context.Context, ref, image string) error
+
+	// Images lists saved images beginning with prefix.
+	Images(ctx context.Context, prefix string) ([]string, error)
+
+	// CopyVolume replicates one volume into another, creating the destination.
+	CopyVolume(ctx context.Context, src, dst string) error
+
+	// VolumeFor names the volume a service's data lives in.
+	VolumeFor(sandbox, service string) string
+}
+
+// SnapshotterFor returns the provider's snapshot support, or a refusal naming the backend.
+func SnapshotterFor(p Provider) (Snapshotter, error) {
+	s, ok := p.(Snapshotter)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot snapshot: saving and restoring a "+
+			"service's state is not something it can do natively, and sbx will not reach "+
+			"around it to do so", p.Name())
+	}
+
+	return s, nil
 }

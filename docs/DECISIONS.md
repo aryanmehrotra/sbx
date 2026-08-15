@@ -188,3 +188,32 @@ forked, and running it again re-seeds a seeded database.
 
 And the fork keeps its own `volume` declaration. The first implementation deleted it, on the
 theory that the image carried the data — which is exactly the assumption that was wrong.
+
+### Capabilities are negotiated, not stubbed — and sbx does not reach around a provider
+
+Snapshot support arrived as four new methods on the core `Provider` interface, and
+kubernetes was made to implement all four as stubs that return errors. That is not an
+interface. A method on `Provider` is a promise every backend keeps, and four methods only
+docker can keep is a docker client with a kubernetes-shaped hole in it.
+
+They are an optional `Snapshotter` interface now. A provider implements it if it can do the
+thing natively; the CLI asks with a type assertion and reports one refusal naming the
+backend. It is the negotiation `--isolation` already uses — declare what you want, be told
+plainly when this backend cannot give it.
+
+The naming rule that follows: **a capability is named for what the user wants, never for how
+a backend does it.** `Snapshotter`, not `Committer` — the kubernetes answer is a volume
+snapshot through its own CSI, not `docker commit`, and an interface named after docker's verb
+would have made the correct implementation look like a workaround.
+
+**And sbx does not reach around a provider to do something the provider cannot.** Egress
+control was nearly implemented by having sbx launch a privileged container to write
+`DOCKER-USER` iptables rules on the host. It would have worked on this laptop. It is also
+sbx mutating a host firewall from outside the abstraction it claims to have — invasive,
+unverifiable on a machine where it cannot be tested, and true only while docker happens to
+be arranged in one particular way.
+
+The provider-neutral shape is a spec field saying *what* is wanted — deny egress — with each
+backend implementing it natively or refusing: NetworkPolicy in a cluster, and for docker a
+primitive that does not currently exist, since `--internal` and `--network none` both stop
+port publishing and make a sandbox that can never be woken.

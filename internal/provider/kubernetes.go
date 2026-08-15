@@ -371,26 +371,6 @@ func (k *kubeProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	return true, true
 }
 
-// Commit is not available in a cluster: committing a container's filesystem is a docker
-// verb, and the cluster equivalent is building and pushing an image to a registry the
-// cluster can pull from — a different operation with credentials attached. Refused rather
-// than approximated, the way isolation is.
-func (k *kubeProvider) Commit(context.Context, string, string) error {
-	return fmt.Errorf("snapshots are not supported on the kubernetes provider: committing a " +
-		"container is a docker operation, and the cluster equivalent needs a registry to push to")
-}
-
-func (k *kubeProvider) Images(context.Context, string) ([]string, error) {
-	return nil, nil
-}
-
-func (k *kubeProvider) CopyVolume(context.Context, string, string) error {
-	return fmt.Errorf("snapshots are not supported on the kubernetes provider: copying a PVC " +
-		"needs a job with both claims mounted, and a storage class that allows it")
-}
-
-func (k *kubeProvider) VolumeFor(string, string) string { return "" }
-
 func (k *kubeProvider) ExecTTY(ctx context.Context, ref string, argv []string) error {
 	args := []string{"exec", "-i"}
 	if isTerminal(os.Stdin) {
