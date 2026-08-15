@@ -87,8 +87,14 @@ client_postgres() { # port
 }
 
 # ── docker helpers shared by the container-hosted arms ──────────────────────────
-container_stopped() { # name
-  [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" != "true" ]
+container_stopped() { # name — stopped OR paused counts as asleep
+  local st
+  st=$(docker inspect -f '{{.State.Running}}/{{.State.Paused}}' "$1" 2>/dev/null)
+  case "$st" in
+    ""|"false/"*) return 0 ;;   # gone or stopped
+    */true)       return 0 ;;   # paused: still "Running", and definitely not serving
+    *)            return 1 ;;
+  esac
 }
 
 wait_stopped() { # name, seconds
@@ -224,6 +230,11 @@ lazytainer_up() { # target
   local i
   for i in $(seq 1 30); do $(client_for "$1") "$PORT" && break; sleep 1; done
   $(client_for "$1") "$PORT" || { REASON="target never served through lazytainer"; return 1; }
+  # Precondition: it must put the target to sleep, or there is nothing to measure.
+  if ! wait_stopped cmp-lazy-target 75; then
+    REASON="target never slept in 75s — no group discovered from LAZYTAINER_GROUP_* env (its logs show only 'Starting Lazytainer'), so its config format here is unverified"
+    return 1
+  fi
 }
 lazytainer_asleep() { wait_stopped cmp-lazy-target 90; }
 lazytainer_rss() {

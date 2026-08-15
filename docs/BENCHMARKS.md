@@ -126,6 +126,55 @@ sandbox exists; here it's the client's own socket. That's in
 
 ---
 
+## Against the field, measured here
+
+`scripts/compare.sh` runs sbx and its self-hosted rivals against the same targets on one
+machine. It answers the obvious objection to the table above: every rival figure in it was
+read rather than measured.
+
+```sh
+scripts/compare.sh 20                          # all contenders, both targets
+CONTENDERS=sbx,sablier scripts/compare.sh 5
+```
+
+**It publishes almost nothing, on purpose.** Three rules decide whether a sample may become a
+number, and each exists because of a specific way this kind of benchmark lies:
+
+| rule | why |
+|---|---|
+| a sample counts only on a **correct protocol reply** | Sablier's middleware failed to engage during development and returned **502 in 98 ms** — faster than sbx's real wake. A status code is not evidence |
+| a sample is **VOID** unless the target was verifiably asleep at `t0` | otherwise a rival whose mechanism never engaged scores a spectacular wake for answering while already awake |
+| every wake is **paired** with a baseline through the identical client | the first real run showed ~100 ms of each 336 ms "wake" was `curl`'s own startup |
+
+`N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
+by design — that is a *result*. zeropod has none because nothing yet distinguishes
+checkpointed from running — that is not.
+
+### First run · 2026-08-15
+
+⚠️ **Not headline numbers, and they do not replace the table at the top of this file.** The
+host was at load 6.95 with 268 MB free in the VM — the condition the next section says
+produced figures "wrong by an order of magnitude". Published to show what the harness does and
+what it refuses to do, not to claim a result.
+
+| contender | target | status | n | median | paired delta | what comes back |
+|---|---|---|---|---|---|---|
+| **sbx** | nginx | OK | 5 | 398 ms | **191 ms** | disk-warm, process cold |
+| **sbx** | postgres | OK | 5 | 683 ms | **504 ms** | disk-warm, process cold |
+| Sablier | nginx | SKIPPED | — | — | — | middleware did not block: a request to a stopped target failed rather than waiting |
+| Sablier | postgres | **N/A** | — | — | — | HTTP-only by design — a middleware on an HTTP request cannot wake a `psql` client |
+| Lazytainer | both | SKIPPED | — | — | — | never slept in 75 s; no group discovered from `LAZYTAINER_GROUP_*`, config format unverified |
+| zeropod | both | SKIPPED | — | — | — | no running cluster, and no verified "checkpointed" observable |
+
+Six of eight rows are a refusal. **Postgres is the row that matters** — raw TCP, the case that
+separates this from every HTTP-middleware tool, and Sablier's `N/A` there is the measured
+version of a claim this project had only ever made in prose.
+
+The p90 and stdev on the two OK rows (1785 ms, 636 ms) are the machine, not the software.
+Re-run on an idle host before quoting anything from here.
+
+---
+
 ## Conditions matter
 
 `scripts/bench.sh` prints host load and VM memory alongside its results, because a wake on
