@@ -83,6 +83,22 @@ type prompt struct {
 	name string
 }
 
+// metricSample is one reading of one service, kept so the detail block can draw a line rather
+// than a number. A number says what is happening; a line says whether it is getting worse.
+type metricSample struct {
+	cores float64
+	mem   uint64
+	known bool
+}
+
+// seriesCap is how many samples are kept per service - four minutes at one a second, which is
+// wider than any terminal and long enough to see a leak start.
+//
+// In memory and nowhere else. The daemon records events, not usage, so this history begins
+// when the dashboard opens and ends when it closes; the graph says so rather than implying a
+// day of data behind a three-minute line.
+const seriesCap = 240
+
 // serviceStat is what the history says about one service, summarised for the detail line.
 type serviceStat struct {
 	wakes      int
@@ -116,6 +132,9 @@ type model struct {
 	// err is the last refresh failure, shown rather than hidden: a dashboard that silently
 	// stops updating when docker dies is worse than one that says docker died.
 	err error
+
+	// series is recent usage per ref, oldest first. See seriesCap.
+	series map[string][]metricSample
 
 	// limits is what each service is allowed, by ref.
 	//

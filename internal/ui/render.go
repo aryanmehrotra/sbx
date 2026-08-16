@@ -12,6 +12,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -273,7 +274,7 @@ func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string 
 		line += "  " + cell(r.CPUKnown && r.Awake, r.CPU/100, float64(l.NanoCPUs)/1e9,
 			trimZeros(float64(l.NanoCPUs)/1e9)+"c") +
 			"  " + cell(r.MemKnown && r.Awake, float64(r.MemBytes), float64(l.MemBytes),
-				shortBytes(l.MemBytes))
+			shortBytes(l.MemBytes))
 	}
 
 	return line
@@ -288,8 +289,11 @@ func cell(sampled bool, used, allowed float64, label string) string {
 		return dim + fmt.Sprintf("%-*s", meterCell, "—") + reset
 	}
 
+	// Not sampled yet is not the same as not capped: the ceiling is known and worth showing,
+	// it is only the fill that is missing.
 	if !sampled {
-		return dim + fmt.Sprintf("%-*s", meterCell, "["+strings.Repeat("·", tableBarCells)+"]") + reset
+		return dim + "[" + strings.Repeat("·", tableBarCells) + "]" + reset +
+			" " + dim + fmt.Sprintf("%*s", limitTextCols, label) + reset
 	}
 
 	return smallBar(used/allowed) + " " + dim + fmt.Sprintf("%*s", limitTextCols, label) + reset
@@ -329,9 +333,11 @@ func shortBytes(b uint64) string {
 	case b >= 1<<30:
 		return trimZeros(float64(b)/(1<<30)) + "g"
 	case b >= 1<<20:
-		return trimZeros(float64(b)/(1<<20)) + "m"
+		// Whole megabytes. "17.47m" is four characters of noise about a number that moves
+		// every second anyway.
+		return strconv.FormatUint(b/(1<<20), 10) + "m"
 	default:
-		return trimZeros(float64(b)/(1<<10)) + "k"
+		return strconv.FormatUint(b/(1<<10), 10) + "k"
 	}
 }
 
@@ -395,7 +401,7 @@ func detailBlock(m model, space, cols int) []string {
 		return blanks(space)
 	}
 
-	head := fmt.Sprintf(" %s%s/%s%s", cyan, r.Sandbox, r.Service, reset)
+	head := fmt.Sprintf(" %s%s/%s%s  %s%s%s", cyan, r.Sandbox, r.Service, reset, dim, r.Ref, reset)
 
 	right := ""
 	if s, ok := m.stats[r.Sandbox+"/"+r.Service]; ok && s.wakes > 0 {
@@ -404,7 +410,8 @@ func detailBlock(m model, space, cols int) []string {
 
 	// One line: the name and the command, because that is what gets typed next.
 	if space == 1 {
-		line := head + fmt.Sprintf("   %seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset)
+		line := fmt.Sprintf(" %s%s/%s%s   %seval \"$(sbx env %s)\"%s",
+			cyan, r.Sandbox, r.Service, reset, dim, r.Sandbox, reset)
 
 		return []string{truncate(pad(line, dim+right+reset, cols), cols)}
 	}
@@ -415,40 +422,152 @@ func detailBlock(m model, space, cols int) []string {
 		out = append(out, truncate(fmt.Sprintf("   %s%-9s%s %s", dim, k, reset, v), cols))
 	}
 
+	connect := fmt.Sprintf("%seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset)
+
+	// Two lines, always. Merging them where the terminal is wide enough was tempting and made
+	// the block's height depend on its width, which is how a layout ends up padding itself
+	// with a blank line on a wide screen and nowhere else.
 	field("address", r.Address)
-	field("connect", fmt.Sprintf("%seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset))
+	field("connect", connect)
 
-	// The meters only appear when the block is tall enough to hold them and the service is
-	// awake enough to have readings. When they do, the state line stops repeating the memory
-	// figure, because it is on the line below in more useful company.
-	meters := r.Awake && space >= detailWithMeters
+	// The width the graph gets: whatever is left after the label and the reading.
+	graph := cols - fieldIndent - 16
 
-	switch {
-	case r.Awake && meters:
-		field("state", green+"awake"+reset)
-	case r.Awake:
-		field("state", green+"awake"+reset+dim+" · using "+reset+humanBytes(r.MemBytes))
-	default:
-		field("state", dim+asleepText(cols-fieldIndent)+reset)
-	}
-
-	// With room for only one of them it is memory, because exceeding a memory ceiling kills
-	// the container and exceeding a CPU one only makes it slower.
-	if meters {
-		if space >= detailFull {
-			field("cpu", cpuMeter(r, m.limitOf(r.Ref), m.metered))
-		}
-
-		field("memory", memMeter(r, m.limitOf(r.Ref), m.metered))
-	}
-
-	field("ref", dim+r.Ref+reset)
+	field("cpu", trend(m, r, true, graph))
+	field("memory", trend(m, r, false, graph))
 
 	for len(out) < space {
 		out = append(out, "")
 	}
 
 	return out[:space]
+}
+
+// trend is one metric: what it is now, against what it is allowed, and where it has been.
+//
+// The reading and the line answer different questions and the dashboard was only answering the
+// first. "477 MB of 512 MB" is alarming or fine depending entirely on whether it has been
+// there all afternoon or arrived in the last thirty seconds, and that is the half a table
+// cannot show.
+func trend(m model, r row, isCPU bool, width int) string {
+	if !m.metered {
+		return dim + "this backend does not report usage" + reset
+	}
+
+	l := m.limitOf(r.Ref)
+	series := m.series[r.Ref]
+
+	var (
+		now     string
+		values  []float64
+		ceiling float64
+	)
+
+	for _, s := range series {
+		if isCPU {
+			values = append(values, s.cores)
+		} else {
+			values = append(values, float64(s.mem))
+		}
+	}
+
+	switch {
+	case isCPU && l.NanoCPUs > 0:
+		ceiling = float64(l.NanoCPUs) / 1e9
+	case !isCPU && l.MemBytes > 0:
+		ceiling = float64(l.MemBytes)
+	}
+
+	switch {
+	case !r.Awake && !isCPU:
+		// The one place the old block's reassurance survives. "is my data still there" is the
+		// question a sleeping database raises, and the table's STATE column does not answer it.
+		now = dim + "asleep · volume intact" + reset
+	case !r.Awake:
+		now = dim + "asleep" + reset
+	case isCPU && r.CPUKnown && ceiling > 0:
+		now = fmt.Sprintf("%.2f/%s", r.CPU/100, trimZeros(ceiling)+"c")
+	case isCPU && r.CPUKnown:
+		now = fmt.Sprintf("%.2fc", r.CPU/100)
+	case !isCPU && r.MemKnown && ceiling > 0:
+		now = shortBytes(r.MemBytes) + "/" + shortBytes(l.MemBytes)
+	case !isCPU && r.MemKnown:
+		now = shortBytes(r.MemBytes)
+	default:
+		now = dim + "…" + reset
+	}
+
+	return padVisible(now, 16) + spark(values, ceiling, width)
+}
+
+// padVisible pads to a width counted in what the reader sees, not in bytes. The readings
+// carry colour, and %-*s counts escape sequences as though they were columns.
+func padVisible(s string, n int) string {
+	if gap := n - visibleLen(s); gap > 0 {
+		return s + strings.Repeat(" ", gap)
+	}
+
+	return s + " "
+}
+
+// sparkGlyphs are eight heights, which is as much resolution as one terminal cell has.
+var sparkGlyphs = []rune("▁▂▃▄▅▆▇█")
+
+// spark draws a series as one line of text.
+//
+// Scaled to the ceiling when there is one, so two services with the same limit are directly
+// comparable and a line near the top means near the limit. Without a ceiling it scales to the
+// window's own peak, which is the only reference there is - and says nothing about how full
+// anything is, only about shape.
+func spark(values []float64, ceiling float64, width int) string {
+	if width < 4 {
+		return ""
+	}
+
+	if len(values) == 0 {
+		return dim + "no readings yet" + reset
+	}
+
+	if len(values) > width {
+		values = values[len(values)-width:]
+	}
+
+	top := ceiling
+
+	if top <= 0 {
+		for _, v := range values {
+			top = max(top, v)
+		}
+	}
+
+	if top <= 0 {
+		return dim + strings.Repeat("▁", len(values)) + reset
+	}
+
+	var (
+		b    strings.Builder
+		last float64
+	)
+
+	for _, v := range values {
+		i := int(v / top * float64(len(sparkGlyphs)-1))
+		b.WriteRune(sparkGlyphs[clamp(i, 0, len(sparkGlyphs)-1)])
+
+		last = v
+	}
+
+	colour := green
+
+	if ceiling > 0 {
+		switch frac := last / ceiling; {
+		case frac >= 0.9:
+			colour = red
+		case frac >= 0.75:
+			colour = yellow
+		}
+	}
+
+	return colour + b.String() + reset
 }
 
 // limitChoices offers the sizes, and gives way to the short form when the terminal is narrow.
@@ -487,113 +606,6 @@ func limitChoices(label string, cols int) string {
 	}
 
 	return truncate(tight, cols)
-}
-
-// asleepText says what "asleep" means, in the longest form that fits.
-//
-// Written out rather than truncated. The full sentence runs to 54 columns and the line-level
-// cut took the last word off it, leaving "volume intact, wakes on" - a sentence that stops
-// immediately before the half that answers the reader's actual question, which is whether
-// their data is still there and what they have to do about it. Each form below is a whole
-// sentence; the narrow ones say less rather than trailing off.
-func asleepText(width int) string {
-	for _, s := range []string{
-		"asleep · 0 B of memory, volume intact, wakes on connect",
-		"asleep · 0 B, volume intact, wakes on connect",
-		"asleep · 0 B, wakes on connect",
-		"asleep · wakes on connect",
-	} {
-		if len(s) <= width {
-			return s
-		}
-	}
-
-	return "asleep"
-}
-
-// barCells is how wide a usage bar is drawn. Sixteen, because its job is "roughly how full"
-// - the figure printed beside it is there for people who want exactly, and a bar wide enough
-// to answer that question would crowd out the numbers that answer it better.
-const barCells = 16
-
-// bar draws a proportion, and colours it by how alarming it is.
-//
-// Anything at all is at least one cell. A service sitting at half a percent of its ceiling is
-// not the same as one that is switched off, and an empty bar says the second.
-func bar(frac float64) string {
-	if frac < 0 {
-		frac = 0
-	}
-
-	filled := int(frac * barCells)
-
-	switch {
-	case filled < 1 && frac > 0:
-		filled = 1
-	case filled > barCells:
-		filled = barCells
-	}
-
-	colour := green
-
-	switch {
-	case frac >= 0.9:
-		colour = red
-	case frac >= 0.75:
-		colour = yellow
-	}
-
-	return dim + "[" + reset + colour + strings.Repeat("█", filled) + reset +
-		dim + strings.Repeat("·", barCells-filled) + "]" + reset
-}
-
-// cpuMeter is what the selected service is using against what it is allowed.
-//
-// Without a ceiling this can only report a share of one core, and it says so in those words.
-// "86.8%" on its own is the number that reads as nearly-full and is usually nothing of the
-// kind: on an eight-core machine it is about a ninth of the host.
-func cpuMeter(r row, l provider.Limits, metered bool) string {
-	if !metered {
-		return dim + "this backend does not report usage" + reset
-	}
-
-	if !r.CPUKnown {
-		return dim + "not sampled yet" + reset
-	}
-
-	cores := r.CPU / 100
-
-	if l.NanoCPUs <= 0 {
-		return fmt.Sprintf("%s%.2f%s%s of %d cores · no limit set · L to set one%s",
-			reset, cores, reset, dim, max(1, r.OnlineCPUs), reset)
-	}
-
-	allowed := float64(l.NanoCPUs) / 1e9
-
-	return fmt.Sprintf("%s  %s%.2f%s%s of %s cores%s",
-		bar(cores/allowed), reset, cores, reset, dim, trimZeros(allowed), reset)
-}
-
-// memMeter is the same for memory, where docker does report a ceiling - but reports the
-// host's entire memory when nothing was capped, which is why an uncapped service is told
-// apart by Limits rather than by that number.
-func memMeter(r row, l provider.Limits, metered bool) string {
-	if !metered {
-		return dim + "this backend does not report usage" + reset
-	}
-
-	if !r.MemKnown {
-		return dim + "not sampled yet" + reset
-	}
-
-	if l.MemBytes == 0 {
-		return fmt.Sprintf("%s%s%s%s · no limit set · L to set one%s",
-			reset, humanBytes(r.MemBytes), reset, dim, reset)
-	}
-
-	return fmt.Sprintf("%s  %s%s%s%s of %s%s",
-		bar(float64(r.MemBytes)/float64(l.MemBytes)), reset, humanBytes(r.MemBytes), reset,
-		dim, humanBytes(l.MemBytes), reset)
 }
 
 // trimZeros writes a core count the way somebody would say it: "0.5", "2", not "2.00".

@@ -234,6 +234,46 @@ func (d *dash) refresh(ctx context.Context) {
 
 	d.model.provider = d.opt.Provider.Name()
 	d.model.metered = metered
+
+	d.record(rows)
+}
+
+// record appends this refresh's readings to each service's series. Called with the lock held.
+//
+// A sleeping service records a zero rather than nothing, because "it went to sleep" is the
+// most interesting shape a usage line has and a gap would draw it as though the service had
+// merely stopped being watched.
+func (d *dash) record(rows []row) {
+	if d.model.series == nil {
+		d.model.series = map[string][]metricSample{}
+	}
+
+	live := make(map[string]bool, len(rows))
+
+	for _, r := range rows {
+		live[r.Ref] = true
+
+		s := metricSample{known: !r.Awake || (r.CPUKnown && r.MemKnown)}
+
+		if r.Awake {
+			s.cores, s.mem = r.CPU/100, r.MemBytes
+		}
+
+		series := append(d.model.series[r.Ref], s)
+		if len(series) > seriesCap {
+			series = series[len(series)-seriesCap:]
+		}
+
+		d.model.series[r.Ref] = series
+	}
+
+	// A sandbox somebody removed should not keep its line in memory for the rest of the
+	// session.
+	for ref := range d.model.series {
+		if !live[ref] {
+			delete(d.model.series, ref)
+		}
+	}
 }
 
 // handle applies a keypress. It returns true when the user is finished.

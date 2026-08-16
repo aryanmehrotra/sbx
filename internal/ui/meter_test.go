@@ -14,23 +14,28 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-func TestTheCPUMeterNamesItsDenominator(t *testing.T) {
-	awake := row{Awake: true, CPU: 35, CPUKnown: true, OnlineCPUs: 8}
+func TestTheCPULineNamesItsDenominator(t *testing.T) {
+	m := model{metered: true, rows: []row{
+		{Sandbox: "a", Service: "b", Ref: "r1", Awake: true, CPU: 35, CPUKnown: true, OnlineCPUs: 8},
+	}}
 
 	// Capped at half a core: 0.35 of a core is 70% of what it is allowed.
-	capped := plainText(cpuMeter(awake, provider.Limits{NanoCPUs: 500_000_000}, true))
+	m.limits = map[string]provider.Limits{"r1": {NanoCPUs: 500_000_000}}
 
-	if !strings.Contains(capped, "0.35") || !strings.Contains(capped, "0.5 cores") {
-		t.Errorf("capped cpu meter = %q, want it to say 0.35 of 0.5 cores", capped)
+	capped := plainText(trend(m, m.rows[0], true, 20))
+
+	if !strings.Contains(capped, "0.35/0.5c") {
+		t.Errorf("capped cpu line = %q, want it to say 0.35 of 0.5 cores", capped)
 	}
 
-	// Uncapped: the only honest denominator is the host, and it must say there is no limit
-	// rather than quietly measuring against one core.
-	free := plainText(cpuMeter(awake, provider.Limits{}, true))
+	// Uncapped: the figure stands alone rather than being measured against a limit that is
+	// not there.
+	m.limits = nil
 
-	if !strings.Contains(free, "8 cores") || !strings.Contains(free, "no limit set") {
-		t.Errorf("uncapped cpu meter = %q, want it to name the host's 8 cores and say no "+
-			"limit is set", free)
+	free := plainText(trend(m, m.rows[0], true, 20))
+
+	if strings.Contains(free, "/") {
+		t.Errorf("uncapped cpu line = %q, want no denominator at all", free)
 	}
 }
 
@@ -38,58 +43,76 @@ func TestTheCPUMeterNamesItsDenominator(t *testing.T) {
 // that on as a denominator says a redis holding 3 MB of a laptop is "0.04% full", which is a
 // true statement about a limit that does not exist.
 func TestTheHostsMemoryIsNotALimit(t *testing.T) {
-	r := row{Awake: true, MemBytes: 3 << 20, MemKnown: true}
+	m := model{metered: true, rows: []row{
+		{Sandbox: "a", Service: "b", Ref: "r1", Awake: true, MemBytes: 3 << 20, MemKnown: true},
+	}}
 
-	got := plainText(memMeter(r, provider.Limits{}, true))
+	got := plainText(trend(m, m.rows[0], false, 20))
 
-	if !strings.Contains(got, "no limit set") {
-		t.Errorf("uncapped memory meter = %q, want it to say no limit is set", got)
+	if strings.Contains(got, "/") {
+		t.Errorf("uncapped memory line = %q, want no proportion of a limit that is not there", got)
 	}
 
-	if strings.Contains(got, "%") {
-		t.Errorf("uncapped memory meter = %q, want no proportion of a limit that is not "+
-			"there", got)
-	}
+	m.limits = map[string]provider.Limits{"r1": {MemBytes: 256 << 20}}
 
-	capped := plainText(memMeter(r, provider.Limits{MemBytes: 256 << 20}, true))
+	capped := plainText(trend(m, m.rows[0], false, 20))
 
-	if !strings.Contains(capped, "3 MB") || !strings.Contains(capped, "256 MB") {
-		t.Errorf("capped memory meter = %q, want 3 MB of 256 MB", capped)
+	if !strings.Contains(capped, "3m/256m") {
+		t.Errorf("capped memory line = %q, want 3m of 256m", capped)
 	}
 }
 
 // A service that has not been sampled yet must say so. A zero would be a claim, and it would
 // be wrong.
 func TestAnUnsampledServiceClaimsNothing(t *testing.T) {
-	for name, got := range map[string]string{
-		"cpu":    plainText(cpuMeter(row{Awake: true}, provider.Limits{NanoCPUs: 1e9}, true)),
-		"memory": plainText(memMeter(row{Awake: true}, provider.Limits{MemBytes: 1 << 20}, true)),
-	} {
-		if !strings.Contains(got, "not sampled") {
-			t.Errorf("%s meter with no sample = %q, want it to say so rather than show 0",
-				name, got)
+	m := model{metered: true, rows: []row{{Sandbox: "a", Service: "b", Ref: "r1", Awake: true}}}
+	m.limits = map[string]provider.Limits{"r1": {NanoCPUs: 1e9, MemBytes: 1 << 20}}
+
+	for _, isCPU := range []bool{true, false} {
+		got := plainText(trend(m, m.rows[0], isCPU, 20))
+
+		if strings.Contains(got, "0.00") || strings.Contains(got, "0m") {
+			t.Errorf("an unsampled service was reported as measured zero: %q", got)
 		}
 	}
 }
 
-// The bar is a proportion, and the two ends are where a rounding mistake shows.
-func TestTheBarsEnds(t *testing.T) {
-	if full := plainText(bar(1)); strings.Contains(full, "·") {
-		t.Errorf("a full bar still has empty cells: %q", full)
+// A backend with no metrics has to say so rather than look like it is still loading.
+func TestATrendOnAnUnmeteredBackendSaysSo(t *testing.T) {
+	m := model{rows: []row{{Sandbox: "a", Service: "b", Ref: "r1", Awake: true}}}
+
+	if got := plainText(trend(m, m.rows[0], true, 20)); !strings.Contains(got, "does not report") {
+		t.Errorf("trend on an unmetered backend = %q, want it to say so", got)
+	}
+}
+
+// The graph is drawn from samples this dashboard took, and before it has any it must say that
+// rather than draw a flat line that looks like a service doing nothing.
+func TestTheGraphWithNoReadings(t *testing.T) {
+	if got := plainText(spark(nil, 0, 20)); !strings.Contains(got, "no readings") {
+		t.Errorf("spark with no samples = %q, want it to say there are none", got)
+	}
+}
+
+// Scaled to the ceiling when there is one, so a line near the top means near the limit and
+// two services with the same limit are directly comparable.
+func TestTheGraphScalesToTheCeiling(t *testing.T) {
+	full := plainText(spark([]float64{1, 1, 1}, 1, 10))
+
+	if !strings.Contains(full, "█") {
+		t.Errorf("a series sitting at its ceiling = %q, want it drawn at full height", full)
 	}
 
-	if over := plainText(bar(4)); len(strings.Split(over, "█")) > barCells+1 {
-		t.Errorf("a bar past its limit overflowed its width: %q", over)
+	tenth := plainText(spark([]float64{0.1, 0.1, 0.1}, 1, 10))
+
+	if strings.Contains(tenth, "█") {
+		t.Errorf("a series at a tenth of its ceiling = %q, want it drawn low", tenth)
 	}
 
-	// Nothing at all is empty; a very little is not, because "barely using it" and "switched
-	// off" are different things and an empty bar says the second.
-	if none := plainText(bar(0)); strings.Contains(none, "█") {
-		t.Errorf("a bar at zero drew a filled cell: %q", none)
-	}
-
-	if tiny := plainText(bar(0.001)); !strings.Contains(tiny, "█") {
-		t.Errorf("a bar at 0.1%% drew nothing, which reads as switched off: %q", tiny)
+	// And it never draws more cells than the width it was given.
+	long := make([]float64, 500)
+	if got := len([]rune(plainText(spark(long, 1, 12)))); got > 12 {
+		t.Errorf("spark drew %d cells into a width of 12", got)
 	}
 }
 
@@ -135,27 +158,36 @@ func TestPluralsOfBothWords(t *testing.T) {
 	}
 }
 
-// A sleeping service has no usage, so the layout must not reserve the meters' two lines for
-// it - that is two blank lines under the sandbox, which is the padding this dashboard was
-// built to avoid.
-func TestASleepingServiceDoesNotReserveMeterLines(t *testing.T) {
-	asleep := model{rows: []row{{Sandbox: "a", Service: "one"}}}
-	awake := model{rows: []row{{Sandbox: "a", Service: "one", Awake: true}}}
-
-	if got := wantDetail(asleep); got != detailNoMeters {
-		t.Errorf("a sleeping service asked for %d detail lines, want %d", got, detailNoMeters)
+// Every line of the block is worth drawing for a sleeping service too - its usage line shows
+// the drop to zero and when it happened - so the block must never be padded with blanks.
+func TestASleepingServiceFillsItsBlock(t *testing.T) {
+	asleep := model{
+		rows:    []row{{Sandbox: "a", Service: "one", Ref: "r1", Address: "127.0.0.1:20000"}},
+		metered: true,
 	}
 
-	if got := wantDetail(awake); got != detailFull {
-		t.Errorf("an awake service asked for %d detail lines, want %d", got, detailFull)
-	}
+	block := detailBlock(asleep, plan(30, 1, wantDetail(asleep)).detailRows, 120)
 
-	// And the block it actually renders has no blank line in it.
-	block := detailBlock(asleep, plan(30, 1, wantDetail(asleep)).detailRows, 100)
 	for i, l := range block {
 		if strings.TrimSpace(plainText(l)) == "" {
 			t.Errorf("line %d of a sleeping service's detail block is blank: %q", i, l)
 		}
+	}
+}
+
+// A sleeping database raises exactly one question, and the table's STATE column does not
+// answer it. The old block said "volume intact" in a sentence of its own; compacting the
+// block must not lose the reassurance with the line.
+func TestASleepingServiceStillSaysTheVolumeIsIntact(t *testing.T) {
+	m := model{
+		rows:    []row{{Sandbox: "a", Service: "db", Ref: "r1", Address: "127.0.0.1:20000"}},
+		metered: true,
+	}
+
+	got := plainText(strings.Join(detailBlock(m, detailFull, 140), "\n"))
+
+	if !strings.Contains(got, "volume intact") {
+		t.Errorf("a sleeping service's block never says the volume survives:\n%s", got)
 	}
 }
 
@@ -183,35 +215,6 @@ func TestAShortenedNameSaysSo(t *testing.T) {
 	for n := 1; n <= 12; n++ {
 		if got := len([]rune(truncateName("a-very-long-sandbox-name", n))); got > n {
 			t.Errorf("truncateName at width %d returned %d columns", n, got)
-		}
-	}
-}
-
-// The line-level truncate took the last word off the sleep sentence, leaving "volume intact,
-// wakes on" - a sentence that stops just before the half that reassures.
-func TestTheSleepSentenceIsNeverCutMidPhrase(t *testing.T) {
-	m := model{rows: []row{{Sandbox: "s", Service: "db", Address: "127.0.0.1:20000"}}}
-
-	for _, cols := range []int{40, 55, 64, 80, 120} {
-		block := detailBlock(m, detailNoMeters, cols)
-
-		var state string
-
-		for _, l := range block {
-			if strings.Contains(plainText(l), "asleep") {
-				state = plainText(l)
-			}
-		}
-
-		if state == "" {
-			t.Errorf("at %d columns there is no state line at all", cols)
-
-			continue
-		}
-
-		if !strings.Contains(state, "wakes on connect") {
-			t.Errorf("at %d columns the state line is %q, which stops before saying what "+
-				"wakes it", cols, strings.TrimSpace(state))
 		}
 	}
 }

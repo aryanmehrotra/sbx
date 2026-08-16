@@ -35,23 +35,21 @@ const (
 	linePaneTag = 1 // EVENTS / LOGS
 	lineFooter  = 1 // key hints
 
-	// detailFull is the expanded block: the name, then address, connect, state, cpu, memory
-	// and ref.
+	// detailFull is the expanded block: the name and ref, address and connect, then cpu and
+	// memory with their recent history.
 	//
-	// cpu and memory are the last two to be granted and the first two dropped, because they
-	// are the only lines that are sometimes not worth drawing: a service with no ceilings set
-	// has nothing to put in them that the table does not already show.
-	detailFull = 7
-
-	// detailWithMeters is the height at which the meters start to earn their space. Below it
-	// the block keeps its original four fields and folds the memory figure back into the
-	// state line, rather than dropping `ref` to make room for a bar.
-	detailWithMeters = 6
-
-	// detailNoMeters is the block as it was before the meters existed: name, address,
-	// connect, state, ref. What a sleeping service is worth, since it has no usage to meter.
-	detailNoMeters = 5
+	// Five, down from seven. `state` went because the table's STATE column already says it,
+	// `ref` moved onto the title line, and address and connect share a line where there is
+	// room - which bought the two graphs their space without the block growing.
+	detailFull = 5
 )
+
+// wantDetail is the tallest the detail block could usefully be for this model.
+//
+// Every line is worth drawing now, awake or asleep: a sleeping service's usage line is the
+// most interesting shape it has - it shows the drop to zero and when it happened - so there
+// is no longer a case where the block would be padded with blanks.
+func wantDetail(model) int { return detailFull }
 
 // plan divides rows between the table and the panes below it.
 //
@@ -59,21 +57,7 @@ const (
 // terminal there is not forty rows of table to show, and the first version spent the
 // difference on blank lines - which is how a working dashboard came to look like a stopped
 // one. The same space spent on the selected sandbox's address, its connect command and its
-// state is space that answers the next question instead.
-// wantDetail is the tallest the detail block could usefully be for this model.
-//
-// It exists because the block is not always worth its full height: the cpu and memory meters
-// only have something to say about a service that is awake, and a layout that reserved their
-// two lines regardless would leave two blank ones under a sleeping sandbox - which is the
-// padding this file's own history says makes a working dashboard look stopped.
-func wantDetail(m model) int {
-	if r, ok := m.currentRow(); ok && r.Awake {
-		return detailFull
-	}
-
-	return detailNoMeters
-}
-
+// usage over time is space that answers the next question instead.
 func plan(rows, items, want int) layout {
 	l := layout{header: true, footer: true}
 
