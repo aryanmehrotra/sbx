@@ -398,6 +398,40 @@ equivalent rather than one design spanning both.
 Either way the deployment exposes exactly one HTTP port, which is the shape every platform
 supports.
 
+## What happened when it was actually deployed
+
+Deployed to a real ZopDay environment (org "Aryan's Project", project `observability`,
+environment `prod` - `target: zopcloud`, `kind: vm-pool`, GCP) through the zopnight MCP server,
+using the root Dockerfile added for it.
+
+**The deploy succeeded and the service cannot work.** Both halves matter:
+
+- ZopDay built the repository at commit `f422ad4`, pushed
+  `us-central1-docker.pkg.dev/.../sbx-connect`, ran `vm-service-deploy` in 21s, and reported
+  `deployment active`. `list_services` shows it `active / active`.
+- The endpoint never serves sbx. Every request to `https://sbx-connect.zopcloud.zop.dev/healthz`
+  returns 7834 bytes of zopcloud's own "Starting up…" page rather than sbx's three-byte `ok`,
+  across eight attempts over four minutes.
+
+The reason is structural rather than a misconfiguration. `deploy_service` takes a repository or
+an image, a port and environment variables - **and no volume mounts**. sbx's whole job is
+managing sibling containers, so with no docker socket it exits at startup naming every socket
+it looked at, which is what it should do. The platform's scale-to-zero then never completes a
+wake, and its holding page answers forever.
+
+**So a zopcloud service is the wrong shape to run sbx in**, and this is worth stating plainly
+rather than filing as a bug: a platform whose contract is "one HTTP port and env vars" cannot
+host a thing whose contract is "give me the container runtime". The deployment shapes that do
+work are the two the design already named - a VM where the socket can be mounted, and a cluster
+where `deploy/activator.yaml` gives it a ServiceAccount. ZopDay can *provision* the first; it
+cannot deploy into it as an ordinary service.
+
+Worth noting for its own sake: the platform reported `active` for a container that exits
+immediately, because on the VM substrate "active" means the install completed rather than the
+process is healthy. That is the same failure shape as two other bugs found this week - a
+cloudflared URL that answered 405, and a docker limit-clear that changed nothing - all three
+being "reported success, reached nothing".
+
 ## Open questions
 
 1. **Does the fleet endpoint need to stream?** Today the client fetches once at startup, so a
