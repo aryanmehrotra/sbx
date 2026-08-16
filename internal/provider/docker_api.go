@@ -277,6 +277,29 @@ func (d *dockerClient) limits(ctx context.Context, id string) (hostLimits, error
 	return h, err
 }
 
+// update changes a container's ceilings in place.
+//
+// MemorySwap is sent as -1, unlimited, rather than left out. Docker's default when a memory
+// limit is set without one is twice the limit, so a service that reached its ceiling would be
+// swapped rather than stopped - and on a laptop that is the failure everybody hates, where
+// nothing is broken and everything is slow. Unlimited swap keeps the ceiling meaning what it
+// says: memory is capped, and going over it is an OOM the reader can see.
+func (d *dockerClient) update(ctx context.Context, id string, nanoCPUs int64, memBytes uint64) error {
+	body := struct {
+		NanoCpus   int64  `json:"NanoCpus"`
+		Memory     uint64 `json:"Memory"`
+		MemorySwap int64  `json:"MemorySwap"`
+	}{NanoCpus: nanoCPUs, Memory: memBytes, MemorySwap: -1}
+
+	// A cleared memory ceiling has no swap ceiling either, and -1 against a zero limit is
+	// what docker rejects.
+	if memBytes == 0 {
+		body.MemorySwap = 0
+	}
+
+	return d.send(ctx, http.MethodPost, "/containers/"+id+"/update", body, nil)
+}
+
 // statsSample is the part of docker's stats document this needs. The endpoint returns a large
 // object; naming four fields keeps the parse cheap and stops an unrelated schema change from
 // breaking it.

@@ -232,6 +232,14 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// A prompt takes every key, because while somebody is typing "512m" the m is a character
+	// and not a command. Nothing below this line runs until they finish or give up.
+	if d.model.input.active {
+		d.typing(ctx, k)
+
+		return false
+	}
+
 	// A pending confirmation swallows everything except its own answer, so that a stray
 	// keypress cannot remove a sandbox.
 	if d.model.confirm != "" {
@@ -319,6 +327,16 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		}
 
 		d.model.offset = 0
+
+	case k.Rune == 'L':
+		if r, ok := d.model.currentRow(); ok {
+			d.model.input = prompt{
+				active: true,
+				label:  fmt.Sprintf("limit %s/%s — cpu,memory", r.Sandbox, r.Service),
+				ref:    r.Ref,
+				name:   r.Sandbox + "/" + r.Service,
+			}
+		}
 
 	case k.Rune == 'd':
 		if r, ok := d.model.currentRow(); ok {
@@ -562,6 +580,138 @@ func (d *dash) followSelection(ctx context.Context) {
 	if ok && d.model.staleLimits(r) {
 		go d.loadLimits(context.WithoutCancel(ctx), r)
 	}
+}
+
+// typing applies one keypress to the open prompt. Called with the lock held.
+func (d *dash) typing(ctx context.Context, k tui.Key) {
+	switch {
+	case k.Code == tui.KeyEscape:
+		d.model.input = prompt{}
+
+	case k.Code == tui.KeyEnter:
+		in := d.model.input
+		d.model.input = prompt{}
+
+		go d.applyLimits(context.WithoutCancel(ctx), in)
+
+	case k.Code == tui.KeyBackspace:
+		if r := []rune(d.model.input.buffer); len(r) > 0 {
+			d.model.input.buffer = string(r[:len(r)-1])
+		}
+
+	case k.Code == tui.KeyRune && k.Rune >= ' ' && k.Rune != 127:
+		// Bounded, because a footer is one line and a buffer that outgrows it would scroll
+		// the thing somebody is reading while they type into it.
+		if len([]rune(d.model.input.buffer)) < 40 {
+			d.model.input.buffer += string(k.Rune)
+		}
+	}
+}
+
+// applyLimits parses what was typed and sets it, saying what happened either way.
+//
+// The syntax is "cpu,memory": "2,4g" caps both, "2" caps only cpu, ",4g" only memory. Two
+// values on one line rather than two prompts in a row, because the pair is one decision and
+// asking twice makes cancelling halfway a state somebody can get stuck in.
+//
+// There is no way to clear a ceiling from here, and that is docker's rule rather than a
+// missing feature. In its update API a zero is "leave this alone", not "remove this" - so a
+// request to clear one is accepted, changes nothing, and reports success. Refusing it out
+// loud beats reporting a change that did not happen, which is what the first version did.
+func (d *dash) applyLimits(ctx context.Context, in prompt) {
+	lim, ok := d.opt.Provider.(provider.Limiter)
+	if !ok {
+		d.say("this provider cannot set limits")
+
+		return
+	}
+
+	cpu, mem, _ := strings.Cut(in.buffer, ",")
+
+	if strings.TrimSpace(in.buffer) == "none" {
+		cpu, mem = "none", "none"
+	}
+
+	d.mu.Lock()
+	current := d.model.limits
+	d.mu.Unlock()
+
+	if asked, half := clearingSomething(cpu, mem, current); asked {
+		d.say("docker cannot remove a %s limit from a container that exists - "+
+			"recreate the sandbox to clear it", half)
+
+		return
+	}
+
+	want, err := provider.ParseLimits(cpu, mem)
+	if err != nil {
+		d.say("%s", err)
+
+		return
+	}
+
+	// An unmentioned half is left alone rather than cleared. Typing "2" to cap the cpu should
+	// not silently remove a memory ceiling somebody set earlier - and a zero would not remove
+	// it anyway, so sending the current value is both honest and what docker will do.
+	if strings.TrimSpace(cpu) == "" {
+		want.NanoCPUs = current.NanoCPUs
+	}
+
+	if strings.TrimSpace(mem) == "" {
+		want.MemBytes = current.MemBytes
+	}
+
+	if !want.Capped() {
+		d.say("nothing to set - type a value like 0.5,512m")
+
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	if err := lim.SetLimits(ctx, in.ref, want); err != nil {
+		d.say("%s", firstLine(err.Error()))
+
+		return
+	}
+
+	// Force the meters to re-read rather than believing what was asked for: what docker
+	// accepted is the only thing worth drawing.
+	d.mu.Lock()
+	d.model.limitsFor = ""
+	d.mu.Unlock()
+
+	d.say("%s limited to %s", in.name, describeLimits(want))
+}
+
+// clearingSomething reports whether the request would remove a ceiling that is currently set,
+// and names which one. Asking to clear something that is already uncapped is not a request to
+// clear anything, so it passes.
+func clearingSomething(cpu, mem string, current provider.Limits) (bool, string) {
+	switch {
+	case strings.TrimSpace(cpu) == "none" && current.NanoCPUs > 0:
+		return true, "cpu"
+	case strings.TrimSpace(mem) == "none" && current.MemBytes > 0:
+		return true, "memory"
+	}
+
+	return false, ""
+}
+
+// describeLimits says a ceiling the way somebody would read it back.
+func describeLimits(l provider.Limits) string {
+	switch {
+	case !l.Capped():
+		return "nothing"
+	case l.NanoCPUs == 0:
+		return humanBytes(l.MemBytes) + " of memory, cpu uncapped"
+	case l.MemBytes == 0:
+		return trimZeros(float64(l.NanoCPUs)/1e9) + " cores, memory uncapped"
+	}
+
+	return fmt.Sprintf("%s cores and %s",
+		trimZeros(float64(l.NanoCPUs)/1e9), humanBytes(l.MemBytes))
 }
 
 // followLimits re-reads the selected service's ceilings when they can have changed.

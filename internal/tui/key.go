@@ -34,6 +34,7 @@ const (
 	KeyEnd
 	KeyTab
 	KeyCtrlZ
+	KeyBackspace
 )
 
 // Reader decodes keys from a terminal.
@@ -120,6 +121,11 @@ func decode(b []byte) Key {
 		// ^Z. Raw mode turns the terminal's own signal generation off, so this is a byte and
 		// not SIGTSTP: if nobody names it, suspending the dashboard silently does nothing.
 		return Key{Code: KeyCtrlZ}
+	case 127, 8:
+		// Terminals disagree about which of these Backspace sends - most send DEL, some send
+		// BS - and a program that names only one of them has a backspace key that works on
+		// some machines. Both, because there is nothing else either byte means here.
+		return Key{Code: KeyBackspace}
 	case 13, 10:
 		return Key{Code: KeyEnter}
 	case 27:

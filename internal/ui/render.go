@@ -414,7 +414,7 @@ func cpuMeter(r row, l provider.Limits) string {
 	cores := r.CPU / 100
 
 	if l.NanoCPUs <= 0 {
-		return fmt.Sprintf("%s%.2f%s%s of %d cores · no limit set%s",
+		return fmt.Sprintf("%s%.2f%s%s of %d cores · no limit set · L to set one%s",
 			reset, cores, reset, dim, max(1, r.OnlineCPUs), reset)
 	}
 
@@ -433,7 +433,8 @@ func memMeter(r row, l provider.Limits) string {
 	}
 
 	if l.MemBytes == 0 {
-		return fmt.Sprintf("%s%s%s%s · no limit set%s", reset, humanBytes(r.MemBytes), reset, dim, reset)
+		return fmt.Sprintf("%s%s%s%s · no limit set · L to set one%s",
+			reset, humanBytes(r.MemBytes), reset, dim, reset)
 	}
 
 	return fmt.Sprintf("%s  %s%s%s%s of %s%s",
@@ -587,6 +588,13 @@ func tail[T any](s []T, n int) []T {
 // hints are decorative and that the rest of them probably lie too.
 func footer(m model, paneRows, cols int) string {
 	switch {
+	case m.input.active:
+		// A block for a cursor, so it is obvious the dashboard is waiting on a person rather
+		// than on a container.
+		return cyan + "  " + m.input.label + reset + "  " +
+			truncate(m.input.buffer, max(1, cols-visibleLen(m.input.label)-24)) +
+			invert + " " + reset + dim + "   ⏎ set   esc cancel" + reset
+
 	case m.confirm != "":
 		return red + "  " + m.confirm + reset + "   y / n"
 
@@ -607,8 +615,8 @@ func footer(m model, paneRows, cols int) string {
 		short = "  l switches  ⇥ table  q quit"
 
 	default:
-		full = "  ↑↓ move   ⏎ wake   s sleep   l logs   d remove   r refresh   ⇥ pane   q quit"
-		short = "  ↑↓ ⏎ wake  s sleep  l logs  d rm  q quit"
+		full = "  ↑↓ move   ⏎ wake   s sleep   l logs   L limit   d remove   r refresh   ⇥ pane   q quit"
+		short = "  ↑↓ ⏎ wake  s sleep  l logs  L limit  d rm  q quit"
 	}
 
 	// Trimmed rather than wrapped: a footer that wraps steals a line from the table and moves

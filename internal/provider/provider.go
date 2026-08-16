@@ -23,6 +23,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -350,6 +352,89 @@ func (l Limits) Capped() bool { return l.NanoCPUs > 0 || l.MemBytes > 0 }
 // round trip per service to re-learn a number that cannot change while the container lives.
 type Limiter interface {
 	Limits(ctx context.Context, ref string) (Limits, error)
+
+	// SetLimits changes what a service is allowed, in place.
+	//
+	// In place rather than by recreating the container, because recreating one is how a
+	// sandbox loses whatever was written to it since it was made - and a ceiling is a
+	// property of the running thing, not of the image it came from. It applies to a sleeping
+	// service too: sleep is a stopped container, and a stopped container still has a
+	// HostConfig to change.
+	//
+	// A zero means "leave this ceiling as it is", NOT "remove it". That is docker's rule and
+	// not a choice made here: its update endpoint treats an omitted or zero value as no
+	// change, so a container that has a limit cannot be returned to unlimited without being
+	// recreated. Verified against a live daemon - clearing is accepted, changes nothing and
+	// reports success, which is the worst of the three possible behaviours. Callers that want
+	// to offer "remove the limit" have to recreate, and callers that cannot must say so
+	// rather than pass a zero and claim it worked.
+	SetLimits(ctx context.Context, ref string, l Limits) error
+}
+
+// ParseLimits reads a cpu and a memory ceiling the way somebody would type them: cores as a
+// plain number ("0.5", "2"), memory as a size ("512m", "4g", "1024k"). An empty string, or
+// "none", means no ceiling.
+//
+// Parsed here rather than passed to docker verbatim as the spec does, because the spec is
+// checked by docker at create time and told off loudly, whereas this is typed into a
+// dashboard by somebody who wants to know now whether it took.
+func ParseLimits(cpu, mem string) (Limits, error) {
+	var l Limits
+
+	if c := strings.TrimSpace(cpu); c != "" && c != "none" {
+		cores, err := strconv.ParseFloat(c, 64)
+		if err != nil || cores <= 0 {
+			return l, fmt.Errorf("cpu %q is not a number of cores - try 0.5, or 2", cpu)
+		}
+
+		l.NanoCPUs = int64(cores * 1e9)
+	}
+
+	if m := strings.TrimSpace(mem); m != "" && m != "none" {
+		bytes, err := parseSize(m)
+		if err != nil {
+			return l, err
+		}
+
+		l.MemBytes = bytes
+	}
+
+	return l, nil
+}
+
+// parseSize reads "512m", "4g", "1024k" or a plain byte count.
+func parseSize(s string) (uint64, error) {
+	unit := uint64(1)
+	digits := strings.TrimSpace(strings.ToLower(s))
+
+	// "512mb" and "512m" are the same thing, and somebody will type both.
+	digits = strings.TrimSuffix(digits, "b")
+
+	if digits != "" {
+		switch digits[len(digits)-1] {
+		case 'k':
+			unit, digits = 1<<10, digits[:len(digits)-1]
+		case 'm':
+			unit, digits = 1<<20, digits[:len(digits)-1]
+		case 'g':
+			unit, digits = 1<<30, digits[:len(digits)-1]
+		}
+	}
+
+	n, err := strconv.ParseFloat(strings.TrimSpace(digits), 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("memory %q is not a size - try 512m, or 2g", s)
+	}
+
+	got := uint64(n * float64(unit))
+
+	// Docker refuses anything under 6 MB, and refuses it from inside the daemon with a
+	// message about "minimum memory limit allowed" that reads like a bug in sbx.
+	if got < 6<<20 {
+		return 0, fmt.Errorf("memory %q is below the 6m docker will accept", s)
+	}
+
+	return got, nil
 }
 
 // Meter reports what running services are costing.

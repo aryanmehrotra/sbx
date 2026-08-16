@@ -58,6 +58,24 @@ const (
 	focusPane
 )
 
+// prompt is a line of text being typed.
+//
+// The dashboard is otherwise driven entirely by single keypresses, and this is the one place a
+// value has to be composed rather than chosen. It lives in the footer so that nothing above it
+// moves while somebody types - a screen that reflows around an input is one where the row you
+// were aiming at is somewhere else by the time you have finished.
+type prompt struct {
+	active bool
+	label  string
+	buffer string
+
+	// ref is the service the answer is for, captured when the prompt opened. The selection can
+	// move underneath a prompt - the fleet refreshes every second - and a limit applied to
+	// whatever happens to be selected on submit is a limit applied to the wrong container.
+	ref  string
+	name string
+}
+
 // serviceStat is what the history says about one service, summarised for the detail line.
 type serviceStat struct {
 	wakes      int
@@ -102,6 +120,9 @@ type model struct {
 	// has no ceilings to report, so without this the first look at a sleeping service would
 	// cache "no limits" and never ask again once it woke.
 	limitsAwake bool
+
+	// input is a line being typed, if one is.
+	input prompt
 
 	// confirm is a pending destructive action.
 	confirm string

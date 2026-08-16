@@ -727,6 +727,15 @@ func (d *dockerProvider) Limits(ctx context.Context, ref string) (Limits, error)
 	}, nil
 }
 
+// SetLimits changes what one container is allowed, without recreating it.
+func (d *dockerProvider) SetLimits(ctx context.Context, ref string, l Limits) error {
+	if err := d.api.update(ctx, ref, l.NanoCPUs, l.MemBytes); err != nil {
+		return fmt.Errorf("could not set limits on %s: %w", ref, err)
+	}
+
+	return nil
+}
+
 func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]Usage, error) {
 	const parallel = 8
 
