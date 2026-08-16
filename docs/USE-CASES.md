@@ -205,6 +205,47 @@ should be inventing on your cluster's behalf.
 
 ---
 
+## 8 · A sandbox that is not on your laptop
+
+The laptop that cannot run the stack - four services on eight gigabytes, or an agent you would
+rather keep off the machine entirely. Put the service on whatever platform you already deploy
+to, and keep talking to it as though it were local:
+
+```sh
+sbx pack --spec sandbox.json          # one build context per service, under sbx-pack/
+
+# deploy sbx-pack/db/ to your platform, with SBX_CONNECT_TOKEN set in its environment
+
+SBX_CONNECT_TOKEN=... sbx connect https://db.example.dev
+#   db  ->  127.0.0.1:20002
+```
+
+`psql -h 127.0.0.1 -p 20002` then connects to a database in someone else's datacentre without
+knowing any of that happened, which is the whole point: the tools stay ordinary.
+
+What makes it work is that a platform-as-a-service gives you one container and one HTTP port,
+so that is the shape `pack` writes. The generated image runs the base image's **own** start
+line - read out of the image rather than guessed - beside `sbx serve --connect-addr --front`,
+and the tunnel is a WebSocket because an L7 proxy will strip anything more exotic. `connect`
+binds `127.0.0.1` only, on the same port numbers the deployment uses, so the `sbx env` block
+from over there is already correct here.
+
+Four things are worth knowing before you rely on it:
+
+- **One deployment per service, today.** `--front` carries several ports at once, so one
+  container can serve a whole sandbox - but `pack` writes one image per service, which means
+  two services are two deployments and two `sbx connect`.
+- **No volume means no data.** Most platforms replace the container rather than keep its disk.
+  That is right for a branch's test fixtures and wrong for anything you would miss.
+- **The token is the whole of the security.** Anyone with the URL and `SBX_CONNECT_TOKEN` has
+  the port, from anywhere. → [SECURITY.md](../SECURITY.md)
+- **It is a network away.** Every round trip now costs what the internet costs, which a test
+  suite that makes thousands of them will notice.
+
+→ [DECISIONS.md](DECISIONS.md) for why this contradicts an earlier decision, and what changed.
+
+---
+
 ## Where to use something else
 
 | If you need | Use |

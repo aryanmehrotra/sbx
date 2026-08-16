@@ -140,9 +140,16 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx rm feature-x",
 	},
 	"serve": {
-		"sbx serve [--idle 5m] [--socket PATH]",
+		"sbx serve [--idle 5m] [--socket PATH] [--connect-addr ADDR] [--front NAME=PORT]",
 		"The daemon. It owns the ports `sbx env` hands out, wakes a sandbox when something\n" +
-			"connects, and sleeps it after --idle. One per machine, not one per sandbox.",
+			"connects, and sleeps it after --idle. One per machine, not one per sandbox.\n" +
+			"\n" +
+			"--connect-addr serves the endpoint `sbx connect` dials, over one HTTP port -\n" +
+			"which is all most platforms route. --front NAME=PORT offers a port that is not a\n" +
+			"sandbox at all, so sbx can sit beside a workload in the same container and hand\n" +
+			"that workload out; --behind-proxy is for when the platform terminates the TLS.\n" +
+			"SBX_CONNECT_TOKEN must be set for any of it - it is the only thing standing\n" +
+			"between the endpoint and whoever finds its URL.",
 		"sbx serve --idle 5m &",
 	},
 	"selftest": {

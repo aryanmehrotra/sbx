@@ -172,6 +172,38 @@ snapshot time and this does not arise.
 
 ---
 
+## `sbx connect` cannot reach a deployment the platform calls healthy
+
+The platform's health check and the tunnel are not the same fact. A container can be up, and
+serving nothing that answers `sbx connect`. Work down this list - it is ordered by how often
+each one was the answer while this was being built.
+
+**"rejected the token".** `SBX_CONNECT_TOKEN` here is not the one the deployment was given.
+It is set in two places, and the deployment's copy is the one people forget after a redeploy.
+
+**"the handshake was answered by something that is not this endpoint".** Something is in
+front of sbx - a platform login page, a router sending `/` somewhere else, or a URL that
+belongs to a different service. Check `curl -sS https://<url>/healthz`: that route needs no
+token and answers only if sbx itself is on the other end.
+
+**The deployment is "active" but nothing answers at all.** Almost always the container died
+at startup and the platform restarted it quietly. Read its logs. The one that has caught
+people is a hand-written Dockerfile installing sbx with `@latest`: releases before this
+feature have no `--connect-addr`, so the process exits on an unknown flag. `sbx pack` pins the
+version for exactly this reason - if you wrote the image yourself, pin it too.
+
+**"cannot open 127.0.0.1:<port>".** This machine's own `sbx serve` already owns that port,
+because the deployment hands out the same numbers it would locally. `--port-offset 1000`
+moves the whole block; the addresses printed at startup are then the correct ones, and the
+deployment's own `sbx env` values are not.
+
+**"the sandbox behind this port was recreated".** The container was replaced while you were
+connected, so the port now serves a different instance. Restart `sbx connect` to pick up the
+new map. This is a refusal on purpose: silently reconnecting would point your open `psql` at
+a database that is not the one it started talking to.
+
+---
+
 ## Removing sbx
 
 Nothing here is hidden, and all of it is reversible.
