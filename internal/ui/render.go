@@ -19,6 +19,10 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
+// fieldIndent is what a detail line spends before its value: three spaces, a nine-column key
+// and one more space. Named so the lines that have to fit inside what is left can say so.
+const fieldIndent = 13
+
 // messageLife is how long feedback from a keypress stays in the footer before the key hints
 // come back. Long enough to read, short enough that the hints are never gone for good.
 const messageLife = 4 * time.Second
@@ -231,8 +235,8 @@ func renderRow(r row, selected bool, w cols) string {
 
 	line := fmt.Sprintf("%s %-*s  %-*s  %s%-6s%s  %*s  %*s",
 		marker,
-		w.sandbox, truncate(r.Sandbox, w.sandbox),
-		w.service, truncate(r.Service, w.service),
+		w.sandbox, truncateName(r.Sandbox, w.sandbox),
+		w.service, truncateName(r.Service, w.service),
 		colour, state, reset,
 		w.cpu, cpu,
 		w.mem, mem)
@@ -317,7 +321,7 @@ func detailBlock(m model, space, cols int) []string {
 	case r.Awake:
 		field("state", green+"awake"+reset+dim+" · using "+reset+humanBytes(r.MemBytes))
 	default:
-		field("state", dim+"asleep · 0 B of memory, volume intact, wakes on connect"+reset)
+		field("state", dim+asleepText(cols-fieldIndent)+reset)
 	}
 
 	// With room for only one of them it is memory, because exceeding a memory ceiling kills
@@ -337,6 +341,28 @@ func detailBlock(m model, space, cols int) []string {
 	}
 
 	return out[:space]
+}
+
+// asleepText says what "asleep" means, in the longest form that fits.
+//
+// Written out rather than truncated. The full sentence runs to 54 columns and the line-level
+// cut took the last word off it, leaving "volume intact, wakes on" - a sentence that stops
+// immediately before the half that answers the reader's actual question, which is whether
+// their data is still there and what they have to do about it. Each form below is a whole
+// sentence; the narrow ones say less rather than trailing off.
+func asleepText(width int) string {
+	for _, s := range []string{
+		"asleep · 0 B of memory, volume intact, wakes on connect",
+		"asleep · 0 B, volume intact, wakes on connect",
+		"asleep · 0 B, wakes on connect",
+		"asleep · wakes on connect",
+	} {
+		if len(s) <= width {
+			return s
+		}
+	}
+
+	return "asleep"
 }
 
 // barCells is how wide a usage bar is drawn. Sixteen, because its job is "roughly how full"
@@ -694,6 +720,30 @@ func pad(left, right string, cols int) string {
 //
 // Counting bytes here would cut in the middle of an escape sequence and leave the rest of the
 // terminal painted in whatever colour that was.
+// truncateName shortens a name and admits that it did.
+//
+// A hard cut gives "postgr" and "sbx-ui-p", which do not read as shortened names. They read
+// as a corrupted one, or worse as a different sandbox that happens to start the same way -
+// and on a narrow terminal every name in the column is a candidate. One column spent on an
+// ellipsis is what makes "there is more of this" visible.
+//
+// Plain text only, unlike truncate: these are names, and a name with an escape sequence in it
+// is a problem for somewhere else.
+func truncateName(s string, n int) string {
+	r := []rune(s)
+
+	switch {
+	case n <= 0:
+		return ""
+	case len(r) <= n:
+		return s
+	case n == 1:
+		return "…"
+	}
+
+	return string(r[:n-1]) + "…"
+}
+
 func truncate(s string, n int) string {
 	if n <= 0 {
 		return ""

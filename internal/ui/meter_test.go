@@ -159,6 +159,63 @@ func TestASleepingServiceDoesNotReserveMeterLines(t *testing.T) {
 	}
 }
 
+// A name that has been shortened has to look shortened. "postgr" and "sbx-ui-p" read as a
+// corrupted name, or as a different sandbox that happens to start the same way.
+func TestAShortenedNameSaysSo(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"postgres", 6, "postg…"},
+		{"sbx-ui-polish", 8, "sbx-ui-…"},
+		{"redis", 6, "redis"}, // fits, so it is left alone
+		{"redis", 5, "redis"}, // exactly fits
+		{"redis", 1, "…"},
+		{"redis", 0, ""},
+	} {
+		if got := truncateName(c.in, c.n); got != c.want {
+			t.Errorf("truncateName(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+
+	// And whatever it returns still fits the column it was given.
+	for n := 1; n <= 12; n++ {
+		if got := len([]rune(truncateName("a-very-long-sandbox-name", n))); got > n {
+			t.Errorf("truncateName at width %d returned %d columns", n, got)
+		}
+	}
+}
+
+// The line-level truncate took the last word off the sleep sentence, leaving "volume intact,
+// wakes on" - a sentence that stops just before the half that reassures.
+func TestTheSleepSentenceIsNeverCutMidPhrase(t *testing.T) {
+	m := model{rows: []row{{Sandbox: "s", Service: "db", Address: "127.0.0.1:20000"}}}
+
+	for _, cols := range []int{40, 55, 64, 80, 120} {
+		block := detailBlock(m, detailNoMeters, cols)
+
+		var state string
+
+		for _, l := range block {
+			if strings.Contains(plainText(l), "asleep") {
+				state = plainText(l)
+			}
+		}
+
+		if state == "" {
+			t.Errorf("at %d columns there is no state line at all", cols)
+
+			continue
+		}
+
+		if !strings.Contains(state, "wakes on connect") {
+			t.Errorf("at %d columns the state line is %q, which stops before saying what "+
+				"wakes it", cols, strings.TrimSpace(state))
+		}
+	}
+}
+
 // plainText strips the escape sequences so a test can assert about what a reader sees.
 func plainText(s string) string {
 	var (
