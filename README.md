@@ -81,7 +81,7 @@ the exhaustive table; the short version:
 | | local · docker | cluster · kubernetes | |
 |---|:---:|:---:|---|
 | Wake on connect, sleep to 0 B, `list` · `env` · `logs` · `exec` · `cp` · `rm` · `ready` | ✅ | ✅ | the everyday commands, identical on both |
-| **cpu / memory limits** | ✅ | ✅ | `cpu` and `memory` per service, and `L` in `sbx ui`. Docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** |
+| **cpu / memory limits** | ✅ | ⚠️ | `cpu` and `memory` per service, and `L` in `sbx ui`. Docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** — and needs credentials that may patch Deployments. The shipped activator Role deliberately cannot ([`deploy/activator.yaml`](deploy/activator.yaml) grants `deployments/scale` only), so this works from your kubeconfig, not from inside the cluster |
 | **removing a limit once set** | ❌ | ✅ | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until it is recreated |
 | **cpu / memory usage** | ✅ | ❌ | reading it from a cluster needs metrics-server, which is the operator's decision. Rows read `n/a` there rather than pretending a sample is coming |
 | `gpus:` · `snapshot` · `fork` · `gc` · `build:` · `prewarm` · `egress: "deny"` · `sbx url` | ✅ | ❌ | each refused in a cluster with a reason - the cluster answers are a device plugin, a CSI snapshot, a NetworkPolicy and an Ingress, none of which is the docker one in a hat |

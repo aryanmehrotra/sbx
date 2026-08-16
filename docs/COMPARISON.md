@@ -354,7 +354,7 @@ missing it is refused with a reason naming the backend, never approximated.
 | **One committed `sandbox.json`** | ● | ● | the same file, unchanged, for both |
 | **Templates built in** | ● | ● | digest-pinned, and a property of the spec rather than the runtime |
 | **`depends_on` and `${VAR}` secrets** | ● | ● | resolved before either backend sees the spec |
-| **cpu / memory limits** | ● | ● | docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** |
+| **cpu / memory limits** | ● | ◐ | docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod**. It needs rights to patch Deployments, and the activator's Role grants `deployments/scale` and nothing more - by design, so that it can wake and sleep a sandbox and never reshape one. Works from your own kubeconfig; denied to the in-cluster component |
 | **removing a limit once set** | ○ | ● | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until it is recreated. The one row the cluster wins outright |
 | **`gpus:`** | ● | ○ | `--gpus` to docker; the cluster answer is a device-plugin resource and is not implemented |
 | **cpu / memory usage** | ● | ○ | needs metrics-server in a cluster, which is the operator's decision. Rows read `n/a` there rather than implying a sample is coming |
