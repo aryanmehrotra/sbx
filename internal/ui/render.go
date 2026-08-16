@@ -24,6 +24,12 @@ import (
 // and one more space. Named so the lines that have to fit inside what is left can say so.
 const fieldIndent = 13
 
+// What a trend line spends before the graph: the reading, then the percentage.
+const (
+	readingCols = 16
+	pctCols     = 5
+)
+
 // messageLife is how long feedback from a keypress stays in the footer before the key hints
 // come back. Long enough to read, short enough that the hints are never gone for good.
 const messageLife = 4 * time.Second
@@ -430,8 +436,11 @@ func detailBlock(m model, space, cols int) []string {
 	field("address", r.Address)
 	field("connect", connect)
 
-	// The width the graph gets: whatever is left after the label and the reading.
-	graph := cols - fieldIndent - 16
+	// What is left for the trace and its legend, after the field label, the reading and the
+	// percentage. Counted rather than estimated: the first version forgot the percentage
+	// column, so the line overran the terminal by five and the truncate ate the span off the
+	// end of the legend - which is the one number that says how far back the graph reaches.
+	graph := cols - fieldIndent - readingCols - pctCols
 
 	field("cpu", trend(m, r, true, graph))
 	field("memory", trend(m, r, false, graph))
@@ -528,8 +537,14 @@ func trend(m model, r row, isCPU bool, width int) string {
 	// whether it covers a minute or an hour.
 	right := legend(values, ceiling, isCPU, width)
 
-	return padVisible(now, 16) + padVisible(pct, 5) +
-		spark(values, ceiling, max(0, width-visibleLen(right))) + right
+	// The trace sits in a frame of fixed width with the newest reading against its right edge,
+	// so the legend never moves and the line grows backwards into the space rather than
+	// pushing everything along in front of it. A graph whose width tracks how long you have
+	// been watching is one where nothing on the row can be read at a glance twice.
+	cells := max(0, width-visibleLen(right))
+
+	return padVisible(now, readingCols) + padVisible(pct, pctCols) +
+		padLeft(spark(values, ceiling, cells), cells) + right
 }
 
 // legend says what the graph's height and length mean.
@@ -578,6 +593,16 @@ func shortDuration(d time.Duration) string {
 	default:
 		return strconv.Itoa(int(d.Hours())) + "h"
 	}
+}
+
+// padLeft pads on the left, which is what puts the newest end of a trace against a fixed
+// right edge.
+func padLeft(s string, n int) string {
+	if gap := n - visibleLen(s); gap > 0 {
+		return strings.Repeat(" ", gap) + s
+	}
+
+	return s
 }
 
 // padVisible pads to a width counted in what the reader sees, not in bytes. The readings
@@ -647,13 +672,34 @@ func spark(values []float64, ceiling float64, cells int) string {
 		return 3 - clamp(int(v/top*3+0.5), 0, 3)
 	}
 
+	// Every cell takes the colour of what was happening when it was drawn, not of what is
+	// happening now. A single colour for the whole line says "this service is fine" over a
+	// trace that spent two of its four minutes against the ceiling, and the moment it went bad
+	// is the one thing a history is for.
+	colourAt := func(v float64) string {
+		if ceiling <= 0 {
+			return green
+		}
+
+		switch frac := v / ceiling; {
+		case frac >= 0.9:
+			return red
+		case frac >= 0.75:
+			return yellow
+		}
+
+		return green
+	}
+
 	var (
 		b    strings.Builder
 		prev = row(values[0])
+		cur  string
 	)
 
 	for i := 0; i < len(values); i += 2 {
 		cell := rune(brailleBlank)
+		worst := values[i]
 
 		for half := range 2 {
 			if i+half >= len(values) {
@@ -661,6 +707,7 @@ func spark(values []float64, ceiling float64, cells int) string {
 			}
 
 			at := row(values[i+half])
+			worst = max(worst, values[i+half])
 
 			// Joined to the sample before it. Without this a series that jumps leaves two
 			// unrelated dots and reads as noise rather than as a line that moved.
@@ -671,21 +718,18 @@ func spark(values []float64, ceiling float64, cells int) string {
 			prev = at
 		}
 
+		// The louder of the two readings in the cell, because a cell that touched the ceiling
+		// should not be painted calm by the sample beside it.
+		if c := colourAt(worst); c != cur {
+			b.WriteString(c)
+
+			cur = c
+		}
+
 		b.WriteRune(cell)
 	}
 
-	colour := green
-
-	if ceiling > 0 {
-		switch frac := values[len(values)-1] / ceiling; {
-		case frac >= 0.9:
-			colour = red
-		case frac >= 0.75:
-			colour = yellow
-		}
-	}
-
-	return colour + b.String() + reset
+	return b.String() + reset
 }
 
 // limitChoices offers the sizes, and gives way to the short form when the terminal is narrow.

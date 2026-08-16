@@ -375,3 +375,88 @@ func plainText(s string) string {
 
 	return b.String()
 }
+
+// The detail block's trend lines carry a reading, a percentage, a trace and a legend, and the
+// arithmetic that divides the row between them has to add up. It did not: the percentage
+// column was left out of the graph's budget, the row overran by five columns, and the
+// line-level truncate took the span off the end of the legend - the one number that says how
+// far back the graph reaches.
+func TestATrendLineFitsAndKeepsItsLegend(t *testing.T) {
+	m := model{metered: true, rows: []row{{
+		Sandbox: "zn-dev", Service: "clickhouse", Ref: "r1", Awake: true,
+		Address: "127.0.0.1:20000 127.0.0.1:20001",
+		CPU:     24, CPUKnown: true, MemBytes: 473 << 20, MemKnown: true,
+	}}}
+
+	m.limits = map[string]provider.Limits{"r1": {NanoCPUs: 500_000_000, MemBytes: 512 << 20}}
+
+	for _, s := range make([]metricSample, 60) {
+		_ = s
+
+		m.series = map[string][]metricSample{"r1": append(m.series["r1"],
+			metricSample{cores: 0.24, mem: 473 << 20, known: true})}
+	}
+
+	for _, cols := range []int{100, 120, 150, 190, 240} {
+		lines := detailBlock(m, detailFull, cols)
+
+		for _, l := range lines {
+			if n := visibleLen(l); n > cols {
+				t.Errorf("at %d columns a detail line is %d wide: %q", cols, n, plainText(l))
+			}
+		}
+
+		joined := plainText(strings.Join(lines, "\n"))
+
+		if !strings.Contains(joined, "peak") {
+			t.Errorf("at %d columns the legend is missing entirely", cols)
+		}
+
+		// The span is the last thing on the legend and so the first thing a too-wide row loses.
+		if !strings.Contains(joined, "·") {
+			t.Errorf("at %d columns the legend lost its span:\n%s", cols, joined)
+		}
+	}
+}
+
+// Every cell takes the colour of what was happening when it was drawn. One colour for the
+// whole line says "fine" over a trace that spent half its length against the ceiling, and when
+// it went bad is the one thing a history is for.
+func TestTheTraceIsColouredWhereItHappened(t *testing.T) {
+	// Low for the first half, pinned against the ceiling for the second.
+	var values []float64
+
+	for range 20 {
+		values = append(values, 0.1)
+	}
+
+	for range 20 {
+		values = append(values, 1.0)
+	}
+
+	got := spark(values, 1, 40)
+
+	if !strings.Contains(got, green) {
+		t.Error("the calm half of the trace was not drawn green")
+	}
+
+	if !strings.Contains(got, red) {
+		t.Error("the half spent against the ceiling was not drawn red")
+	}
+
+	// And the calm half must come first, so the colour follows the data rather than the
+	// current reading being smeared backwards over history.
+	if strings.Index(got, green) > strings.Index(got, red) {
+		t.Error("the trace is coloured by its latest reading rather than by each moment")
+	}
+}
+
+// A trace with no ceiling has nothing to be alarmed about, so it stays one colour: a
+// proportion of nothing is not a warning.
+func TestAnUncappedTraceIsNotColouredAsAWarning(t *testing.T) {
+	got := spark([]float64{1, 5, 100, 900}, 0, 20)
+
+	if strings.Contains(got, red) || strings.Contains(got, yellow) {
+		t.Errorf("an uncapped trace was coloured as though it were near a limit: %q", got)
+	}
+}
