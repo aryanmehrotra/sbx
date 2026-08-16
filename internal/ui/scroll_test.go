@@ -174,7 +174,7 @@ func TestTabRefusesAFocusThatWouldDoNothing(t *testing.T) {
 		t.Error("tab moved the arrows to a pane with nothing to scroll, where they do nothing")
 	}
 
-	if d.model.message == "" {
+	if d.message() == "" {
 		t.Error("it moved nothing and said nothing, which is indistinguishable from a freeze")
 	}
 }

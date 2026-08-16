@@ -54,7 +54,14 @@ func everyState() map[string]func() *dash {
 				Service: []string{"postgres", "redis"}[i%2],
 				Awake:   i%3 == 0,
 				Ref:     "ref" + itoa(i),
-				Address: "127.0.0.1:2000" + itoa(i%10),
+
+				// Port 1 rather than 20000+, because Enter dials this address for real and
+				// 20000-20009 is sbx's own published range: on a machine with `sbx serve`
+				// running, this test would reach the daemon and wake somebody's containers.
+				// A unit test must not have a side effect on the developer's sandboxes.
+				// Nothing listens on port 1, so the dial is refused immediately and the path
+				// under test - a wake that fails - is the one that ran here anyway.
+				Address: "127.0.0.1:1",
 			})
 		}
 
@@ -155,11 +162,32 @@ func manyEvents(n int) []history.Record {
 	return out
 }
 
+// snapshot copies the model the way any reader outside the key loop has to.
+//
+// Enter and s hand their work to a goroutine, which reports what happened by writing the model
+// under d.mu (run.go). Reading d.model directly makes the test a second reader with no lock -
+// a data race, and the detector fails the build over it. The synchronisation belongs here
+// rather than in run.go: the code already takes the lock on both sides, the test did not.
+func (d *dash) snapshot() (model, int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.model, d.paneHeight
+}
+
+// message is the footer line, read the way it is written: under the lock. Every test that
+// waits for the effect of a key goes through here, because the effect arrives on a goroutine.
+func (d *dash) message() string {
+	m, _ := d.snapshot()
+
+	return m.message
+}
+
 // The invariants, checked after every keypress in every state.
 func check(t *testing.T, d *dash, where string) {
 	t.Helper()
 
-	m := d.model
+	m, paneHeight := d.snapshot()
 
 	if len(m.rows) == 0 {
 		if m.selected != 0 {
@@ -174,7 +202,7 @@ func check(t *testing.T, d *dash, where string) {
 		t.Errorf("%s: scroll offset is negative (%d)", where, m.offset)
 	}
 
-	if limit := maxOffset(m, max(1, d.paneHeight)); m.offset > limit {
+	if limit := maxOffset(m, max(1, paneHeight)); m.offset > limit {
 		t.Errorf("%s: scroll offset %d is past the end (%d) - the pane would be showing "+
 			"nothing at all", where, m.offset, limit)
 	}

@@ -255,15 +255,15 @@ func TestClearingIsTheProvidersDecision(t *testing.T) {
 	d.handle(context.Background(), rkey('c'))
 	typeInto(t, d, "none\r")
 
-	waitFor(t, func() bool { return d.model.message != "" })
+	waitFor(t, func() bool { return d.message() != "" })
 
 	if _, _, n := p.taken(); n != 1 {
 		t.Errorf("the backend was asked %d times; it is the one that decides whether a "+
 			"ceiling can be removed", n)
 	}
 
-	if !strings.Contains(d.model.message, "recreate") {
-		t.Errorf("message = %q, want the backend's own refusal", d.model.message)
+	if msg := d.message(); !strings.Contains(msg, "recreate") {
+		t.Errorf("message = %q, want the backend's own refusal", msg)
 	}
 }
 
@@ -294,7 +294,7 @@ func TestAnEmptyLineIsNotAClear(t *testing.T) {
 	d.handle(context.Background(), rkey('c'))
 	typeInto(t, d, "\r")
 
-	waitFor(t, func() bool { return d.model.message != "" })
+	waitFor(t, func() bool { return d.message() != "" })
 
 	if _, _, n := p.taken(); n != 0 {
 		t.Errorf("an empty line reached the backend %d times", n)
