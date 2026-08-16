@@ -81,7 +81,7 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 	}
 
 	if len(units) == 0 {
-		return nil, fmt.Errorf("no sandbox %q", sandbox)
+		return nil, UnknownSandbox(ctx, p, sandbox)
 	}
 
 	refs := make([]SnapshotRef, 0, len(units))

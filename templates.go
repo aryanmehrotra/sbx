@@ -50,6 +50,30 @@ func TemplateNames() []string {
 	return out
 }
 
+// TemplateDescription is the one-line summary a menu needs, read out of the template's own
+// README rather than kept in a second list here. A hand-kept list is one that goes stale the
+// first time somebody edits a template, which is the same reasoning TemplateImages uses.
+func TemplateDescription(name string) string {
+	body, err := templates.ReadFile("examples/" + name + "/README.md")
+	if err != nil {
+		return ""
+	}
+
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+
+		// The first prose line: skip the heading and the blank after it.
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Backticks are markdown, and a terminal menu is not markdown.
+		return strings.ReplaceAll(line, "`", "")
+	}
+
+	return ""
+}
+
 // TemplateImages lists every image any template needs, deduplicated.
 //
 // Used by prewarm, and it reads the specs rather than keeping a second list - a hand-kept

@@ -409,7 +409,7 @@ func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, imag
 	}
 
 	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q - create it first", sandbox)
+		return UnknownSandbox(ctx, p, sandbox)
 	}
 
 	for _, u := range units {
@@ -523,18 +523,21 @@ func detectShell() string {
 }
 
 func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) error {
-	sp, err := spec.LoadSpec(path)
-	if err != nil {
-		return err
-	}
-
+	// The sandbox is checked first, on purpose. Loading the spec first meant that `sbx env
+	// typo-x` in a directory with no sandbox.json reported the missing spec - so the reader
+	// was told to write a spec when what they had actually done was mistype a name.
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
 	}
 
 	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q - create it first", sandbox)
+		return UnknownSandbox(ctx, p, sandbox)
+	}
+
+	sp, err := spec.LoadSpec(path)
+	if err != nil {
+		return err
 	}
 
 	layout, err := sp.Assign()
@@ -619,7 +622,7 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 	}
 
 	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q", sandbox)
+		return UnknownSandbox(ctx, p, sandbox)
 	}
 
 	var unverifiable []string
@@ -754,7 +757,7 @@ func serviceRef(ctx context.Context, p provider.Provider, sandbox, service strin
 	}
 
 	if len(units) == 0 {
-		return "", fmt.Errorf("no sandbox %q", sandbox)
+		return "", UnknownSandbox(ctx, p, sandbox)
 	}
 
 	for _, u := range units {
@@ -817,7 +820,7 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 	}
 
 	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q", sandbox)
+		return UnknownSandbox(ctx, p, sandbox)
 	}
 
 	if service != "" {

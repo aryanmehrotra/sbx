@@ -219,9 +219,23 @@ func sandboxOf(cmd string, argv []string) string {
 }
 
 func dispatch(cmd string, args []string) error {
+	// `sbx serve --help` and `sbx history --help` reach flag sets that live in other packages
+	// and would otherwise print Go's bare dump, so they are answered here instead.
+	//
+	// Only in first position. `sbx exec main postgres psql --help` is asking psql for its
+	// help, not sbx for its own, and a command that swallows that is one you cannot use to
+	// run anything with a --help flag.
+	if len(args) > 0 && helpWanted(args[:1]) {
+		if _, ok := help[cmd]; ok {
+			commandHelp(cmd)
+
+			return nil
+		}
+	}
+
 	switch cmd {
 	case "create":
-		fs := flag.NewFlagSet("create", flag.ExitOnError)
+		fs := newFlagSet("create")
 		spec := fs.String("spec", defaultSpec, "path to sandbox.json")
 		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
 		optional := fs.Bool("optional", false, "include services marked optional")
@@ -230,7 +244,7 @@ func dispatch(cmd string, args []string) error {
 		_ = fs.Parse(rest)
 
 		if len(positional) < 1 {
-			return fmt.Errorf("missing sandbox name")
+			return missing(cmd, "sandbox name")
 		}
 
 		p, iso, err := resolve(*kind, *socket, *ns, *isolation)
@@ -252,7 +266,7 @@ func dispatch(cmd string, args []string) error {
 		return nil
 
 	case "env":
-		fs := flag.NewFlagSet("env", flag.ExitOnError)
+		fs := newFlagSet("env")
 		spec := fs.String("spec", defaultSpec, "path to sandbox.json")
 		tmpl := fs.String("template", "", "use a built-in spec instead")
 		shell := fs.String("shell", "", "posix | fish | powershell | cmd | json; detected if unset")
@@ -261,7 +275,7 @@ func dispatch(cmd string, args []string) error {
 		_ = fs.Parse(rest)
 
 		if len(positional) < 1 {
-			return fmt.Errorf("missing sandbox name")
+			return missing(cmd, "sandbox name")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -277,14 +291,14 @@ func dispatch(cmd string, args []string) error {
 		return cli.Env(context.Background(), p, path, positional[0], *shell)
 
 	case "ready":
-		fs := flag.NewFlagSet("ready", flag.ExitOnError)
+		fs := newFlagSet("ready")
 		timeout := fs.Duration("timeout", 90*time.Second, "give up after this long")
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional, rest := splitPositional(args, 1)
 		_ = fs.Parse(rest)
 
 		if len(positional) < 1 {
-			return fmt.Errorf("missing sandbox name")
+			return missing(cmd, "sandbox name")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -298,13 +312,13 @@ func dispatch(cmd string, args []string) error {
 		return runAdd(args)
 
 	case "snapshot":
-		fs := flag.NewFlagSet("snapshot", flag.ExitOnError)
+		fs := newFlagSet("snapshot")
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional, rest := splitPositional(args, 2)
 		_ = fs.Parse(rest)
 
 		if len(positional) < 2 {
-			return fmt.Errorf("usage: sbx snapshot <sandbox> <name>")
+			return missing("snapshot", "arguments")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -321,7 +335,7 @@ func dispatch(cmd string, args []string) error {
 		return nil
 
 	case "fork":
-		fs := flag.NewFlagSet("fork", flag.ExitOnError)
+		fs := newFlagSet("fork")
 		spec := fs.String("spec", defaultSpec, "path to the spec the snapshot came from")
 		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
 		optional := fs.Bool("optional", false, "include services marked optional")
@@ -330,7 +344,7 @@ func dispatch(cmd string, args []string) error {
 		_ = fs.Parse(rest)
 
 		if len(positional) < 2 {
-			return fmt.Errorf("usage: sbx fork <snapshot> <new-sandbox>")
+			return missing("fork", "arguments")
 		}
 
 		p, iso, err := resolve(*kind, *socket, *ns, *isolation)
@@ -356,7 +370,7 @@ func dispatch(cmd string, args []string) error {
 		return nil
 
 	case "gc":
-		fs := flag.NewFlagSet("gc", flag.ExitOnError)
+		fs := newFlagSet("gc")
 		olderThan := fs.Duration("older-than", 0, "only offer artifacts older than this")
 		force := fs.Bool("force", false, "actually delete; without it this only lists")
 		snaps := fs.Bool("snapshots", false, "include snapshots, which are never swept by default")
@@ -371,14 +385,14 @@ func dispatch(cmd string, args []string) error {
 		return cli.GC(context.Background(), p, os.Stdout, *olderThan, *force, *snaps)
 
 	case "doctor":
-		fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+		fs := newFlagSet("doctor")
 		asJSON := fs.Bool("json", false, "machine-readable")
 		_ = fs.Parse(args)
 
 		return cli.PrintReport(os.Stdout, cli.Doctor(context.Background()), *asJSON)
 
 	case "exec":
-		fs := flag.NewFlagSet("exec", flag.ExitOnError)
+		fs := newFlagSet("exec")
 		kind, socket, ns, isolation := backendFlags(fs)
 		tty := fs.Bool("t", false, "attach a terminal - for a shell, psql, redis-cli")
 
@@ -391,7 +405,7 @@ func dispatch(cmd string, args []string) error {
 
 		positional := fs.Args()
 		if len(positional) < 3 {
-			return fmt.Errorf("usage: sbx exec [-t] <sandbox> <service> <command>...")
+			return missing("exec", "arguments")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -402,7 +416,7 @@ func dispatch(cmd string, args []string) error {
 		return cli.Exec(context.Background(), p, positional[0], positional[1], positional[2:], *tty)
 
 	case "logs":
-		fs := flag.NewFlagSet("logs", flag.ExitOnError)
+		fs := newFlagSet("logs")
 		lines := fs.Int("tail", 100, "how many lines")
 		follow := fs.Bool("f", false, "keep streaming")
 		kind, socket, ns, isolation := backendFlags(fs)
@@ -429,7 +443,7 @@ func dispatch(cmd string, args []string) error {
 		return cli.Logs(ctx, p, positional[0], svc, *lines, *follow)
 
 	case "cp":
-		fs := flag.NewFlagSet("cp", flag.ExitOnError)
+		fs := newFlagSet("cp")
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional, rest := splitPositional(args, 4)
 		_ = fs.Parse(rest)
@@ -446,7 +460,7 @@ func dispatch(cmd string, args []string) error {
 		return cli.Copy(context.Background(), p, positional[0], positional[1], positional[2], positional[3])
 
 	case "url":
-		fs := flag.NewFlagSet("url", flag.ExitOnError)
+		fs := newFlagSet("url")
 		via := fs.String("via", "", "cloudflared | ngrok | ssh; detected if unset")
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional, rest := splitPositional(args, 2)
@@ -488,29 +502,29 @@ func dispatch(cmd string, args []string) error {
 		return nil
 
 	case "init":
-		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		fs := newFlagSet("init")
 		tmpl := fs.String("template", "postgres", "which built-in to start from: "+strings.Join(TemplateNames(), ", "))
+		yes := fs.Bool("yes", false, "take every default and ask nothing")
 		_ = fs.Parse(args)
 
-		// To stdout, not to a file. `sbx init > sandbox.json` is explicit about what it
-		// overwrites, and a command that silently writes into the working directory is one
-		// people run once by accident and never trust again.
-		path, err := MaterializeTemplate(*tmpl)
-		if err != nil {
-			return err
-		}
+		// Guided at a terminal; unchanged in a pipeline.
+		//
+		// `sbx init > sandbox.json` prints the spec to stdout exactly as it always has - it
+		// is in scripts and in this project's own docs, and a prompt appearing in a pipeline
+		// is worse than the first-run problem the guided version fixes. Naming --template
+		// explicitly also means you know what you want and are not asking to be asked.
+		chosen := false
 
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "template" {
+				chosen = true
+			}
+		})
 
-		_, err = os.Stdout.Write(body)
-
-		return err
+		return runInit(*tmpl, chosen, *yes, os.Stdout)
 
 	case "validate":
-		fs := flag.NewFlagSet("validate", flag.ExitOnError)
+		fs := newFlagSet("validate")
 		specFlag := fs.String("spec", defaultSpec, "path to sandbox.json")
 		tmpl := fs.String("template", "", "check a built-in template instead")
 		positional, rest := splitPositional(args, 1)
@@ -530,7 +544,7 @@ func dispatch(cmd string, args []string) error {
 		return cli.Validate(os.Stdout, path)
 
 	case "prewarm":
-		fs := flag.NewFlagSet("prewarm", flag.ExitOnError)
+		fs := newFlagSet("prewarm")
 		kind, socket, ns, isolation := backendFlags(fs)
 		specPath := fs.String("spec", "", "pull the images this spec needs instead of every template's")
 		_ = fs.Parse(args)
@@ -567,7 +581,7 @@ func dispatch(cmd string, args []string) error {
 		return cli.History(args, os.Stdout)
 
 	case "list":
-		fs := flag.NewFlagSet("list", flag.ExitOnError)
+		fs := newFlagSet("list")
 		kind, socket, ns, isolation := backendFlags(fs)
 		_ = fs.Parse(args)
 
@@ -579,13 +593,13 @@ func dispatch(cmd string, args []string) error {
 		return cli.List(context.Background(), p)
 
 	case "rm":
-		fs := flag.NewFlagSet("rm", flag.ExitOnError)
+		fs := newFlagSet("rm")
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional, rest := splitPositional(args, 1)
 		_ = fs.Parse(rest)
 
 		if len(positional) < 1 {
-			return fmt.Errorf("missing sandbox name")
+			return missing(cmd, "sandbox name")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -593,7 +607,16 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		if err := cli.Remove(context.Background(), p, positional[0]); err != nil {
+		// Checked here rather than trusting the backend's own refusal: a provider reports
+		// "no sandbox" without knowing which ones do exist, and a typo is the usual reason
+		// somebody is reading this.
+		ctx := context.Background()
+
+		if units, err := p.List(ctx, positional[0]); err == nil && len(units) == 0 {
+			return cli.UnknownSandbox(ctx, p, positional[0])
+		}
+
+		if err := cli.Remove(ctx, p, positional[0]); err != nil {
 			return err
 		}
 
@@ -602,7 +625,7 @@ func dispatch(cmd string, args []string) error {
 		return nil
 
 	case "selftest":
-		fs := flag.NewFlagSet("selftest", flag.ExitOnError)
+		fs := newFlagSet("selftest")
 		keep := fs.Bool("keep", false, "leave the sandbox behind for inspection")
 		kind, socket, ns, isolation := backendFlags(fs)
 		_ = fs.Parse(args)
@@ -639,7 +662,7 @@ func runAdd(args []string) error {
 	// missing while it sat right there on the line. Split the leading names off first.
 	positional, rest := splitPositional(args, 2)
 
-	fs := flag.NewFlagSet("add", flag.ExitOnError)
+	fs := newFlagSet("add")
 	image := fs.String("image", "", "container image (required)")
 	ports := fs.String("port", "", "comma-separated container ports (required)")
 	health := fs.String("health", "", "command run inside the container to test readiness")
@@ -650,7 +673,7 @@ func runAdd(args []string) error {
 	_ = fs.Parse(rest)
 
 	if len(positional) < 2 {
-		return fmt.Errorf("usage: sbx add <sandbox> <service> --image IMG --port PORT")
+		return missing("add", "arguments")
 	}
 
 	sandbox, service := positional[0], positional[1]
@@ -729,34 +752,44 @@ func splitPositional(args []string, n int) (positional, rest []string) {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `sbx - per-branch sandboxes that sleep when nobody is using them
 
-  sbx create <sandbox> [--spec sandbox.json | --template NAME] [--optional]
-  sbx env    <sandbox> [--spec sandbox.json] [--shell posix|fish|powershell|cmd|json]
-  sbx ready  <sandbox> [--timeout 90s]
-  sbx add    <sandbox> <service> --image IMG --port 5432[,...] [--health CMD]
-                                 [--env K=V,...] [--volume PATH] [ARGS...]
+A sandbox is a named group of services - a postgres, a redis, a browser - that belong to one
+branch, task or agent. Nothing is started or stopped by hand: connecting to a port wakes it,
+and idleness sleeps it back to 0 B.
+
+Start here
+  sbx doctor                                    what this machine can and cannot do
+  sbx init                                      pick a template, write sandbox.json, go
+  sbx serve  [--idle 5m]                        the daemon. One per machine, not per sandbox
+  sbx selftest                                  prove the whole cycle works here (~9s warm)
+
+Every day
+  sbx create <sandbox> [--template NAME]        make one. --optional includes optional services
+  sbx env    <sandbox> [--shell posix|json]     its addresses, as exports or JSON
+  sbx list                                      every sandbox, its services and their state
+  sbx rm     <sandbox>                          delete it and its data
+
+While you work
+  sbx logs   <sandbox> [service] [-f]           all services if none named
+  sbx exec   [-t] <sandbox> <service> <cmd>...  -t attaches a terminal
+  sbx cp     <sandbox> <service> <src> <dst>    a path inside is prefixed with :
+  sbx add    <sandbox> <service> --image IMG --port N   a service the spec never declared
+  sbx url    <sandbox> <service>                a public link that wakes it on open
+  sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
+
+Data
   sbx snapshot <sandbox> <name>                 save every service's filesystem
-  sbx fork   <snapshot> <new-sandbox> [--spec]  a new sandbox from that state
-  sbx gc     [--older-than DURATION] [--snapshots] [--force]  lists; deletes only with --force
-  sbx doctor [--json]                           what this machine can and cannot do
-  sbx prewarm [--spec sandbox.json]             pull images now so a create is not a download
-  sbx init   [--template NAME]                  print a starter spec to stdout
-  sbx validate [sandbox.json]                   check the spec; creates nothing
-  sbx exec   [-t] <sandbox> <service> <command>...   -t attaches a terminal
-  sbx logs   <sandbox> [service] [--tail N] [-f]   all services if none named
-  sbx cp     <sandbox> <service> <src> <dst>    (inside path is prefixed with :)
-  sbx url    <sandbox> <service> [--via cloudflared|ngrok|ssh]
-  sbx list
-  sbx history [sandbox] [--limit N] [--commands|--events] [--json]   what happened, and who did it
-  sbx rm     <sandbox>
-  sbx serve  [--idle 5m] [--socket PATH]
-  sbx selftest [--provider ...] [--keep]     prove it works here (~9s warm)
+  sbx fork     <snapshot> <new-sandbox>         a new sandbox from that state
+  sbx gc       [--force]                        reclaim what dead sandboxes left. Lists by default
 
-Templates (no spec file needed): sbx templates
+Finding out
+  sbx history  [sandbox] [--events|--commands]  what happened, and who did it
+  sbx templates                                 the built-in specs, and when they were pinned
+  sbx validate [sandbox.json]                   check a spec without creating anything
+  sbx prewarm  [--spec sandbox.json]            pull images now, so a create is not a download
 
-Backend (any command touching a sandbox): --provider docker|kubernetes  --namespace NS
-                                          --isolation container|gvisor|kata
+Any command touching a sandbox also takes:
+  --provider docker|kubernetes   --namespace NS   --isolation container|gvisor|kata
 
-There is no start and no stop: connecting to a sandbox port wakes it, and idleness
-sleeps it. Run one "sbx serve" per machine.
+`+"`sbx <command> --help`"+` explains one command.
 `)
 }
