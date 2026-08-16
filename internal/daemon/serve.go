@@ -189,6 +189,21 @@ func (d *daemon) discover(ctx context.Context) {
 		return
 	}
 
+	// Reserve the label column before anything below logs into it.
+	//
+	// Without this the daemon printed every line with an unpadded label, so the message
+	// started wherever the sandbox and service names happened to end and the left edge was
+	// ragged for the whole run. `sbx logs` was the only caller of Align, which is why it
+	// looked fine there and nowhere else.
+	width := 0
+	for _, f := range found {
+		if w := len(f.Sandbox) + 1 + len(f.Service); w > width {
+			width = w
+		}
+	}
+
+	logs.Default.Align(width)
+
 	seen := map[string]bool{}
 
 	for _, f := range found {

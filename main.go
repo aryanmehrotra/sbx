@@ -36,6 +36,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/cli"
 	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -136,10 +137,85 @@ func main() {
 
 	logs.Version = version
 
-	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
+	// Everything the daemon says about a sandbox goes into the journal as well as to its
+	// stdout. Subscribing here rather than editing the wake path keeps file IO out of the
+	// one code path this project publishes a number for.
+	logs.Default.Observe(func(e logs.Entry) {
+		if e.Event == "" {
+			return // an ordinary line, not something that happened to a sandbox
+		}
+
+		history.Append(history.Record{
+			Time: e.Time, Kind: "event",
+			Sandbox: e.Sandbox, Service: e.Service,
+			Event: e.Event, DurationMs: e.DurationMs, Message: e.Message,
+			Failed: e.Level == "ERROR",
+		})
+	})
+
+	// The daemon is recorded when it starts, not when it stops. Recording it on the way out
+	// like everything else means a daemon that is still running - the normal state, and the
+	// one worth knowing about - never appears in the journal at all.
+	if os.Args[1] == "serve" {
+		record(os.Args[1], os.Args[1:], nil)
+	}
+
+	err := dispatch(os.Args[1], os.Args[2:])
+
+	if os.Args[1] != "serve" {
+		record(os.Args[1], os.Args[1:], err)
+	}
+
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "sbx: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// record writes the invocation to the journal, so `sbx history` can answer "who did this to
+// my sandbox" afterwards.
+//
+// Reading commands are skipped. A journal where every `sbx list` is a line is a journal
+// nobody reads, and the question people actually ask is what *changed*.
+func record(cmd string, argv []string, err error) {
+	switch cmd {
+	case "list", "env", "history", "doctor", "templates", "validate", "ready", "logs",
+		"version", "--version", "-v", "help", "--help", "-h", "ui":
+		return
+	}
+
+	r := history.Record{
+		Kind:    "command",
+		Sandbox: sandboxOf(cmd, argv),
+		Command: history.Redact(append([]string{"sbx"}, argv...)),
+	}
+
+	if dir, e := os.Getwd(); e == nil {
+		r.Dir = dir
+	}
+
+	if err != nil {
+		r.Failed = true
+		r.Error = err.Error()
+	}
+
+	history.Append(r)
+}
+
+// sandboxOf picks the sandbox name out of an argv, so history can be filtered by it. Every
+// command that changes something takes it first, except serve, which is about the machine.
+func sandboxOf(cmd string, argv []string) string {
+	if cmd == "serve" || cmd == "selftest" || cmd == "prewarm" || cmd == "gc" {
+		return ""
+	}
+
+	for _, a := range argv[1:] {
+		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+
+	return ""
 }
 
 func dispatch(cmd string, args []string) error {
@@ -485,6 +561,11 @@ func dispatch(cmd string, args []string) error {
 
 		return cli.Prewarm(context.Background(), p, os.Stdout, images)
 
+	case "history":
+		// No provider and no daemon: this reads a file. Asking what happened to a sandbox
+		// has to work when docker is down, which is one of the times people ask.
+		return cli.History(args, os.Stdout)
+
 	case "list":
 		fs := flag.NewFlagSet("list", flag.ExitOnError)
 		kind, socket, ns, isolation := backendFlags(fs)
@@ -665,6 +746,7 @@ func usage(w io.Writer) {
   sbx cp     <sandbox> <service> <src> <dst>    (inside path is prefixed with :)
   sbx url    <sandbox> <service> [--via cloudflared|ngrok|ssh]
   sbx list
+  sbx history [sandbox] [--limit N] [--commands|--events] [--json]   what happened, and who did it
   sbx rm     <sandbox>
   sbx serve  [--idle 5m] [--socket PATH]
   sbx selftest [--provider ...] [--keep]     prove it works here (~9s warm)

@@ -108,6 +108,43 @@ type entry struct {
 	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
+// Entry is one log line, handed to whatever registered with Observe.
+//
+// A separate type from the unexported entry above because that one is a wire format - its
+// json tags are what a shipper parses - and a consumer in this process should not be coupled
+// to the shape of a file on disk.
+type Entry struct {
+	Level      string
+	Time       time.Time
+	Sandbox    string
+	Service    string
+	Message    string
+	Event      string
+	DurationMs int64
+}
+
+// Observe registers a function called for every line, after it is written.
+//
+// This exists so that recording history does not mean editing every place that logs. The
+// daemon already says "woke in 191ms" with a machine-readable event tag on it; the journal
+// subscribes to that rather than being threaded through the wake path, which would put file
+// IO in the middle of the one path this project measures.
+func (l *Logger) Observe(fn func(Entry)) {
+	l.mu.Lock()
+	l.obs = append(l.obs, fn)
+	l.mu.Unlock()
+}
+
+func (l *Logger) notify(e Entry) {
+	l.mu.Lock()
+	obs := l.obs
+	l.mu.Unlock()
+
+	for _, fn := range obs {
+		fn(e)
+	}
+}
+
 // Version is stamped by main so that a JSON log line says which build produced it.
 var Version = "dev"
 
@@ -121,6 +158,7 @@ type Logger struct {
 	level Level
 	tty   bool
 	width int // service column, so lines from several services align
+	obs   []func(Entry)
 
 	mu sync.Mutex
 }
@@ -149,11 +187,21 @@ func isTerminal(w io.Writer) bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-// align reserves a column width for service names, so a sandbox with a postgres and a redis
-// in it does not jitter between lines.
+// Align reserves a column width for service names, so lines from several services line up
+// instead of starting wherever the previous name happened to end.
+//
+// The column only ever grows. A width that shrinks re-indents everything after it, which
+// makes every line already on screen look misaligned against the new ones - and the daemon,
+// which calls this as sandboxes come and go, would otherwise re-indent its output every time
+// somebody removed the sandbox with the longest name.
+//
+// Nobody calling this at all is the bug this exists to prevent: the daemon printed a ragged
+// left edge for its entire life because Align was only ever called by `sbx logs`.
 func (l *Logger) Align(width int) {
 	l.mu.Lock()
-	l.width = width
+	if width > l.width {
+		l.width = width
+	}
 	l.mu.Unlock()
 }
 
@@ -167,6 +215,13 @@ func (l *Logger) Event(lvl Level, sandbox, service, event string, ms int64, form
 }
 
 func (l *Logger) event(lvl Level, sandbox, service, event string, ms int64, msg string) {
+	defer l.notify(Entry{
+		Level:   lvl.String(),
+		Time:    time.Now(),
+		Sandbox: sandbox, Service: service,
+		Message: msg, Event: event, DurationMs: ms,
+	})
+
 	if lvl < l.level {
 		return
 	}
@@ -205,7 +260,7 @@ func (l *Logger) event(lvl Level, sandbox, service, event string, ms int64, msg 
 	fmt.Fprintf(l.out, "[38;5;%dm%-4s[0m [%s]", lvl.color(), short, time.Now().Format(time.TimeOnly))
 
 	if where := source(sandbox, service); where != "" {
-		fmt.Fprintf(l.out, " [38;5;8m%-*s[0m", l.width, where)
+		fmt.Fprintf(l.out, " [38;5;245m%-*s[0m", l.width, where)
 	}
 
 	fmt.Fprintf(l.out, " %s\n", msg)
