@@ -324,6 +324,29 @@ only one of them works for a client that does not retry.
 | GPU | ○ | ◐ | ◐ | ● | ○ | ● | n/a | ● |
 | Production-proven | ○ | ● | ● | ● | ● | ● | ● | ● |
 
+### Same spec, two backends - and not the same capabilities
+
+"Same spec local + cluster" is a row sbx scores ● on, and it is doing a lot of work. The
+spec really is the same file and the everyday commands really are the same. Six capabilities
+are docker only, and one works in a cluster and cannot work on docker at all.
+
+Where a backend cannot do something it is refused with a reason rather than approximated,
+which is the rule the optional-interface design exists to keep.
+
+| | docker | kubernetes | |
+|---|:---:|:---:|---|
+| Create, wake on connect, sleep when idle | ● | ● | the whole point, identical on both |
+| `list` · `env` · `logs` · `exec` · `cp` · `rm` · `ready` | ● | ● | the everyday commands |
+| **cpu / memory limits** | ● | ● | docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** |
+| **removing a limit once set** | ○ | ● | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until recreated. The one row where the cluster wins outright |
+| **cpu / memory usage** | ● | ○ | needs metrics-server in a cluster, which is the operator's call. Rows read `n/a` rather than implying a sample is coming |
+| `snapshot` · `fork` | ● | ○ | a cluster's answer is a volume snapshot through its own CSI, not `docker commit` in a hat |
+| `gc` · `prewarm` | ● | ○ | |
+| `build:` instead of `image:` | ● | ○ | refused in a cluster rather than shelling out to a builder that is not there |
+| `egress: "deny"` | ● | ○ | refused rather than approximated with a NetworkPolicy that means something else |
+| `--isolation gvisor\|kata` | ● | ● | a RuntimeClass in a cluster; refused wherever the runtime is absent |
+| `sbx url` | ● | ○ | in a cluster the public link is an Ingress in front of the Service, not a tunnel from a laptop |
+
 ### Rows chosen by them, not by us
 
 The table above still asks "does everyone else do what we do". These are the ones their
