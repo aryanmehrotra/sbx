@@ -1,5 +1,10 @@
 # Compared
 
+> **Short version:** sbx wakes on any TCP connection with no SDK, on hardware you own. That
+> corner is unoccupied. It loses on memory restore (zeropod, E2B), on egress filtering by
+> domain, and on being somebody else's problem to operate (Neon). Every figure is measured
+> here or quoted from the vendor with a link.
+
 Every figure here is either measured by a script in this repo or quoted from the vendor's own
 documentation, with a link. Nothing is quoted from a competitor's marketing page about a
 competitor.
@@ -81,12 +86,16 @@ resume. sbx does not snapshot RAM. A sleeping sandbox is a stopped container wit
 intact, so a wake is a **cold process start against warm data** — Postgres replays its WAL and
 comes up, it doesn't resume mid-transaction.
 
-That is a worse guarantee. It is also why sleeping costs nothing to *enter*: a sleeping
-sandbox holds **0 B of memory** and no storage beyond the volume it already had, where a
-paused E2B or a suspended Fly machine keeps a RAM image on top of its disk — written at about
-4 s per GiB of RAM before any saving starts. No checkpoint to pay for, and no meter on the
-disk it keeps. For a database on a branch, disk-warm is the state that matters. For
-an agent's half-finished Python REPL, it isn't, and E2B is the better tool.
+That is a worse guarantee. It is also why sleeping costs nothing to *enter*.
+
+A sleeping sandbox holds **0 B of memory** and no storage beyond the volume it already had. A
+paused E2B or suspended Fly machine keeps a RAM image *on top of* its disk — written at about
+4 s per GiB of RAM before any saving starts.
+
+No checkpoint to pay for, and no meter on the disk it keeps.
+
+For a database on a branch, disk-warm is the state that matters. For an agent's half-finished
+Python REPL it is not, and E2B is the better tool.
 
 ---
 
@@ -427,11 +436,13 @@ The self-hosted prior art, read from the repositories themselves:
   monitored interface; "you must apply a label to them and proxy their traffic through the
   Lazytainer container".
 
-Third-party roundup figures are **no longer quoted here at all.** Daytona advertises a cold
-start "in under 90ms"; it publishes no percentile and no wake figure, and a cold start is not
-a wake. That number used to appear in this file as "~90 ms p99" in a column headed *wake* —
-a percentile this repo added and a measurement Daytona never made. It is gone, on the same
-rule that keeps Modal and Cloudflare out: a blank is better than a guess.
+Third-party roundup figures are **no longer quoted here at all.**
+
+Daytona advertises a cold start "in under 90ms". It publishes no percentile and no wake
+figure — and a cold start is not a wake. That number used to appear here as "~90 ms p99" in a
+column headed *wake*: a percentile this repo added to a measurement Daytona never made.
+
+It is gone, on the same rule that keeps Modal and Cloudflare out: a blank beats a guess.
 
 Where a figure is still attributed to a vendor it is on their page, in their words. **They
 were not reproduced here**, and cross-platform latency numbers taken on

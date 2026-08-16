@@ -1,7 +1,8 @@
 # Use cases
 
-Seven shapes this fits, and the ones it does not — the problem each one solves.
-The commands per situation are in the [README](../README.md#use-it).
+> **Short version:** seven shapes this fits — branches, agents, CI, a shared link, a browser,
+> seed-and-fan-out, a cluster — and the ones it does not. The commands are in the
+> [README](../README.md#how-to-use); this is the *why* and the numbers.
 
 ---
 
@@ -22,9 +23,11 @@ opened.
    is a migration on all              pay for what you're looking at
 ```
 
-Only what you are looking at is resident. **Three attached sandboxes ≈ 2.2 GB against 5.7 GB
-for three copies of an untuned stack**, and the three that nobody has queried cost nothing at
-all rather than a third each.
+Only what you are looking at is resident. The measured figures are in
+[BENCHMARKS.md](BENCHMARKS.md): a sleeping sandbox is **0 B of memory**, and the tuning table
+there shows what an attached one costs per service (`mysql:8.0` 411 MB stock, 110 MB tuned).
+Three attached against three sleeping is the difference between paying for what you are
+looking at and paying for every branch you ever opened.
 
 ---
 
@@ -156,6 +159,12 @@ sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
 Each fork has its own copy and its own ports; a write in one is invisible to the others and
 to the original. The migration runs once.
 
+⚠️ **Snapshot does not pause the service.** It copies a crash-consistent filesystem — what a
+database recovers from after a power cut. If something is actively writing at snapshot time,
+the very last write can be lost;
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-fork-is-missing-the-write-i-just-made) has the
+quiesce recipe. Seed-then-snapshot, the shape above, is unaffected.
+
 ⚠️ **Filesystem state, not memory.** A fork starts its services cold against warm data,
 exactly as a wake does. It is not a paused process resumed — E2B and zeropod do that, in
 about a second for E2B, and for zeropod's CRIU restore "tens to a few hundred milliseconds"
@@ -210,4 +219,5 @@ should be inventing on your cluster's behalf.
 
 **Honest limits.** A container shares the host kernel; `--isolation gvisor|kata` is
 declarable and refused when the runtime is absent, but operating a hardened cluster is not
-something this does for you. And nobody outside its author has run it in production.
+something this does for you. And it has not yet been run in production outside its own test
+suite.

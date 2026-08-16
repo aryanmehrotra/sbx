@@ -34,9 +34,22 @@ case "$os" in
 esac
 
 if [ "$VERSION" = "latest" ]; then
-  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
+  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null |
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-  [ -n "$VERSION" ] || fail "could not determine the latest release; set VERSION explicitly"
+
+  # No release yet, or no network. Either way this script has nothing to download, and
+  # "could not determine the latest release" leaves somebody stuck on the first command they
+  # ever ran. There is a way to install that needs no release at all, so say it.
+  if [ -z "$VERSION" ]; then
+    echo "install: no published release found for ${REPO}." >&2
+    echo "" >&2
+    echo "  Install from source instead — it needs nothing but a Go toolchain:" >&2
+    echo "" >&2
+    echo "      go install github.com/${REPO}@latest" >&2
+    echo "" >&2
+    echo "  Or pick a version explicitly: VERSION=v0.1.0 sh install.sh" >&2
+    exit 1
+  fi
 fi
 
 asset="sbx_${VERSION}_${os}_${arch}"

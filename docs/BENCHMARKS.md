@@ -1,5 +1,10 @@
 # Benchmarks
 
+> **Short version:** wake 191 ms (redis) to ~1 s (postgres) · a new connection costs nothing
+> measurable · bulk transfer runs at 57% of direct · a sleeping sandbox is 0 B of memory.
+> Every number names the script that produced it, and the ones this project got wrong are
+> [listed as corrections](COMPARISON.md#what-we-have-actually-measured-and-what-we-have-only-read).
+
 Every number here was measured on the machine described beside it, by a script in this repo
 that you can run. Nothing is quoted from a single run.
 
@@ -168,10 +173,12 @@ single outlier was worst, which any small delta passes automatically. It then re
 "indistinguishable from zero" about the number that verifies this project's own headline fix.
 
 The samples are collected in interleaved pairs, so the pairing was there and thrown away.
-`connbench.sh` now subtracts pair by pair, as `measure.sh`'s own doctrine has always required,
-and reports the median delta with its IQR. The honest reading is: on a quiet machine the cost
-is a fraction of a millisecond and the IQR straddles zero, so it is not resolvable — and on a
-busy one it is not resolvable either, just noisier. What is claimed is that it is not 68 ms.
+
+`connbench.sh` now subtracts pair by pair, as `measure.sh` has always required, and reports the
+median delta with its IQR.
+
+The honest reading: on a quiet machine the cost is a fraction of a millisecond and the IQR
+straddles zero, so it is not resolvable. What *is* claimed is that it is not 68 ms.
 
 **It was 68 ms.** The daemon re-ran the health command through `docker exec` on every
 accepted connection — including connections to a sandbox it had woken minutes earlier and
@@ -330,17 +337,12 @@ next section explains why it would be dishonest to present it as one.
 They are here because people ask, and refusing to answer is its own kind of dishonesty. But
 four things make the column non-comparable, and all four favour us:
 
-1. **Different hardware.** Ours is one laptop with nothing else running. Theirs is a
-   multi-tenant fleet serving other people at the same time.
-2. **No network.** 191 ms is loopback. Every hosted figure is a client somewhere else on the
-   internet, and the [Neon docs][neon] name cold start as the primary cause with physical
-   distance as a further factor on top.
-3. **Different work.** E2B's ~1 s restores a memory image with your processes inside it. Our
-   191 ms starts a process against a warm disk. **Theirs is the harder problem**, and a
-   like-for-like row would compare their number to a cold `docker start` plus a health check
-   — which is exactly what our 5282 ms first measurement was.
-4. **They publish a floor, we publish a distribution.** n=20, p90 and stdev are in the row
-   above. A vendor's "~1 s" has no n.
+| why it is not like-for-like | |
+|---|---|
+| **Different hardware** | ours is one laptop with nothing else running; theirs is a multi-tenant fleet |
+| **Different distance** | ours is loopback. Theirs crosses the internet, and the [Neon docs][neon] name cold start as the primary cause with distance a further factor on top |
+| **Different images** | a wake is mostly the workload's own start-up, so redis and a Firecracker microVM are not the same measurement |
+| **Different definitions of awake** | ours is a correct protocol reply. Theirs is whatever their page counts |
 
 The one comparison that *is* fair is structural rather than numerical: **what has to happen for
 the wake to start at all.** On every hosted platform it's an SDK call from code that knows the
@@ -374,12 +376,15 @@ number, and each exists because of a specific way this kind of benchmark lies:
 `N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
 by design — that is a *result*.
 
-zeropod took two attempts to gate honestly, and the second one is the interesting part. It
-does not stop the container: the pod stays `Running` while checkpointed, so `kubectl get pod`
-cannot tell asleep from awake, and a wake timed without that distinction is a warm request
-wearing a wake's name. `scripts/zeropod-probe.sh` gates on the `zeropod_running` metric
-instead — 0 when checkpointed — scraped from inside the cluster. That is what turned "cannot
-be measured" into the 272 ms row below.
+zeropod took two attempts to gate honestly.
+
+It does not stop the container — the pod stays `Running` while checkpointed — so `kubectl get
+pod` cannot tell asleep from awake, and a wake timed without that distinction is a warm request
+wearing a wake's name.
+
+`scripts/zeropod-probe.sh` gates on the `zeropod_running` metric instead (0 when checkpointed),
+scraped from inside the cluster. That is what turned "cannot be measured" into the 272 ms row
+below.
 
 ### Measured · 2026-08-15
 

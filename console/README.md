@@ -12,10 +12,11 @@ claim, not an accident — `go install github.com/aryanmehrotra/sbx@latest` stil
 nothing but the standard library, and the daemon stays small because nothing was linked into
 it that did not have to be. This module requires GoFr; the one it watches requires nothing.
 
-**Ports are discovered, never GoFr's defaults.** GoFr refuses to start when a port is taken
-and sbx is multi-instance by design — one daemon per branch, per worktree, per CI job — so
-fixed `8000/2121/9000` would mean the second console on a machine dies on boot. Three consoles
-run side by side; the chosen ports are printed at startup.
+**Ports are discovered, never GoFr's defaults.** GoFr refuses to start when a port is taken,
+and a fixed `8000/2121/9000` is exactly the sort of thing already in use on a developer's
+machine — or in use by a second console watching a daemon on another host. The ports are
+chosen at startup and printed. (One `sbx serve` per machine: it owns every sandbox's public
+ports, and a second refuses to start. One console per daemon.)
 
 **It cannot slow anything down.** The daemon does not know this exists. It already writes a
 structured JSON line for every wake and sleep, and this reads that stream — no callback, no
@@ -27,6 +28,10 @@ reach the byte-splice path.
 | `/metrics` | `sbx_wakes_total`, `sbx_sleeps_total`, `sbx_wake_failures_total`, `sbx_wake_duration_ms` — all labelled by sandbox and service |
 | `/.well-known/health`, `/alive` | auth-exempt, so Kubernetes probes need no credentials |
 | `/api/sandboxes` | what the daemon is fronting, read-only |
+
+⚠️ **Nothing here is authenticated** — not `/metrics`, not `/api/sandboxes`. It is a
+read-only view of what the daemon on this machine is fronting, and it is meant to be bound to
+loopback or a private network. Do not put it on a public address.
 
 Telemetry is off: `GOFR_TELEMETRY=false` is set before the app starts. A tool whose job is
 watching your infrastructure should not be the thing making an outbound call you did not ask

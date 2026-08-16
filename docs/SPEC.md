@@ -1,5 +1,9 @@
 # The spec
 
+> **Short version:** one committed `sandbox.json` says what services a branch needs. It never
+> says when to start or stop them. `sbx init > sandbox.json` gives you a working one;
+> `sbx validate` checks it without creating anything.
+
 `sandbox.json` — one file, committed to your repo, describing what a branch needs to run.
 
 A spec never says **when** to start or stop anything. It says what exists, how to tell when it
@@ -17,7 +21,7 @@ a spec could start something, the spec would eventually be the thing that left i
     "postgres": {
       "image": "postgres:16-alpine",
       "ports": [5432],
-      "health": "pg_isready -U app -d app",
+      "health": "psql -U app -d app -c 'select 1'",
       "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
       "volume": "/var/lib/postgresql/data",
       "init": ["psql -U app -d app -c 'CREATE TABLE IF NOT EXISTS todo (id serial)'"]
@@ -28,16 +32,24 @@ a spec could start something, the spec would eventually be the thing that left i
       "health": "redis-cli ping"
     },
     "clickhouse": {
-      "image": "clickhouse/clickhouse-server:24.3",
+      "image": "clickhouse/clickhouse-server:24.3-alpine",
       "ports": [8123],
       "health": "wget -qO- localhost:8123/ping",
-      "files": { "low-mem.xml": "/etc/clickhouse-server/config.d/low-mem.xml" },
+      "files": { "clickhouse-low-mem.xml": "/etc/clickhouse-server/config.d/low-mem.xml" },
       "optional": true
     }
   },
   "exports": { "DATABASE_PORT": "postgres:5432", "REDIS_PORT": "redis:6379" }
 }
 ```
+
+⚠️ **Note the postgres health command.** It is `psql … select 1`, not `pg_isready`.
+`pg_isready` answers yes while postgres is still bootstrapping — before `POSTGRES_DB` exists —
+so `init` would run against a database that is not there yet. Every bundled template uses the
+`psql` form for this reason, and so does `sbx init`.
+
+Every image above is shown with a readable tag; the shipped templates additionally pin a
+digest, which is what `scripts/pin-templates.sh` maintains.
 
 ---
 
@@ -109,13 +121,20 @@ $ sbx create feat-y            # same context
   web          build cached (sbx-build-bc02342a9ba51b10)
 ```
 
-Content, not a clock. Daytona expires build caches after 24 hours, which both rebuilds work
-that has not changed and reuses work that has. Hashing the inputs is right in both
-directions: change one byte and you get a different tag, change nothing and you get the same
-one next month. Timestamps are excluded for the same reason — a fresh `git clone` rewrites
-every mtime, so a time-based key would miss on every CI runner, which is exactly where the
-cache is worth the most. File modes are included, because a script that stops being
-executable is a different image. `.git` and `node_modules` are skipped.
+**Content, not a clock.** Change one byte, get a different tag. Change nothing, get the same
+tag next month.
+
+Three things are deliberately in or out of the hash:
+
+| | |
+|---|---|
+| **timestamps — out** | a fresh `git clone` rewrites every mtime, so a time-based key misses on every CI runner, which is exactly where the cache is worth most |
+| **file modes — in** | a script that stops being executable is a different image, and a silent cache hit there fails at runtime |
+| **`.git`, `node_modules` — out** | otherwise every commit and every install busts the cache |
+
+Why not expire it on a timer instead? Because a clock is wrong in both directions at once —
+it rebuilds what has not changed and reuses what has.
+→ [DECISIONS.md](DECISIONS.md#a-built-image-is-keyed-by-its-content-never-by-its-age)
 
 Docker only. In a cluster, building means pushing to a registry the nodes can pull from —
 credentials and a registry sbx has no business assuming — so `sbx create` says so and stops

@@ -8,24 +8,89 @@
 #
 # The end-to-end tests need a Docker daemon and stay Linux-only. GitHub's macOS runners
 # have no daemon, and skipping them there is honest; pretending otherwise is not.
+#
+# What this costs, because a pipeline nobody has costed is one that quietly gets expensive:
+# a full run is ~29 minutes of wall clock and ~68 BILLED minutes, because GitHub bills macOS
+# at 10x. Two macOS jobs were 64% of the bill for 15% of the wall time. So:
+#
+#   - `shell (macos)` runs on every push. It earns its 10x: both macOS-only bugs this repo
+#     has had were bash 3.2 treating an empty array as unbound under `set -u`, and only this
+#     job would have caught them.
+#   - `test (macos)` runs daily and on demand, not per push. Go's unit tests are far less
+#     platform-sensitive than the shell is, so a day's latency on that signal is the cheaper
+#     side of the trade.
+#   - `zeropod` measures a COMPETITOR. It is data for BENCHMARKS.md, not a gate on whether
+#     this code is correct, so it is scheduled rather than blocking every push.
+#   - Cross-compilation is one job that loops, not seven jobs that each start a runner.
+#   - A documentation-only push skips the Docker suites, which cannot be affected by an .md
+#     file. The linters still run.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '17 4 * * *' # daily: the macOS unit tests and the competitor benchmark
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A push that supersedes another cancels it. Without this, three pushes in a minute pay for
+# three full runs and only the last one's answer is wanted.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Did anything that can affect behaviour change? A README edit cannot break the wake path,
+  # and this repo's changes are often documentation only.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          # Anything other than a push with a parent — a PR, a schedule, a manual run — is
+          # treated as "code changed", because the cheap check is only safe when there is
+          # exactly one commit to compare against.
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          changed=$(git diff --name-only HEAD^ HEAD 2>/dev/null || echo unknown)
+
+          if [ "$changed" = "unknown" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          if echo "$changed" | grep -qvE '^(docs/|README\.md|SECURITY\.md|CONTRIBUTING\.md|LICENSE)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "documentation only — the Docker suites are skipped:"
+            echo "$changed" | sed 's/^/  /'
+          fi
+
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false # one platform failing should not hide the other's result
       matrix:
-        os: [ubuntu-latest, macos-latest] # macos-latest is arm64
+        # macOS bills at 10x, so its unit-test run is daily rather than per push — see the
+        # header. The macOS *shell* job stays on every push, because that is the one that has
+        # actually caught bugs here.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest","macos-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -67,31 +132,47 @@ jobs:
   # assumed. It exists so that the first import of something platform-specific fails here
   # rather than in someone's install.
   build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [darwin, linux, windows, freebsd]
-        goarch: [amd64, arm64]
-        exclude:
-          - goos: freebsd
-            goarch: arm64
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-      - run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o /dev/null .
+      # One runner, seven compiles. As a matrix this was seven runners doing thirty seconds
+      # of work each, most of which was starting a runner. The compiler cache is shared here,
+      # so it is also faster in wall clock.
+      - name: cross-compile every published target
+        run: |
+          fail=0
+          for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 \
+                   windows/amd64 windows/arm64 freebsd/amd64; do
+            os="${t%/*}"; arch="${t#*/}"
+            if CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o /dev/null .; then
+              echo "  ok   $t"
+            else
+              echo "  FAIL $t"; fail=1
+            fi
+          done
+          exit "$fail"
 
   # The shell that runs on a developer's machine is not the shell in CI. macOS ships bash
   # 3.2 from 2007 and every script here has to work on it: both empty-array bugs in this
   # repo were exactly that, and both reached main.
   shell:
     name: shell (${{ matrix.os }})
+    needs: changes
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Always Linux: this job carries lint-docs, lint-workflows and shellcheck, which are
+        # the checks a documentation change most needs. macOS joins it only when code
+        # changed — it bills at 10x and no .md file has ever broken bash 3.2.
+        os: ${{ needs.changes.outputs.code == 'true' && fromJSON('["ubuntu-latest","macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -134,7 +215,10 @@ jobs:
   # The claims that only a real daemon can settle: a sandbox is created, sleeps to zero,
   # wakes on a plain socket, and remembers what it was told.
   selftest:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -147,7 +231,10 @@ jobs:
   # Several at once, which is the actual premise: independent state, independent sleep, and
   # no sandbox answering with another's data.
   e2e:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -162,7 +249,10 @@ jobs:
   # every one of those is a place where "it worked on my machine" has already been wrong
   # once here: docker commit silently excludes volumes.
   snapshot:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -177,7 +267,10 @@ jobs:
   # and that data survives — claims that were only ever checked when a human remembered to
   # run the script, which is not a regression barrier.
   recovery:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -192,7 +285,10 @@ jobs:
   # was missing: the daemon re-ran the health command through `docker exec` on every accepted
   # connection, costing 68 ms each, and no benchmark in the repo could see it.
   connections:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -207,7 +303,10 @@ jobs:
   # lying, which is how this suite found `ready` reporting a sandbox as serving on an
   # address that accepted nothing.
   usecases:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -225,7 +324,10 @@ jobs:
   # runc, the whole sleep/wake cycle still works there, and the kernel it sees is gVisor's
   # rather than the host's — which is the actual claim isolation makes.
   isolation:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -284,7 +386,11 @@ jobs:
   # depends on an upstream project's manifests, so a red tick here would mean "their release
   # moved", not "this repo is broken". It reports, and the report is read.
   zeropod:
+    # Scheduled, not per push. This measures a rival's wake path for BENCHMARKS.md — it says
+    # nothing about whether this commit is correct, and it stands up a kind cluster to do it.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

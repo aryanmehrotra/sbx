@@ -121,9 +121,9 @@ you can cache.
 
 ## `sbx create` is slow the more sandboxes exist
 
-It should not be any more — creating a sandbox lists the existing ones to pick a free port
-slot, and that used to fork a `docker inspect` per container. If you see this on a current
-build, it is a bug worth reporting with `sbx list | wc -l`.
+It should not be. Creating a sandbox lists the existing ones to pick a free port slot, and
+that used to fork a `docker inspect` per container — it is one API call now. If you still see
+it, that is a bug worth reporting with the output of `sbx list | wc -l`.
 
 ---
 
@@ -136,14 +136,88 @@ machine, and `AllocSlot` binds a candidate slot's backing ports before returning
 the same question docker asks a moment later.
 
 Neither closes it completely, and nothing can from inside one process: two machines driving
-one remote `DOCKER_HOST` share no lock. Measured on a laptop, four concurrent creates: 1 of 4
-succeeded before, 17 of 20 after. **If one fails, retry it** — the retry sees the winner's
+one remote `DOCKER_HOST` share no lock. Measured on a laptop, four concurrent creates repeated five times: 5 of 20 succeeded before,
+17 of 20 after. **If one fails, retry it** — the retry sees the winner's
 containers and takes the next slot.
 
 On a VM-backed docker (Colima, Docker Desktop) the host-side port forward can outlive the
 container it belonged to by a few seconds, so a create immediately after an `sbx rm` can
 collide with a forward docker already considers gone. Waiting a moment, or retrying, is the
 answer there too.
+
+---
+
+## A fork is missing the write I just made
+
+`sbx snapshot` does **not** stop the service first. It takes a crash-consistent copy — the
+state the database would recover from after a power cut — because stopping would silently
+interrupt whoever is using the sandbox.
+
+Databases are built to survive that, and normally do: an acknowledged Postgres commit is
+already in the WAL, and the fork replays it on start. But the copy can catch the WAL mid-write,
+and Postgres stops replay at the first torn record — so under heavy load the **last** write
+before the snapshot can be missing.
+
+Seen once here, during a run with several suites competing for one docker daemon.
+
+**If the snapshot must be exact**, quiesce it first:
+
+```sh
+docker stop sbx-<sandbox>-<service>     # or just stop writing to it
+sbx snapshot <sandbox> golden
+```
+
+For the ordinary case — seed a database, snapshot it, fan out — nothing is writing to it at
+snapshot time and this does not arise.
+
+---
+
+## Removing sbx
+
+Nothing here is hidden, and all of it is reversible.
+
+```sh
+# 1. stop the daemon
+launchctl unload ~/Library/LaunchAgents/dev.sbx.daemon.plist   # macOS
+systemctl --user disable --now sbx                             # linux
+pkill -f 'sbx serve'                                           # or just this
+
+# 2. destroy the sandboxes — THIS DELETES THEIR DATA
+sbx list                       # see what exists first
+sbx rm <each-sandbox>
+
+# 3. reclaim what is left: snapshots, orphaned volumes
+sbx gc --snapshots             # lists, deletes nothing
+sbx gc --snapshots --force
+
+# 4. sbx's own state, and the binary
+rm -rf ~/.sbx                  # templates, origins, presence and lock files
+rm "$(command -v sbx)"
+```
+
+⚠️ **`sbx rm` destroys the sandbox's volume with it.** That is the point — a sandbox is meant
+to be cheap to throw away — but it means `sbx rm` on a branch you cared about loses that
+branch's database. `sbx snapshot` first if you want it back.
+
+`~/.sbx` holds no data of yours: extracted templates, a record of which spec each sandbox came
+from, the daemon's pid file and a lock. Deleting it while sandboxes exist costs you the
+`--spec` convenience and nothing else.
+
+---
+
+## On a shared or persistent CI runner
+
+**One daemon per machine, per user.** It owns the public ports for every sandbox on the box,
+and a second `sbx serve` refuses to start rather than fighting it.
+
+⚠️ **`sbx serve --idle 30m &` does not survive a GitHub Actions step.** Each step is a new
+shell and the background job dies with it. Start the daemon and use the sandbox **in the same
+step**, or install the supervised unit from [`deploy/`](../deploy/) on a self-hosted runner.
+
+Two jobs on one runner share the 20000+ port range and the same daemon. That is fine — they
+get different slots — but they are not isolated from each other, and `sbx rm` in one job will
+happily destroy the other's sandbox. Name sandboxes after the branch *and* the job if they can
+overlap.
 
 ---
 

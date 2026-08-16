@@ -36,6 +36,43 @@ for f in "$ROOT"/docs/*.md "$ROOT"/README.md; do
   done
 done
 
+# A #fragment must match a heading in the file it points at.
+#
+# `](../README.md#use-it)` is not a broken link — the file is there — so the target check
+# above passes it, and the reader lands at the top of the page wondering what they missed.
+# One of those shipped in the first line of USE-CASES.md.
+python3 - "$ROOT" <<'PYANCHOR' || fail=1
+import os, re, sys, glob
+
+root = sys.argv[1]
+bad = 0
+
+files = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "console/README.md"]
+files += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "docs", "*.md"))]
+
+def anchors(path):
+    heads = re.findall(r"^#{1,6} (.+)$", open(path).read(), re.M)
+    return {re.sub(r"[^a-z0-9 -]", "", h.lower()).strip().replace(" ", "-") for h in heads}
+
+for rel in files:
+    path = os.path.join(root, rel)
+    if not os.path.exists(path):
+        continue
+
+    for target, frag in re.findall(r"\]\(([^)#]*)#([a-z0-9-]+)\)", open(path).read()):
+        dest = path if not target else os.path.normpath(os.path.join(os.path.dirname(path), target))
+
+        if not os.path.exists(dest):
+            continue  # the target check above already reports this
+
+        if frag not in anchors(dest):
+            print("  ✗ %s links to %s#%s, which is not a heading there"
+                  % (rel, target or "(itself)", frag))
+            bad = 1
+
+raise SystemExit(bad)
+PYANCHOR
+
 # And the external ones must actually be there.
 #
 # Six rounds of review produced five separate vendor-sourcing defects in these files —

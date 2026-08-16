@@ -1,5 +1,9 @@
 # Decisions
 
+> **Short version:** why sbx is shaped the way it is. Mostly these are things that broke, and
+> the reasoning that replaced them. If you are about to change how sandboxes are addressed,
+> woken or slept, the answer to "why not just…" is probably here.
+
 Why this is shaped the way it is. Each of these was a real fork, and most were settled by
 something breaking rather than by argument.
 
@@ -258,8 +262,10 @@ zero, but because "somebody else runs it" is the whole product and this one is r
 `build:` names the image it produces `sbx-build-<sha256 of the context>`, so the second
 create with an unchanged context finds the image already there and does no build at all.
 
-The alternative — and what Daytona does — is to expire the cache on a timer, 24 hours in its
-case. A clock is wrong in both directions at once: it rebuilds a context that has not changed
+The alternative — and what [Daytona documents][daytona-builder] — is to expire the cache on a
+timer: "Declarative images are cached for 24 hours … subsequent runs **on the same runner**
+will be almost instantaneous." Note the last clause; a content hash does not care which runner
+it is on. A clock is wrong in both directions at once: it rebuilds a context that has not changed
 since yesterday, and it reuses one that changed five minutes ago if the entry is still young.
 Content-addressing has neither failure. Change a byte and the tag changes; change nothing and
 the tag is the same next month.
@@ -350,3 +356,5 @@ reading in the step's log.
 Docker only, via a `Puller` capability. In a cluster there is no local image store to warm —
 the image has to be on whichever node the scheduler later picks, which means a DaemonSet sbx
 would be creating in somebody's cluster uninvited.
+
+[daytona-builder]: https://www.daytona.io/docs/en/declarative-builder/

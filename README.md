@@ -29,7 +29,7 @@ Five situations. They differ mostly in *who types the commands* — the tool is 
 
 | | the problem | what sbx does |
 |---|---|---|
-| **Branches** | every branch shares one database, so a migration on one is a migration on all — and a stack per branch costs full memory for every branch you ever opened | a sandbox per branch. Only what you are looking at is resident: **three attached ≈ 2.2 GB against 5.7 GB** for three untuned stacks, and the ones nobody has queried cost nothing |
+| **Branches** | every branch shares one database, so a migration on one is a migration on all — and a stack per branch costs full memory for every branch you ever opened | a sandbox per branch. Only what you are looking at is resident — the ones nobody has queried cost **0 B of memory**, which is the measured figure in [BENCHMARKS.md](docs/BENCHMARKS.md) |
 | **Agents** | an agent needs somewhere to work that dies with the task, and its clients — `psql`, a pool, a test runner — cannot call an SDK to wake anything | shell commands are the whole integration. `--shell json` for parsing, `sbx add` for a service the spec never declared |
 | **Fan-out** | the expensive part of a sandbox per task is not the container, it is getting the data in | seed once, `sbx snapshot`, then `sbx fork` as many as you want. The migration runs once |
 | **CI** | jobs spend longer waiting for a stack than running tests | `sbx ready` blocks until it is genuinely serving. On a persistent runner the next job reuses warm, migrated state |
@@ -46,7 +46,7 @@ Five situations. They differ mostly in *who types the commands* — the tool is 
 | **Wakes on any TCP connection** | no SDK, no client library, no wrapper. Anything with a socket |
 | **Sleeps to 0 B** | a stopped container with its volume intact — an idle sandbox costs no memory at all |
 | **Holds the first connection** | it waits rather than refusing — **5/5 measured**, where a rival that refuses scores 0/5 |
-| **One static binary** | zero non-stdlib dependencies, CI-gated. darwin · linux · freebsd · windows, amd64 · arm64 |
+| **One static binary** | zero non-stdlib dependencies, CI-gated. darwin · linux · freebsd on amd64 · arm64; **Windows via WSL2** (sbx cannot dial a Windows named pipe) |
 | **One committed file** | `sandbox.json` describes what a branch needs. → [SPEC.md](docs/SPEC.md) |
 | **Templates built in** | `--template postgres` works with nothing on disk. Pinned by digest, dated |
 | **Snapshot & fork** | save every service's data, then make as many sandboxes from it as you want |
@@ -57,7 +57,7 @@ Five situations. They differ mostly in *who types the commands* — the tool is 
 | **Isolation tiers** | `--isolation gvisor\|kata`, refused with a reason where the runtime is absent |
 | **Two backends** | the same spec on docker or kubernetes; `sbx doctor` tells you what this host can do |
 | **Housekeeping** | `sbx gc` reclaims what dead sandboxes left, listing by default and deleting only with `--force` |
-| **Observability** | structured logs on one stdout; [`console/`](console/) adds metrics and health |
+| **Observability** | structured logs on one stdout; [`console/`](console/) adds metrics and health — a *separate* module, so it has dependencies and the daemon still has none |
 
 ---
 
@@ -82,7 +82,7 @@ sbx selftest     # create, sleep to zero, wake on a socket, data intact
 
 ```sh
 git switch feature-x
-sbx create feature-x                  # reads ./sandbox.json — sbx init writes a starter one
+sbx create feature-x                  # reads ./sandbox.json — `sbx init > sandbox.json` makes one
 eval "$(sbx env feature-x)"           # DATABASE_PORT=20002, REDIS_PORT=20003…
 npm test                              # your tooling, unchanged
 ```
@@ -124,6 +124,20 @@ eval "$(sbx env "$BRANCH")"
 ```
 
 `sbx prewarm` moves the image pull into a step your runner can cache.
+
+### On Kubernetes
+
+The same spec, the same commands, `--provider kubernetes`:
+
+```sh
+sbx create my-branch --provider kubernetes --namespace sbx
+sbx env    my-branch --provider kubernetes
+```
+
+Services become Deployments and Services in that namespace, and
+[`deploy/activator.yaml`](deploy/activator.yaml) is the in-cluster component that plays the
+daemon's part. `build:` and `egress: "deny"` are **refused** there rather than approximated —
+[USE-CASES.md](docs/USE-CASES.md) explains why.
 
 ### Every command
 
@@ -193,7 +207,8 @@ for libpq — and expect a pooled client to see a server-initiated close when a 
 
 ⚠️ A container shares the host kernel unless you run `--isolation gvisor`, which CI proves end
 to end. Egress can be denied but not filtered by domain. Memory is not restored, so a wake
-starts processes cold. **Nobody outside its author has run this in production.**
+starts processes cold. **This has not yet been run in production anywhere outside its own
+test suite** — what *is* exercised on every push is below.
 
 ---
 
@@ -284,5 +299,7 @@ sandbox on the machine is 9.1 MB — *corrected from a published 4.5 MB, which w
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | what to do about what you're seeing |
 | [DECISIONS.md](docs/DECISIONS.md) | why it's shaped this way — mostly things that broke |
 | [console/](console/) | metrics, health and a read-only API for a running daemon |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | how the test tiers are arranged, and what a change should come with |
+| [SECURITY.md](SECURITY.md) | the threat model, what counts as a vulnerability, and where to report one |
 
 MIT. Issues and patches welcome.

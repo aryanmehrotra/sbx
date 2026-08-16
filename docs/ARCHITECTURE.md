@@ -188,4 +188,4 @@ policy above doesn't know which of these it is driving.
 | A tunnel implementation | Cloudflare delegates theirs too; we shell out |
 | Preview URLs in cluster mode | that is an Ingress, and it already exists |
 | Code interpreters | a language runtime product, not a sandbox one |
-| Multi-tenant hardening | `--isolation gvisor|kata` is declarable; operating it is yours |
+| Multi-tenant hardening | `--isolation gvisor\|kata` is declarable; operating it is yours |

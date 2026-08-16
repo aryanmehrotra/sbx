@@ -12,6 +12,7 @@ They are ordinary specs — nothing here is special-cased by sbx.
 
 | | what it gives you | why it is here |
 |---|---|---|
+| [`nginx`](nginx/) | one nginx | the smallest possible demonstration of the whole idea |
 | [`postgres`](postgres/) | Postgres 16 | the smallest useful one |
 | [`web-stack`](web-stack/) | Postgres + Redis | the shape most apps actually have |
 | [`browser`](browser/) | headless Chrome over CDP | agents that need to look at a page |
