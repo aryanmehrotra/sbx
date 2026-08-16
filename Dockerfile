@@ -1,25 +1,41 @@
-# Deploying sbx as a service, for a platform that takes a repository.
+# THIS BRANCH EXISTS TO BE DEPLOYED, and its root Dockerfile is the Postgres sandbox rather
+# than sbx itself.
 #
-# `sbx serve` fronts sandboxes on the machine it runs on, so this image is only useful where
-# it can reach a container runtime: a VM with the docker socket mounted, or a cluster where
-# deploy/activator.yaml gives it a ServiceAccount. A platform that runs your container with no
-# socket and no volume mounts will start this and watch it exit, saying which sockets it looked
-# at - which is the correct outcome, and better than a daemon that comes up fronting nothing.
+# A platform that builds a repository looks in the root and takes no path argument, so shipping
+# a second image out of one repository means a second root - which is what this branch is. main
+# keeps the ordinary sbx image; deploy/sandbox-pg/Dockerfile on main is the same file, and this
+# is the copy a builder can actually find.
 #
-# deploy/Dockerfile is the cluster image and carries kubectl. This one is the plain one.
+# A Postgres you can reach with psql, on a platform that only speaks HTTP.
+#
+# The platform gives one container and one HTTP port, and a database speaks TCP - so the two
+# do not meet, and that is the whole reason this image exists. Postgres listens on loopback
+# where nothing outside the container can reach it; sbx serves the connect endpoint on the one
+# port the platform *does* route, and carries TCP to it over a WebSocket. `sbx connect` on a
+# laptop then presents an ordinary local 5432 and psql connects to it knowing nothing.
+#
+# What you get from the platform for free: HTTPS, a hostname, and scale-to-zero - the database
+# costs nothing while nobody is connected, which is the same bargain sbx makes locally.
+#
+# What you do NOT get, and should know before storing anything you care about: a zopcloud
+# service has no persistent volume, so this is a database that starts empty every time the
+# container is replaced. It is the right shape for a branch's test data and the wrong shape for
+# anything you would miss.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/sbx .
 
-FROM alpine:3.20
+FROM postgres:16-alpine
 COPY --from=build /out/sbx /usr/local/bin/sbx
+COPY deploy/sandbox-pg/start.sh /start.sh
 
-# The tunnel endpoint, on whatever port the platform hands us. It refuses to start without
-# SBX_CONNECT_TOKEN, and --behind-proxy is the statement that something in front terminates
-# TLS - which is true of every platform that gives you one HTTP port.
-ENV PORT=8080
+# No default password. It would be baked into the image, and an image is not a secret - the
+# platform passes this in as an environment variable at deploy time, where it belongs.
+ENV PORT=8080 \
+    POSTGRES_DB=sbx \
+    PGDATA=/var/lib/postgresql/data
+
 EXPOSE 8080
-
-ENTRYPOINT ["/bin/sh", "-c", "exec sbx serve --connect-addr=:${PORT} --behind-proxy \"$@\"", "--"]
+ENTRYPOINT ["/start.sh"]
