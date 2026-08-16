@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="330" viewBox="0 0 1040 330" role="img" aria-label="How sbx connect works: on your laptop, psql dials 127.0.0.1 port 20002, which sbx connect is listening on; sbx connect carries that TCP stream over one HTTPS WebSocket, authenticated with SBX_CONNECT_TOKEN, to the single HTTP port the platform routes; there sbx serve --front hands it to postgres listening on port 5432 inside the container, which is never published.">
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; white-space: pre }
+    .t { fill: #c9d1d9; font-weight: 600 }
+    .s { fill: #8b949e; font-size: 12px }
+    .g { fill: #8b949e; font-size: 12px; letter-spacing: .08em }
+    .k { fill: #3fb950; font-size: 12px }
+  </style>
+
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#58a6ff"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#3fb950"/>
+    </marker>
+  </defs>
+
+  <rect width="1040" height="330" rx="10" fill="#0d1117"/>
+
+  <!-- the two sides -->
+  <rect x="20" y="60" width="440" height="200" rx="8" fill="#0f141b" stroke="#30363d"/>
+  <text x="36" y="84" class="g">YOUR LAPTOP</text>
+
+  <rect x="580" y="60" width="440" height="200" rx="8" fill="#0f141b" stroke="#30363d"/>
+  <text x="596" y="84" class="g">THE PLATFORM · ONE CONTAINER, ONE HTTP PORT</text>
+
+  <!-- laptop: the tool -->
+  <rect x="40" y="112" width="176" height="60" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="56" y="138" class="t">psql</text>
+  <text x="56" y="157" class="s">knows none of this</text>
+
+  <!-- laptop: sbx connect -->
+  <rect x="256" y="112" width="184" height="60" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="272" y="138" class="t">sbx connect</text>
+  <text x="272" y="157" class="k">127.0.0.1:20002</text>
+
+  <line x1="216" y1="142" x2="248" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- platform: sbx serve -->
+  <rect x="600" y="112" width="200" height="60" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="616" y="138" class="t">sbx serve</text>
+  <text x="616" y="157" class="s">--front db=5432</text>
+
+  <!-- platform: the workload -->
+  <rect x="840" y="112" width="160" height="60" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text x="856" y="138" class="t">postgres</text>
+  <text x="856" y="157" class="s">:5432, private</text>
+
+  <line x1="800" y1="142" x2="832" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- the tunnel -->
+  <line x1="440" y1="142" x2="592" y2="142" stroke="#3fb950" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="516" y="126" class="k" text-anchor="middle">HTTPS · WebSocket</text>
+  <text x="516" y="166" class="s" text-anchor="middle">SBX_CONNECT_TOKEN</text>
+  <text x="516" y="184" class="s" text-anchor="middle">the one port it routes</text>
+
+  <!-- what it costs you to know -->
+  <text x="40" y="212" class="s">the port numbers are the deployment's own, so the</text>
+  <text x="40" y="230" class="s">`sbx env` block from over there is correct here</text>
+
+  <text x="600" y="212" class="s">nothing publishes 5432. The tunnel is the way in,</text>
+  <text x="600" y="230" class="s">and it is authenticated</text>
+
+  <text x="20" y="300" class="s">sbx pack writes the image on the right - the base image's own start line, read out of the image rather than guessed.</text>
+</svg>

@@ -1,11 +1,18 @@
 # Cutting a release, on a tag and nothing else.
 #
+#   write docs/release-notes/vX.Y.Z.md, commit it, then:
 #   git tag v0.1.0 && git push origin v0.1.0
 #
 # Everything below is what a person would otherwise do by hand and eventually do
 # inconsistently: build every target, checksum them, attach them to a release, and publish
 # the activator image. The binaries are built by scripts/release.sh - the same script used
 # locally - so a release is never the first time that path runs.
+#
+# The notes are the exception: they are written by hand, and this refuses to build without
+# them. GitHub will happily generate a release body from commit subjects, which reads as a
+# changelog for people who already know the codebase and tells anybody deciding whether to
+# adopt this precisely nothing. Generated notes are still appended - underneath the ones a
+# person wrote, where they belong. See CONTRIBUTING.md.
 #
 # One step is deliberately still manual, because it writes to a different repository and
 # automating it would mean storing a token here that can push to one:
@@ -46,6 +53,22 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.5'
+      # Before anything is built, because notes written after the binaries are published are
+      # notes nobody reads. A generated list of commit subjects is a changelog, not release
+      # notes: it tells somebody who already knows the codebase what moved, and tells somebody
+      # deciding whether to adopt this nothing at all. So the file is required, and a release
+      # without one fails here rather than shipping with a link to a diff.
+      - name: the release notes exist
+        run: |
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::no release notes at $notes"
+            echo
+            echo "Write them before tagging - what changed, why anybody would want it, how to"
+            echo "adopt it, and what it costs. docs/release-notes/ has the last one to follow,"
+            echo "and CONTRIBUTING.md has the checklist."
+            exit 1
+          fi
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build -o sbx .
@@ -68,12 +91,18 @@ jobs:
 
       # The checksums are published beside the binaries because install.sh verifies them.
       # A download nobody can check is a download nobody should run.
+      #
+      # body_path is the hand-written notes; generate_release_notes still appends the commit
+      # list and the contributors underneath them. Both, in that order: the part a person reads
+      # to decide whether to upgrade, then the part they read to find out what touched the file
+      # they care about.
       - name: publish
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/sbx_*
             dist/SHA256SUMS
+          body_path: docs/release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
 
   # The activator only exists as an image, so a cluster user has nothing to install without

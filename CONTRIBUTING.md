@@ -69,6 +69,24 @@ Match the file you are editing. Two things are genuinely load-bearing:
 
 `gofmt` and `go vet` are enforced, as is `shellcheck -S warning` on every script.
 
+## Cutting a release
+
+A release is a tag, and everything else happens by itself - but the notes are written by hand,
+before the tag, and the workflow refuses to build without them.
+
+1. **Write `docs/release-notes/vX.Y.Z.md`.** Follow the last one. It is for somebody deciding
+   whether to adopt this, not for somebody who already knows the codebase: what changed, why
+   they would want it, the commands to adopt it, and what it costs them. GitHub's generated
+   commit list is appended underneath automatically, so do not restate it.
+2. **Commit any image it references first.** Release notes are rendered outside the repository,
+   so pictures need absolute `raw.githubusercontent.com` URLs pinned to the tag - which means
+   the file has to be in the tag. `scripts/ui-shot.sh` re-records the dashboard.
+3. **Tag and push.** `git tag -a vX.Y.Z && git push origin vX.Y.Z`. That builds every target,
+   publishes the binaries with `SHA256SUMS`, and pushes the activator image.
+4. **Update the tap**, which is a different repository and so is not automated:
+   `scripts/brew-formula.sh vX.Y.Z > ../homebrew-tap/Formula/sbx.rb`. It reads the checksums
+   out of the published release, so there is nothing to read until step 3 finishes.
+
 ## Where things live
 
 | | |

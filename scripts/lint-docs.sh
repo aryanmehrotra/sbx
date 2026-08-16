@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail=0
 
-for f in "$ROOT"/docs/*.md "$ROOT"/README.md "$ROOT"/console/README.md; do
+for f in "$ROOT"/docs/*.md "$ROOT"/docs/release-notes/*.md "$ROOT"/README.md "$ROOT"/console/README.md; do
   [ -f "$f" ] || continue
 
   for u in $(grep -o '\]\[[A-Za-z0-9_-]*\]' "$f" 2>/dev/null | sed 's/^\]\[//; s/\]$//' | sort -u); do
@@ -25,7 +25,7 @@ for f in "$ROOT"/docs/*.md "$ROOT"/README.md "$ROOT"/console/README.md; do
 done
 
 # A relative link to a file that is not there is the same class of problem.
-for f in "$ROOT"/docs/*.md "$ROOT"/README.md; do
+for f in "$ROOT"/docs/*.md "$ROOT"/docs/release-notes/*.md "$ROOT"/README.md; do
   [ -f "$f" ] || continue
 
   for target in $(grep -o '](\.\?\.\?/\?[A-Za-z0-9._/-]*\.md)' "$f" 2>/dev/null | sed 's/^](//; s/)$//'); do
@@ -49,6 +49,7 @@ bad = 0
 
 files = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "console/README.md"]
 files += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "docs", "*.md"))]
+files += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "docs", "release-notes", "*.md"))]
 
 def anchors(path):
     heads = re.findall(r"^#{1,6} (.+)$", open(path).read(), re.M)
@@ -93,7 +94,7 @@ elif ! curl -fsS -m 10 -o /dev/null https://example.com 2>/dev/null; then
   echo "  - external links not checked (no network)"
 else
   urls=$(grep -ho 'https://[A-Za-z0-9._~:/?#@!$&*+,;=%-]*' \
-           "$ROOT"/docs/*.md "$ROOT"/README.md 2>/dev/null \
+           "$ROOT"/docs/*.md "$ROOT"/docs/release-notes/*.md "$ROOT"/README.md 2>/dev/null \
          | sed 's/[.,)]*$//' | grep -E '^https://[A-Za-z0-9.-]+\.[A-Za-z]{2,}' | sort -u)
 
   for u in $urls; do
@@ -121,6 +122,66 @@ else
 
   [ "$fail" = 0 ] && echo "  ✓ every external link resolves"
 fi
+
+# ── our own links point at a file that is really in that ref ──────────────────
+#
+# The check above deliberately skips this project's own URLs: they 404 until the thing is
+# published, which says nothing about whether the link is right. Harmless until release notes
+# existed - those are rendered outside the repository, so every picture and every doc link in
+# them is an absolute URL of ours pinned to a ref, and the exemption meant none of them were
+# checked at all. A release's hero image is exactly the link nobody notices is broken.
+#
+# So they are checked here, against git rather than the network: it is offline, and a tag that
+# has not been pushed yet is not evidence of a bad link.
+python3 - "$ROOT" <<'PY' || fail=1
+import os, re, subprocess, sys, glob
+
+root = sys.argv[1]
+bad = 0
+
+files = ["README.md", "CONTRIBUTING.md", "SECURITY.md"]
+files += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "docs", "*.md"))]
+files += [os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "docs", "release-notes", "*.md"))]
+
+# Only the forms that name a ref and a path. Everything else of ours - releases, actions,
+# compare - has no file behind it to check.
+pats = [
+    re.compile(r"https://raw\.githubusercontent\.com/aryanmehrotra/sbx/([^/\s]+)/([^)\s\"'>]+)"),
+    re.compile(r"https://github\.com/aryanmehrotra/sbx/(?:blob|raw)/([^/\s]+)/([^)\s\"'>]+)"),
+]
+
+def known(ref):
+    return subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+                          capture_output=True).returncode == 0
+
+for f in files:
+    path = os.path.join(root, f)
+    if not os.path.exists(path):
+        continue
+
+    for pat in pats:
+        for ref, target in pat.findall(open(path, encoding="utf-8").read()):
+            target = target.rstrip(".,)")
+
+            if known(ref):
+                ok = subprocess.run(["git", "-C", root, "cat-file", "-e", "%s:%s" % (ref, target)],
+                                    capture_output=True).returncode == 0
+                where = ref
+            else:
+                # A tag that does not exist yet: it will be cut from this commit, so what the
+                # working tree has now is what that tag will contain.
+                ok = os.path.exists(os.path.join(root, target))
+                where = "the working tree (%s is not a ref here yet)" % ref
+
+            if not ok:
+                print("  ✗ %s: %s is not in %s" % (f, target, where))
+                bad = 1
+
+if not bad:
+    print("  ✓ every link of ours names a file that is in the ref it pins")
+
+sys.exit(bad)
+PY
 
 [ "$fail" = 0 ] && echo "  ✓ every documentation link resolves"
 
