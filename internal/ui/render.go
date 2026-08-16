@@ -3,11 +3,15 @@ package ui
 // Turning the model into a frame.
 //
 // Pure: state in, string out, no terminal involved. Every hard case here - a name longer than
-// the column, a terminal eighty columns wide, more sandboxes than rows on screen - is a test
-// rather than something found by resizing a window and squinting.
+// its column, a terminal eighty columns wide, more sandboxes than rows on screen - is a test
+// rather than something found by resizing a window and squinting at it.
+//
+// The frame is always exactly as tall as the terminal. Shorter leaves the tail of the previous
+// frame on screen; taller scrolls the header off and never brings it back.
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
@@ -24,58 +28,128 @@ const (
 	yellow = "\x1b[38;5;179m"
 	red    = "\x1b[38;5;167m"
 	invert = "\x1b[7m"
+
+	// The ground the whole dashboard is painted on.
+	//
+	// A terminal program that only sets foreground colours inherits whatever the reader's
+	// theme is behind it, and on a light or a busy background the result is a table that does
+	// not read as one thing. Painting every line to the full width makes the dashboard a panel
+	// rather than text that happens to be on the screen.
+	//
+	// 234 is a near-black grey rather than true black: on an OLED-black terminal, true black
+	// would make the panel invisible against the surround, and the point is that it is a
+	// surface. SBX_UI_PLAIN=1 turns all of this off for anyone whose terminal or palette
+	// disagrees.
+	background = "\x1b[48;5;234m"
+	clearRight = "\x1b[K"
 )
 
-// minCols is the narrowest terminal this lays out for. Below it the address column is dropped
-// rather than wrapped: a table that wraps is not a table.
-const minCols = 60
+// plainTheme reports whether to skip the painted background and use the terminal's own colours.
+func plainTheme() bool { return os.Getenv("SBX_UI_PLAIN") != "" }
 
-func render(m model, rows, cols int) string {
-	if m.logs != nil {
-		return renderLogs(m, rows, cols)
+// paint puts a line on the dashboard's ground, padded so the surface reaches the right edge.
+func paint(line string, cols int) string {
+	if plainTheme() {
+		return line
 	}
 
-	if cols < 20 || rows < 6 {
+	if gap := cols - visibleLen(line); gap > 0 {
+		line += strings.Repeat(" ", gap)
+	}
+
+	return background + line + reset
+}
+
+func render(m model, rows, cols int) string {
+	if cols < 24 || rows < 4 {
 		return "terminal too small"
 	}
 
-	var b strings.Builder
+	l := plan(rows, len(m.rows))
+	w := widths(m.rows, cols)
 
-	lines := 0
-	write := func(s string) {
-		b.WriteString(truncate(s, cols))
-		b.WriteString("\n")
-		lines++
+	var out []string
+
+	add := func(s string) { out = append(out, paint(truncate(s, cols), cols)) }
+	rule := func() { out = append(out, paint(dim+strings.Repeat("─", cols)+reset, cols)) }
+
+	add(title(m, cols))
+	rule()
+
+	if l.header {
+		add(tableHeader(w))
 	}
 
-	// ── header ───────────────────────────────────────────────────────────────
+	out = append(out, painted(tableRows(m, w, l.tableRows, cols), cols)...)
+
+	if l.detailRows > 0 {
+		rule()
+		out = append(out, painted(detailBlock(m, l.detailRows, cols), cols)...)
+	}
+
+	if l.paneRows > 0 {
+		rule()
+		add(paneTitle(m, l.paneRows, cols))
+		out = append(out, painted(paneBody(m, l.paneRows, cols), cols)...)
+	}
+
+	if l.footer {
+		rule()
+		add(footer(m, cols))
+	}
+
+	for len(out) < rows {
+		out = append(out, paint("", cols))
+	}
+
+	return strings.Join(out[:rows], "\n")
+}
+
+// title is the top line: what this is, how much of it there is, and anything urgent.
+func title(m model, cols int) string {
 	sandboxes, awake := m.counts()
 
-	left := fmt.Sprintf("%ssbx%s %s%s%s", bold, reset, dim, m.version, reset)
+	left := fmt.Sprintf(" %ssbx%s %s%s%s", bold, reset, dim, m.version, reset)
+
 	right := fmt.Sprintf("%d sandbox%s · %d awake", sandboxes, plural(sandboxes), awake)
 
+	if m.provider != "" {
+		right += " · " + m.provider
+	}
+
 	if m.update != "" {
-		// The whole point of the notice: visible, and never in the way of the data.
 		right = fmt.Sprintf("%s%s available%s · %s", yellow, m.update, reset, right)
 	}
 
-	write(pad(left, right, cols))
-	write(dim + strings.Repeat("─", cols) + reset)
+	return pad(left, right+" ", cols)
+}
 
-	// ── table ────────────────────────────────────────────────────────────────
-	w := widths(m.rows, cols)
+func tableHeader(w cols) string {
+	head := fmt.Sprintf("%s  %-*s  %-*s  %-6s  %*s  %*s",
+		dim, w.sandbox, "SANDBOX", w.service, "SERVICE", "STATE", w.cpu, "CPU", w.mem, "MEMORY")
 
-	write(fmt.Sprintf("%s  %-*s  %-*s  %-*s  %*s  %*s  %s%s",
-		dim, w.sandbox, "SANDBOX", w.service, "SERVICE", 6, "STATE",
-		w.cpu, "CPU", w.mem, "MEMORY", "ADDRESS", reset))
+	if w.address > 0 {
+		head += "  ADDRESS"
+	}
 
-	// Rows left for the table: the header took three lines, and the footer, the event pane
-	// and its rules need the rest.
-	footer := 4 + min(len(m.events), 3)
-	space := rows - lines - footer
+	return head + reset
+}
 
-	if space < 1 {
-		space = 1
+// tableRows renders the visible slice of the table, scrolled to keep the selection in view.
+func tableRows(m model, w cols, space, cols int) []string {
+	var out []string
+
+	if len(m.rows) == 0 {
+		empty := dim + "  no sandboxes yet.  sbx init  makes one." + reset
+
+		// A failed listing is not evidence of an empty fleet: nothing was found because
+		// nothing could be looked at, and saying both at once tells somebody whose docker is
+		// down that they have no sandboxes.
+		if m.err != nil {
+			empty = red + "  could not read the fleet - see below" + reset
+		}
+
+		out = append(out, truncate(empty, cols))
 	}
 
 	start := 0
@@ -83,54 +157,23 @@ func render(m model, rows, cols int) string {
 		start = m.selected - space + 1
 	}
 
-	for i := start; i < len(m.rows) && i-start < space; i++ {
-		write(renderRow(m.rows[i], i == m.selected, w))
-	}
+	for i := start; i < len(m.rows) && len(out) < space; i++ {
+		line := truncate(renderRow(m.rows[i], i == m.selected, w), cols)
 
-	if len(m.rows) == 0 {
-		write("")
-
-		// "no sandboxes yet" is a claim about the fleet, and a failed listing is not evidence
-		// for it: nothing was found because nothing could be looked at. Saying both at once -
-		// which it did - tells somebody whose docker is down that they have no sandboxes.
-		if m.err != nil {
-			write(red + "  could not read the fleet - the error is below" + reset)
-		} else {
-			write(dim + "  no sandboxes yet.  sbx init  makes one." + reset)
+		if i == m.selected {
+			line = highlight(line, cols)
 		}
+
+		out = append(out, line)
 	}
 
-	// ── events ───────────────────────────────────────────────────────────────
-	for lines < rows-footer {
-		write("")
+	// Padding keeps the panes below from walking up and down the screen as sandboxes come and
+	// go, which is what makes a table feel unsteady to read.
+	for len(out) < space {
+		out = append(out, "")
 	}
 
-	write(dim + strings.Repeat("─", cols) + reset)
-
-	if len(m.events) == 0 {
-		write(dim + "  nothing has happened yet" + reset)
-	}
-
-	for _, e := range m.events {
-		write(fmt.Sprintf("%s  %-4s%s %s%s/%s%s  %s",
-			dim, shortAgo(e.Time), reset, cyan, e.Sandbox, e.Service, reset, eventText(e)))
-	}
-
-	// ── footer ───────────────────────────────────────────────────────────────
-	write(dim + strings.Repeat("─", cols) + reset)
-
-	switch {
-	case m.confirm != "":
-		write(fmt.Sprintf("%s  %s%s  y / n", red, m.confirm, reset))
-	case m.err != nil:
-		write(fmt.Sprintf("%s  %s%s", red, truncate(m.err.Error(), cols-4), reset))
-	case m.message != "":
-		write(fmt.Sprintf("%s  %s%s", green, m.message, reset))
-	default:
-		write(dim + "  ↑↓ move   ⏎ wake   s sleep   l logs   d remove   r refresh   q quit" + reset)
-	}
-
-	return strings.TrimRight(b.String(), "\n")
+	return out[:space]
 }
 
 func renderRow(r row, selected bool, w cols) string {
@@ -145,119 +188,338 @@ func renderRow(r row, selected bool, w cols) string {
 	}
 
 	// An asleep service shows a dash rather than 0. Zero is a measurement and this is not one:
-	// there is nothing running to measure, which is the point of the project.
+	// there is nothing running to measure, which is the point of the project. A sample that
+	// has not arrived yet is not zero either, and says so differently.
 	cpu, mem := "-", "-"
+
 	if r.Awake {
+		cpu, mem = "…", "…"
+
 		if r.CPUKnown {
 			cpu = fmt.Sprintf("%.1f%%", r.CPU)
-		} else {
-			cpu = "…" // one sample so far; a rate needs two
 		}
 
 		if r.MemKnown {
 			mem = humanBytes(r.MemBytes)
-		} else {
-			mem = "…"
 		}
 	}
 
-	line := fmt.Sprintf("%s %-*s  %-*s  %s%-6s%s  %*s  %*s  %s%s%s",
+	line := fmt.Sprintf("%s %-*s  %-*s  %s%-6s%s  %*s  %*s",
 		marker,
 		w.sandbox, truncate(r.Sandbox, w.sandbox),
 		w.service, truncate(r.Service, w.service),
 		colour, state, reset,
 		w.cpu, cpu,
-		w.mem, mem,
-		dim, r.Address, reset)
+		w.mem, mem)
 
-	if selected {
-		return invert + stripColour(line) + reset
+	if w.address > 0 {
+		line += "  " + dim + truncate(shortAddress(r.Address, w.address), w.address) + reset
 	}
 
 	return line
 }
 
-func renderLogs(m model, rows, cols int) string {
-	var b strings.Builder
+// highlight marks the selected row, across the full width.
+//
+// Padded before it is inverted, not after: a highlight that stops where the text does looks
+// like a rendering fault rather than a selection, and the painted background would otherwise
+// fill the rest of the line and cut it short.
+//
+// The colours are stripped first because an inverted line that still carries its own
+// foreground colours is unreadable on a good half of terminals.
+func highlight(line string, cols int) string {
+	flat := stripColour(line)
 
-	b.WriteString(truncate(bold+"  "+m.logsTitle+reset, cols) + "\n")
-	b.WriteString(dim + strings.Repeat("─", cols) + reset + "\n")
-
-	// The last screenful, because the interesting end of a log is the bottom.
-	space := rows - 4
-	start := max(0, len(m.logs)-space)
-
-	shown := 0
-
-	for _, l := range m.logs[start:] {
-		b.WriteString(truncate("  "+l, cols) + "\n")
-		shown++
+	if gap := cols - visibleLen(flat); gap > 0 {
+		flat += strings.Repeat(" ", gap)
 	}
 
-	for ; shown < space; shown++ {
-		b.WriteString("\n")
-	}
-
-	b.WriteString(dim + strings.Repeat("─", cols) + reset + "\n")
-	b.WriteString(dim + "  any key returns" + reset)
-
-	return b.String()
+	return invert + flat + reset
 }
 
-// rowOverhead is everything in a row that is not one of the sized columns: the selection
-// marker, the space after it, the five gaps, and the state column.
-const rowOverhead = 1 + 1 + (2 * 5) + 6
+// shortAddress drops the loopback prefix when the column is tight. Every docker address is
+// 127.0.0.1, so the host repeated down the column is ten characters saying nothing.
+func shortAddress(addr string, width int) string {
+	if addr == "" || len(addr) <= width {
+		return addr
+	}
+
+	return strings.ReplaceAll(addr, "127.0.0.1:", ":")
+}
+
+// detailBlock describes the selected sandbox.
+//
+// It is the answer to "and now what": the address to connect to, the command that exports it,
+// and what the thing is actually doing. On a short terminal it collapses to the one line that
+// matters; given room it expands, which is a better use of a tall screen than blank lines.
+func detailBlock(m model, space, cols int) []string {
+	r, ok := m.currentRow()
+	if !ok {
+		return blanks(space)
+	}
+
+	head := fmt.Sprintf(" %s%s/%s%s", cyan, r.Sandbox, r.Service, reset)
+
+	right := ""
+	if s, ok := m.stats[r.Sandbox+"/"+r.Service]; ok && s.wakes > 0 {
+		right = fmt.Sprintf("woke %d× · last %dms ", s.wakes, s.lastWakeMs)
+	}
+
+	// One line: the name and the command, because that is what gets typed next.
+	if space == 1 {
+		line := head + fmt.Sprintf("   %seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset)
+
+		return []string{truncate(pad(line, dim+right+reset, cols), cols)}
+	}
+
+	out := []string{truncate(pad(head, dim+right+reset, cols), cols)}
+
+	field := func(k, v string) {
+		out = append(out, truncate(fmt.Sprintf("   %s%-9s%s %s", dim, k, reset, v), cols))
+	}
+
+	field("address", r.Address)
+	field("connect", fmt.Sprintf("%seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset))
+
+	if r.Awake {
+		field("state", green+"awake"+reset+dim+" · using "+reset+humanBytes(r.MemBytes))
+	} else {
+		field("state", dim+"asleep · 0 B of memory, volume intact, wakes on connect"+reset)
+	}
+
+	field("ref", dim+r.Ref+reset)
+
+	for len(out) < space {
+		out = append(out, "")
+	}
+
+	return out[:space]
+}
+
+// painted puts a block of already-built lines on the ground.
+func painted(lines []string, cols int) []string {
+	out := make([]string, 0, len(lines))
+
+	for _, l := range lines {
+		out = append(out, paint(l, cols))
+	}
+
+	return out
+}
+
+func blanks(n int) []string {
+	out := make([]string, n)
+
+	return out
+}
+
+func paneTitle(m model, space, cols int) string {
+	name := "EVENTS"
+	total := len(m.events)
+
+	if m.pane == paneLogs {
+		name, total = "LOGS", len(m.logs)
+
+		if r, ok := m.currentRow(); ok {
+			name = "LOGS " + r.Sandbox + "/" + r.Service
+		}
+	}
+
+	if m.focus == focusPane {
+		name = "▸ " + name
+	}
+
+	right := "l switches · tab focuses"
+
+	// Only worth saying when there is more than fits, and only then is "following" meaningful.
+	if total > space {
+		shown := total - m.offset
+
+		if m.offset == 0 {
+			right = fmt.Sprintf("%d lines · following", total)
+		} else {
+			right = fmt.Sprintf("%d/%d · ↑↓ scroll · G follows", shown, total)
+		}
+	}
+
+	return pad(" "+dim+name+reset, dim+right+reset+" ", cols)
+}
+
+// paneBody is the bottom pane: recent events, or the selected service's logs.
+//
+// A window into the content, positioned from the end. Offset 0 is the tail, which is where
+// both a log and a history are interesting, and scrolling back moves the window without ever
+// changing its size - so the screen does not reflow while somebody is reading it.
+func paneBody(m model, space, cols int) []string {
+	var raw []string
+
+	if m.pane == paneLogs {
+		if len(m.logs) == 0 {
+			return pad_lines([]string{truncate(dim+"  no output yet"+reset, cols)}, space)
+		}
+
+		for _, l := range window(m.logs, space, m.offset) {
+			raw = append(raw, truncate("  "+formatLog(l), cols))
+		}
+	} else {
+		if len(m.events) == 0 {
+			return pad_lines([]string{truncate(dim+"  nothing has happened yet"+reset, cols)}, space)
+		}
+
+		for _, e := range window(m.events, space, m.offset) {
+			raw = append(raw, truncate(eventLine(e), cols))
+		}
+	}
+
+	return pad_lines(raw, space)
+}
+
+// window returns the n items ending offset from the end.
+func window[T any](s []T, n, offset int) []T {
+	if n <= 0 || len(s) == 0 {
+		return nil
+	}
+
+	end := len(s) - offset
+	end = clamp(end, min(n, len(s)), len(s))
+
+	start := max(0, end-n)
+
+	return s[start:end]
+}
+
+// maxOffset is how far back the pane can be scrolled: far enough to reach the first line, and
+// no further, so holding the key does not walk off into empty space.
+func maxOffset(m model, space int) int {
+	n := len(m.events)
+	if m.pane == paneLogs {
+		n = len(m.logs)
+	}
+
+	return max(0, n-space)
+}
+
+func pad_lines(lines []string, space int) []string {
+	for len(lines) < space {
+		lines = append(lines, "")
+	}
+
+	return lines[:space]
+}
+
+func eventLine(e history.Record) string {
+	return fmt.Sprintf("%s  %-4s%s %s%s%s  %s",
+		dim, shortAgo(e.Time), reset, cyan, e.Sandbox+"/"+e.Service, reset, eventText(e))
+}
+
+// tail returns the last n of a slice. Generic because it is wanted for two element types, and
+// copying it twice is how the two drift apart.
+func tail[T any](s []T, n int) []T {
+	if n <= 0 || len(s) == 0 {
+		return nil
+	}
+
+	if len(s) <= n {
+		return s
+	}
+
+	return s[len(s)-n:]
+}
+
+// footer says what the keys do, and gives way to anything more urgent.
+func footer(m model, cols int) string {
+	switch {
+	case m.confirm != "":
+		return red + "  " + m.confirm + reset + "   y / n"
+
+	case m.err != nil:
+		return red + "  " + truncate(firstLine(m.err.Error()), cols-4) + reset
+
+	case m.message != "":
+		return green + "  " + m.message + reset
+	}
+
+	// The hints follow the focus. Showing the table's keys while the arrows are driving the
+	// log pane is how somebody presses down expecting to move the selection and watches the
+	// log scroll instead.
+	full := "  ↑↓ move   ⏎ wake   s sleep   l logs   d remove   r refresh   ⇥ pane   q quit"
+	short := "  ↑↓ ⏎ wake  s sleep  l logs  d rm  q quit"
+
+	if m.focus == focusPane {
+		full = "  ↑↓ scroll   ⇞⇟ page   g top   G follow   l switches   ⇥ table   q quit"
+		short = "  ↑↓ scroll  g top  G follow  ⇥ table  q quit"
+	}
+
+	// Trimmed rather than wrapped: a footer that wraps steals a line from the table and moves
+	// everything on the screen by one.
+	if cols < visibleLen(full)+2 {
+		full = short
+	}
+
+	return dim + full + reset
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+
+	return s
+}
 
 // cols are the computed column widths.
-type cols struct{ sandbox, service, cpu, mem int }
+type cols struct{ sandbox, service, cpu, mem, address int }
+
+// rowOverhead is everything in a row that is not one of the sized columns: the selection
+// marker, the space after it, the four gaps before the address, and the state column.
+const rowOverhead = 1 + 1 + (2 * 4) + 6
 
 // widths sizes the columns to the data, within what the terminal has.
 //
 // The fixed cost is counted rather than estimated. A guessed constant here is how a long
-// branch name pushed the address column past the right edge and off the screen: the row still
-// fit after truncation, so nothing looked broken, and the one column somebody needs in order
-// to connect had silently gone.
+// branch name pushed the address column past the right edge: the row still fit after
+// truncation, so nothing looked broken, and the one column somebody needs in order to connect
+// had quietly gone.
 func widths(rows []row, total int) cols {
 	w := cols{sandbox: 7, service: 7, cpu: 6, mem: 7}
 
-	addr := len("127.0.0.1:20000")
+	want := len("127.0.0.1:20000")
 
 	for _, r := range rows {
 		w.sandbox = max(w.sandbox, len(r.Sandbox))
 		w.service = max(w.service, len(r.Service))
-		addr = max(addr, len(r.Address))
+		want = max(want, len(r.Address))
 	}
 
-	// The marker, the space after it, the five two-space gaps between the six columns, and
-	// the six-wide state column. rowOverhead is asserted against a real rendered row by a
-	// test, because hand-counting a format string is exactly the sort of thing that is wrong
-	// by two and produces a table that is quietly two columns too wide.
-	const fixed = rowOverhead
+	// The address is what somebody came for, so it is paid before the names.
+	spare := total - rowOverhead - w.cpu - w.mem
 
-	// The address is what somebody came for, so it is paid first and the name column takes
-	// whatever is left.
-	if budget := total - fixed - w.service - w.cpu - w.mem - addr; w.sandbox > budget {
+	if budget := spare - w.service - want; w.sandbox > budget {
 		w.sandbox = max(8, budget)
 	}
 
-	// On a genuinely narrow terminal the service name gives way too, rather than the address.
-	if budget := total - fixed - w.sandbox - w.cpu - w.mem - addr; w.service > budget {
+	if budget := spare - w.sandbox - want; w.service > budget {
 		w.service = max(6, budget)
+	}
+
+	// Whatever is left is the address. Below a usable width it is dropped rather than shown as
+	// three characters and an ellipsis.
+	if w.address = spare - w.sandbox - w.service - 2; w.address < 8 {
+		w.address = 0
 	}
 
 	return w
 }
 
 func eventText(e history.Record) string {
-	if e.Event == "woke" && e.DurationMs > 0 {
+	switch {
+	case e.Event == "woke" && e.DurationMs > 0:
 		return fmt.Sprintf("woke in %dms", e.DurationMs)
-	}
-
-	if e.Event == "slept" {
+	case e.Event == "slept":
 		return "slept"
+	default:
+		return e.Event
 	}
-
-	return e.Event
 }
 
 func plural(n int) string {
@@ -337,8 +599,8 @@ func visibleLen(s string) int {
 	return n
 }
 
-// stripColour removes escapes, for the selected row: an inverted line with its own colours
-// still in it comes out unreadable on half the terminals that exist.
+// stripColour removes escapes, for the selected row and for tests, which should assert
+// against what a reader sees rather than against a palette.
 func stripColour(s string) string {
 	var b strings.Builder
 

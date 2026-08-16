@@ -34,11 +34,51 @@ type row struct {
 	MemKnown bool
 }
 
+// pane names what the bottom of the screen is showing. There are two, and switching between
+// them changes that pane's contents and nothing else - the layout does not move, because a
+// dashboard that rearranges itself costs the reader their bearings every time.
+type pane int
+
+const (
+	paneEvents pane = iota
+	paneLogs
+)
+
+// focus is which half of the screen the arrow keys are driving. Two, and Tab moves between
+// them: the alternative is arrows that mean different things depending on a mode nobody can
+// see, which is how a reader ends up scrolling a log when they meant to pick a sandbox.
+type focus int
+
+const (
+	focusTable focus = iota
+	focusPane
+)
+
+// serviceStat is what the history says about one service, summarised for the detail line.
+type serviceStat struct {
+	wakes      int
+	lastWakeMs int64
+}
+
 // model is the whole state of the screen.
 type model struct {
 	rows     []row
 	selected int
 	events   []history.Record
+
+	// stats is keyed by "sandbox/service" and derived from the journal, so the detail line can
+	// say how often this thing has actually woken rather than only what it is doing now.
+	stats map[string]serviceStat
+
+	// pane is which content the bottom shows; logs holds the selected service's output.
+	pane pane
+	logs []string
+
+	// focus is what the arrows drive. offset is how far the pane is scrolled back from the
+	// end, in lines, so 0 always means "following the tail" - the state people expect after
+	// pressing End, and the one a new line should not knock them out of.
+	focus  focus
+	offset int
 
 	// update is a newer version, or "". Read from a cache, never fetched here.
 	update  string
@@ -48,17 +88,46 @@ type model struct {
 	// stops updating when docker dies is worse than one that says docker died.
 	err error
 
-	// confirm is a pending destructive action, and the row it applies to.
+	// confirm is a pending destructive action.
 	confirm string
 
 	// message is transient feedback: what the last key did.
 	message string
 
-	// logs is a full-screen overlay when non-nil.
-	logs      []string
-	logsTitle string
-
 	provider string
+}
+
+// currentRow is the selected row, if there is one.
+func (m model) currentRow() (row, bool) {
+	if m.selected < 0 || m.selected >= len(m.rows) {
+		return row{}, false
+	}
+
+	return m.rows[m.selected], true
+}
+
+// summarise counts what the journal says about each service, for the detail line.
+func summarise(events []history.Record) map[string]serviceStat {
+	out := map[string]serviceStat{}
+
+	for _, e := range events {
+		if e.Event != "woke" {
+			continue
+		}
+
+		k := e.Sandbox + "/" + e.Service
+
+		s := out[k]
+		s.wakes++
+
+		if e.DurationMs > 0 {
+			s.lastWakeMs = e.DurationMs
+		}
+
+		out[k] = s
+	}
+
+	return out
 }
 
 // counts summarises the fleet for the header.

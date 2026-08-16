@@ -32,6 +32,7 @@ const (
 	KeyPageDown
 	KeyHome
 	KeyEnd
+	KeyTab
 )
 
 // Reader decodes keys from a terminal.
@@ -112,6 +113,8 @@ func decode(b []byte) Key {
 	switch b[0] {
 	case 3:
 		return Key{Code: KeyCtrlC}
+	case 9:
+		return Key{Code: KeyTab}
 	case 13, 10:
 		return Key{Code: KeyEnter}
 	case 27:

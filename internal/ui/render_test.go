@@ -122,22 +122,31 @@ func TestTheUpdateNoticeAppearsOnlyWhenThereIsOne(t *testing.T) {
 	}
 }
 
-// A selected row is inverted, and an inverted row with its own colours still in it is
-// unreadable on a good half of terminals.
-func TestTheSelectedRowCarriesNoColourOfItsOwn(t *testing.T) {
+// The selected row is inverted across the whole width. A highlight that stops where the text
+// ends reads as a rendering fault rather than as a selection, and it was the first thing the
+// painted background broke.
+func TestTheSelectedRowIsHighlightedAcrossTheWholeWidth(t *testing.T) {
 	m := sample()
 	m.selected = 0
 
-	for _, line := range strings.Split(render(m, 24, 100), "\n") {
+	const cols = 100
+
+	for _, line := range strings.Split(render(m, 24, cols), "\n") {
 		if !strings.Contains(line, invert) {
 			continue
 		}
 
-		body := strings.TrimPrefix(line, invert)
-		body = strings.TrimSuffix(body, reset)
+		body := line[strings.Index(line, invert)+len(invert):]
+		for strings.HasSuffix(body, reset) {
+			body = strings.TrimSuffix(body, reset)
+		}
 
 		if strings.Contains(body, "\x1b[") {
-			t.Errorf("the inverted row still carries escapes: %q", body)
+			t.Errorf("the inverted row still carries its own colours: %q", body)
+		}
+
+		if n := visibleLen(body); n != cols {
+			t.Errorf("the highlight covers %d of %d columns, so it stops mid-row", n, cols)
 		}
 
 		return
@@ -291,22 +300,38 @@ func TestEventsAreShown(t *testing.T) {
 }
 
 // rowOverhead is a hand-counted constant describing a format string, which is the kind of
-// thing that is silently wrong by two. This checks it against a row that was actually
+// thing that is silently wrong by two. This checks it against rows that were actually
 // rendered, so changing the layout without changing the constant fails here rather than by
 // pushing the address column off somebody's screen.
 func TestRowOverheadMatchesTheLayout(t *testing.T) {
-	w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7}
-
 	r := row{Sandbox: "abcdefghij", Service: "abcdefgh", Awake: true, Address: "127.0.0.1:20000",
-		CPU: 1, CPUKnown: true, MemBytes: 1 << 20}
+		CPU: 1, CPUKnown: true, MemBytes: 1 << 20, MemKnown: true}
 
-	got := visibleLen(renderRow(r, false, w))
-	want := rowOverhead + w.sandbox + w.service + w.cpu + w.mem + len(r.Address)
+	t.Run("without an address column", func(t *testing.T) {
+		w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7}
 
-	if got != want {
-		t.Errorf("a rendered row is %d columns but the width budget assumes %d - rowOverhead "+
-			"is %d and does not match the format string", got, want, rowOverhead)
-	}
+		got := visibleLen(renderRow(r, false, w))
+		want := rowOverhead + w.sandbox + w.service + w.cpu + w.mem
+
+		if got != want {
+			t.Errorf("a rendered row is %d columns but the budget assumes %d - rowOverhead is "+
+				"%d and does not match the format string", got, want, rowOverhead)
+		}
+	})
+
+	t.Run("with one", func(t *testing.T) {
+		w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7, address: len(r.Address)}
+
+		got := visibleLen(renderRow(r, false, w))
+
+		// The two extra columns are the gap before the address, which widths() budgets for
+		// separately when it works out what is left over.
+		want := rowOverhead + w.sandbox + w.service + w.cpu + w.mem + 2 + w.address
+
+		if got != want {
+			t.Errorf("a row with an address is %d columns, budget assumes %d", got, want)
+		}
+	})
 }
 
 // A sample that did not arrive is not a measurement of zero. An awake service whose stats

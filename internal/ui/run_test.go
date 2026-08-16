@@ -173,7 +173,7 @@ func TestEnterWakesBySelectingAndDialling(t *testing.T) {
 	// Select the asleep one.
 	d.handle(context.Background(), tui.Key{Code: tui.KeyDown})
 
-	if r, _ := d.currentRow(); r.Service != "redis" {
+	if r, _ := d.model.currentRow(); r.Service != "redis" {
 		t.Fatalf("the selected row is %q, expected the asleep redis", r.Service)
 	}
 
@@ -209,13 +209,24 @@ func TestQuitting(t *testing.T) {
 	}
 }
 
-func TestTheLogOverlayIsDismissedByAnyKey(t *testing.T) {
+// Logs are a pane, not an overlay: pressing l switches what the bottom shows and moves
+// nothing else. Pressing it again switches back.
+func TestLPaneTogglesWithoutChangingTheLayout(t *testing.T) {
 	d := newDash(&fakeProvider{})
-	d.model.logs = []string{"a log line"}
 
-	d.handle(context.Background(), tui.Key{Rune: 'z', Code: tui.KeyRune})
+	if d.model.pane != paneEvents {
+		t.Fatal("the pane does not start on events")
+	}
 
-	if d.model.logs != nil {
-		t.Error("a keypress did not dismiss the log overlay")
+	d.handle(context.Background(), tui.Key{Rune: 'l', Code: tui.KeyRune})
+
+	if d.model.pane != paneLogs {
+		t.Error("l did not switch the pane to logs")
+	}
+
+	d.handle(context.Background(), tui.Key{Rune: 'l', Code: tui.KeyRune})
+
+	if d.model.pane != paneEvents {
+		t.Error("l a second time did not switch back to events")
 	}
 }

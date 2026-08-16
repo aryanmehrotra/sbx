@@ -112,7 +112,16 @@ type dash struct {
 
 	// prev is the previous CPU sample per ref, which is what makes a rate possible.
 	prev map[string]provider.Usage
+
+	// paneHeight is the height the renderer last drew the pane at, so the scroll keys can
+	// bound themselves without the model having to know the terminal's size.
+	paneHeight int
 }
+
+// eventBacklog is how many events the refresher keeps in memory. It is a ceiling on
+// what the log pane can ever show, so it must exceed the tallest plausible terminal
+// rather than the shortest — the renderer trims to fit, this only has to not run out.
+const eventBacklog = 500
 
 func (d *dash) poll(ctx context.Context) {
 	t := time.NewTicker(Refresh)
@@ -165,7 +174,10 @@ func (d *dash) refresh(ctx context.Context) {
 		now, _ = m.Stats(ctx, running)
 	}
 
-	events, _ := history.Read(history.Filter{Kind: "event", Limit: 3})
+	// Read enough to fill any terminal and let the renderer decide how many fit. The
+	// screen size is only known at render time, and a limit of three here made the
+	// layout question moot: there was never a fourth line to show.
+	events, _ := history.Read(history.Filter{Kind: "event", Limit: eventBacklog})
 
 	// Everything below is arithmetic and assignment, so the lock is held for microseconds.
 	d.mu.Lock()
@@ -198,20 +210,16 @@ func (d *dash) refresh(ctx context.Context) {
 
 	if events != nil {
 		d.model.events = events
+		d.model.stats = summarise(events)
 	}
+
+	d.model.provider = d.opt.Provider.Name()
 }
 
 // handle applies a keypress. It returns true when the user is finished.
 func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	// Any key dismisses the log overlay, which is what the overlay says it does.
-	if d.model.logs != nil {
-		d.model.logs = nil
-
-		return false
-	}
 
 	// A pending confirmation swallows everything except its own answer, so that a stray
 	// keypress cannot remove a sandbox.
@@ -228,6 +236,22 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		return false
 	}
 
+	// Tab moves the arrows between the table and the pane. Two targets and a visible marker
+	// beats arrows that silently mean different things depending on an invisible mode.
+	if k.Code == tui.KeyTab {
+		if d.model.focus == focusTable {
+			d.model.focus = focusPane
+		} else {
+			d.model.focus = focusTable
+		}
+
+		return false
+	}
+
+	if d.model.focus == focusPane && d.scrollPane(k) {
+		return false
+	}
+
 	switch {
 	case k.Code == tui.KeyCtrlC, k.Rune == 'q':
 		return true
@@ -235,8 +259,12 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 	case k.Code == tui.KeyUp, k.Rune == 'k':
 		d.model.selected = max(0, d.model.selected-1)
 
+		d.followSelection(ctx)
+
 	case k.Code == tui.KeyDown, k.Rune == 'j':
 		d.model.selected = min(len(d.model.rows)-1, d.model.selected+1)
+
+		d.followSelection(ctx)
 
 	case k.Code == tui.KeyEnter:
 		go d.wake(context.WithoutCancel(ctx), d.current())
@@ -245,10 +273,20 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		go d.sleep(context.WithoutCancel(ctx), d.current())
 
 	case k.Rune == 'l':
-		go d.showLogs(context.WithoutCancel(ctx), d.current())
+		// A toggle, not a screen. The pane's contents change and the layout does not move.
+		if d.model.pane == paneLogs {
+			d.model.pane = paneEvents
+		} else {
+			d.model.pane = paneLogs
+
+			go d.loadLogs(context.WithoutCancel(ctx), d.current())
+		}
+
+		d.model.offset = 0
+		d.model.focus = focusPane // what you just asked for is what the arrows should drive
 
 	case k.Rune == 'd':
-		if r, ok := d.currentRow(); ok {
+		if r, ok := d.model.currentRow(); ok {
 			d.model.confirm = fmt.Sprintf("remove %s and its data?", r.Sandbox)
 		}
 
@@ -259,18 +297,41 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 	return false
 }
 
-func (d *dash) current() row {
-	r, _ := d.currentRow()
+// scrollPane moves the pane's window. It reports whether the key was one of its own, so that
+// anything else falls through to the table's bindings rather than being swallowed by a focus
+// the reader may have forgotten about.
+//
+// The bounds need the pane's height, which only the renderer knows exactly. paneHeight is the
+// last height it drew at, which is right except for the frame after a resize.
+func (d *dash) scrollPane(k tui.Key) bool {
+	h := max(1, d.paneHeight)
 
-	return r
-}
+	limit := maxOffset(d.model, h)
 
-func (d *dash) currentRow() (row, bool) {
-	if d.model.selected < 0 || d.model.selected >= len(d.model.rows) {
-		return row{}, false
+	switch {
+	case k.Code == tui.KeyUp, k.Rune == 'k':
+		d.model.offset = min(limit, d.model.offset+1)
+	case k.Code == tui.KeyDown, k.Rune == 'j':
+		d.model.offset = max(0, d.model.offset-1)
+	case k.Code == tui.KeyPageUp:
+		d.model.offset = min(limit, d.model.offset+h)
+	case k.Code == tui.KeyPageDown:
+		d.model.offset = max(0, d.model.offset-h)
+	case k.Code == tui.KeyHome, k.Rune == 'g':
+		d.model.offset = limit
+	case k.Code == tui.KeyEnd, k.Rune == 'G':
+		d.model.offset = 0 // following again
+	default:
+		return false
 	}
 
-	return d.model.rows[d.model.selected], true
+	return true
+}
+
+func (d *dash) current() row {
+	r, _ := d.model.currentRow()
+
+	return r
 }
 
 func (d *dash) say(format string, a ...any) {
@@ -281,6 +342,12 @@ func (d *dash) say(format string, a ...any) {
 
 // wake connects to the service, because connecting is the only way this product wakes
 // anything. Calling the provider's Start directly would demonstrate a path no user has.
+//
+// The dial returning is not the wake. The daemon accepts immediately and only then starts the
+// container, so a dial-and-close comes back in about a millisecond and reports nothing: the
+// first version printed "woke in 1ms" for a postgres that had not started yet, which reads as
+// a dashboard that is lying or stuck. What is timed instead is the round trip to a service
+// that is actually running again.
 func (d *dash) wake(ctx context.Context, r row) {
 	if r.Address == "" {
 		return
@@ -305,11 +372,48 @@ func (d *dash) wake(ctx context.Context, r row) {
 		return
 	}
 
-	_ = conn.Close()
+	// Held open until the workload is up. Closing at once is what the daemon sees as a caller
+	// that changed its mind, and it is also what made the measurement meaningless.
+	defer conn.Close()
+
+	if err := d.waitAwake(ctx, r.Ref, 90*time.Second); err != nil {
+		d.say("%s/%s did not come up: %v", r.Sandbox, r.Service, err)
+
+		return
+	}
 
 	d.say("%s/%s woke in %dms", r.Sandbox, r.Service, time.Since(start).Milliseconds())
 
 	d.refresh(ctx)
+}
+
+// waitAwake polls until the backend reports the unit running.
+//
+// Polling rather than trusting the connection, because "the daemon accepted" and "postgres is
+// serving" are different facts and only the second one is worth putting on screen.
+func (d *dash) waitAwake(ctx context.Context, ref string, limit time.Duration) error {
+	deadline := time.Now().Add(limit)
+
+	for {
+		units, err := d.opt.Provider.List(ctx, "")
+		if err == nil {
+			for _, u := range units {
+				if u.Ref == ref && u.Running {
+					return nil
+				}
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("still not running after %s", limit)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
 }
 
 func (d *dash) sleep(ctx context.Context, r row) {
@@ -346,7 +450,12 @@ func (d *dash) remove(ctx context.Context, r row) {
 	d.refresh(ctx)
 }
 
-func (d *dash) showLogs(ctx context.Context, r row) {
+// loadLogs fills the bottom pane with the selected service's output.
+//
+// Fetched when the pane is opened and when the selection moves, not on every tick: a log read
+// per second per sandbox is a lot of round trips to say nothing new, and the pane is a glance
+// rather than a follow.
+func (d *dash) loadLogs(ctx context.Context, r row) {
 	if r.Ref == "" {
 		return
 	}
@@ -362,9 +471,29 @@ func (d *dash) showLogs(ctx context.Context, r row) {
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 
 	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// The selection may have moved while this was in flight, and showing one service's logs
+	// under another's name is worse than showing none.
+	if cur, ok := d.model.currentRow(); !ok || cur.Ref != r.Ref {
+		return
+	}
+
 	d.model.logs = lines
-	d.model.logsTitle = r.Sandbox + "/" + r.Service
-	d.mu.Unlock()
+}
+
+// followSelection keeps the log pane pointed at the highlighted row. Called with the lock
+// held, so the fetch itself is a goroutine.
+func (d *dash) followSelection(ctx context.Context) {
+	if d.model.pane != paneLogs {
+		return
+	}
+
+	d.model.logs = nil
+
+	if r, ok := d.model.currentRow(); ok {
+		go d.loadLogs(context.WithoutCancel(ctx), r)
+	}
 }
 
 // printOnce is the non-interactive path: the same information, printed and gone.

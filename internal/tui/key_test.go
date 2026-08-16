@@ -117,3 +117,10 @@ func TestATildeSequenceDoesNotLeaveItsTail(t *testing.T) {
 		t.Errorf("second key is %+v (ok=%v), want q - the ~ was left in the buffer", k, ok)
 	}
 }
+
+func TestTabIsAKeyOfItsOwn(t *testing.T) {
+	if got := decode([]byte{9}); got.Code != KeyTab {
+		t.Errorf("decode(tab) = %+v, want KeyTab - without it, tab arrives as an ordinary "+
+			"character and moves nothing", got)
+	}
+}
