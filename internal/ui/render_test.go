@@ -137,8 +137,15 @@ func TestTheSelectedRowIsHighlightedAcrossTheWholeWidth(t *testing.T) {
 		}
 
 		body := line[strings.Index(line, invert)+len(invert):]
-		for strings.HasSuffix(body, reset) {
-			body = strings.TrimSuffix(body, reset)
+
+		// Trailing escapes are the frame closing itself off; what matters is that none appear
+		// inside the row, where they would break the highlight into pieces.
+		for {
+			trimmed := strings.TrimSuffix(strings.TrimSuffix(body, reset), background)
+			if trimmed == body {
+				break
+			}
+			body = trimmed
 		}
 
 		if strings.Contains(body, "\x1b[") {

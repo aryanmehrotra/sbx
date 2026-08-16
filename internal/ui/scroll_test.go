@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/tui"
 )
@@ -139,29 +141,91 @@ func TestGoToTopAndFollow(t *testing.T) {
 	}
 }
 
-// Tab moves the arrows between the two halves, and the footer has to say which one they are
-// driving - otherwise down means two different things and nothing on screen says which.
-func TestTabMovesFocusAndTheFooterFollows(t *testing.T) {
+// The trap that shipped: pressing l to look at a log took the arrow keys away from the table,
+// so moving to the next service did nothing and the dashboard felt frozen.
+func TestOpeningLogsLeavesTheArrowsOnTheTable(t *testing.T) {
 	d := newDash(&fakeProvider{})
 
+	d.handle(context.Background(), tui.Key{Rune: 'l', Code: tui.KeyRune})
+
 	if d.model.focus != focusTable {
-		t.Fatal("focus does not start on the table")
+		t.Fatal("opening the log pane took the arrows away from the table")
 	}
 
-	d.handle(nil, tui.Key{Code: tui.KeyTab})
+	before := d.model.selected
+
+	d.handle(context.Background(), tui.Key{Code: tui.KeyDown})
+
+	if d.model.selected == before {
+		t.Error("with logs open, down did not move to the next service")
+	}
+}
+
+// Tab is the explicit way in, and it refuses to strand the arrows somewhere they do nothing.
+func TestTabRefusesAFocusThatWouldDoNothing(t *testing.T) {
+	d := newDash(&fakeProvider{})
+	d.paneHeight = 20
+	d.model.pane = paneLogs
+	d.model.logs = []string{"one", "two"} // fits with room to spare
+
+	d.handle(context.Background(), tui.Key{Code: tui.KeyTab})
+
+	if d.model.focus != focusTable {
+		t.Error("tab moved the arrows to a pane with nothing to scroll, where they do nothing")
+	}
+
+	if d.model.message == "" {
+		t.Error("it moved nothing and said nothing, which is indistinguishable from a freeze")
+	}
+}
+
+func TestTabMovesFocusWhenThereIsSomethingToScroll(t *testing.T) {
+	d := newDash(&fakeProvider{})
+	d.paneHeight = 3
+	d.model.pane = paneLogs
+	d.model.logs = []string{"1", "2", "3", "4", "5", "6", "7", "8"}
+
+	d.handle(context.Background(), tui.Key{Code: tui.KeyTab})
 
 	if d.model.focus != focusPane {
-		t.Fatal("tab did not move focus to the pane")
+		t.Fatal("tab did not move the arrows to a scrollable pane")
 	}
 
-	if got := stripColour(footer(d.model, 120)); !strings.Contains(got, "scroll") {
-		t.Errorf("with the pane focused the footer still shows the table's keys: %q", got)
+	if got := stripColour(footer(d.model, 3, 120)); !strings.Contains(got, "scroll") {
+		t.Errorf("the footer does not show the scroll keys: %q", got)
 	}
 
-	d.handle(nil, tui.Key{Code: tui.KeyTab})
+	// And back again.
+	d.handle(context.Background(), tui.Key{Code: tui.KeyTab})
 
-	if got := stripColour(footer(d.model, 120)); !strings.Contains(got, "wake") {
-		t.Errorf("back on the table the footer does not show its keys: %q", got)
+	if d.model.focus != focusTable {
+		t.Error("tab did not bring the arrows back to the table")
+	}
+}
+
+// Whatever state the reader is in, one key returns them to the table.
+func TestEscapeAlwaysReturnsToTheTable(t *testing.T) {
+	d := newDash(&fakeProvider{})
+	d.model.focus = focusPane
+
+	d.handle(context.Background(), tui.Key{Code: tui.KeyEscape})
+
+	if d.model.focus != focusTable {
+		t.Error("escape did not return the arrows to the table")
+	}
+}
+
+// A footer must not advertise a key that does nothing right now.
+func TestTheFooterOnlyNamesLiveKeys(t *testing.T) {
+	m := model{version: "v", focus: focusPane, pane: paneEvents}
+	m.events = nil
+
+	got := stripColour(footer(m, 10, 120))
+
+	for _, dead := range []string{"g top", "G follow", "⇞⇟ page"} {
+		if strings.Contains(got, dead) {
+			t.Errorf("the footer offers %q with nothing to scroll: %q", dead, got)
+		}
 	}
 }
 
@@ -175,8 +239,8 @@ func TestScrollingDoesNotMoveTheTableSelection(t *testing.T) {
 
 	before := d.model.selected
 
-	d.handle(nil, tui.Key{Code: tui.KeyUp})
-	d.handle(nil, tui.Key{Code: tui.KeyUp})
+	d.handle(context.Background(), tui.Key{Code: tui.KeyUp})
+	d.handle(context.Background(), tui.Key{Code: tui.KeyUp})
 
 	if d.model.selected != before {
 		t.Errorf("scrolling the pane moved the table selection from %d to %d",
@@ -185,5 +249,69 @@ func TestScrollingDoesNotMoveTheTableSelection(t *testing.T) {
 
 	if d.model.offset == 0 {
 		t.Error("the pane did not scroll at all")
+	}
+}
+
+// A reader who has scrolled back is reading something. Refetching under them would move the
+// text, or silently change what "forty lines back" refers to.
+func TestFollowingStopsWhenScrolledBack(t *testing.T) {
+	p := &fakeProvider{}
+	d := newDash(p)
+	d.model.pane = paneLogs
+	d.model.logs = []string{"stale"}
+
+	// Following: the poll refills the pane.
+	d.model.offset = 0
+	d.followLogs(context.Background())
+
+	if got := strings.Join(d.model.logs, " "); !strings.Contains(got, "line one") {
+		t.Errorf("while following, the pane was not refreshed: %v", d.model.logs)
+	}
+
+	// Scrolled back: it is left alone.
+	d.model.offset = 5
+	d.model.logs = []string{"what the reader is looking at"}
+
+	d.followLogs(context.Background())
+
+	if got := strings.Join(d.model.logs, " "); !strings.Contains(got, "what the reader") {
+		t.Errorf("a scrolled-back pane was refetched under the reader: %v", d.model.logs)
+	}
+}
+
+// Nothing is fetched for a pane that is not open.
+func TestNoLogReadsWhileThePaneIsClosed(t *testing.T) {
+	p := &fakeProvider{}
+	d := newDash(p)
+	d.model.pane = paneEvents
+	d.model.logs = nil
+
+	d.followLogs(context.Background())
+
+	if d.model.logs != nil {
+		t.Error("logs were fetched with the pane showing events, which is a round trip per " +
+			"service per second to answer a question nobody asked")
+	}
+}
+
+// Feedback from a keypress must not become permanent furniture: one `s` used to leave its
+// message in the footer for the rest of the session, and the key hints never came back.
+func TestAMessageFadesAndTheHintsReturn(t *testing.T) {
+	m := model{version: "v", message: "zn-dev/mysql asleep", messageAt: time.Now()}
+
+	if got := stripColour(footer(m, 5, 120)); !strings.Contains(got, "asleep") {
+		t.Errorf("a fresh message is not shown: %q", got)
+	}
+
+	m.messageAt = time.Now().Add(-2 * messageLife)
+
+	got := stripColour(footer(m, 5, 120))
+
+	if strings.Contains(got, "asleep") {
+		t.Errorf("an old message is still in the footer: %q", got)
+	}
+
+	if !strings.Contains(got, "quit") {
+		t.Errorf("the key hints did not come back: %q", got)
 	}
 }

@@ -133,6 +133,7 @@ func (d *dash) poll(ctx context.Context) {
 			return
 		case <-t.C:
 			d.refresh(ctx)
+			d.followLogs(ctx)
 		}
 	}
 }
@@ -236,14 +237,36 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		return false
 	}
 
-	// Tab moves the arrows between the table and the pane. Two targets and a visible marker
-	// beats arrows that silently mean different things depending on an invisible mode.
+	// Escape always returns the arrows to the table. Whatever else is going on, there is one
+	// key that gets you back to the thing the dashboard is about.
+	if k.Code == tui.KeyEscape {
+		d.model.focus = focusTable
+
+		return false
+	}
+
+	// Tab moves the arrows to the pane and back, and refuses to move them somewhere they
+	// would do nothing.
+	//
+	// Focus used to follow `l`, which is how somebody pressed l to look at a log, pressed down
+	// to move to the next service, and watched nothing happen: the arrows were scrolling a
+	// pane whose contents already fitted. The table is what this screen is about, so it keeps
+	// the arrows unless they are explicitly asked for elsewhere.
 	if k.Code == tui.KeyTab {
-		if d.model.focus == focusTable {
-			d.model.focus = focusPane
-		} else {
+		if d.model.focus == focusPane {
 			d.model.focus = focusTable
+
+			return false
 		}
+
+		if maxOffset(d.model, max(1, d.paneHeight)) == 0 {
+			d.model.message = "nothing to scroll: it is all on screen"
+			d.model.messageAt = time.Now()
+
+			return false
+		}
+
+		d.model.focus = focusPane
 
 		return false
 	}
@@ -262,7 +285,10 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		d.followSelection(ctx)
 
 	case k.Code == tui.KeyDown, k.Rune == 'j':
-		d.model.selected = min(len(d.model.rows)-1, d.model.selected+1)
+		// max(0, ...) because an empty fleet makes len-1 negative, and a selection of -1 is a
+		// row that does not exist waiting for the first piece of code that indexes without
+		// checking. Nothing does today; that is luck, not design.
+		d.model.selected = max(0, min(len(d.model.rows)-1, d.model.selected+1))
 
 		d.followSelection(ctx)
 
@@ -283,7 +309,6 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		}
 
 		d.model.offset = 0
-		d.model.focus = focusPane // what you just asked for is what the arrows should drive
 
 	case k.Rune == 'd':
 		if r, ok := d.model.currentRow(); ok {
@@ -337,6 +362,7 @@ func (d *dash) current() row {
 func (d *dash) say(format string, a ...any) {
 	d.mu.Lock()
 	d.model.message = fmt.Sprintf(format, a...)
+	d.model.messageAt = time.Now()
 	d.mu.Unlock()
 }
 
@@ -480,6 +506,34 @@ func (d *dash) loadLogs(ctx context.Context, r row) {
 	}
 
 	d.model.logs = lines
+}
+
+// followLogs re-reads the selected service's output while the pane is open and following.
+//
+// Only while following. Somebody who has scrolled back is reading something, and refetching
+// under them would either move the text or silently change what "40 lines back" means; the
+// pane says "following" or gives a position, and this respects which of those it said.
+//
+// Only while the pane is open, because a log read per service per second is a lot of round
+// trips to a docker daemon to answer a question nobody is asking.
+func (d *dash) followLogs(ctx context.Context) {
+	d.mu.Lock()
+
+	if d.model.pane != paneLogs || d.model.offset != 0 {
+		d.mu.Unlock()
+
+		return
+	}
+
+	r, ok := d.model.currentRow()
+
+	d.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	d.loadLogs(ctx, r)
 }
 
 // followSelection keeps the log pane pointed at the highlighted row. Called with the lock

@@ -13,9 +13,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
 )
+
+// messageLife is how long feedback from a keypress stays in the footer before the key hints
+// come back. Long enough to read, short enough that the hints are never gone for good.
+const messageLife = 4 * time.Second
 
 // Colours, as escape sequences. Kept together so the palette is one thing rather than
 // scattered through the layout, and so a future --no-colour has one place to switch off.
@@ -48,10 +53,18 @@ const (
 func plainTheme() bool { return os.Getenv("SBX_UI_PLAIN") != "" }
 
 // paint puts a line on the dashboard's ground, padded so the surface reaches the right edge.
+//
+// Every inner reset has the background re-asserted after it. \x1b[0m resets *everything*,
+// background included, so a line that sets a colour and clears it - which is every row here -
+// lost the painted ground from that point on and finished on the terminal's own background.
+// On screen that is a lighter band running from the state column to the right edge of the
+// table, which looks like a rendering fault because it is one.
 func paint(line string, cols int) string {
 	if plainTheme() {
 		return line
 	}
+
+	line = strings.ReplaceAll(line, reset, reset+background)
 
 	if gap := cols - visibleLen(line); gap > 0 {
 		line += strings.Repeat(" ", gap)
@@ -95,7 +108,7 @@ func render(m model, rows, cols int) string {
 
 	if l.footer {
 		rule()
-		add(footer(m, cols))
+		add(footer(m, l.paneRows, cols))
 	}
 
 	for len(out) < rows {
@@ -427,33 +440,48 @@ func tail[T any](s []T, n int) []T {
 }
 
 // footer says what the keys do, and gives way to anything more urgent.
-func footer(m model, cols int) string {
+//
+// It only names keys that would do something. The scroll keys were advertised whenever the
+// pane had focus, including when its nine events fitted on screen with room to spare - so
+// `g top` and `G follow` sat in the footer doing nothing, which teaches a reader that the
+// hints are decorative and that the rest of them probably lie too.
+func footer(m model, paneRows, cols int) string {
 	switch {
 	case m.confirm != "":
 		return red + "  " + m.confirm + reset + "   y / n"
 
 	case m.err != nil:
 		return red + "  " + truncate(firstLine(m.err.Error()), cols-4) + reset
-
-	case m.message != "":
-		return green + "  " + m.message + reset
 	}
 
-	// The hints follow the focus. Showing the table's keys while the arrows are driving the
-	// log pane is how somebody presses down expecting to move the selection and watches the
-	// log scroll instead.
-	full := "  ↑↓ move   ⏎ wake   s sleep   l logs   d remove   r refresh   ⇥ pane   q quit"
-	short := "  ↑↓ ⏎ wake  s sleep  l logs  d rm  q quit"
+	var full, short string
 
-	if m.focus == focusPane {
+	switch {
+	case m.focus == focusPane && maxOffset(m, paneRows) > 0:
 		full = "  ↑↓ scroll   ⇞⇟ page   g top   G follow   l switches   ⇥ table   q quit"
 		short = "  ↑↓ scroll  g top  G follow  ⇥ table  q quit"
+
+	case m.focus == focusPane:
+		// Focused, but there is nothing to scroll: everything is already on screen.
+		full = "  all of it is on screen   l switches   ⇥ table   r refresh   q quit"
+		short = "  l switches  ⇥ table  q quit"
+
+	default:
+		full = "  ↑↓ move   ⏎ wake   s sleep   l logs   d remove   r refresh   ⇥ pane   q quit"
+		short = "  ↑↓ ⏎ wake  s sleep  l logs  d rm  q quit"
 	}
 
 	// Trimmed rather than wrapped: a footer that wraps steals a line from the table and moves
 	// everything on the screen by one.
 	if cols < visibleLen(full)+2 {
 		full = short
+	}
+
+	// A message from the last keypress is worth more than the hints, but not forever: the
+	// first version never cleared one, so a single `s` left "asleep" in the footer for the
+	// rest of the session and the keys were never mentioned again.
+	if m.message != "" && time.Since(m.messageAt) < messageLife {
+		return green + "  " + truncate(m.message, cols-4) + reset
 	}
 
 	return dim + full + reset

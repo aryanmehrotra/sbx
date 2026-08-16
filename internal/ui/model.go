@@ -91,8 +91,10 @@ type model struct {
 	// confirm is a pending destructive action.
 	confirm string
 
-	// message is transient feedback: what the last key did.
-	message string
+	// message is transient feedback: what the last key did, and when, so it can fade rather
+	// than sit in the footer for the rest of the session.
+	message   string
+	messageAt time.Time
 
 	provider string
 }
