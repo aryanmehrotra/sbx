@@ -253,3 +253,38 @@ func (d *dockerClient) healthCommand(ctx context.Context, id string) (string, bo
 
 	return "", false
 }
+
+// statsSample is the part of docker's stats document this needs. The endpoint returns a large
+// object; naming four fields keeps the parse cheap and stops an unrelated schema change from
+// breaking it.
+type statsSample struct {
+	CPU struct {
+		Usage struct {
+			Total uint64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		System     uint64 `json:"system_cpu_usage"`
+		OnlineCPUs int    `json:"online_cpus"`
+	} `json:"cpu_stats"`
+
+	Memory struct {
+		Usage uint64 `json:"usage"`
+		Limit uint64 `json:"limit"`
+		Stats struct {
+			InactiveFile uint64 `json:"inactive_file"`
+		} `json:"stats"`
+	} `json:"memory_stats"`
+}
+
+// stats takes one sample for one container.
+//
+// one-shot=true is what makes this cheap. Without it the daemon takes two samples a second
+// apart so it can compute a rate itself, which for a dashboard refreshing every second means
+// every refresh is a second late. The caller computes the rate from consecutive samples
+// instead, which is the same arithmetic against an interval it actually knows.
+func (d *dockerClient) stats(ctx context.Context, id string) (statsSample, error) {
+	var s statsSample
+
+	err := d.do(ctx, http.MethodGet, "/containers/"+id+"/stats?stream=false&one-shot=true", &s)
+
+	return s, err
+}

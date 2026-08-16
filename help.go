@@ -135,6 +135,13 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"them works with nothing on disk: sbx create <name> --template <template>.",
 		"sbx templates",
 	},
+	"ui": {
+		"sbx ui",
+		"A live dashboard: every sandbox, whether it is awake, what it is costing in cpu and\n" +
+			"memory, and what the daemon has been doing. Wake, sleep, read logs and remove from\n" +
+			"the keyboard. Where there is no terminal it prints the table once instead.",
+		"sbx ui",
+	},
 	"history": {
 		"sbx history [sandbox] [--limit N] [--commands|--events] [--json]",
 		"What happened, and who did it: commands that changed something, and every wake and\n" +

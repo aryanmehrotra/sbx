@@ -41,6 +41,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 	"github.com/aryanmehrotra/sbx/internal/tunnel"
+	"github.com/aryanmehrotra/sbx/internal/ui"
 )
 
 const defaultSpec = "sandbox.json"
@@ -575,6 +576,22 @@ func dispatch(cmd string, args []string) error {
 
 		return cli.Prewarm(context.Background(), p, os.Stdout, images)
 
+	case "ui", "dash", "dashboard":
+		fs := newFlagSet("ui")
+		kind, socket, ns, isolation := backendFlags(fs)
+		_ = fs.Parse(args)
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		return ui.Run(context.Background(), ui.Options{
+			Provider: p,
+			Version:  version,
+			Repo:     "aryanmehrotra/sbx",
+		}, os.Stdout)
+
 	case "history":
 		// No provider and no daemon: this reads a file. Asking what happened to a sandbox
 		// has to work when docker is down, which is one of the times people ask.
@@ -766,6 +783,7 @@ Every day
   sbx create <sandbox> [--template NAME]        make one. --optional includes optional services
   sbx env    <sandbox> [--shell posix|json]     its addresses, as exports or JSON
   sbx list                                      every sandbox, its services and their state
+  sbx ui                                        the same, live, with cpu and memory
   sbx rm     <sandbox>                          delete it and its data
 
 While you work

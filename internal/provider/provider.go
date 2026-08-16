@@ -290,6 +290,56 @@ func BuilderFor(p Provider) (Builder, error) {
 	return b, nil
 }
 
+// Usage is one raw sample of what a service is costing right now.
+//
+// Raw counters rather than percentages on purpose. CPU use is a rate, and a rate needs two
+// samples and the interval between them; a provider that returned "17%" would have had to
+// pick that interval itself, cache the previous sample somewhere, and be wrong for every
+// caller that wanted a different one. Handing back the counters lets the dashboard compute
+// the rate over exactly the interval it redraws at, and lets a test compute it over an
+// interval it made up.
+type Usage struct {
+	// CPUNanos is cumulative CPU time consumed by the service since it started.
+	CPUNanos uint64
+
+	// SystemNanos is cumulative CPU time across the whole host over the same period. The
+	// ratio of the two deltas is the share of one machine; multiplied by OnlineCPUs it is the
+	// share of one core, which is the number people recognise from `docker stats`.
+	SystemNanos uint64
+	OnlineCPUs  int
+
+	// MemBytes is resident memory with the page cache taken off. Docker's own `stats` does
+	// the same subtraction: leaving it in reports a database that has read a large table as
+	// though it were holding all of it, which is the number people would act on.
+	MemBytes uint64
+	MemLimit uint64
+}
+
+// Meter reports what running services are costing.
+//
+// Optional like the rest. A service that is asleep has no sample and is not an error: it is a
+// stopped container, it is costing nothing, and saying so is the whole point of this project.
+// Callers should treat a missing entry as zero rather than as a failure.
+type Meter interface {
+	// Stats samples the given refs. Refs that are not running are omitted rather than
+	// reported as an error, and one unreadable ref does not fail the others - a dashboard
+	// that blanks out entirely because one container died mid-refresh is worse than one that
+	// shows a gap.
+	Stats(ctx context.Context, refs []string) (map[string]Usage, error)
+}
+
+// MeterFor returns the provider's metering support, or a refusal naming the backend.
+func MeterFor(p Provider) (Meter, error) {
+	m, ok := p.(Meter)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot report cpu and memory: in a cluster that "+
+			"is the metrics API and a metrics-server that may not be installed, which is the "+
+			"operator's decision rather than something sbx should assume", p.Name())
+	}
+
+	return m, nil
+}
+
 // Puller fetches an image ahead of time, so the first create is not a download.
 //
 // Optional for the same reason as the rest: on docker this is one command against the local

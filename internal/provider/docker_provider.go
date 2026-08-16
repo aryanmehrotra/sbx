@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 	"time"
@@ -704,4 +705,61 @@ func (d *dockerProvider) backingPortsFree(slot int) bool {
 	}
 
 	return true
+}
+
+// Stats implements Meter.
+//
+// Concurrent, because one round trip per container against a busy docker daemon is the
+// difference between a dashboard that redraws in 40ms and one that visibly stutters at twenty
+// sandboxes. Bounded, because firing two hundred requests at a laptop's docker daemon to draw
+// a table is its own kind of rude.
+func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]Usage, error) {
+	const parallel = 8
+
+	var (
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		out = make(map[string]Usage, len(refs))
+		sem = make(chan struct{}, parallel)
+	)
+
+	for _, ref := range refs {
+		wg.Add(1)
+
+		go func(ref string) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			s, err := d.api.stats(ctx, ref)
+			if err != nil {
+				// A container that stopped between the listing and this call is the normal
+				// case, not a failure: it went to sleep, which is what it is for. Omitted,
+				// and the caller reads a missing entry as zero.
+				return
+			}
+
+			// Docker's own CLI subtracts the page cache. Leaving it in reports a database
+			// that has read a large table as though it were holding all of it.
+			mem := s.Memory.Usage
+			if mem > s.Memory.Stats.InactiveFile {
+				mem -= s.Memory.Stats.InactiveFile
+			}
+
+			mu.Lock()
+			out[ref] = Usage{
+				CPUNanos:    s.CPU.Usage.Total,
+				SystemNanos: s.CPU.System,
+				OnlineCPUs:  s.CPU.OnlineCPUs,
+				MemBytes:    mem,
+				MemLimit:    s.Memory.Limit,
+			}
+			mu.Unlock()
+		}(ref)
+	}
+
+	wg.Wait()
+
+	return out, nil
 }

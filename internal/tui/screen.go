@@ -1,0 +1,171 @@
+//go:build darwin || freebsd || netbsd || openbsd || dragonfly || linux
+
+package tui
+
+// The drawing half: an alternate screen, and frames written in one syscall.
+//
+// One write per frame, not one per line. A dashboard that writes its rows individually tears
+// visibly on a slow terminal - the top of the table is the new frame while the bottom is
+// still the old one - and over ssh it is worse. Building the whole frame in a buffer and
+// writing it once is both faster and the reason it looks steady.
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+)
+
+// ANSI, written out rather than pulled from a library. There are six of them.
+const (
+	altScreenOn  = "\x1b[?1049h"
+	altScreenOff = "\x1b[?1049l"
+	cursorHide   = "\x1b[?25l"
+	cursorShow   = "\x1b[?25h"
+	clear        = "\x1b[2J"
+	home         = "\x1b[H"
+)
+
+// Screen owns the terminal for as long as a dashboard is running.
+type Screen struct {
+	out io.Writer
+	fd  uintptr
+
+	mu    sync.Mutex
+	saved *state
+
+	Rows, Cols int
+
+	// Resized is signalled when the window changes, so the caller can redraw immediately
+	// rather than at the next tick.
+	Resized chan struct{}
+
+	stopSignals chan os.Signal
+	restoreOnce sync.Once
+}
+
+// Open takes over the terminal. The returned Close must run, and callers should defer it
+// before anything that can panic: a terminal left in raw mode with no cursor is one somebody
+// has to blindly type `reset` into.
+func Open(f *os.File) (*Screen, error) {
+	if !supported {
+		return nil, ErrUnsupported
+	}
+
+	if !IsTerminal(f) {
+		return nil, ErrUnsupported
+	}
+
+	saved, err := makeRaw(f.Fd())
+	if err != nil {
+		return nil, fmt.Errorf("could not put the terminal into raw mode: %w", err)
+	}
+
+	s := &Screen{
+		out:     f,
+		fd:      f.Fd(),
+		saved:   saved,
+		Resized: make(chan struct{}, 1),
+	}
+
+	s.Rows, s.Cols = size(s.fd)
+
+	fmt.Fprint(s.out, altScreenOn+cursorHide+clear+home)
+
+	s.watchResize()
+	s.watchSignals(f)
+
+	return s, nil
+}
+
+// watchResize keeps Rows and Cols current and nudges the caller to redraw.
+func (s *Screen) watchResize() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGWINCH)
+
+	go func() {
+		for range ch {
+			s.mu.Lock()
+			s.Rows, s.Cols = size(s.fd)
+			s.mu.Unlock()
+
+			select {
+			case s.Resized <- struct{}{}:
+			default: // a redraw is already pending; one is enough
+			}
+		}
+	}()
+}
+
+// watchSignals puts the terminal back if the process is killed.
+//
+// Raw mode turns off the terminal's own signal generation, so ^C arrives as a byte rather
+// than as SIGINT and the caller handles it. This is for the signals that still arrive:
+// SIGTERM from a supervisor, SIGHUP when the ssh session drops. Without it the terminal is
+// left unusable by something the user did not do.
+func (s *Screen) watchSignals(f *os.File) {
+	s.stopSignals = make(chan os.Signal, 1)
+	signal.Notify(s.stopSignals, syscall.SIGTERM, syscall.SIGHUP)
+
+	go func() {
+		if _, ok := <-s.stopSignals; !ok {
+			return // Close ran first, which is the ordinary path
+		}
+
+		s.putBack()
+		os.Exit(1)
+	}()
+}
+
+// Size reports the current terminal size, safely against the resize watcher.
+func (s *Screen) Size() (rows, cols int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.Rows, s.Cols
+}
+
+// Draw replaces the screen with frame, in one write.
+func (s *Screen) Draw(frame string) {
+	var b bytes.Buffer
+
+	b.WriteString(home)
+
+	// Clearing each line as it is drawn, rather than clearing the screen first, is what stops
+	// the flicker: a full clear followed by a redraw shows an empty screen for one frame.
+	for i, line := range strings.Split(frame, "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+
+		b.WriteString("\x1b[2K") // clear to end of line
+		b.WriteString(line)
+	}
+
+	b.WriteString("\x1b[0J") // and clear anything below a frame that got shorter
+
+	_, _ = s.out.Write(b.Bytes())
+}
+
+// Close gives the terminal back exactly as it was found.
+func (s *Screen) Close() {
+	s.putBack()
+}
+
+func (s *Screen) putBack() {
+	s.restoreOnce.Do(func() {
+		signal.Stop(s.stopSignals)
+
+		fmt.Fprint(s.out, altScreenOff+cursorShow)
+
+		s.mu.Lock()
+		saved := s.saved
+		s.mu.Unlock()
+
+		_ = restore(s.fd, saved)
+	})
+}
