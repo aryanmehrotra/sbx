@@ -220,11 +220,24 @@ func (d *daemon) discover(ctx context.Context) {
 		d.mu.Unlock()
 
 		for _, l := range legs {
-			go func(l leg) {
-				if err := u.serve(uctx, d.provider, l, d.ready); err != nil {
-					logs.Default.Error(u.sandbox, u.service, "stopped serving :%d: %v", l.Listen, err)
+			go func(u *unit, ref string, l leg) {
+				err := u.serve(uctx, d.provider, l, d.ready)
+				if err == nil || uctx.Err() != nil {
+					return // shutting down, which is not a failure
 				}
-			}(l)
+
+				logs.Default.Error(u.sandbox, u.service, "stopped serving :%d: %v", l.Listen, err)
+
+				// Forget it, so the next discovery tick tries again.
+				//
+				// Without this the unit stays in d.units, discover() skips it forever as
+				// already known, and the sandbox is unreachable for the life of a daemon that
+				// is designed to run for weeks. The way in is ordinary: `sbx rm x` then a new
+				// sandbox moments later reuses the freed slot, and its bind can land while the
+				// old listener is still closing. One "address already in use" and that
+				// sandbox was finished.
+				d.forget(ref, u)
+			}(u, f.Ref, l)
 		}
 	}
 
@@ -240,6 +253,28 @@ func (d *daemon) discover(ctx context.Context) {
 		delete(d.stop, ref)
 	}
 	d.mu.Unlock()
+}
+
+// forget drops a unit so the next discovery tick can rebuild it.
+//
+// It drops the unit only if `want` is still the registered one. A unit has one goroutine per
+// leg, they can fail together, and a later tick may already have rebuilt the unit by the time
+// the second one gets here - without this check that second goroutine would delete a healthy
+// replacement it knows nothing about, and the sandbox would go dark for a tick for no reason.
+func (d *daemon) forget(ref string, want *unit) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.units[ref] != want {
+		return
+	}
+
+	if cancel, ok := d.stop[ref]; ok {
+		cancel()
+	}
+
+	delete(d.units, ref)
+	delete(d.stop, ref)
 }
 
 // reapEvery keeps the check frequent enough that the idle window is honoured and rare
