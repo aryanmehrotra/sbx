@@ -18,7 +18,9 @@ package daemon
 //     therefore refused by default and enabled deliberately.
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,7 +87,7 @@ func (d *daemon) Connect(opt ConnectOptions) (*http.Server, error) {
 	// platform restart a process whose problem a restart cannot fix, and the restart loop is
 	// what hides the reason. The reason goes in the body and in /v1/fleet.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if d.startupErr != nil {
+		if d.startupErr != nil && len(d.fronted) == 0 {
 			_, _ = fmt.Fprintf(w, "degraded: no container runtime\n\n%v\n", d.startupErr)
 
 			return
@@ -167,7 +169,7 @@ type fleetService struct {
 func (d *daemon) fleetHandler(w http.ResponseWriter, _ *http.Request) {
 	// 503 rather than an empty list. "No sandboxes" and "I cannot see any sandboxes" are
 	// different answers, and a client that cannot tell them apart will report the first.
-	if d.startupErr != nil {
+	if d.startupErr != nil && len(d.fronted) == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 
@@ -184,7 +186,16 @@ func (d *daemon) fleetHandler(w http.ResponseWriter, _ *http.Request) {
 
 	d.mu.Lock()
 
-	out := make([]fleetService, 0, len(d.units))
+	out := make([]fleetService, 0, len(d.units)+len(d.fronted))
+
+	// Fronted ports first: where they exist they are usually the whole point, and a reader
+	// scanning the list should not have to look past a fleet to find them.
+	for _, f := range d.fronted {
+		out = append(out, fleetService{
+			Sandbox: f.name, Service: "fronted", Ref: f.name,
+			Instance: frontInstance, Awake: true, Ports: []int{f.port},
+		})
+	}
 
 	for _, u := range d.units {
 		ports := make([]int, 0, len(u.legs))
@@ -208,10 +219,43 @@ func (d *daemon) fleetHandler(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"services": out})
 }
 
+// fronted is a port this process was told to carry, rather than one it discovered.
+//
+// `sbx serve --front 5432` exists for the shape where sbx is not managing anything: it is in a
+// container beside the workload, on a platform that gives one HTTP port and no container
+// runtime, and its whole job is to carry TCP to a process that is already listening on
+// loopback. There is nothing to wake - the platform woke the container - and nothing to
+// discover, so these ports bypass the provider entirely.
+type fronted struct {
+	name string
+	port int
+}
+
+// frontInstance identifies this process, so a tunnel does not survive the container being
+// replaced. A fronted port has no container ID to use and does not need one: if this process
+// restarted, whatever was behind the port restarted with it.
+var frontInstance = newInstanceID()
+
+func newInstanceID() string {
+	var b [8]byte
+
+	_, _ = rand.Read(b[:])
+
+	return "front-" + hex.EncodeToString(b[:])
+}
+
 // lookup finds the unit fronting a port, and reports whether the instance still matches.
 func (d *daemon) lookup(port int, instance string) (*unit, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	if f, ok := d.fronted[port]; ok {
+		if instance == "" || instance != frontInstance {
+			return nil, errStale
+		}
+
+		return &unit{sandbox: f.name, service: "fronted", ref: f.name, instance: frontInstance}, nil
+	}
 
 	for _, u := range d.units {
 		for _, l := range u.legs {

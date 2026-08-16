@@ -23,6 +23,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"strings"
 )
 
 // envOr is here rather than in main because the daemon is the only thing that reads
@@ -96,9 +97,12 @@ type daemon struct {
 	// startupErr is why there is no provider, when there is none. Set only where the connect
 	// endpoint was asked for, because that is the only case where staying up beats exiting.
 	startupErr error
-	idle       time.Duration
-	ready      time.Duration
-	refresh    time.Duration
+
+	// fronted are ports this process carries without discovering them - see --front.
+	fronted map[int]fronted
+	idle    time.Duration
+	ready   time.Duration
+	refresh time.Duration
 
 	mu    sync.Mutex
 	units map[string]*unit              // ref -> unit
@@ -124,6 +128,14 @@ func Serve(args []string) error {
 	// had worked yesterday. A deployment passes `--connect-addr :$PORT` itself, which is one
 	// word in a manifest and cannot surprise anybody.
 	connectAddr := fs.String("connect-addr", "", "serve the tunnel endpoint here (needs SBX_CONNECT_TOKEN); off unless set")
+
+	// Carrying a port beside a workload, rather than managing anything.
+	//
+	// This is sbx in a container next to a database, on a platform that gives one HTTP port
+	// and no container runtime. There is nothing to discover and nothing to wake - the
+	// platform woke the container - so these ports skip the provider entirely and are the
+	// only thing the tunnel will carry.
+	front := fs.String("front", "", "carry these local ports over the connect endpoint, e.g. 5432 or db=5432,cache=6379")
 	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
 	_ = fs.Parse(args)
 
@@ -142,7 +154,8 @@ func Serve(args []string) error {
 	p, err := provider.For(*kind, *socket, *namespace)
 
 	// A daemon that cannot reach its runtime exits - unless it was asked to serve the connect
-	// endpoint, in which case it starts anyway and says so there.
+	// endpoint, in which case it starts anyway and says so there. With --front there is nothing
+	// it needed the runtime for in the first place.
 	//
 	// The two cases genuinely differ. On a laptop, failing fast is right: you typed a command,
 	// you get the reason, you fix it. Deployed, exiting is the worst thing it can do - the
@@ -157,6 +170,16 @@ func Serve(args []string) error {
 		return err
 	}
 
+	fronts, ferr := parseFront(*front)
+	if ferr != nil {
+		return ferr
+	}
+
+	if len(fronts) > 0 && *connectAddr == "" {
+		return errors.New("--front only means something with --connect-addr: it names what the " +
+			"tunnel may carry, and without the tunnel nothing can ask for it")
+	}
+
 	var startupErr error
 
 	if err != nil {
@@ -169,6 +192,7 @@ func Serve(args []string) error {
 	d := &daemon{
 		provider:   p,
 		startupErr: startupErr,
+		fronted:    fronts,
 		idle:       *idle,
 		ready:      *ready,
 		refresh:    *refresh,
@@ -413,4 +437,43 @@ func (d *daemon) reap(ctx context.Context) {
 
 		u.sleep(ctx, d.provider, d.idle)
 	}
+}
+
+// parseFront reads --front: "5432", "5432,6379", or "db=5432,cache=6379".
+//
+// A name is optional and only ever cosmetic - it is what the fleet listing calls the port, so
+// that somebody running two of these can tell them apart. The port is the part that matters,
+// because it is the allow-list: the tunnel carries these and refuses everything else, which is
+// what keeps a connect endpoint from being an open proxy into whatever the container can reach.
+func parseFront(spec string) (map[int]fronted, error) {
+	if strings.TrimSpace(spec) == "" {
+		return nil, nil
+	}
+
+	out := map[int]fronted{}
+
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		name, portText, named := strings.Cut(part, "=")
+		if !named {
+			name, portText = "", part
+		}
+
+		port, err := strconv.Atoi(strings.TrimSpace(portText))
+		if err != nil || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("--front %q: %q is not a port", spec, portText)
+		}
+
+		if name = strings.TrimSpace(name); name == "" {
+			name = "port-" + portText
+		}
+
+		out[port] = fronted{name: name, port: port}
+	}
+
+	return out, nil
 }

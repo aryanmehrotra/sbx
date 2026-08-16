@@ -410,3 +410,102 @@ func TestADaemonWithNoRuntimeStaysUpAndExplains(t *testing.T) {
 		t.Errorf("fleet body = %q, want it to say what would fix this", fb)
 	}
 }
+
+// --front carries a port beside a workload, with no provider at all. That is sbx in a
+// container next to a database on a platform that gives one HTTP port and no runtime.
+func TestAFrontedPortIsCarriedWithNoProvider(t *testing.T) {
+	port := echoPort(t)
+
+	d := New(nil, time.Minute, time.Minute, time.Minute)
+	d.startupErr = errors.New("no docker daemon found")
+	d.fronted = map[int]fronted{port: {name: "db", port: port}}
+
+	ts := serverFor(t, d)
+
+	// Not degraded: there was never anything to discover.
+	resp, _ := http.Get(ts.URL + "/healthz")
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if strings.Contains(string(body), "degraded") {
+		t.Errorf("a fronted daemon called itself degraded: %q", body)
+	}
+
+	// The fleet names it, so `sbx connect` knows which listener to open.
+	got := fleetOf(t, ts)
+	if len(got) != 1 || got[0].Ports[0] != port {
+		t.Fatalf("fleet = %+v, want the fronted port %d", got, port)
+	}
+
+	if got[0].Instance != frontInstance {
+		t.Errorf("fronted instance = %q, want this process's id", got[0].Instance)
+	}
+
+	// And bytes go through it.
+	roundTrip(t, ts.URL, port, frontInstance)
+}
+
+// The allow-list is what keeps a connect endpoint from being an open proxy into whatever the
+// container can reach, and --front is the whole allow-list when there is no provider.
+func TestAFrontedDaemonRefusesAnyOtherPort(t *testing.T) {
+	victim := echoPort(t)
+
+	d := New(nil, time.Minute, time.Minute, time.Minute)
+	d.fronted = map[int]fronted{victim + 1: {name: "db", port: victim + 1}}
+
+	ts := serverFor(t, d)
+
+	if code, _ := rawDial(t, ts.URL, victim, frontInstance); code != http.StatusForbidden {
+		t.Errorf("a port that was not fronted got %d, want 403", code)
+	}
+}
+
+// A container that restarted is a different process, and a tunnel held across it is pointing
+// at something that no longer exists.
+func TestAFrontedTunnelDoesNotSurviveARestart(t *testing.T) {
+	port := echoPort(t)
+
+	d := New(nil, time.Minute, time.Minute, time.Minute)
+	d.fronted = map[int]fronted{port: {name: "db", port: port}}
+
+	ts := serverFor(t, d)
+
+	if code, _ := rawDial(t, ts.URL, port, "front-from-a-previous-life"); code != http.StatusConflict {
+		t.Errorf("a tunnel from before a restart got %d, want 409", code)
+	}
+}
+
+func TestParseFront(t *testing.T) {
+	for spec, want := range map[string]map[int]string{
+		"5432":               {5432: "port-5432"},
+		"5432,6379":          {5432: "port-5432", 6379: "port-6379"},
+		"db=5432,cache=6379": {5432: "db", 6379: "cache"},
+		" db = 5432 ":        {5432: "db"},
+		"":                   {},
+	} {
+		got, err := parseFront(spec)
+		if err != nil {
+			t.Errorf("parseFront(%q) = %v", spec, err)
+
+			continue
+		}
+
+		if len(got) != len(want) {
+			t.Errorf("parseFront(%q) gave %d ports, want %d", spec, len(got), len(want))
+
+			continue
+		}
+
+		for port, name := range want {
+			if got[port].name != name {
+				t.Errorf("parseFront(%q)[%d] = %q, want %q", spec, port, got[port].name, name)
+			}
+		}
+	}
+
+	for _, bad := range []string{"nope", "5432,nope", "0", "70000"} {
+		if _, err := parseFront(bad); err == nil {
+			t.Errorf("parseFront(%q) was accepted", bad)
+		}
+	}
+}
