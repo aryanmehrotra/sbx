@@ -77,6 +77,21 @@ spec:
             - --namespace=sbx
             - --idle=30s
             - --refresh=5s
+            # Uncomment to let a laptop reach these sandboxes through one endpoint - see
+            # `sbx connect`. Off by default: this is the only part of sbx that listens
+            # outward, and an Ingress in front of the Service below is what terminates TLS,
+            # which is what --behind-proxy asserts.
+            # - --connect-addr=:8080
+            # - --behind-proxy
+          # env:
+          #   - name: SBX_CONNECT_TOKEN
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: sbx-connect
+          #         key: token
+          # ports:
+          #   - name: connect
+          #     containerPort: 8080
           resources:
             # It holds connections and copies bytes. Sized so that the thing that saves
             # memory is not itself worth measuring.
@@ -85,3 +100,23 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+---
+# The tunnel endpoint, if --connect-addr above is uncommented.
+#
+# Separate from every sandbox's own client-facing Service on purpose: those select the same
+# pod to answer a sleeping workload's port, and this is the one address a `sbx connect` on
+# somebody's laptop talks to. Put an Ingress in front of it - the activator refuses a
+# non-loopback address unless --behind-proxy says something is terminating TLS.
+#
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: sbx-connect
+#   namespace: sbx
+# spec:
+#   selector:
+#     app: sbx-activator
+#   ports:
+#     - name: connect
+#       port: 80
+#       targetPort: connect
