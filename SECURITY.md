@@ -24,8 +24,17 @@ threat model is not "untrusted users share one daemon".**
   the reasoning. The supported shape is a machine whose users already trust each other.
 - **Ports bind to loopback only.** `sbx serve` listens on `127.0.0.1`, and docker publishes
   backing ports on `127.0.0.1`. Nothing is exposed to the network unless you deliberately
-  expose it, and `sbx url` - which does - is opt-in per invocation and prints the URL it
-  created.
+  expose it. Two things do, and both are opt-in and say so:
+  - `sbx url` - one HTTP service, per invocation, printing the URL it created.
+  - `sbx serve --connect-addr` - the tunnel endpoint for a *deployed* sbx, off unless the flag
+    is passed. It refuses to start without `SBX_CONNECT_TOKEN`, and refuses a non-loopback
+    address unless `--behind-proxy` says something in front terminates TLS. The sandbox ports
+    themselves stay on loopback: the endpoint is the only thing listening outward, and what it
+    carries is a TCP stream to a port it is already fronting.
+- **The connect token is the whole boundary.** Anyone holding it has TCP access to every
+  service in that deployment - the services' own credentials still apply, but sbx does not
+  check them. That is the same posture as an SSH key on a dev box, and it is why the control
+  plane (`create`, `rm`, `exec`) is deliberately *not* reachable over it.
 - **A container shares the host kernel.** `--isolation gvisor|kata` asks for a stronger
   boundary and is *refused with a reason* where the runtime is absent rather than silently
   downgraded. If you are running code you did not write, use one of those or use a tool built
@@ -50,7 +59,8 @@ Roughly: anything that breaks a boundary sbx claims to hold.
 - A sandbox reaching another sandbox's data, or a fork inheriting state it should not.
 - `egress: "deny"` permitting routed egress on docker.
 - `--isolation gvisor|kata` reporting success while running under the default runtime.
-- A public port serving a different sandbox than the one `sbx env` named.
+- A public port serving a different sandbox than the one `sbx env` named - including a
+  `sbx connect` tunnel still carrying traffic to a port whose sandbox was recreated under it.
 - `sbx gc` deleting an artifact belonging to a live sandbox.
 - Anything in the spec reaching a shell it should not - the values are passed as arguments,
   not interpolated into a command line, and a case where that is not true is a bug.

@@ -155,7 +155,7 @@ func BenchmarkRoundTripProxied(b *testing.B) {
 	port := front.Addr().(*net.TCPAddr).Port
 	_ = front.Close() // serve() binds it itself; this was only to claim a free port
 
-	u := newUnit("bench", "svc", "ref", "bench", nil, true)
+	u := newUnit("bench", "svc", "ref", "inst-ref", "bench", nil, true)
 	u.mu.Lock()
 	u.served = true
 	u.mu.Unlock()

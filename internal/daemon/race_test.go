@@ -75,7 +75,7 @@ func TestConcurrentWakesStartOnce(t *testing.T) {
 
 	p := &countingProvider{}
 
-	u := newUnit("race", "svc", "ref", "race", nil, false)
+	u := newUnit("race", "svc", "ref", "inst-ref", "race", nil, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -131,7 +131,7 @@ func TestConcurrentWakeAndReap(t *testing.T) {
 	p := &countingProvider{}
 	p.serving.Store(true)
 
-	u := newUnit("race", "svc", "ref", "race", nil, true)
+	u := newUnit("race", "svc", "ref", "inst-ref", "race", nil, true)
 
 	d := &daemon{
 		provider: p,

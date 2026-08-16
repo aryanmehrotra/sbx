@@ -621,12 +621,13 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 		slot, _ := strconv.Atoi(c.Labels[labelSlot])
 
 		u := Unit{
-			Sandbox: c.Labels[labelSandbox],
-			Service: c.Labels[labelService],
-			Slot:    slot,
-			Ref:     c.name(),
-			Running: c.State == "running",
-			Index:   (pairs[0].Public - publicBase) % blockSize,
+			Sandbox:  c.Labels[labelSandbox],
+			Service:  c.Labels[labelService],
+			Slot:     slot,
+			Ref:      c.name(),
+			Instance: c.ID,
+			Running:  c.State == "running",
+			Index:    (pairs[0].Public - publicBase) % blockSize,
 		}
 
 		for _, pr := range pairs {

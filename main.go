@@ -460,6 +460,31 @@ func dispatch(cmd string, args []string) error {
 
 		return cli.Copy(context.Background(), p, positional[0], positional[1], positional[2], positional[3])
 
+	case "connect":
+		fs := newFlagSet("connect")
+		offset := fs.Int("port-offset", 0, "add this to every local port, for a machine already running its own sbx serve")
+		only := multiFlag{}
+		fs.Var(&only, "sandbox", "only this sandbox; repeatable")
+		positional, rest := splitPositional(args, 1)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 1 {
+			return fmt.Errorf("usage: sbx connect <url> [--sandbox NAME] [--port-offset N]\n" +
+				"     the url is a deployment running `sbx serve --connect-addr`, and\n" +
+				"     SBX_CONNECT_TOKEN must hold the token it was given")
+		}
+
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+
+		return daemon.Connect(ctx, daemon.ClientOptions{
+			Base:      positional[0],
+			Token:     os.Getenv("SBX_CONNECT_TOKEN"),
+			Sandbox:   only,
+			PortShift: *offset,
+			Out:       os.Stdout,
+		})
+
 	case "url":
 		fs := newFlagSet("url")
 		via := fs.String("via", "", "cloudflared | ngrok | ssh; detected if unset")
@@ -792,6 +817,7 @@ While you work
   sbx cp     <sandbox> <service> <src> <dst>    a path inside is prefixed with :
   sbx add    <sandbox> <service> --image IMG --port N   a service the spec never declared
   sbx url    <sandbox> <service>                a public link that wakes it on open
+  sbx connect <url> [--sandbox NAME]            local ports for a DEPLOYED sbx, over one endpoint
   sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
 
 Data
@@ -810,4 +836,15 @@ Any command touching a sandbox also takes:
 
 `+"`sbx <command> --help`"+` explains one command.
 `)
+}
+
+// multiFlag is a string flag that may be given more than once.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+
+	return nil
 }

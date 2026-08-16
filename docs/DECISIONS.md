@@ -251,6 +251,19 @@ anyway. A shared box for a team that trusts each other is the supported shape.
 view of what the daemon is doing. It is not the seam through which sbx becomes hosted, and
 the API stays read-only for that reason as much as for the lifecycle one.
 
+**A tunnel to your own deployment is not tenancy.** `sbx serve --connect-addr` and
+`sbx connect` let one person reach a sandbox they deployed, from a laptop that cannot run it.
+That is a data-plane tunnel with one shared token proving you own the deployment - the same
+posture as an SSH key on your own dev box - and it is off unless the flag is passed. The three
+consequences above still hold: there are no users, no roles, no quotas, and the control plane
+is not on it. `create`, `rm` and `exec` remain local-only, which is what keeps "one person's
+box, reached from their laptop" different from "a service other people log in to".
+
+The line, so a later change can be measured against it: the moment this grows a second identity
+- per-user tokens, roles, anything that answers "who are you" rather than "is this yours" - it
+has become the thing this section rules out, and the answer is a gateway in front rather than
+an identity system inside.
+
 **"Hosted Postgres, operated for you" stays in the use-something-else table permanently.**
 Neon is the answer there and always will be - not because sbx cannot branch and scale to
 zero, but because "somebody else runs it" is the whole product and this one is run by you.

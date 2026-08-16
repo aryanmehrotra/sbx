@@ -61,6 +61,15 @@ type Unit struct {
 	Ref     string // provider-local handle: container id, or namespace/deployment
 	Running bool
 
+	// Instance changes when the thing behind Ref is replaced, and Ref does not.
+	//
+	// A docker Ref is the container's *name*, which sbx derives from the sandbox and service,
+	// so `sbx rm x && sbx create x` produces the identical Ref on the identical port with a
+	// brand-new empty volume. Anything holding a reference across that - a tunnel, a cached
+	// map - would carry on addressing what it believes is the old service. The container ID
+	// does change, which is what makes it an identity rather than a label.
+	Instance string
+
 	// Index is the service's ordinal within the sandbox. Only a provider that shares one
 	// address space needs it; the rest report 0 and nothing asks again.
 	Index int

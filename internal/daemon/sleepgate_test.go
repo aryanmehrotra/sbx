@@ -39,7 +39,7 @@ func TestReapDoesNotSleepAUnitThatWasNeverServing(t *testing.T) {
 
 	// Awake and long past the idle window: every condition for sleep is met except the one
 	// that matters.
-	u := newUnit("boot", "postgres", "ref", "boot/postgres", nil, true)
+	u := newUnit("boot", "postgres", "ref", "inst-ref", "boot/postgres", nil, true)
 	u.lastByte.Store(time.Now().Add(-time.Hour).UnixNano())
 
 	d := &daemon{provider: p, idle: time.Minute, units: map[string]*unit{u.name: u}}
@@ -73,7 +73,7 @@ func TestReapSleepsOnceItHasBeenSeenServing(t *testing.T) {
 	p := &countingProvider{}
 	p.serving.Store(true)
 
-	u := newUnit("up", "redis", "ref", "up/redis", nil, true)
+	u := newUnit("up", "redis", "ref", "inst-ref", "up/redis", nil, true)
 
 	d := &daemon{provider: p, idle: time.Minute, units: map[string]*unit{u.name: u}}
 
@@ -107,7 +107,7 @@ func TestReapIgnoresSleepingUnits(t *testing.T) {
 
 	p := &countingProvider{}
 
-	u := newUnit("down", "redis", "ref", "down/redis", nil, false)
+	u := newUnit("down", "redis", "ref", "inst-ref", "down/redis", nil, false)
 	u.lastByte.Store(time.Now().Add(-time.Hour).UnixNano())
 
 	d := &daemon{provider: p, idle: time.Minute, units: map[string]*unit{u.name: u}}

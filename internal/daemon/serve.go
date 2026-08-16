@@ -9,9 +9,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -109,6 +111,16 @@ func Serve(args []string) error {
 	idle := fs.Duration("idle", 5*time.Minute, "sleep a service after this long with no bytes")
 	ready := fs.Duration("ready", 90*time.Second, "give up waking a service after this long")
 	refresh := fs.Duration("refresh", 15*time.Second, "how often to look for new or removed sandboxes")
+
+	// Off unless asked for, and never inferred from the environment.
+	//
+	// An earlier draft defaulted this to :$PORT because that is what a PaaS provides. PORT is
+	// exported in a great many developer shells, so that default would have opened a network
+	// listener on a laptop by accident - or, with no token set, refused to start a daemon that
+	// had worked yesterday. A deployment passes `--connect-addr :$PORT` itself, which is one
+	// word in a manifest and cannot surprise anybody.
+	connectAddr := fs.String("connect-addr", "", "serve the tunnel endpoint here (needs SBX_CONNECT_TOKEN); off unless set")
+	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
 	_ = fs.Parse(args)
 
 	// One per machine. A second copy binds nothing - every listener fails with "address
@@ -137,6 +149,19 @@ func Serve(args []string) error {
 		stop:     map[string]context.CancelFunc{},
 	}
 
+	var connectSrv *http.Server
+
+	if *connectAddr != "" {
+		connectSrv, err = d.Connect(ConnectOptions{
+			Addr:        *connectAddr,
+			Token:       os.Getenv("SBX_CONNECT_TOKEN"),
+			BehindProxy: *behindProxy,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -145,6 +170,18 @@ func Serve(args []string) error {
 	defer MarkRunning(p.Name())()
 
 	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, p.Name(), d.idle, InCluster())
+
+	if connectSrv != nil {
+		logs.Default.Info("", "", "connect endpoint on %s", connectSrv.Addr)
+
+		go func() {
+			if err := connectSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logs.Default.Info("", "", "connect endpoint stopped: %v", err)
+			}
+		}()
+
+		defer func() { _ = connectSrv.Close() }()
+	}
 
 	d.run(ctx)
 
@@ -225,7 +262,7 @@ func (d *daemon) discover(ctx context.Context) {
 			continue
 		}
 
-		u := newUnit(f.Sandbox, f.Service, f.Ref, f.Ref, legs, f.Running)
+		u := newUnit(f.Sandbox, f.Service, f.Ref, f.Instance, f.Ref, legs, f.Running)
 
 		uctx, ucancel := context.WithCancel(ctx)
 

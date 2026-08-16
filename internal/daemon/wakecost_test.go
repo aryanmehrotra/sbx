@@ -60,7 +60,7 @@ func TestAColdWakeDoesNotProbeBeforeStarting(t *testing.T) {
 	// Ready the moment it starts, so the poll loop needs exactly one probe. Any second probe
 	// is the pre-Start one, which is what this test is for.
 	p := &readyAfter{delay: 0}
-	u := newUnit("s", "svc", "ref", "s/svc", nil, false)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, false)
 
 	if err := u.wake(context.Background(), p, 10*time.Second); err != nil {
 		t.Fatalf("wake: %v", err)
@@ -84,7 +84,7 @@ func TestASlowWorkloadIsNotProbedHundredsOfTimes(t *testing.T) {
 	log.SetOutput(io.Discard)
 
 	p := &readyAfter{delay: 900 * time.Millisecond}
-	u := newUnit("s", "svc", "ref", "s/svc", nil, false)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, false)
 
 	if err := u.wake(context.Background(), p, 20*time.Second); err != nil {
 		t.Fatalf("wake: %v", err)

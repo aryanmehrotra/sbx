@@ -24,8 +24,13 @@ type unit struct {
 	sandbox string
 	service string // for logs: which part of the sandbox this is
 	ref     string // provider handle: container id, or deployment name
-	name    string // for logs
-	legs    []leg
+
+	// instance changes when the thing behind ref is replaced and ref is not - see
+	// provider.Unit.Instance. A tunnel holding a port across `sbx rm x && sbx create x` would
+	// otherwise carry on addressing a service that no longer exists.
+	instance string
+	name     string // for logs
+	legs     []leg
 
 	// lastByte is the only activity signal. Connection counting is not enough: a Go
 	// service's pool holds idle connections open indefinitely, so a unit fronted by a
@@ -52,15 +57,16 @@ type leg struct {
 	Upstream provider.Endpoint // dialled once the workload is serving
 }
 
-func newUnit(sandbox, service, ref, name string, legs []leg, running bool) *unit {
+func newUnit(sandbox, service, ref, instance, name string, legs []leg, running bool) *unit {
 	u := &unit{
-		sandbox: sandbox,
-		service: service,
-		ref:     ref,
-		name:    name,
-		legs:    legs,
-		live:    map[net.Conn]struct{}{},
-		awake:   running,
+		sandbox:  sandbox,
+		instance: instance,
+		service:  service,
+		ref:      ref,
+		name:     name,
+		legs:     legs,
+		live:     map[net.Conn]struct{}{},
+		awake:    running,
 	}
 	u.touch()
 

@@ -117,8 +117,8 @@ func TestForgetLeavesARebuiltUnitAlone(t *testing.T) {
 		stop:  map[string]context.CancelFunc{},
 	}
 
-	stale := newUnit("s", "svc", "sbx-s-svc", "sbx-s-svc", nil, true)
-	fresh := newUnit("s", "svc", "sbx-s-svc", "sbx-s-svc", nil, true)
+	stale := newUnit("s", "svc", "sbx-s-svc", "inst-sbx-s-svc", "sbx-s-svc", nil, true)
+	fresh := newUnit("s", "svc", "sbx-s-svc", "inst-sbx-s-svc", "sbx-s-svc", nil, true)
 
 	cancelled := false
 

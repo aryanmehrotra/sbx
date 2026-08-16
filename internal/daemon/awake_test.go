@@ -28,7 +28,7 @@ import (
 // nothing - no probe, no exec, no docker.
 func TestAnAwakeUnitIsNotProbedAgain(t *testing.T) {
 	p := &countingProvider{}
-	u := newUnit("s", "svc", "ref", "s/svc", nil, false)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, false)
 
 	if err := u.wake(context.Background(), p, 5*time.Second); err != nil {
 		t.Fatalf("first wake: %v", err)
@@ -55,7 +55,7 @@ func TestAnAwakeUnitIsNotProbedAgain(t *testing.T) {
 // Believing "awake" forever would leave every future connection failing.
 func TestAFailedDialRevokesAwake(t *testing.T) {
 	p := &countingProvider{}
-	u := newUnit("s", "svc", "ref", "s/svc", nil, false)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, false)
 
 	if err := u.wake(context.Background(), p, 5*time.Second); err != nil {
 		t.Fatalf("wake: %v", err)
@@ -90,7 +90,7 @@ func TestHandleDoesNotHangOnADeadUpstream(t *testing.T) {
 	p := &countingProvider{}
 	p.serving.Store(true)
 
-	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, true)
 
 	// A port with nothing on it: bind one, learn its number, and let it go.
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -176,7 +176,7 @@ func TestWakeWaitsForACommittedSleep(t *testing.T) {
 	p := &slowStopper{stopping: make(chan struct{}), release: make(chan struct{})}
 	p.serving.Store(true)
 
-	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, true)
 	u.lastByte.Store(time.Now().Add(-time.Hour).UnixNano())
 
 	go u.sleep(context.Background(), p, time.Minute)
@@ -237,7 +237,7 @@ func TestWakeTakesTheLockEvenWhenAwake(t *testing.T) {
 	p := &countingProvider{}
 	p.serving.Store(true)
 
-	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, true)
 
 	u.waking.Lock()
 
@@ -311,7 +311,7 @@ func TestAHalfClosedClientStillGetsTheWholeResponse(t *testing.T) {
 	p := &countingProvider{}
 	p.serving.Store(true)
 
-	u := newUnit("s", "svc", "ref", "s/svc", nil, true)
+	u := newUnit("s", "svc", "ref", "inst-ref", "s/svc", nil, true)
 
 	l := leg{
 		Listen:   front.Addr().(*net.TCPAddr).Port,

@@ -120,7 +120,7 @@ func BenchmarkStreamProxied(b *testing.B) {
 	port := front.Addr().(*net.TCPAddr).Port
 	_ = front.Close()
 
-	u := newUnit("bench", "svc", "ref", "bench", nil, true)
+	u := newUnit("bench", "svc", "ref", "inst-ref", "bench", nil, true)
 	u.mu.Lock()
 	u.served = true
 	u.mu.Unlock()

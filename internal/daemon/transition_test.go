@@ -121,7 +121,7 @@ func TestSleepAndWakeDoNotOverlap(t *testing.T) {
 
 	p := &transitionRecorder{serving: true, stopFor: 200 * time.Millisecond}
 
-	u := newUnit("t", "svc", "ref", "t", nil, true)
+	u := newUnit("t", "svc", "ref", "inst-ref", "t", nil, true)
 	u.setAwake(true)
 
 	u.mu.Lock()
