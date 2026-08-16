@@ -66,6 +66,13 @@ const (
 // were aiming at is somewhere else by the time you have finished.
 type prompt struct {
 	active bool
+
+	// typing is false while the offered ceilings are on screen and true once somebody has
+	// asked to write their own. Two steps rather than one, because "cpu,memory" is a syntax
+	// to remember and most of the time the answer is one of three or four ordinary sizes -
+	// and a dashboard that makes you type the ordinary case has got its defaults wrong.
+	typing bool
+
 	label  string
 	buffer string
 

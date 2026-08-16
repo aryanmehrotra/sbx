@@ -121,6 +121,7 @@ func TestAPromptSwallowsCommandKeys(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
 	typeInto(t, d, "0.5,512m")
 
 	if d.model.input.buffer != "0.5,512m" {
@@ -141,6 +142,7 @@ func TestBackspaceAndEscape(t *testing.T) {
 	d, _ := dashWithLimiter()
 
 	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
 	typeInto(t, d, "2,4g\b\b")
 
 	if d.model.input.buffer != "2," {
@@ -158,6 +160,7 @@ func TestSubmittingSetsTheLimit(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
 	typeInto(t, d, "0.5,256m\r")
 
 	waitFor(t, func() bool { _, _, n := p.taken(); return n == 1 })
@@ -187,6 +190,7 @@ func TestTheAnswerFollowsThePromptNotTheSelection(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	d.handle(context.Background(), rkey('L')) // opened on row 0, sbx-one-db
+	d.handle(context.Background(), rkey('c'))
 	typeInto(t, d, "1,512m")
 
 	d.model.selected = 1 // the fleet shifted, or an arrow slipped through elsewhere
@@ -210,7 +214,8 @@ func TestAnUnmentionedHalfIsLeftAlone(t *testing.T) {
 	d.model.limitsFor = "sbx-one-db"
 
 	d.handle(context.Background(), rkey('L'))
-	typeInto(t, d, "0.5\r") // cpu only
+	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
+	typeInto(t, d, "0.5\r")                   // cpu only
 
 	waitFor(t, func() bool { _, _, n := p.taken(); return n == 1 })
 
@@ -237,6 +242,7 @@ func TestClearingIsRefusedRatherThanFaked(t *testing.T) {
 	d.model.limits = p.have
 
 	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
 	typeInto(t, d, "none\r")
 
 	waitFor(t, func() bool { return d.model.message != "" })
@@ -261,12 +267,107 @@ func TestNoneOnAnAlreadyUncappedHalfIsNotRefused(t *testing.T) {
 	d.model.limits = p.have
 
 	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
 	typeInto(t, d, "none,2g\r")
 
 	waitFor(t, func() bool { _, _, n := p.taken(); return n == 1 })
 
 	if got, _, _ := p.taken(); got.MemBytes != 2<<30 {
 		t.Errorf("MemBytes = %d, want the 2 GB that was asked for", got.MemBytes)
+	}
+}
+
+// The common case is one of the offered sizes, and it must be one keypress rather than a
+// syntax to remember.
+func TestPickingAnOfferedSize(t *testing.T) {
+	for _, p := range limitPresets {
+		d, prov := dashWithLimiter()
+
+		d.handle(context.Background(), rkey('L'))
+
+		if d.model.input.typing {
+			t.Fatal("L went straight to a text field; the sizes were never offered")
+		}
+
+		d.handle(context.Background(), rkey(p.key))
+
+		waitFor(t, func() bool { _, _, n := prov.taken(); return n == 1 })
+
+		got, ref, _ := prov.taken()
+
+		if got != p.limits {
+			t.Errorf("%q set %+v, want %+v", p.name, got, p.limits)
+		}
+
+		if ref != "sbx-one-db" {
+			t.Errorf("%q went to %q, want the selected service", p.name, ref)
+		}
+
+		if d.model.input.active {
+			t.Errorf("%q left the chooser open", p.name)
+		}
+	}
+}
+
+// c is the way out to a value nobody thought to offer.
+func TestCustomOpensTheTextField(t *testing.T) {
+	d, _ := dashWithLimiter()
+
+	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c'))
+
+	if !d.model.input.typing {
+		t.Fatal("c did not open the text field")
+	}
+
+	typeInto(t, d, "0.75,700m")
+
+	if d.model.input.buffer != "0.75,700m" {
+		t.Errorf("buffer = %q, want 0.75,700m", d.model.input.buffer)
+	}
+}
+
+// While the sizes are offered, a key that is not one of them must do nothing at all - and in
+// particular must not fall through to the fleet commands underneath.
+func TestAnUnofferedKeyDoesNothingWhileChoosing(t *testing.T) {
+	d, p := dashWithLimiter()
+
+	d.handle(context.Background(), rkey('L'))
+
+	for _, r := range []rune{'9', 'd', 's', 'q', 'z'} {
+		d.handle(context.Background(), rkey(r))
+	}
+
+	if !d.model.input.active {
+		t.Error("a key that was not offered closed the chooser")
+	}
+
+	if stopped, removed := p.took(); len(stopped) != 0 || len(removed) != 0 {
+		t.Errorf("keys leaked to the fleet while choosing: stopped=%v removed=%v",
+			stopped, removed)
+	}
+}
+
+// Escape gets out of both steps.
+func TestEscapeLeavesTheChooser(t *testing.T) {
+	d, _ := dashWithLimiter()
+
+	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), tui.Key{Code: tui.KeyEscape})
+
+	if d.model.input.active {
+		t.Error("escape did not close the chooser")
+	}
+}
+
+// Every offered size has to fit the footer it is drawn in, at a narrow terminal too.
+func TestTheChooserFitsItsFooter(t *testing.T) {
+	for _, cols := range []int{40, 64, 80, 118, 200} {
+		got := footer(model{input: prompt{active: true, label: "limit zn-dev/clickhouse"}}, 5, cols)
+
+		if n := visibleLen(got); n > cols {
+			t.Errorf("at %d columns the chooser is %d wide: %q", cols, n, plainText(got))
+		}
 	}
 }
 

@@ -343,6 +343,44 @@ func detailBlock(m model, space, cols int) []string {
 	return out[:space]
 }
 
+// limitChoices offers the sizes, and gives way to the short form when the terminal is narrow.
+//
+// The numbers are the keys. Naming them in the footer rather than in a box that opens over the
+// table keeps the fleet visible while somebody decides - the whole point of a dashboard is
+// that a choice is made in front of the thing it is about.
+func limitChoices(label string, cols int) string {
+	named := cyan + "  " + label + reset + "  "
+	for _, p := range limitPresets {
+		named += dim + " " + string(p.key) + " " + reset + p.name + "   "
+	}
+
+	named += dim + " c " + reset + "custom" + dim + "   esc" + reset
+
+	short := cyan + "  limit" + reset + "  "
+	for _, p := range limitPresets {
+		short += p.short + "  "
+	}
+
+	short += dim + "c custom  esc" + reset
+
+	tight := "  "
+	for _, p := range limitPresets {
+		tight += p.short + " "
+	}
+
+	tight += dim + "c ✎ esc" + reset
+
+	// Longest first. A footer that overflows is one that pushes the key hints off the right
+	// edge of a terminal somebody chose to keep narrow.
+	for _, s := range []string{named, short, tight} {
+		if visibleLen(s) <= cols {
+			return s
+		}
+	}
+
+	return truncate(tight, cols)
+}
+
 // asleepText says what "asleep" means, in the longest form that fits.
 //
 // Written out rather than truncated. The full sentence runs to 54 columns and the line-level
@@ -588,11 +626,16 @@ func tail[T any](s []T, n int) []T {
 // hints are decorative and that the rest of them probably lie too.
 func footer(m model, paneRows, cols int) string {
 	switch {
+	case m.input.active && !m.input.typing:
+		return limitChoices(m.input.label, cols)
+
 	case m.input.active:
 		// A block for a cursor, so it is obvious the dashboard is waiting on a person rather
 		// than on a container.
-		return cyan + "  " + m.input.label + reset + "  " +
-			truncate(m.input.buffer, max(1, cols-visibleLen(m.input.label)-24)) +
+		head := m.input.label + dim + " — cpu,memory" + reset
+
+		return cyan + "  " + head + "  " +
+			truncate(m.input.buffer, max(1, cols-visibleLen(head)-24)) +
 			invert + " " + reset + dim + "   ⏎ set   esc cancel" + reset
 
 	case m.confirm != "":

@@ -332,7 +332,7 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		if r, ok := d.model.currentRow(); ok {
 			d.model.input = prompt{
 				active: true,
-				label:  fmt.Sprintf("limit %s/%s — cpu,memory", r.Sandbox, r.Service),
+				label:  fmt.Sprintf("limit %s/%s", r.Sandbox, r.Service),
 				ref:    r.Ref,
 				name:   r.Sandbox + "/" + r.Service,
 			}
@@ -582,8 +582,31 @@ func (d *dash) followSelection(ctx context.Context) {
 	}
 }
 
+// limitPresets are the ceilings offered by name.
+//
+// Three, and they are the sizes a dev service actually wants: a cache, a database, and
+// something that holds a working set. A longer list would be a menu to read rather than a
+// choice to make, and anything not on it is what `c` is for.
+var limitPresets = []struct {
+	key    rune
+	name   string
+	short  string
+	limits provider.Limits
+}{
+	{'1', "small ½c/512m", "1 ½c/512m", provider.Limits{NanoCPUs: 500_000_000, MemBytes: 512 << 20}},
+	{'2', "medium 1c/1g", "2 1c/1g", provider.Limits{NanoCPUs: 1_000_000_000, MemBytes: 1 << 30}},
+	{'3', "large 2c/4g", "3 2c/4g", provider.Limits{NanoCPUs: 2_000_000_000, MemBytes: 4 << 30}},
+}
+
 // typing applies one keypress to the open prompt. Called with the lock held.
 func (d *dash) typing(ctx context.Context, k tui.Key) {
+	// While the offered sizes are on screen the keys are a choice, not a value.
+	if !d.model.input.typing {
+		d.choosing(ctx, k)
+
+		return
+	}
+
 	switch {
 	case k.Code == tui.KeyEscape:
 		d.model.input = prompt{}
@@ -608,6 +631,34 @@ func (d *dash) typing(ctx context.Context, k tui.Key) {
 	}
 }
 
+// choosing handles the first step: one of the offered sizes, or c to write your own.
+func (d *dash) choosing(ctx context.Context, k tui.Key) {
+	if k.Code == tui.KeyEscape {
+		d.model.input = prompt{}
+
+		return
+	}
+
+	if k.Rune == 'c' {
+		d.model.input.typing = true
+
+		return
+	}
+
+	for _, p := range limitPresets {
+		if k.Rune != p.key {
+			continue
+		}
+
+		in := d.model.input
+		d.model.input = prompt{}
+
+		go d.setLimits(context.WithoutCancel(ctx), in, p.limits)
+
+		return
+	}
+}
+
 // applyLimits parses what was typed and sets it, saying what happened either way.
 //
 // The syntax is "cpu,memory": "2,4g" caps both, "2" caps only cpu, ",4g" only memory. Two
@@ -619,13 +670,6 @@ func (d *dash) typing(ctx context.Context, k tui.Key) {
 // request to clear one is accepted, changes nothing, and reports success. Refusing it out
 // loud beats reporting a change that did not happen, which is what the first version did.
 func (d *dash) applyLimits(ctx context.Context, in prompt) {
-	lim, ok := d.opt.Provider.(provider.Limiter)
-	if !ok {
-		d.say("this provider cannot set limits")
-
-		return
-	}
-
 	cpu, mem, _ := strings.Cut(in.buffer, ",")
 
 	if strings.TrimSpace(in.buffer) == "none" {
@@ -663,6 +707,19 @@ func (d *dash) applyLimits(ctx context.Context, in prompt) {
 
 	if !want.Capped() {
 		d.say("nothing to set - type a value like 0.5,512m")
+
+		return
+	}
+
+	d.setLimits(ctx, in, want)
+}
+
+// setLimits sends a ceiling and says what happened. Shared by the offered sizes and by a
+// value somebody typed, so that the two cannot drift into behaving differently.
+func (d *dash) setLimits(ctx context.Context, in prompt, want provider.Limits) {
+	lim, ok := d.opt.Provider.(provider.Limiter)
+	if !ok {
+		d.say("this provider cannot set limits - it is docker only for now")
 
 		return
 	}
