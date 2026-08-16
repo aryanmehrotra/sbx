@@ -70,7 +70,9 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
-          if echo "$changed" | grep -qvE '^(docs/|README\.md|SECURITY\.md|CONTRIBUTING\.md|LICENSE)'; then
+          # A markdown file cannot change what the binary does. Nothing in the build, the
+          # tests or the scripts reads one — except lint-docs.sh, which runs either way.
+          if echo "$changed" | grep -qvE '(\.md$|^LICENSE$)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"

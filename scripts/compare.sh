@@ -352,7 +352,7 @@ zeropod_available() {
   # The observable problem comes first because it is unconditional: even with a healthy
   # cluster we would have no way to tell asleep from awake, so "no cluster" would be a
   # misleading reason to print. Fix the gate before bothering with the infrastructure.
-  REASON="no verified 'checkpointed' observable: zeropod CRIU-checkpoints while the pod stays phase Running, so neither docker inspect nor kubectl get pod can express asleep. No gate means no table"
+  REASON="no verified 'checkpointed' observable: zeropod CRIU-checkpoints while the pod stays phase Running, so neither docker inspect nor kubectl get pod can express asleep. No gate means no table — scripts/zeropod-probe.sh gates on the zeropod_running metric instead"
   return 3
 }
 zeropod_up()     { return 1; }
