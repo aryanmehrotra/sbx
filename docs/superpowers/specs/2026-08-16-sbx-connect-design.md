@@ -426,6 +426,22 @@ work are the two the design already named - a VM where the socket can be mounted
 where `deploy/activator.yaml` gives it a ServiceAccount. ZopDay can *provision* the first; it
 cannot deploy into it as an ordinary service.
 
+**What was fixed, and what it changed.** `sbx serve` now stays up when it cannot reach a
+runtime, provided `--connect-addr` was asked for - see the commit. Redeployed to the same
+environment, the endpoint answers from sbx rather than from the platform:
+
+| request | before | after |
+|---|---|---|
+| `/healthz` | 7834 bytes of "Starting up…" | `degraded: no container runtime`, and the reason |
+| `/v1/fleet` unauthenticated | the same holding page | `401` |
+| `/v1/fleet?token=…` | the same holding page | `400` - the header-only rule, holding on the open internet |
+| `/v1/fleet` authenticated | the same holding page | sbx's JSON: what is wrong and what would fix it |
+
+It still cannot run a sandbox there, and that has not changed - but the difference between
+"cannot" and "silent" is the whole distance between a deployment somebody can debug and one
+they cannot. The first version of this fix panicked on a nil provider one line after logging
+that it was carrying on, which was found by running the container rather than by reading it.
+
 Worth noting for its own sake: the platform reported `active` for a container that exits
 immediately, because on the VM substrate "active" means the install completed rather than the
 process is healthy. That is the same failure shape as two other bugs found this week - a
