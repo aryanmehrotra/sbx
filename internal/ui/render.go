@@ -497,7 +497,86 @@ func trend(m model, r row, isCPU bool, width int) string {
 		now = dim + "…" + reset
 	}
 
-	return padVisible(now, 16) + spark(values, ceiling, width)
+	// The percentage is the one figure a reader can compare across services without doing
+	// arithmetic, and it only exists where there is a ceiling to be a percentage of.
+	pct := ""
+
+	if ceiling > 0 && r.Awake {
+		var used float64
+
+		switch {
+		case isCPU && r.CPUKnown:
+			used = r.CPU / 100
+		case !isCPU && r.MemKnown:
+			used = float64(r.MemBytes)
+		}
+
+		if used > 0 {
+			pct = fmt.Sprintf("%.0f%%", used/ceiling*100)
+
+			switch frac := used / ceiling; {
+			case frac >= 0.9:
+				pct = red + pct + reset
+			case frac >= 0.75:
+				pct = yellow + pct + reset
+			}
+		}
+	}
+
+	// The graph needs a scale and a span, or it is a shape with no units: a reader cannot tell
+	// whether the top of the line is the ceiling or merely the highest thing that happened, nor
+	// whether it covers a minute or an hour.
+	right := legend(values, ceiling, isCPU, width)
+
+	return padVisible(now, 16) + padVisible(pct, 5) +
+		spark(values, ceiling, max(0, width-visibleLen(right))) + right
+}
+
+// legend says what the graph's height and length mean.
+//
+// "peak" rather than "max" because it is the highest reading in the window rather than a
+// limit, and "of 0.5c" when there is a ceiling so full height is known to mean full. The span
+// answers the other question a growing line raises, which is how far back it goes - it grows
+// until it fills the width and then slides, and without a number nobody can tell which.
+func legend(values []float64, ceiling float64, isCPU bool, width int) string {
+	if len(values) == 0 || width < 30 {
+		return ""
+	}
+
+	var peak float64
+	for _, v := range values {
+		peak = max(peak, v)
+	}
+
+	shown := min(len(values), width)
+	span := shortDuration(time.Duration(shown) * Refresh)
+
+	unit := func(v float64) string {
+		if isCPU {
+			return trimZeros(v) + "c"
+		}
+
+		return shortBytes(uint64(v))
+	}
+
+	scale := "peak " + unit(peak)
+	if ceiling > 0 {
+		scale = "peak " + unit(peak) + " of " + unit(ceiling)
+	}
+
+	return dim + "  " + scale + " · " + span + reset
+}
+
+// shortDuration writes a window the way somebody would say it: "45s", "3m", "1h".
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return strconv.Itoa(int(d.Seconds())) + "s"
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	default:
+		return strconv.Itoa(int(d.Hours())) + "h"
+	}
 }
 
 // padVisible pads to a width counted in what the reader sees, not in bytes. The readings
