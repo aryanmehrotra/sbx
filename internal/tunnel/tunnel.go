@@ -36,6 +36,9 @@ type tunnelBackend struct {
 	args func(port int) []string
 	// url finds the public address in the tool's own output.
 	url *regexp.Regexp
+	// notURL are hostnames the pattern matches that are never the tunnel — a
+	// backend's own control plane, typically.
+	notURL map[string]bool
 	// note is shown once, when a backend needs the reader to know something.
 	note string
 
@@ -62,7 +65,14 @@ func tunnelBackends() []tunnelBackend {
 			args: func(p int) []string {
 				return []string{"tunnel", "--no-autoupdate", "--url", "http://localhost:" + strconv.Itoa(p)}
 			},
-			url: regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`),
+			// api.trycloudflare.com is cloudflared's OWN control plane, and it
+			// logs a call to it BEFORE printing the tunnel hostname. Matching the
+			// first hit therefore handed out a URL that answers 405 from
+			// Cloudflare's API and never reaches the sandbox at all. Excluded by
+			// name rather than by shape: quick-tunnel hostnames are ordinary
+			// words, so nothing about the form distinguishes them.
+			url:    regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`),
+			notURL: map[string]bool{"https://api.trycloudflare.com": true},
 		},
 		{
 			name: "ngrok",
@@ -212,7 +222,7 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) err
 		line := scanner.Text()
 
 		if !found {
-			if m := b.url.FindStringSubmatch(line); m != nil {
+			if m := b.url.FindStringSubmatch(line); m != nil && !b.notURL[m[len(m)-1]] {
 				link := m[len(m)-1]
 				found = true
 

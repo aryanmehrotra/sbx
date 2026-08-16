@@ -85,3 +85,44 @@ func names(bs []tunnelBackend) []string {
 
 	return out
 }
+
+// cloudflared's control plane must never be mistaken for the tunnel.
+//
+// cloudflared logs a call to api.trycloudflare.com BEFORE it prints the tunnel
+// hostname, so matching the first hit handed the user a URL that answers 405
+// from Cloudflare's API and reaches no sandbox at all. Seen live.
+func TestCloudflaredControlPlaneIsNotTheTunnelURL(t *testing.T) {
+	var b *tunnelBackend
+
+	all := tunnelBackends()
+	for i := range all {
+		if all[i].name == "cloudflared" {
+			b = &all[i]
+			break
+		}
+	}
+
+	if b == nil {
+		t.Skip("no cloudflared backend registered")
+	}
+
+	// The order cloudflared really prints them in.
+	lines := []string{
+		`INF Requesting new quick Tunnel on trycloudflare.com...`,
+		`INF Connecting to https://api.trycloudflare.com to request a tunnel`,
+		`INF |  https://operators-authors-opponent-exchanges.trycloudflare.com  |`,
+	}
+
+	var got string
+
+	for _, line := range lines {
+		if m := b.url.FindStringSubmatch(line); m != nil && !b.notURL[m[len(m)-1]] {
+			got = m[len(m)-1]
+			break
+		}
+	}
+
+	if want := "https://operators-authors-opponent-exchanges.trycloudflare.com"; got != want {
+		t.Errorf("picked %q, want %q", got, want)
+	}
+}
