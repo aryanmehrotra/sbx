@@ -20,7 +20,7 @@ import (
 //
 // The tag is a hash of what went into it, which is the whole design: an unchanged context
 // produces the same tag, the image is already there, and the build is skipped entirely.
-// Daytona caches builds for 24 hours; a clock is the wrong key for this — it rebuilds work
+// Daytona caches builds for 24 hours; a clock is the wrong key for this - it rebuilds work
 // that has not changed and reuses work that has.
 //
 // Content, not timestamps. A fresh `git clone` rewrites every mtime and would miss every
@@ -142,7 +142,7 @@ func buildIfNeeded(ctx context.Context, p provider.Provider, specDir, name strin
 		return svc, nil
 	}
 
-	fmt.Printf("  %-12s building…\n", name)
+	fmt.Printf("  %-12s building...\n", name)
 
 	dockerfile := svc.Build.Dockerfile
 	if dockerfile == "" {

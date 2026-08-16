@@ -3,7 +3,7 @@ package provider
 // The one primitive in this project that moves user data, exercised against a real docker.
 //
 // Skipped where there is no daemon rather than failing, so `go test ./...` still means
-// something on a machine without one — and so that this exists at all, which it did not.
+// something on a machine without one - and so that this exists at all, which it did not.
 // DECISIONS.md records the failure this guards: a fork that came up with a working server and
 // an empty database, "the worst shape of failure, because it looks like it worked".
 
@@ -107,7 +107,7 @@ func TestCopyVolumeMovesEveryFile(t *testing.T) {
 }
 
 // Docker creates an empty volume for a name that does not exist rather than failing, so a
-// copy from a snapshot that was never made used to be a silent success producing nothing —
+// copy from a snapshot that was never made used to be a silent success producing nothing -
 // and worse, producing it by first deleting whatever the destination held.
 //
 // Reachable: `sbx gc --snapshots --force` collects a snapshot's image and its volume as two
@@ -128,7 +128,7 @@ func TestCopyVolumeRefusesAnEmptySource(t *testing.T) {
 
 	// And it refused before touching anything: the destination still holds what it held.
 	if got := countFiles(t, d, dst); got != 2 {
-		t.Errorf("the destination has %d files, want the 2 it started with — it was wiped "+
+		t.Errorf("the destination has %d files, want the 2 it started with - it was wiped "+
 			"before the copy was found to be impossible", got)
 	}
 }
@@ -147,7 +147,7 @@ func TestCopyVolumeReplacesRatherThanMerges(t *testing.T) {
 	}
 
 	if got := countFiles(t, d, dst); got != 2 {
-		t.Errorf("destination has %d files, want exactly the source's 2 — the copy merged "+
+		t.Errorf("destination has %d files, want exactly the source's 2 - the copy merged "+
 			"over the destination instead of replacing it", got)
 	}
 }

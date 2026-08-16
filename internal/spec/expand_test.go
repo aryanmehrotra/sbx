@@ -47,13 +47,13 @@ func TestExpandsReferencedVariables(t *testing.T) {
 
 // The failure that must not be silent. A database that comes up with an empty password
 // because a variable was not exported looks like success, and finding out later is
-// expensive — so this refuses at load, before anything is created.
+// expensive - so this refuses at load, before anything is created.
 func TestAnUnsetVariableIsAnError(t *testing.T) {
 	s := specWith(map[string]string{"POSTGRES_PASSWORD": "${NOT_SET_ANYWHERE}"})
 
 	err := s.expandEnv(fixed(nil))
 	if err == nil {
-		t.Fatal("an unset variable was accepted — the service would start with the literal " +
+		t.Fatal("an unset variable was accepted - the service would start with the literal " +
 			"${NOT_SET_ANYWHERE} or an empty string")
 	}
 

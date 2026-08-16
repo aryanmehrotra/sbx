@@ -8,7 +8,7 @@ import (
 
 // Orphans lists sbx volumes and snapshot images whose sandbox is gone.
 //
-// "Gone" means no container carries the sandbox label — not "stopped". A sleeping sandbox
+// "Gone" means no container carries the sandbox label - not "stopped". A sleeping sandbox
 // has no running container and every byte of its data still matters, which is the whole
 // design; treating stopped as garbage would delete the branch somebody returns to.
 func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {

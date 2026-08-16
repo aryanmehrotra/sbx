@@ -1,7 +1,7 @@
 // sbx gives every branch, task or agent its own copy of a project's backing services,
 // and charges nothing for the ones nobody is using.
 //
-// A repo declares its services once, in sandbox.json. Anyone — a person, an agent, CI —
+// A repo declares its services once, in sandbox.json. Anyone - a person, an agent, CI -
 // creates a sandbox from that spec and gets their own containers on their own ports, with
 // their own data. Those containers are stopped by default. `sbx serve` owns their public
 // ports: a connection wakes the container behind it and is spliced through, and a few idle
@@ -69,7 +69,7 @@ func specFor(fs *flag.FlagSet, sandbox, templateName, path string) (string, erro
 
 	// Whether --spec was *set*, not whether it differs from the default. Someone who writes
 	// `--spec sandbox.json` for clarity has asked explicitly, and comparing the value would
-	// silently redirect them to whatever was remembered — breaking the one guarantee this
+	// silently redirect them to whatever was remembered - breaking the one guarantee this
 	// feature makes.
 	if wasSet(fs, "spec") {
 		return path, nil
@@ -303,11 +303,11 @@ func dispatch(cmd string, args []string) error {
 	case "exec":
 		fs := flag.NewFlagSet("exec", flag.ExitOnError)
 		kind, socket, ns, isolation := backendFlags(fs)
-		tty := fs.Bool("t", false, "attach a terminal — for a shell, psql, redis-cli")
+		tty := fs.Bool("t", false, "attach a terminal - for a shell, psql, redis-cli")
 
 		// Parse first, then take positionals from what is left. flag stops at the first
 		// non-flag argument, so `sbx exec -t br pg psql -U app` gives sbx the -t and hands
-		// psql its own -U untouched — which is how docker and kubectl behave, and what
+		// psql its own -U untouched - which is how docker and kubectl behave, and what
 		// anyone typing this expects. Splitting positionals first, as the other commands
 		// do, made a LEADING flag consume the sandbox name and print a usage error.
 		_ = fs.Parse(args)
@@ -402,7 +402,7 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		// The age of the pins, not just the names. Every template image is pinned to a
-		// digest so the sandbox you create is the one CI tested — which also means these
+		// digest so the sandbox you create is the one CI tested - which also means these
 		// images stop getting updates until somebody refreshes them.
 		if d := TemplatesRefreshed(); d != "" {
 			fmt.Printf("\nimages pinned by digest, last refreshed %s\n", d)
@@ -553,7 +553,7 @@ func dispatch(cmd string, args []string) error {
 func runAdd(args []string) error {
 	// `sbx add <sandbox> <service> --image ...` reads the way a person would write it, but
 	// Go's flag package stops at the first non-flag argument, so the flags after the two
-	// names would be silently ignored — and the command would fail claiming --image was
+	// names would be silently ignored - and the command would fail claiming --image was
 	// missing while it sat right there on the line. Split the leading names off first.
 	positional, rest := splitPositional(args, 2)
 
@@ -619,7 +619,7 @@ func runAdd(args []string) error {
 
 	// The same fallback env and fork use. Add reads the spec to respect ordinals reserved for
 	// declared-but-not-yet-created services, and a sandbox made from --template has no
-	// sandbox.json to find — so without this the reservations are silently not seen, and a
+	// sandbox.json to find - so without this the reservations are silently not seen, and a
 	// later `--optional` create can collide with the port this just took.
 	specPath, err := specFor(fs, sandbox, "", *spec)
 	if err != nil {
@@ -640,7 +640,7 @@ func splitPositional(args []string, n int) (positional, rest []string) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `sbx — per-branch sandboxes that sleep when nobody is using them
+	fmt.Fprint(os.Stderr, `sbx - per-branch sandboxes that sleep when nobody is using them
 
   sbx create <sandbox> [--spec sandbox.json | --template NAME] [--optional]
   sbx env    <sandbox> [--spec sandbox.json] [--shell posix|fish|powershell|cmd|json]

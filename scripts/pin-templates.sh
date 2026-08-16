@@ -8,7 +8,7 @@
 # first thing anybody runs can break without a commit touching this repo. Pinning by digest
 # makes a template reproducible: the sandbox someone creates today is the one CI tested.
 #
-# The tag is KEPT alongside the digest — `postgres:16-alpine@sha256:...` — because a bare
+# The tag is KEPT alongside the digest - `postgres:16-alpine@sha256:...` - because a bare
 # digest tells a reader nothing about what they are running. Docker resolves by digest and
 # ignores the tag, so the tag is documentation that cannot drift.
 #
@@ -72,7 +72,7 @@ if missing:
 }
 
 if [ "$CHECK" = "1" ]; then
-  echo "checking every template image is pinned…"
+  echo "checking every template image is pinned..."
 
   while IFS= read -r line; do
     case "$line" in
@@ -87,7 +87,7 @@ fi
 
 command -v docker >/dev/null 2>&1 || { echo "docker is needed to resolve digests" >&2; exit 1; }
 
-echo "resolving template images…"
+echo "resolving template images..."
 
 for img in $(images); do
   if ! digest=$(resolve "$img"); then
@@ -95,7 +95,7 @@ for img in $(images); do
     continue
   fi
 
-  printf '  %-42s %s\n' "$img" "${digest:0:19}…"
+  printf '  %-42s %s\n' "$img" "${digest:0:19}..."
 
   # Rewrite every occurrence, pinned or not, to this image at this digest.
   python3 - "$img" "$digest" "$ROOT" <<'PY'
@@ -119,7 +119,7 @@ done
 
 if [ "$fail" != 0 ]; then
   echo
-  echo "some images could not be pinned — nothing was stamped, so the date still reflects the"
+  echo "some images could not be pinned - nothing was stamped, so the date still reflects the"
   echo "last complete refresh rather than this partial one."
   exit 1
 fi

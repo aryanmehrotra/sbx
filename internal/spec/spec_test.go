@@ -19,7 +19,7 @@ func writeSpec(t *testing.T, body string) string {
 }
 
 // Layout must not depend on which services were actually created. It used to, and skipping
-// the optional ClickHouse moved MySQL's ordinal — so every config that had recorded where
+// the optional ClickHouse moved MySQL's ordinal - so every config that had recorded where
 // the database lived was quietly pointing somewhere else.
 func TestAssignIsStableAcrossOptionalServices(t *testing.T) {
 	path := writeSpec(t, `{
@@ -99,7 +99,7 @@ func TestAssignRefusesToOverflowTheBlock(t *testing.T) {
 
 // `sbx validate` is billed as the pre-commit gate for a committed file, so a spec it accepts
 // must be one `sbx create` can realise. A service name becomes part of a container name, and
-// validate used to accept names the runtime refuses — the one path where a false pass costs
+// validate used to accept names the runtime refuses - the one path where a false pass costs
 // most, and the exact thing validate.go's own docstring says must not happen.
 func TestServiceNamesMustBeUsable(t *testing.T) {
 	bad := []string{"BAD NAME", "has space", "../evil", "-leading", ".hidden", ""}

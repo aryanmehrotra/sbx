@@ -13,13 +13,13 @@ import (
 
 // Snapshot and fork.
 //
-// The interesting capability the hosted platforms have is not "resume the one you paused" —
+// The interesting capability the hosted platforms have is not "resume the one you paused" -
 // it is spawning many sandboxes from one saved state. That is what makes a sandbox per task
 // affordable: seed a database once, migrate it once, then hand every agent its own copy.
 //
 // This is a FILESYSTEM snapshot. Processes and memory are not in it: a fork starts its
 // services cold against a warm disk, exactly as a wake does. E2B and zeropod restore memory
-// too — about a second for E2B, and 272 ms for zeropod when this project measured it —
+// too - about a second for E2B, and 272 ms for zeropod when this project measured it -
 // using Firecracker or CRIU, neither of
 // which exists on a machine that only has docker, and `sbx doctor` will tell you whether
 // yours does.
@@ -52,7 +52,7 @@ func snapshotImage(name, service string) string {
 // Snapshot commits every service of a sandbox to an image.
 //
 // It does not stop anything first. Committing a running container gives a crash-consistent
-// filesystem — the same state the service would recover from after a power cut, which every
+// filesystem - the same state the service would recover from after a power cut, which every
 // database in this project's examples is built to survive. Stopping first would be cleaner
 // and would also mean the snapshot silently interrupts whoever is using the sandbox.
 func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([]SnapshotRef, error) {
@@ -130,7 +130,7 @@ func ForkSpec(sp map[string]any, name string, refs []SnapshotRef) error {
 		svc["image"] = r.Image
 
 		// The volume STAYS. The fork gets its own, restored from the snapshot's copy after
-		// creation — an earlier version deleted it on the theory that the image carried the
+		// creation - an earlier version deleted it on the theory that the image carried the
 		// data, and the fork started blank because docker commit does not capture volumes.
 
 		// init has already run in the state being forked. Running it again would re-seed a
@@ -169,7 +169,7 @@ func SnapshotsOf(ctx context.Context, p provider.Provider, name string) ([]Snaps
 	}
 
 	if len(refs) == 0 {
-		return nil, fmt.Errorf("no snapshot %q — run: sbx snapshot <sandbox> %s", name, name)
+		return nil, fmt.Errorf("no snapshot %q - run: sbx snapshot <sandbox> %s", name, name)
 	}
 
 	return refs, nil
@@ -184,7 +184,7 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 	withOptional bool, iso provider.Isolation,
 ) error {
 	// Before the snapshot lookup, not after. Create validates this too, but by then the
-	// snapshot has been resolved and a temporary spec written — work thrown away for
+	// snapshot has been resolved and a temporary spec written - work thrown away for
 	// something knowable from the argument itself.
 	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
@@ -242,7 +242,7 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 		return err
 	}
 
-	fmt.Printf("\n  forked from snapshot %q — filesystem state only, processes start cold.\n", snapshot)
+	fmt.Printf("\n  forked from snapshot %q - filesystem state only, processes start cold.\n", snapshot)
 	fmt.Printf("  use it with: sbx env %s --spec %s\n", sandbox, forked)
 
 	return nil
@@ -256,7 +256,7 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 // serving from a data directory it initialised itself. Copying over that while it runs is
 // replacing the floor underneath a live process.
 //
-// So: stop, then copy, per service — never copy first, and never copy into a service that is
+// So: stop, then copy, per service - never copy first, and never copy into a service that is
 // still up. Anything not present in the snapshot is left exactly as Create made it.
 func restoreVolumes(ctx context.Context, p provider.Provider, snap provider.Snapshotter,
 	sandbox string, units []provider.Unit, refs []SnapshotRef,

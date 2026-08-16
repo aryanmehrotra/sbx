@@ -19,7 +19,7 @@ package spec
 //     empty password because a variable was not exported is the kind of failure that looks
 //     like success, and this project has already been bitten by one of those.
 //
-// Anything beyond this — Vault, 1Password, a cloud secret manager — stays out. It would mean
+// Anything beyond this - Vault, 1Password, a cloud secret manager - stays out. It would mean
 // a dependency, a network call and a credential to fetch the credential, in a binary whose
 // whole claim is that it has none of those.
 

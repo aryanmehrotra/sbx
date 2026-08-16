@@ -13,7 +13,7 @@ go build -o sbx .
 ```
 
 No dependencies to install: the root module uses nothing outside Go's standard library, and
-CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a preference —
+CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a preference -
 `go install` has to stay a single step.
 
 ## The test tiers
@@ -26,7 +26,7 @@ CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a
 | snapshot and fork | docker | `./scripts/fork-e2e.sh` |
 | crash recovery | docker | `./scripts/recovery.sh` |
 | every documented use case | docker | `./scripts/usecases-e2e.sh` |
-| shell, workflows, docs, pins | — | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |
+| shell, workflows, docs, pins | - | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |
 
 `-short` skips the tests that start real containers. They cost about a minute, which is worth
 it in CI and not worth it on every local run.
@@ -36,7 +36,7 @@ whose name contains "build".
 
 ## What a change is expected to come with
 
-**A test that fails without it.** Not as a formality — the convention here is to write the
+**A test that fails without it.** Not as a formality - the convention here is to write the
 test, break the code, and confirm the test goes red. Several tests in this repo passed on the
 first attempt for the wrong reason and had to be rewritten; the commit messages say so where
 it happened.
@@ -50,7 +50,7 @@ knowing before you measure anything:
   result.
 - **A delta inside the run-to-run spread is not a result.** Say it was not resolvable rather
   than publishing it. A change that is theoretically less work but measures as nothing is a
-  fine change — describe it that way.
+  fine change - describe it that way.
 
 **A vendor claim, quoted from the vendor with a link.** `scripts/lint-docs.sh` checks that
 every external URL in the docs resolves, because this project has published invented figures
@@ -77,9 +77,9 @@ Match the file you are editing. Two things are genuinely load-bearing:
 | `internal/cli/` | what each command does, provider-agnostic |
 | `internal/daemon/` | the wake/sleep state machine and the byte proxy |
 | `internal/provider/` | docker and kubernetes, plus the optional capabilities |
-| `internal/spec/` | `sandbox.json` — parsing, validation, port assignment |
+| `internal/spec/` | `sandbox.json` - parsing, validation, port assignment |
 | `docs/DECISIONS.md` | why it is shaped this way, mostly things that broke |
 
-If you are about to change how a sandbox is addressed — ports, slots, labels — read
+If you are about to change how a sandbox is addressed - ports, slots, labels - read
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) first. That scheme lives on every user's machine and
 is the hardest thing here to change later.

@@ -9,7 +9,7 @@
 # It reports a distribution, not a number. Every wake figure quoted before this script
 # existed was a single run, and the spread here is wide enough that a single run says more
 # about what else the machine was doing than about the sandbox. Machine conditions are
-# recorded alongside the results for the same reason — a wake on an idle laptop and a wake
+# recorded alongside the results for the same reason - a wake on an idle laptop and a wake
 # on one that is paging are not the same measurement, and the numbers should say which.
 set -uo pipefail
 
@@ -52,7 +52,7 @@ echo "── setup ────────────────────�
 t0=$(measure_ms)
 "$SBX" create "$NAME" --spec "$SPEC" >/dev/null || { echo "bench: create failed" >&2; exit 1; }
 t1=$(measure_ms)
-printf '  create         %s ms  (image pull, health wait, init — once)\n' "$((t1 - t0))"
+printf '  create         %s ms  (image pull, health wait, init - once)\n' "$((t1 - t0))"
 
 eval "$("$SBX" env "$NAME" --spec "$SPEC")"
 

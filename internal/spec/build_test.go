@@ -3,7 +3,7 @@ package spec
 import "testing"
 
 // image and build are alternatives. Neither is an error, and both is an error rather than
-// a silent precedence rule — which of the two wins is exactly what a reader would guess
+// a silent precedence rule - which of the two wins is exactly what a reader would guess
 // wrong, and guessing means running a different image than the file appears to describe.
 func TestImageOrBuild(t *testing.T) {
 	cases := []struct {

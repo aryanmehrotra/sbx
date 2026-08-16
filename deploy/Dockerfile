@@ -1,6 +1,6 @@
 # The activator image.
 #
-# It carries kubectl because the Kubernetes provider shells out to it — the same choice the
+# It carries kubectl because the Kubernetes provider shells out to it - the same choice the
 # Docker provider makes, and for the same reason: a failing command can be copied out of a
 # log and run by hand. The cost is an apk package rather than a client library and the API
 # machinery behind it, which for a binary whose whole argument is that it stays small is the

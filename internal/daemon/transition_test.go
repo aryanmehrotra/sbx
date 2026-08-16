@@ -188,7 +188,7 @@ func TestSleepAndWakeDoNotOverlap(t *testing.T) {
 		case "wake-returned-ok":
 			if inStop {
 				t.Fatalf("wake told a caller the sandbox was serving while a stop was in "+
-					"flight — that caller now dials a container being torn down.\n"+
+					"flight - that caller now dials a container being torn down.\n"+
 					"  sequence: %v", seq)
 			}
 		}

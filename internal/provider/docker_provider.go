@@ -3,7 +3,7 @@ package provider
 // The Docker provider: sandboxes as containers on one machine.
 //
 // Addressing here is the awkward case. Every sandbox shares one loopback, so each gets a
-// block of 20 ports and every service is remapped into it — twice, because the daemon has
+// block of 20 ports and every service is remapped into it - twice, because the daemon has
 // to hold a port that answers while the container behind it is stopped:
 //
 //	client ──▶ 20002 (wake, sbx serve listens)  ──▶ 30002 (backing, docker publishes)
@@ -46,12 +46,12 @@ func newDocker(ep dockerEndpoint) *dockerProvider {
 func (d *dockerProvider) Name() string { return "docker" }
 
 // Creation shells out to `docker` while the daemon's hot path uses the Engine API. That
-// split is deliberate: creation happens once and wants to be readable — you can copy the
-// command out of an error and run it — whereas start, stop and inspect happen on every
+// split is deliberate: creation happens once and wants to be readable - you can copy the
+// command out of an error and run it - whereas start, stop and inspect happen on every
 // wake and want no fork.
 // Both halves are pinned to the same resolved endpoint through DOCKER_HOST. Letting the CLI
 // do its own resolution would mean `create` could reach one daemon and the wake another, on
-// any machine with more than one context — which is most of them.
+// any machine with more than one context - which is most of them.
 func (d *dockerProvider) docker(args ...string) (string, error) {
 	cmd := exec.Command("docker", args...)
 	cmd.Env = append(os.Environ(), "DOCKER_HOST="+d.endpoint.String())
@@ -100,7 +100,7 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 
 		// Listed as free, and then actually checked. The container list says which slots are
 		// SPOKEN FOR; the ports say which are TAKEN, and between two concurrent creates those
-		// are different questions — the loser of a race is handed a gap that another create
+		// are different questions - the loser of a race is handed a gap that another create
 		// is about to fill, and finds out at `docker run` with "failed to set up container
 		// networking". Measured before this: four concurrent creates, three failures.
 		//
@@ -177,7 +177,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	}
 
 	// Passed verbatim: "all", "1", "device=0". Docker refuses an unknown value itself,
-	// and its error names the runtime that is missing — better than anything we would
+	// and its error names the runtime that is missing - better than anything we would
 	// paraphrase.
 	if svc.CPU != "" {
 		args = append(args, "--cpus", svc.CPU)
@@ -203,7 +203,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		// The interval is the floor on how long a wake appears to take, because docker only
 		// re-evaluates health on it. The long start period is the opposite of low retries:
 		// inside it a failing check does not latch the container as unhealthy, while a
-		// passing one still flips it immediately — so a database that needs six seconds to
+		// passing one still flips it immediately - so a database that needs six seconds to
 		// open its data directory is not declared broken at 300ms.
 		args = append(args,
 			"--health-cmd", svc.Health,
@@ -229,7 +229,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		}
 
 		// Absolute, always. Docker reads a RELATIVE `-v` source as a named volume, not a
-		// path — so it silently creates an empty volume and mounts that, and the container
+		// path - so it silently creates an empty volume and mounts that, and the container
 		// finds a directory where its config should be. `sbx create --spec sandbox.json`
 		// (relative, which is the normal way to type it) made specDir "." and left the
 		// source relative, so `files:` did not work at all from the working directory.
@@ -262,13 +262,13 @@ func egressNetwork(sandbox string) string { return "sbx-noegress-" + sandbox }
 
 // ensureEgressNetwork creates a bridge with IP masquerade disabled.
 //
-// Without masquerade there is no NAT off the host, so nothing routed leaves — and docker
+// Without masquerade there is no NAT off the host, so nothing routed leaves - and docker
 // still publishes ports into it, so the wake path is untouched. That last part is why this
 // works and the obvious alternatives do not: `--internal` and `--network none` both block
 // egress AND stop publishing, which produces a sandbox that can never be woken.
 //
 // Measured 2026-08-15: published port answered 200, external fetch blocked, docker's
-// embedded DNS still resolved — it sits on the bridge and needs no route out.
+// embedded DNS still resolved - it sits on the bridge and needs no route out.
 func (d *dockerProvider) ensureEgressNetwork(sandbox string) error {
 	name := egressNetwork(sandbox)
 
@@ -327,7 +327,7 @@ func (d *dockerProvider) Healthy(ctx context.Context, ref string) (bool, bool) {
 // Docker already knows how to answer this and answers it late: it re-evaluates health on
 // the check interval and republishes afterwards, which measured 5030ms on a container that
 // was serving at 110ms. Running the same command ourselves costs one exec and returns in
-// about 150ms, and the command is the one the spec declared — so this is faster without
+// about 150ms, and the command is the one the spec declared - so this is faster without
 // being a different question.
 func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	cmd, ok := d.api.healthCommand(ctx, ref)
@@ -341,7 +341,7 @@ func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	//
 	// Honestly: this did NOT measurably improve wake latency. Interleaved A/B on the same
 	// machine, n=8 each: 228 ms median via the CLI against 252 ms via the API, spreads of
-	// 210–754 and 155–452 — a difference well inside the noise, in the unflattering
+	// 210-754 and 155-452 - a difference well inside the noise, in the unflattering
 	// direction. The reason to keep it is the same one that took `docker ps` + N ×
 	// `docker inspect` out of List: it removes a process spawn from a path the daemon walks
 	// on its own schedule, which is what stops cost growing with the number of sandboxes.
@@ -356,7 +356,7 @@ func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 
 func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {
 	// Pausing for the duration of the copy is what makes this crash-consistent rather than
-	// torn — the filesystem does not move underneath it. It is docker's default and the flag
+	// torn - the filesystem does not move underneath it. It is docker's default and the flag
 	// that used to say so is deprecated, so passing it printed a deprecation notice on top of
 	// every commit error, burying the actual reason. Not passing it keeps the behaviour and
 	// loses the noise; `--no-pause` is the flag that would change it.
@@ -387,25 +387,25 @@ func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, err
 //
 // `cp -a` inside a small image is docker's own recipe for this and it is the right one:
 // it stays in docker's storage, needs no host path (which colima would not share anyway),
-// preserves ownership and permissions — postgres refuses to start on a data directory it
-// does not own — and never streams the bytes through this process.
+// preserves ownership and permissions - postgres refuses to start on a data directory it
+// does not own - and never streams the bytes through this process.
 func (d *dockerProvider) CopyVolume(_ context.Context, src, dst string) error {
 	// Two things this deliberately does, both learned the hard way.
 	//
 	// It REPLACES rather than merges. `cp -a /from/.` on its own lands the snapshot on top of
 	// whatever Create just initialised, so files present only in the fresh data directory
-	// survive into what is supposed to be an exact copy — a database whose state is neither
+	// survive into what is supposed to be an exact copy - a database whose state is neither
 	// the snapshot's nor a fresh one's.
 	//
 	// And it lets the exit code mean something. This used to end in `2>/dev/null || true`,
 	// which made the container exit 0 unconditionally: a full disk, an unreadable source, a
-	// volume that did not exist — all reported success, on the one primitive in this project
+	// volume that did not exist - all reported success, on the one primitive in this project
 	// that moves user data. DECISIONS.md records what that failure looks like when it
 	// happens: a fork with a working server and an empty database, which looks like it
 	// worked. The mechanism changed; the shape was still reachable.
 	// The source is checked BEFORE the destination is touched, which the first version of
 	// this got wrong: it counted both sides afterwards and compared them, so an empty source
-	// gave 0 == 0 and passed — after the delete had already wiped a freshly initialised data
+	// gave 0 == 0 and passed - after the delete had already wiped a freshly initialised data
 	// directory. Reachable in practice, because `sbx gc --snapshots --force` collects a
 	// snapshot's image and its volume as two separate artifacts, so an interrupted sweep can
 	// leave an image that SnapshotsOf still resolves with no volume behind it.
@@ -434,7 +434,7 @@ echo "SBXCOUNT $(find /from -mindepth 1 | wc -l) $(find /to -mindepth 1 | wc -l)
 	// Both are refused, because neither is a snapshot worth restoring and the alternative is
 	// a fork with a working server and an empty database.
 	if strings.Contains(out, "SBXEMPTY") {
-		return fmt.Errorf("copying volume %s to %s: the source is empty or does not exist — "+
+		return fmt.Errorf("copying volume %s to %s: the source is empty or does not exist - "+
 			"nothing was changed", src, dst)
 	}
 
@@ -447,7 +447,7 @@ echo "SBXCOUNT $(find /from -mindepth 1 | wc -l) $(find /to -mindepth 1 | wc -l)
 
 	if from != to {
 		return fmt.Errorf("copying volume %s to %s: %d files in the source and %d in the "+
-			"destination — the copy was incomplete", src, dst, from, to)
+			"destination - the copy was incomplete", src, dst, from, to)
 	}
 
 	return nil
@@ -587,7 +587,7 @@ func qualify(ref, path string) string {
 //
 // One HTTP request over the socket, not one `docker ps` plus one `docker inspect` per
 // container. That mattered more than it looks: List is called by discover() on every refresh
-// tick, by AllocSlot on every create, and by nine CLI commands — so on a machine with twenty
+// tick, by AllocSlot on every create, and by nine CLI commands - so on a machine with twenty
 // sandboxes the daemon was spawning dozens of docker CLI processes every fifteen seconds,
 // for ever, and `sbx create` got slower the more sandboxes already existed. The Engine API
 // returns labels, state and names in the same response the filter already needs.
@@ -673,7 +673,7 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	// After the containers: docker refuses to remove a network still in use. A sandbox that
-	// never declared egress deny has none, and the failure is ignored — this is cleanup, and
+	// never declared egress deny has none, and the failure is ignored - this is cleanup, and
 	// reporting "no such network" would make every ordinary rm look like it went wrong.
 	if _, err := d.docker("network", "rm", egressNetwork(sandbox)); err == nil {
 		fmt.Printf("  removed network %s\n", egressNetwork(sandbox))

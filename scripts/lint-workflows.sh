@@ -3,7 +3,7 @@
 #
 #   scripts/lint-workflows.sh
 #
-# A workflow with a syntax error does not fail a job — GitHub rejects the whole run in
+# A workflow with a syntax error does not fail a job - GitHub rejects the whole run in
 # under a second, with no logs, and the previous run's green tick is still the last thing
 # you see on the branch. That happened here: an embedded multi-line python block inside a
 # `run: |` step ended the YAML scalar at its first column-0 line, and the failure was

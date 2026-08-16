@@ -52,7 +52,7 @@ func TemplateNames() []string {
 
 // TemplateImages lists every image any template needs, deduplicated.
 //
-// Used by prewarm, and it reads the specs rather than keeping a second list — a hand-kept
+// Used by prewarm, and it reads the specs rather than keeping a second list - a hand-kept
 // list of images is one that goes stale the first time somebody edits a template.
 func TemplateImages() []string {
 	seen := map[string]bool{}
@@ -115,8 +115,8 @@ func TemplatesRefreshed() string {
 // MaterializeTemplate writes a built-in template to a directory on disk and returns the
 // path to its spec.
 //
-// Written out rather than parsed in memory because a spec can reference files beside it —
-// the analytics template mounts a ClickHouse config — and an embedded template has no
+// Written out rather than parsed in memory because a spec can reference files beside it -
+// the analytics template mounts a ClickHouse config - and an embedded template has no
 // directory for those to live in. Extracting the whole thing means templates and on-disk
 // specs then travel exactly one code path, which is the only reason this is not two.
 func MaterializeTemplate(name string) (string, error) {
@@ -127,7 +127,7 @@ func MaterializeTemplate(name string) (string, error) {
 
 	// Under $HOME, not the system temp directory.
 	//
-	// A VM-backed Docker only shares some host paths — Colima shares $HOME and not
+	// A VM-backed Docker only shares some host paths - Colima shares $HOME and not
 	// /var/folders, which is where MkdirTemp puts things on macOS. A bind mount whose source
 	// the VM cannot see does not fail: docker creates an empty directory at the destination
 	// instead. ClickHouse then finds a directory where its config should be, and exits

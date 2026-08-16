@@ -46,7 +46,7 @@ func TestSlotLockIsExclusive(t *testing.T) {
 	wg.Wait()
 
 	if worst > 1 {
-		t.Errorf("%d callers were inside the lock at once — it is not exclusive", worst)
+		t.Errorf("%d callers were inside the lock at once - it is not exclusive", worst)
 	}
 }
 

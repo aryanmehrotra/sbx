@@ -6,7 +6,7 @@ import "testing"
 // `sbx gc --force` and somebody's branch database.
 //
 // gc offers an artifact for deletion when nothing owns it. So a bug here does not produce a
-// wrong listing — it produces a deleted volume, and there is no second chance to notice.
+// wrong listing - it produces a deleted volume, and there is no second chance to notice.
 // The dangerous direction is a live sandbox whose volume looks unowned; the harmless one is
 // an orphan that never gets reclaimed.
 func TestOwnerOf(t *testing.T) {
@@ -32,7 +32,7 @@ func TestOwnerOf(t *testing.T) {
 		// offered for deletion.
 		//
 		// That is the direction to be wrong in. The cost is an orphan that never gets
-		// reclaimed — disk not freed. The other direction costs somebody their database.
+		// reclaimed - disk not freed. The other direction costs somebody their database.
 		{"sbx-auth-flow-postgres", "auth"},
 
 		// Not ours at all. Something else on the machine called a volume this.
@@ -48,7 +48,7 @@ func TestOwnerOf(t *testing.T) {
 	}
 }
 
-// Nothing live means everything is an orphan — which is correct, and is also the shape of
+// Nothing live means everything is an orphan - which is correct, and is also the shape of
 // the worst possible bug: if listing live sandboxes ever fails soft and returns nothing,
 // every volume on the machine becomes reclaimable at once. Orphans propagates that error
 // rather than treating it as "none", and this pins the distinction.
@@ -85,7 +85,7 @@ func TestALiveSandboxNeverLooksLikeAnOrphan(t *testing.T) {
 			vol := volumeName(sandbox, service)
 
 			if owner := ownerOf(vol, live); owner == "" {
-				t.Errorf("volume %q of the live sandbox %q was reported as an orphan — "+
+				t.Errorf("volume %q of the live sandbox %q was reported as an orphan - "+
 					"`sbx gc --force` would delete it", vol, sandbox)
 			}
 		}

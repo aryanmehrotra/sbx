@@ -9,7 +9,7 @@ package provider
 // The one thing that genuinely simplifies is addressing. Locally every sandbox shares one
 // loopback, so services are remapped into a per-slot port block and the daemon has to hold
 // a port that answers while nothing is behind it. Here every pod has its own address, so a
-// sandbox's MySQL is reachable at its own name on 3306 and there is no remapping at all —
+// sandbox's MySQL is reachable at its own name on 3306 and there is no remapping at all -
 // which is why callers ask this package for an Endpoint rather than for a port.
 //
 // Manifests are emitted as JSON rather than YAML. kubectl accepts both, and JSON is
@@ -39,12 +39,12 @@ type kubeProvider struct {
 	// The readiness command each deployment declares, cached with a short TTL.
 	//
 	// Cached because Probe is the body of the wake poll loop and this was a `kubectl get`
-	// fork on every iteration, on top of the `kubectl exec` that follows it — and kubectl
+	// fork on every iteration, on top of the `kubectl exec` that follows it - and kubectl
 	// startup dominates a cluster wake.
 	//
 	// TTL rather than explicit invalidation, which is what the first version got wrong.
 	// Create does call forgetReady, but Create runs in the `sbx create` process while the
-	// cache lives in the long-running `sbx serve` daemon — so the invalidation never reached
+	// cache lives in the long-running `sbx serve` daemon - so the invalidation never reached
 	// the process that actually probes. `sbx rm x && sbx create x` with an edited health
 	// command would have left the daemon probing with the old one for weeks. Exactly the
 	// mistake the docker docstring one file over describes: reasoning about invalidation
@@ -141,7 +141,7 @@ func kubeName(sandbox, service string) string {
 }
 
 // Endpoints: a service name and the port the workload actually listens on. No block, no
-// backing port, no arithmetic — the constraint that produced those does not exist here.
+// backing port, no arithmetic - the constraint that produced those does not exist here.
 func (k *kubeProvider) Endpoints(sandbox, service string, _, _ int, containerPorts []int) []Endpoint {
 	eps := make([]Endpoint, 0, len(containerPorts))
 
@@ -165,7 +165,7 @@ const activatorSelector = "sbx-activator"
 
 // activatorPort is where the activator listens for one service. It multiplexes every
 // sandbox onto one pod, so the per-slot block from the local provider earns its keep here
-// too — but it is now entirely private, and no client ever sees it.
+// too - but it is now entirely private, and no client ever sees it.
 func activatorPort(slot, ordinal, i int) int {
 	return publicBase + slot*blockSize + ordinal + i
 }
@@ -174,7 +174,7 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 	svc spec.Service, _ []Endpoint, _ string, iso Isolation,
 ) error {
 	// Refused, not ignored. The cluster answer is a NetworkPolicy, which needs a CNI that
-	// enforces them — many do not — and silently leaving a service open when its spec said
+	// enforces them - many do not - and silently leaving a service open when its spec said
 	// deny is the one outcome a security control must never produce.
 	if svc.Egress == spec.EgressDeny {
 		return fmt.Errorf("service %q declares egress deny, which the kubernetes provider "+
@@ -197,14 +197,14 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 
 	// Check the runtime exists before asking for it.
 	//
-	// Kubernetes already fails closed here — a pod naming an absent RuntimeClass is never
+	// Kubernetes already fails closed here - a pod naming an absent RuntimeClass is never
 	// admitted, so nothing runs with weaker isolation than was asked for. But it fails
 	// closed silently: the Deployment is created, no pod ever appears, and two minutes
 	// later the error says the service never became ready. That sends someone looking at
 	// their database while the actual problem is that the cluster has no gVisor.
 	if rc := kubeRuntimeClass(iso); rc != "" {
 		if _, err := kubectl("", "get", "runtimeclass", rc); err != nil {
-			return fmt.Errorf("isolation %q needs RuntimeClass %q, which this cluster does not have — "+
+			return fmt.Errorf("isolation %q needs RuntimeClass %q, which this cluster does not have - "+
 				"install it, or create with --isolation container", iso, rc)
 		}
 	}
@@ -233,7 +233,7 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 	// Two Services, and the split is the point.
 	//
 	// The one clients use selects the *activator*, so a connection to a sleeping sandbox
-	// still lands somewhere that can answer — which is exactly what a Service selecting the
+	// still lands somewhere that can answer - which is exactly what a Service selecting the
 	// workload cannot do at zero replicas. The activator then scales the workload up and
 	// forwards through the second Service, which does select the workload.
 	//
@@ -299,7 +299,7 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc spe
 
 	// The healthcheck becomes a readiness probe, which is the same promise in the same
 	// place: nothing routes to this pod until it says it is serving. failureThreshold is
-	// generous for the same reason the local start period is — a database opening its data
+	// generous for the same reason the local start period is - a database opening its data
 	// directory is not a broken database.
 	if svc.Health != "" {
 		container["readinessProbe"] = map[string]any{
@@ -362,7 +362,7 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc spe
 	}
 }
 
-// clientService keeps the natural address — mysql on :3306 — and sends it to the activator.
+// clientService keeps the natural address - mysql on :3306 - and sends it to the activator.
 func (k *kubeProvider) clientService(name string, labels map[string]string, svc spec.Service, slot, ordinal int) map[string]any {
 	var ports []any
 
@@ -506,7 +506,7 @@ func (k *kubeProvider) Logs(ctx context.Context, ref string, lines int, follow b
 func (k *kubeProvider) Copy(_ context.Context, ref, src, dst string) error {
 	pod, err := k.kc("", "get", "pod", "-l", "app="+ref, "-o", "jsonpath={.items[0].metadata.name}")
 	if err != nil || pod == "" {
-		return fmt.Errorf("no running pod for %s — copy needs it awake", ref)
+		return fmt.Errorf("no running pod for %s - copy needs it awake", ref)
 	}
 
 	_, err = k.kc("", "cp", qualify(pod, src), qualify(pod, dst))
@@ -602,7 +602,7 @@ func (k *kubeProvider) Remove(_ context.Context, sandbox string) error {
 	}
 
 	// PVCs are deleted here and nowhere else. Sleeping a sandbox must never reach this
-	// path — that is the whole reason a stopped sandbox is still a sandbox.
+	// path - that is the whole reason a stopped sandbox is still a sandbox.
 	// Both Services carry the labels, so one delete per kind still gets the pair.
 	for _, kind := range []string{"deployment", "service", "pvc"} {
 		if _, err := k.kc("", "delete", kind, "-l", sel); err != nil {

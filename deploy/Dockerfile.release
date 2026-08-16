@@ -1,7 +1,7 @@
 # The activator image, built from an already-compiled binary.
 #
 # TARGETARCH is set by buildx per platform, so one Dockerfile produces both architectures
-# from binaries the release job compiled — the image and the published binaries then come
+# from binaries the release job compiled - the image and the published binaries then come
 # from exactly the same compilation rather than two that happen to agree.
 FROM alpine:3.20
 

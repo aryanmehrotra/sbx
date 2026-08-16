@@ -5,7 +5,7 @@ package cli
 //
 // Create starts every service to health-check it. For a database that means it initialised
 // an empty data directory and is now serving from it. Copying the snapshot over that while
-// it runs is replacing the floor underneath a live process — and DECISIONS.md already
+// it runs is replacing the floor underneath a live process - and DECISIONS.md already
 // records what this class of bug looks like here: a fork that came up with a healthy server
 // and an empty database, which is the worst shape of failure because it looks like it worked.
 //
@@ -88,13 +88,13 @@ func TestRestoreStopsEachServiceBeforeWritingOverIt(t *testing.T) {
 		}
 
 		if stop > copyc {
-			t.Errorf("%s: copied at %d but stopped at %d — the snapshot was written over a "+
+			t.Errorf("%s: copied at %d but stopped at %d - the snapshot was written over a "+
 				"running service\n  sequence: %v", svc, copyc, stop, r.calls)
 		}
 	}
 }
 
-// A service the snapshot knows nothing about is left exactly as Create made it — not
+// A service the snapshot knows nothing about is left exactly as Create made it - not
 // stopped, not overwritten. A fork that stopped services it had no data for would hand back
 // a sandbox with half of it down.
 func TestRestoreLeavesUnsnapshottedServicesAlone(t *testing.T) {

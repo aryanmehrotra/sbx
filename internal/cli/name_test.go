@@ -10,7 +10,7 @@ func TestSandboxNames(t *testing.T) {
 	ok := []string{"main", "feature-x", "a", "release-2026.08", "agent_1", "x9", "A-B"}
 	bad := []string{
 		"",                  // nothing to name
-		"feature/login",     // what a branch is actually called — the common mistake
+		"feature/login",     // what a branch is actually called - the common mistake
 		"../../../tmp/evil", // and why the rule is written down rather than inherited
 		"-leading-dash",
 		".hidden",
@@ -71,7 +71,7 @@ func TestTheMessageNamesWhatWasWrong(t *testing.T) {
 	}
 }
 
-// A snapshot name becomes part of an image tag, and image repositories must be lowercase —
+// A snapshot name becomes part of an image tag, and image repositories must be lowercase -
 // a stricter rule than container names. `sbx snapshot db GOLDEN` used to reach docker and
 // come back with "repository name (library/sbx-snap-GOLDEN-postgres) must be lowercase":
 // a message about a name the user never typed, from a command they never ran.
@@ -93,7 +93,7 @@ func TestSnapshotNamesMustBeTagSafe(t *testing.T) {
 }
 
 // The two rules genuinely differ, and the sandbox rule must not be quietly reused for
-// snapshots — uppercase is fine for a container and fatal for an image tag.
+// snapshots - uppercase is fine for a container and fatal for an image tag.
 func TestSnapshotRuleIsStricterThanTheSandboxRule(t *testing.T) {
 	if err := ValidateName("sandbox", "Feature-X"); err != nil {
 		t.Errorf("uppercase is legal in a container name: %v", err)

@@ -4,8 +4,8 @@ package daemon
 //
 // With a caveat this file exists to record. Counting calls is deterministic where wall-clock
 // on a loaded machine is not, but it answers a different question: it treats every call as
-// free. A backoff from 5 ms looked like a large win by this measure — an 8 ms workload
-// declared awake in 102 ms flat against about 20 ms backing off — and was worth nothing
+// free. A backoff from 5 ms looked like a large win by this measure - an 8 ms workload
+// declared awake in 102 ms flat against about 20 ms backing off - and was worth nothing
 // end-to-end, because each probe is an Engine API exec and probing at 5 ms cannot sample
 // faster than the probe costs. Measured, order alternating, n=14: 162 ms flat, 166 ms
 // backing off.
@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// readyAfter is a workload that becomes serving once, after a delay — the shape of a real
+// readyAfter is a workload that becomes serving once, after a delay - the shape of a real
 // container: not ready when Start returns, ready shortly after.
 type readyAfter struct {
 	countingProvider
@@ -51,7 +51,7 @@ func (r *readyAfter) Probe(context.Context, string) (bool, bool) {
 
 // Nothing is asked before the container is started.
 //
-// The unit being asleep is why wake was called, so a probe before Start could only fail —
+// The unit being asleep is why wake was called, so a probe before Start could only fail -
 // and starting an already-running container is a 304 the provider treats as success, so the
 // case that probe existed for costs nothing without it. One round trip per cold wake.
 func TestAColdWakeDoesNotProbeBeforeStarting(t *testing.T) {
@@ -73,7 +73,7 @@ func TestAColdWakeDoesNotProbeBeforeStarting(t *testing.T) {
 	// One probe: the poll loop's first iteration, after Start. Two would mean the pre-Start
 	// probe is back.
 	if got := p.probes.Load(); got != 1 {
-		t.Errorf("a cold wake cost %d probes, want 1 — each is a round trip to the runtime, "+
+		t.Errorf("a cold wake cost %d probes, want 1 - each is a round trip to the runtime, "+
 			"and a probe before Start can only fail", got)
 	}
 }
@@ -91,7 +91,7 @@ func TestASlowWorkloadIsNotProbedHundredsOfTimes(t *testing.T) {
 	}
 
 	if got := p.probes.Load(); got > 15 {
-		t.Errorf("a 900 ms wake cost %d probes at a 100 ms interval — that is more than the "+
+		t.Errorf("a 900 ms wake cost %d probes at a 100 ms interval - that is more than the "+
 			"interval allows, so something is polling faster than it says", got)
 	}
 }

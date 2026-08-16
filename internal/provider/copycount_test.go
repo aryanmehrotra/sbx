@@ -4,7 +4,7 @@ import "testing"
 
 // CopyVolume asserts what it moved rather than assuming it. Docker creates an empty volume
 // for a name that does not exist instead of failing, so a copy from a snapshot that was never
-// made is otherwise a silent success producing nothing at all — which is the exact shape
+// made is otherwise a silent success producing nothing at all - which is the exact shape
 // DECISIONS.md records for the docker-commit bug: a working server and an empty database.
 func TestParseCopyCount(t *testing.T) {
 	cases := []struct {

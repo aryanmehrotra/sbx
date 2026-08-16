@@ -6,13 +6,13 @@ import (
 )
 
 // A floating tag in a template means the first thing anybody runs can change without a commit
-// touching this repo — and the failure surfaces as "sbx is broken", not "the upstream image
+// touching this repo - and the failure surfaces as "sbx is broken", not "the upstream image
 // moved". CI runs the same check as a shell script; this one keeps it true for `go test`
 // alone, which is what somebody editing a template actually runs.
 func TestEveryTemplateImageIsPinned(t *testing.T) {
 	images := TemplateImages()
 	if len(images) == 0 {
-		t.Fatal("no template images found — the parser is broken, which would make this test vacuous")
+		t.Fatal("no template images found - the parser is broken, which would make this test vacuous")
 	}
 
 	for _, img := range images {
@@ -32,7 +32,7 @@ func TestPinnedImagesKeepTheirTag(t *testing.T) {
 		}
 
 		if !strings.Contains(name, ":") {
-			t.Errorf("%s is pinned but carries no tag — nobody can tell what it is", img)
+			t.Errorf("%s is pinned but carries no tag - nobody can tell what it is", img)
 		}
 	}
 }
@@ -42,7 +42,7 @@ func TestPinnedImagesKeepTheirTag(t *testing.T) {
 func TestTemplatesReportWhenTheyWerePinned(t *testing.T) {
 	d := TemplatesRefreshed()
 	if d == "" {
-		t.Fatal("no refresh date — a pin nobody can see the age of is one nobody refreshes")
+		t.Fatal("no refresh date - a pin nobody can see the age of is one nobody refreshes")
 	}
 
 	if len(d) != len("2006-01-02") || strings.Count(d, "-") != 2 {

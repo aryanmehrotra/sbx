@@ -39,7 +39,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		return err
 	}
 
-	// Held only until the first container exists — see slotlock.go. After that the slot is
+	// Held only until the first container exists - see slotlock.go. After that the slot is
 	// claimed by something every other create can see.
 	releaseSlot := lockSlots()
 	defer releaseSlot()
@@ -75,19 +75,19 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 
 		// A service being created that depends on one that was just skipped would be exactly
 		// the failure depends_on exists to prevent, with the cause moved from "alphabetical
-		// accident" to "optional accident" — and it would look like success, because the
+		// accident" to "optional accident" - and it would look like success, because the
 		// ordering ran and every service that was created came up.
 		for _, dep := range svc.DependsOn {
 			if skipped[dep] {
 				return fmt.Errorf("service %q depends on %q, which is optional and was not "+
-					"created — pass --optional, or drop the dependency", name, dep)
+					"created - pass --optional, or drop the dependency", name, dep)
 			}
 		}
 
 		start, _ := sp.StartIndex(layout, name)
 
-		// Resolve a build into an image first: everything downstream — the provider, the
-		// labels, the wake path — only ever knows about images.
+		// Resolve a build into an image first: everything downstream - the provider, the
+		// labels, the wake path - only ever knows about images.
 		svc, err = buildIfNeeded(ctx, p, specDir, name, svc)
 		if err != nil {
 			return err
@@ -98,7 +98,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		}
 
 		// The slot now belongs to a real container, so nothing else can be handed it. Every
-		// remaining service — pulls, health checks, init — proceeds unserialised.
+		// remaining service - pulls, health checks, init - proceeds unserialised.
 		releaseSlot()
 
 		created = append(created, p.Endpoints(sandbox, name, slot, start, svc.Ports)...)
@@ -112,7 +112,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 
 // readiness says what is actually true, which is not always the same sentence.
 //
-// The ports `sbx env` exports are the daemon's, not docker's — `sbx serve` is what accepts on
+// The ports `sbx env` exports are the daemon's, not docker's - `sbx serve` is what accepts on
 // them. Create used to print "connecting wakes it" unconditionally, and on a machine with no
 // daemon that is simply false: the sandbox exists, the exports look right, and the first
 // connection is refused with nothing anywhere saying why. That is the worst shape a first run
@@ -120,7 +120,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 //
 // So it is checked rather than asserted. `sbx ready` already refuses on the same evidence;
 // this is the same question asked one step earlier, where it is a warning rather than an
-// error — the sandbox really was created, and starting the daemon afterwards fixes it.
+// error - the sandbox really was created, and starting the daemon afterwards fixes it.
 func readiness(eps []provider.Endpoint) string {
 	var local []provider.Endpoint
 
@@ -133,35 +133,35 @@ func readiness(eps []provider.Endpoint) string {
 	}
 
 	if len(local) == 0 {
-		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
+		return "ready. Nothing needs starting again - connecting wakes it, idleness sleeps it."
 	}
 
 	// The ports are the ground truth, so they are asked first and the presence file is only
 	// consulted to decide WHICH message when they are dead.
 	//
 	// Dialling first because a refused connection is the fact, and the record is only ever
-	// evidence about the cause. One daemon serves the whole machine — `sbx serve` refuses to
-	// start a second — so the record is now reliable; asking the port anyway costs nothing
+	// evidence about the cause. One daemon serves the whole machine - `sbx serve` refuses to
+	// start a second - so the record is now reliable; asking the port anyway costs nothing
 	// and means a stale or unwritable record degrades the advice rather than the answer.
 	if waitReachable(local, 0) {
-		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
+		return "ready. Nothing needs starting again - connecting wakes it, idleness sleeps it."
 	}
 
 	// Two different problems that look identical from a refused connection, and they need
 	// opposite advice: start a daemon, versus wait a moment for the one you have.
 	if _, ok := daemon.Running(); !ok {
 		return "no `sbx serve` is running, so nothing accepts on the ports `sbx env` exports.\n" +
-			"Start one — once per machine, not once per sandbox:\n\n" +
+			"Start one - once per machine, not once per sandbox:\n\n" +
 			"    sbx serve --idle 5m &\n\n" +
 			"deploy/ has a launchd plist and a systemd unit for running it supervised."
 	}
 
-	// There is a daemon, and it finds new sandboxes on its refresh tick — so for a moment
+	// There is a daemon, and it finds new sandboxes on its refresh tick - so for a moment
 	// after create, the exported ports are still dead. Waiting here rather than handing back
 	// an address that is about to work is the difference between the README's three-line
 	// quickstart being true and being true-eventually.
 	if waitReachable(local, 30*time.Second) {
-		return "ready. Nothing needs starting again — connecting wakes it, idleness sleeps it."
+		return "ready. Nothing needs starting again - connecting wakes it, idleness sleeps it."
 	}
 
 	return "created, but the running `sbx serve` has not picked it up yet.\n" +
@@ -225,7 +225,7 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 
 // checkMounts asserts that every declared file arrived as a file.
 //
-// A bind mount whose source the container runtime cannot reach does not fail — docker
+// A bind mount whose source the container runtime cannot reach does not fail - docker
 // creates an empty directory at the destination. Anything that then reads that path gets a
 // directory, and the resulting error talks about config parsing or a missing file rather
 // than about a mount. This turns the most expensive silent failure in the project into one
@@ -234,7 +234,7 @@ func checkMounts(ctx context.Context, p provider.Provider, ref, name string, svc
 	for host, dest := range svc.Files {
 		if _, err := p.Exec(ctx, ref, []string{"test", "-f", dest}); err != nil {
 			return fmt.Errorf(
-				"service %q: %s did not mount as a file — the container has a directory at %s.\n"+
+				"service %q: %s did not mount as a file - the container has a directory at %s.\n"+
 					"The runtime could not reach %s, so it created an empty one. A VM-backed docker "+
 					"only shares some host paths; move the file somewhere it can see, such as under "+
 					"your home directory",
@@ -279,7 +279,7 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 		}
 
 		// The first failure is the one worth looking at closely. A health command that is not
-		// in the image fails identically to one that is merely early — and waiting two
+		// in the image fails identically to one that is merely early - and waiting two
 		// minutes to say "never became ready" for a missing binary is the least useful
 		// message this tool can produce. The shell distinguishes them for us: 127 is "not
 		// found" and 126 is "found but not executable", and neither improves with time.
@@ -301,7 +301,7 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 	// it kept returning it.
 	if command != "" {
 		if out, err := p.Exec(ctx, ref, []string{"sh", "-c", command}); err != nil {
-			return fmt.Errorf("%s never became ready within %s — the health command %q still "+
+			return fmt.Errorf("%s never became ready within %s - the health command %q still "+
 				"fails: %s", ref, timeout, command, firstLine(out))
 		}
 	}
@@ -365,7 +365,7 @@ func firstLine(s string) string {
 	}
 
 	if len(s) > 200 {
-		s = s[:200] + "…"
+		s = s[:200] + "..."
 	}
 
 	if s == "" {
@@ -390,14 +390,14 @@ func joinEndpoints(eps []provider.Endpoint) string {
 //
 // This is the affordance an agent needs. A spec covers what a repo always wants; an agent
 // mid-task wants a Postgres to try a migration against, and should be able to have one
-// inside its own sandbox — addressed, sleeping when idle, destroyed with the sandbox —
+// inside its own sandbox - addressed, sleeping when idle, destroyed with the sandbox -
 // rather than reaching for a stray container that outlives the task and belongs to nobody.
 func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, image string,
 	containerPorts []int, health string, env map[string]string, volume string, args []string, iso provider.Isolation,
 ) error {
 	// The service name becomes a container name, exactly as a sandbox name does. This is the
 	// agent-facing path, so it is also the one most likely to be handed something shaped like
-	// a branch or a task id — and without this it fails at docker, late, with a dump of the
+	// a branch or a task id - and without this it fails at docker, late, with a dump of the
 	// whole command instead of the name that was wrong.
 	if err := ValidateName("service", name); err != nil {
 		return err
@@ -409,7 +409,7 @@ func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, imag
 	}
 
 	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q — create it first", sandbox)
+		return fmt.Errorf("no sandbox %q - create it first", sandbox)
 	}
 
 	for _, u := range units {
@@ -476,7 +476,7 @@ func freeIndex(specPath string, units []provider.Unit, n int) (int, error) {
 // cmdEnv prints the exports a repo's existing tooling already reads.
 //
 // Both a host and a port, always. Locally the host is loopback and only the port carries
-// information, but a caller that hardcodes localhost is a caller that cannot be deployed —
+// information, but a caller that hardcodes localhost is a caller that cannot be deployed -
 // and the whole point of the provider seam is that the same spec works in both places.
 // shellFormat renders one variable the way the caller's shell will accept it.
 //
@@ -534,7 +534,7 @@ func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) 
 	}
 
 	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q — create it first", sandbox)
+		return fmt.Errorf("no sandbox %q - create it first", sandbox)
 	}
 
 	layout, err := sp.Assign()
@@ -647,8 +647,8 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 			continue
 		}
 
-		// No health command in hand here — Ready works from what the provider reports, not
-		// from a spec — so the fast-fail check is skipped and this behaves as it always did.
+		// No health command in hand here - Ready works from what the provider reports, not
+		// from a spec - so the fast-fail check is skipped and this behaves as it always did.
 		if err := waitHealthy(ctx, p, u.Ref, "", timeout); err != nil {
 			return err
 		}
@@ -659,14 +659,14 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 	if len(unverifiable) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"sbx: warning: %s declare no health check, so nothing here checked whether they\n"+
-				"     are serving — only that they exist. Give them a health command.\n",
+				"     are serving - only that they exist. Give them a health command.\n",
 			strings.Join(unverifiable, ", "))
 	}
 
 	// The services are healthy. That is not the same as the sandbox being usable, and the
 	// difference is what a caller trips over: `sbx env` hands out the PUBLIC port, and only
 	// the daemon answers on it. Without one running, this used to print "is serving" while
-	// the address it had just exported accepted nothing — a green light on a dead address,
+	// the address it had just exported accepted nothing - a green light on a dead address,
 	// which is worse than a red one.
 	var unreachable []string
 
@@ -683,7 +683,7 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 	}
 
 	if len(unreachable) > 0 {
-		return fmt.Errorf("%s serving, but nothing answers on %s — those are the ports\n"+
+		return fmt.Errorf("%s serving, but nothing answers on %s - those are the ports\n"+
 			"     `sbx env` exports, and `sbx serve` is what fronts them. Start the daemon,\n"+
 			"     or connect to the backing ports directly if you do not want one",
 			sandbox, strings.Join(unreachable, ", "))
@@ -697,7 +697,7 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 // hostVar is the companion variable for a declared port export.
 //
 // `DATABASE_PORT` gets `DATABASE_HOST`, which is the convention most application config
-// already reads. `PGPORT` gets `PGHOST` — no underscore — because that is what libpq itself
+// already reads. `PGPORT` gets `PGHOST` - no underscore - because that is what libpq itself
 // reads, and it is the difference between the README's `psql` example working and not: with
 // PGHOST and PGPORT set, `psql` with no arguments connects to the sandbox. The same shape
 // covers MYSQL_HOST/MYSQL_PORT and REDIS_HOST/REDIS_PORT without special-casing any of them.
@@ -721,7 +721,7 @@ func isLocal(u provider.Unit) bool {
 
 // ── exec / logs / cp ─────────────────────────────────────────────────────────
 //
-// The hard part of a sandbox — waking on demand, surviving sleep, being addressable — was
+// The hard part of a sandbox - waking on demand, surviving sleep, being addressable - was
 // already here. These three are the thin part, and without them a sandbox is a data plane
 // rather than somewhere you can work.
 //
@@ -808,7 +808,7 @@ func Exec(ctx context.Context, p provider.Provider, sandbox, service string, arg
 // cmdLogs shows one service, or the whole sandbox at once.
 //
 // With no service named it interleaves every service on stdout, each line prefixed with
-// where it came from — a sandbox is a set of processes, and watching it should feel like
+// where it came from - a sandbox is a set of processes, and watching it should feel like
 // watching one server rather than opening N terminals.
 func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lines int, follow bool) error {
 	units, err := p.List(ctx, sandbox)
@@ -824,7 +824,7 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 		// Deliberately NOT serviceRef: that wakes what it touches, which is right for exec
 		// and cp and wrong here. Asking what a sandbox said is not using it, and a `sbx logs
 		// -f my-branch postgres` left open would otherwise hold a sandbox awake for as long
-		// as somebody was watching it — the one command where that is exactly backwards.
+		// as somebody was watching it - the one command where that is exactly backwards.
 		ref, err := sleepingRef(ctx, units, sandbox, service)
 		if err != nil {
 			return err
@@ -919,7 +919,7 @@ func WakePort(ctx context.Context, p provider.Provider, sandbox, service string)
 
 		if !isLocal(u) {
 			return 0, fmt.Errorf(
-				"in a cluster the link is an Ingress in front of %s, not a tunnel from here — "+
+				"in a cluster the link is an Ingress in front of %s, not a tunnel from here - "+
 					"see deploy/activator.yaml", u.Client[0].Host)
 		}
 

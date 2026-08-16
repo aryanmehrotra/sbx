@@ -3,13 +3,13 @@
 #
 #   scripts/recovery.sh
 #
-# Two commit messages already claim it: "the daemon owns no state — it rediscovers every
+# Two commit messages already claim it: "the daemon owns no state - it rediscovers every
 # sandbox from container labels at startup, and deliberately sleeps nothing on the way out."
 # Nothing had checked either half, and both are the sort of claim that is true right up
 # until someone adds a cache.
 #
-# So this kills it in the two states that matter — while a sandbox is awake, and while one
-# is asleep — and asserts what a user would notice:
+# So this kills it in the two states that matter - while a sandbox is awake, and while one
+# is asleep - and asserts what a user would notice:
 #
 #   1. killing the daemon does not stop a running sandbox
 #   2. a restarted daemon re-adopts sandboxes it never created
@@ -75,7 +75,7 @@ kill -9 "$DAEMON" 2>/dev/null
 sleep 3
 
 if running; then
-  ok "sandbox still running after SIGKILL — the daemon took nothing with it"
+  ok "sandbox still running after SIGKILL - the daemon took nothing with it"
 else
   bad "killing the daemon stopped the sandbox"
 fi

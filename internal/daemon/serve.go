@@ -4,7 +4,7 @@ package daemon
 // their lifecycle: a connection wakes what is behind a port, silence puts it back.
 //
 // The same binary is the local proxy and the in-cluster activator. Only the Provider and
-// the addresses differ, because the policy — connect means wake, quiet means sleep — was
+// the addresses differ, because the policy - connect means wake, quiet means sleep - was
 // never about containers.
 
 import (
@@ -58,7 +58,7 @@ func Knock(port int) {
 
 // Reachable reports whether anything accepts on a port.
 //
-// Knock deliberately discards its error — it is a wake signal, and a sandbox that is asleep
+// Knock deliberately discards its error - it is a wake signal, and a sandbox that is asleep
 // with no daemon in front is not an error condition to knock on. This is the other question:
 // can the address a caller was handed actually be connected to.
 func Reachable(port int) bool {
@@ -111,13 +111,13 @@ func Serve(args []string) error {
 	refresh := fs.Duration("refresh", 15*time.Second, "how often to look for new or removed sandboxes")
 	_ = fs.Parse(args)
 
-	// One per machine. A second copy binds nothing — every listener fails with "address
-	// already in use", logged once per port with no retry — while the process stays up
+	// One per machine. A second copy binds nothing - every listener fails with "address
+	// already in use", logged once per port with no retry - while the process stays up
 	// looking healthy, and on exit it removes the first daemon's presence record. That is a
 	// normal accident: a supervised unit from deploy/ plus a manual `sbx serve &`, or two
 	// terminal tabs.
 	if running, ok := Running(); ok && running.PID != os.Getpid() {
-		return fmt.Errorf("sbx serve is already running (pid %d, since %s). One per machine — "+
+		return fmt.Errorf("sbx serve is already running (pid %d, since %s). One per machine - "+
 			"it fronts every sandbox's ports.\n     Stop that one first, or leave it: it is "+
 			"already serving everything this would.",
 			running.PID, running.Since.Format("15:04:05"))
@@ -141,7 +141,7 @@ func Serve(args []string) error {
 	defer cancel()
 
 	// Say so, in a file, so `sbx create` can tell "no daemon" from "the daemon has not
-	// noticed this sandbox yet" — those need opposite advice.
+	// noticed this sandbox yet" - those need opposite advice.
 	defer MarkRunning(p.Name())()
 
 	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, p.Name(), d.idle, InCluster())
@@ -150,7 +150,7 @@ func Serve(args []string) error {
 
 	// Deliberately does not sleep anything on the way out. The daemon dying is not a reason
 	// to tear down a database somebody is mid-migration on.
-	logs.Default.Info("", "", "stopped — sandboxes left as they are")
+	logs.Default.Info("", "", "stopped - sandboxes left as they are")
 
 	return nil
 }
@@ -162,7 +162,7 @@ func (d *daemon) run(ctx context.Context) {
 	defer discovery.Stop()
 
 	// The reaper's cadence has to follow the idle window, not ignore it. Fixed at 30s, a
-	// sandbox configured to sleep after 5s slept after 60 — two ticks, because the first
+	// sandbox configured to sleep after 5s slept after 60 - two ticks, because the first
 	// one only established that it had ever been serving. The setting meant nothing below
 	// half a minute, which is exactly where anyone testing it would set it.
 	reap := time.NewTicker(reapEvery(d.idle))

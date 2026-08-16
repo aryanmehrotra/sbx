@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// The zero-dependency root module is a product claim — it is a README badge, it is why
+// The zero-dependency root module is a product claim - it is a README badge, it is why
 // `go install` resolves nothing but stdlib, and it is the entire reason this console is a
 // separate module. The plan said to prove it with a test rather than by looking, because an
 // errant `go get` in the root would otherwise regress it silently.
@@ -124,7 +124,7 @@ func TestIngestScale(t *testing.T) {
 		t.Fatalf("wakes: got %d, want %d", got, lines)
 	}
 
-	t.Logf("ingested %d lines in %s — %.0f lines/sec, %.1f µs/line",
+	t.Logf("ingested %d lines in %s - %.0f lines/sec, %.1f µs/line",
 		lines, took.Round(time.Millisecond),
 		float64(lines)/took.Seconds(), float64(took.Microseconds())/lines)
 }
@@ -168,7 +168,7 @@ func TestDaemonExitingMidStreamIsNotAnError(t *testing.T) {
 	}
 
 	if len(r.wakes) != 2 {
-		t.Fatalf("wakes: got %v, want both — the last line had no newline", r.wakes)
+		t.Fatalf("wakes: got %v, want both - the last line had no newline", r.wakes)
 	}
 }
 

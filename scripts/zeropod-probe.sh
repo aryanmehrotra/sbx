@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# zeropod, measured — the rival that beats sbx on the thing sbx cannot do.
+# zeropod, measured - the rival that beats sbx on the thing sbx cannot do.
 #
 #   scripts/zeropod-probe.sh
 #
@@ -12,8 +12,8 @@
 # an argument for measuring it somewhere else, not for leaving the only rival that wins
 # unmeasured. This runs on Linux/amd64 with kind, which is what its own e2e suite uses.
 #
-# The blocker was the gate. zeropod does not stop the container — the pod stays phase
-# Running while checkpointed — so `kubectl get pod` cannot tell asleep from awake, and a
+# The blocker was the gate. zeropod does not stop the container - the pod stays phase
+# Running while checkpointed - so `kubectl get pod` cannot tell asleep from awake, and a
 # wake timed without that gate is a warm request wearing a wake's name. The observable is a
 # metric: `zeropod_running` is 0 when checkpointed and 1 when running
 # (docs/metrics.md, ctrox/zeropod, read 2026-08-15).
@@ -21,7 +21,7 @@
 # Measured the same way compare.sh measures everything else, so the numbers can sit in one
 # table: a sample counts only on a correct protocol reply, the target must be verifiably
 # asleep at t0, and whether the FIRST attempt was served is recorded separately from how
-# long it took — that column is what separates holding a connection from refusing it.
+# long it took - that column is what separates holding a connection from refusing it.
 set -uo pipefail
 
 CLUSTER="${CLUSTER:-zeropod-probe}"
@@ -34,7 +34,7 @@ note() { printf '  %-14s %s\n' "$1" "$2"; }
 skip() { # reason
   say
   say "── result ──────────────────────────────────────────────────"
-  say "  zeropod   SKIPPED — $1"
+  say "  zeropod   SKIPPED - $1"
   say
   say "SKIPPED means it could not be stood up here. It is not a result about zeropod."
   exit 0
@@ -77,8 +77,8 @@ fi
 say "  cluster up"
 
 # config/production, not config/kind. The kind overlay pins :dev images that are not
-# published — it is for zeropod's own development, where images are built locally and loaded
-# into the cluster — and using it here failed with
+# published - it is for zeropod's own development, where images are built locally and loaded
+# into the cluster - and using it here failed with
 #   ghcr.io/ctrox/zeropod-installer:dev: not found
 # after a ten-minute ImagePullBackOff. production pins released tags (v0.12.1) and the CRIU
 # image the installer needs. The kind-ness of this cluster is in the node label, not the
@@ -111,7 +111,7 @@ if ! kubectl -n zeropod-system rollout status daemonset/zeropod-node --timeout=6
   say
   kubectl get events -n zeropod-system --sort-by=.lastTimestamp 2>&1 | tail -12 | sed 's/^/    /'
 
-  skip "the zeropod node daemonset never became ready — diagnosis above"
+  skip "the zeropod node daemonset never became ready - diagnosis above"
 fi
 say "  zeropod installed"
 
@@ -190,7 +190,7 @@ if ! metrics | grep -q '^zeropod_running'; then
   metrics 2>&1 | grep -c '^zeropod_' | sed 's/^/      /'
   say
 
-  skip "zeropod_running is not exposed, so asleep cannot be told from awake — and a wake timed without that gate is a warm request"
+  skip "zeropod_running is not exposed, so asleep cannot be told from awake - and a wake timed without that gate is a warm request"
 fi
 say "  gate available: zeropod_running is exposed"
 
@@ -215,7 +215,7 @@ for i in $(seq 1 "$RUNS"); do
 
   if ! checkpointed; then
     void=$((void + 1))
-    printf '  run %-3s VOID — never checkpointed in 90s\n' "$i"
+    printf '  run %-3s VOID - never checkpointed in 90s\n' "$i"
     continue
   fi
 
@@ -233,7 +233,7 @@ for i in $(seq 1 "$RUNS"); do
   t1=$(python3 -c 'import time;print(int(time.time()*1000))')
 
   if ! client; then
-    printf '  run %-3s FAILED — never served\n' "$i"
+    printf '  run %-3s FAILED - never served\n' "$i"
     continue
   fi
 
@@ -268,5 +268,5 @@ if len(xs) > 1:
 note "first attempt" "$transparent/$n served"
 note "void" "$void"
 say
-say "  what comes back: RAM and processes, via CRIU — not a cold start against a warm disk."
+say "  what comes back: RAM and processes, via CRIU - not a cold start against a warm disk."
 say "  That is the axis sbx loses on, and it is why this was worth measuring."

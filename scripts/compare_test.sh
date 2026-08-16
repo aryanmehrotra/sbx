@@ -47,7 +47,7 @@ stub_client()    { return 0; }
 client_for()     { echo stub_client; }   # every target uses the stub client
 
 echo
-echo "compare.sh — injected failures"
+echo "compare.sh - injected failures"
 echo "=============================="
 
 # 1. `up` fails → SKIPPED, and nothing is measured.
@@ -88,7 +88,7 @@ measure_one stub postgres >/dev/null 2>&1
   && ok "rc=2 → N/A, distinct from SKIPPED" \
   || bad "N/A vs SKIPPED" "got [$(status_of)]"
 
-# 5. A contender that cannot be gated at all gets no row whatsoever — not even a dash.
+# 5. A contender that cannot be gated at all gets no row whatsoever - not even a dash.
 reset
 stub_available() { REASON="nothing distinguishes asleep from awake"; return 3; }
 measure_one stub nginx >/dev/null 2>&1
@@ -96,7 +96,7 @@ measure_one stub nginx >/dev/null 2>&1
   && ok "rc=3 → omitted entirely, no row to misread" \
   || bad "omission" "expected no rows, got ${#RESULTS[@]}: $(status_of)"
 
-# 6. The happy path still records numbers — a gate that rejects everything is useless.
+# 6. The happy path still records numbers - a gate that rejects everything is useless.
 reset
 stub_available() { return 0; }
 measure_one stub nginx >/dev/null 2>&1
@@ -104,7 +104,7 @@ measure_one stub nginx >/dev/null 2>&1
   && ok "healthy contender → OK with a distribution" \
   || bad "happy path" "got [$(status_of)] [$(detail_of)]"
 
-# 7. Below n=10 the row must not carry a p90 — it would be the second-highest sample
+# 7. Below n=10 the row must not carry a p90 - it would be the second-highest sample
 #    wearing a percentile's name.
 [[ "$(detail_of)" == *"min="* && "$(detail_of)" != *" p90="* ]] \
   && ok "n<10 reports min/max, never p90" \

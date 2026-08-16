@@ -3,7 +3,7 @@ package logs
 // Logging, in the shape a Go service already logs.
 //
 // A sandbox is a set of processes, and the daemon in front of them is a server. Both should
-// read like one — same columns, same levels, one stream — so that `sbx logs` is something
+// read like one - same columns, same levels, one stream - so that `sbx logs` is something
 // you can leave running in a pane rather than a wall of raw container output with no idea
 // which line came from where.
 //
@@ -126,7 +126,7 @@ type Logger struct {
 }
 
 // NewLogger decides its own format. Attached to a terminal it prints columns; anything else
-// gets JSON — a pipe means a file, a shipper or a CI log, none of which want escape codes.
+// gets JSON - a pipe means a file, a shipper or a CI log, none of which want escape codes.
 func New(out io.Writer) *Logger {
 	return &Logger{
 		out:   out,
@@ -246,7 +246,7 @@ func (l *Logger) Error(sandbox, service, format string, a ...any) {
 //
 // A container writes whatever it likes with no level and no idea which sandbox it is in.
 // This attaches both, holds partial lines until they are whole, and passes the text through
-// unchanged — reformatting somebody else's log message is how you lose the detail you were
+// unchanged - reformatting somebody else's log message is how you lose the detail you were
 // reading it for.
 type LineWriter struct {
 	Log     *Logger
@@ -284,7 +284,7 @@ func (w *LineWriter) Write(p []byte) (int, error) {
 // Flush emits whatever is left when the stream ends without a final newline.
 //
 // A container that was killed, or crashed, or was stopped mid-write does not get to finish
-// its last line — and that line is very often the one somebody is running `sbx logs` to
+// its last line - and that line is very often the one somebody is running `sbx logs` to
 // read. Without this it is buffered and silently dropped.
 func (w *LineWriter) Flush() {
 	w.mu.Lock()

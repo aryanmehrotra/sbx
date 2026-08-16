@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for scripts/lib/measure.sh — the maths every published number goes through.
+# Tests for scripts/lib/measure.sh - the maths every published number goes through.
 #
 #   bash scripts/lib/measure_test.sh
 #
@@ -59,7 +59,7 @@ eq "paired median" "100" "$(printf '%s\n' $PAIRS | measure_pairs | measure_stat 
 eq "paired max"    "110" "$(printf '%s\n' $PAIRS | measure_pairs | measure_stat max)"
 eq "paired n"      "4"   "$(printf '%s\n' $PAIRS | measure_pairs | measure_stat n)"
 
-# A negative delta is real data — the target answered faster than the baseline — and
+# A negative delta is real data - the target answered faster than the baseline - and
 # must survive rather than being clamped to zero, which would hide a broken baseline.
 eq "negative delta survives" "-10" "$(echo '90:100' | measure_pairs)"
 
@@ -80,7 +80,7 @@ eq "MiB parsed to KiB"  "4632"    "$(echo "$STATS" | measure_rss_kib sbx-bench-r
 eq "KiB parsed"         "512"     "$(echo "$STATS" | measure_rss_kib tiny)"
 eq "GiB parsed"         "1572864" "$(echo "$STATS" | measure_rss_kib big)"
 
-# A name that is not in the output is not 0 KiB of memory — it is an absent container,
+# A name that is not in the output is not 0 KiB of memory - it is an absent container,
 # and reporting 0 would publish a rival's control plane as free.
 eq "absent container is n/a" "n/a" "$(echo "$STATS" | measure_rss_kib not-running)"
 

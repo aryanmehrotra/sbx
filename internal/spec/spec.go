@@ -1,6 +1,6 @@
 package spec
 
-// The sandbox spec: what a repo declares so that anyone — a person, an agent, CI — can
+// The sandbox spec: what a repo declares so that anyone - a person, an agent, CI - can
 // have their own copy of its backing services.
 //
 // A spec never says when to start or stop anything. It says what exists, how to tell when
@@ -37,7 +37,7 @@ type Spec struct {
 // Build describes an image to build instead of pull.
 //
 // The alternative today is that everyone writes their own Dockerfile, builds it by hand,
-// tags it themselves and remembers to rebuild it — which is a build system every user
+// tags it themselves and remembers to rebuild it - which is a build system every user
 // reimplements badly. Daytona ships one and caches it; this is the same idea with the
 // caching done by content rather than by a clock.
 type Build struct {
@@ -49,7 +49,7 @@ type Build struct {
 }
 
 type Service struct {
-	// Image is what to run. Exactly one of Image or Build is required — an image with no
+	// Image is what to run. Exactly one of Image or Build is required - an image with no
 	// build is a pull, a build with no image is built and tagged by its own content.
 	Image string `json:"image"`
 
@@ -63,7 +63,7 @@ type Service struct {
 
 	// Health is a command run inside the container. Strongly recommended: without it the
 	// daemon can only dial the published port, which docker answers before the server
-	// does — so the first query after a wake lands on a socket that is about to close.
+	// does - so the first query after a wake lands on a socket that is about to close.
 	Health string `json:"health,omitempty"`
 
 	Env  map[string]string `json:"env,omitempty"`
@@ -77,7 +77,7 @@ type Service struct {
 	// repo next to the spec that references them.
 	Files map[string]string `json:"files,omitempty"`
 
-	// Init runs once, after the service first reports healthy — schemas, users, seed data.
+	// Init runs once, after the service first reports healthy - schemas, users, seed data.
 	// Not on every start: a woken container already has whatever this created.
 	Init []string `json:"init,omitempty"`
 
@@ -85,7 +85,7 @@ type Service struct {
 	//
 	// Only creation order. It deliberately does not affect which port a service gets:
 	// ordinals stay alphabetical, so adding a dependency never moves an existing
-	// sandbox's addresses. And it says nothing about wake order — the daemon wakes what
+	// sandbox's addresses. And it says nothing about wake order - the daemon wakes what
 	// is connected to, and a service that needs another at runtime should retry, because
 	// after a sleep there is no "startup" for an ordering rule to attach to.
 	DependsOn []string `json:"depends_on,omitempty"`
@@ -96,7 +96,7 @@ type Service struct {
 
 	// Egress says whether this service may reach the network beyond the host.
 	//
-	//	""      unset — whatever the backend does by default, which is what every
+	//	""      unset - whatever the backend does by default, which is what every
 	//	        existing spec already gets
 	//	"deny"  no routed egress. It can still be reached, and can still talk to the
 	//	        rest of its own sandbox
@@ -106,7 +106,7 @@ type Service struct {
 	// cannot do it at all must refuse rather than quietly leave the service open.
 	//
 	// It is not a domain allow-list. Docker has no primitive for that and doing it
-	// properly needs a filtering proxy in the data path — a component with a lifecycle,
+	// properly needs a filtering proxy in the data path - a component with a lifecycle,
 	// not a flag. Claiming it with anything less would be a control that does not control.
 	Egress string `json:"egress,omitempty"`
 
@@ -115,7 +115,7 @@ type Service struct {
 	//
 	// Unset means unlimited, which is what every sandbox had before this existed and is
 	// fine for one. It stops being fine at twenty: a laptop running a sandbox per branch
-	// has no ceiling at all, and the failure is the machine rather than the sandbox — the
+	// has no ceiling at all, and the failure is the machine rather than the sandbox - the
 	// limit that binds first, long before any wake latency does.
 	//
 	// Not validated here. Docker and Kubernetes each reject their own malformed values
@@ -140,7 +140,7 @@ func (s Service) validate(name string) error {
 		// Refused rather than picking one. Which of the two wins is exactly the kind of
 		// thing a reader would guess wrong, and guessing here means running a different
 		// image than the file appears to describe.
-		return fmt.Errorf("service %q: has both image and build — one or the other, "+
+		return fmt.Errorf("service %q: has both image and build - one or the other, "+
 			"since a built image is tagged from its own content", name)
 	case hasBuild && strings.TrimSpace(s.Build.Context) == "":
 		return fmt.Errorf("service %q: build needs a context directory", name)
@@ -161,7 +161,7 @@ func (s Service) validate(name string) error {
 	switch s.Egress {
 	case "", EgressDeny:
 	default:
-		return fmt.Errorf("service %q: egress %q is not valid — the only value is %q",
+		return fmt.Errorf("service %q: egress %q is not valid - the only value is %q",
 			name, s.Egress, EgressDeny)
 	}
 
@@ -177,7 +177,7 @@ func LoadSpec(path string) (*Spec, error) {
 	if err != nil {
 		// A missing spec is the first thing anybody hits on a real repo, and `open
 		// sandbox.json: no such file or directory` mentions neither the built-in templates
-		// nor the flag that skips the file entirely — in a tool whose pitch is "no spec file
+		// nor the flag that skips the file entirely - in a tool whose pitch is "no spec file
 		// needed". The bare error is right about what happened and useless about what to do.
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("no %s here. Either start from a built-in:\n"+
@@ -193,7 +193,7 @@ func LoadSpec(path string) (*Spec, error) {
 }
 
 // ServiceName is what a service may be called: the container-name rule, because that is what
-// the name becomes. Exported so the CLI's own name check and this one cannot drift apart —
+// the name becomes. Exported so the CLI's own name check and this one cannot drift apart -
 // they are the same rule, asserted equal by a test.
 var ServiceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
@@ -218,12 +218,12 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 
 	for name, svc := range s.Services {
 		// The name becomes part of a container name, so a spec that names a service something
-		// the runtime will not accept cannot be created — and `sbx validate` exists to say so
+		// the runtime will not accept cannot be created - and `sbx validate` exists to say so
 		// before a commit, not after. Its own docstring sets the standard: a spec that passes
 		// lint and fails create is worse than no lint at all.
 		if !ServiceName.MatchString(name) {
 			return nil, fmt.Errorf("%s: service name %q is not usable: start with a letter or "+
-				"digit, then letters, digits, dot, dash or underscore — it becomes part of a "+
+				"digit, then letters, digits, dot, dash or underscore - it becomes part of a "+
 				"container name", path, name)
 		}
 

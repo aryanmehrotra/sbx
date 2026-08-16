@@ -1,6 +1,6 @@
 # web-stack
 
-Postgres and Redis — the shape most applications actually have.
+Postgres and Redis - the shape most applications actually have.
 
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
@@ -11,7 +11,7 @@ npm run dev
 ```
 
 The two services **sleep and wake independently**. A branch that only ever touches Postgres
-never pays for Redis, and vice versa — which is why this is two services rather than one
+never pays for Redis, and vice versa - which is why this is two services rather than one
 image with both in it.
 
 Watch them as one thing:

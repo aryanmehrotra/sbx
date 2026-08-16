@@ -6,7 +6,7 @@ package daemon
 // question behind most confusing first runs: the sandbox is created, `sbx env` prints an
 // address, and the connection is refused because nothing is fronting it. Answering that by
 // dialling a port cannot distinguish "no daemon" from "the daemon has not noticed this
-// sandbox yet", and those need opposite advice — start one, versus wait a moment.
+// sandbox yet", and those need opposite advice - start one, versus wait a moment.
 //
 // So the daemon says so directly, in a file, with its pid. A pid is checkable: a file left
 // behind by a killed daemon is detected as stale rather than believed.
@@ -39,8 +39,8 @@ func presencePath() (string, error) {
 
 // MarkRunning records that this process is the daemon, and returns a function that clears it.
 //
-// Best-effort throughout. A daemon that cannot write this file still works — every part of
-// sbx that matters dials ports, not this — so a read-only home directory degrades the advice
+// Best-effort throughout. A daemon that cannot write this file still works - every part of
+// sbx that matters dials ports, not this - so a read-only home directory degrades the advice
 // in error messages rather than stopping the daemon from running.
 func MarkRunning(providerName string) func() {
 	path, err := presencePath()
@@ -63,7 +63,7 @@ func MarkRunning(providerName string) func() {
 
 	return func() {
 		// Only clear it if it is still ours. `sbx serve` refuses to start while another is
-		// running, so this should not arise — but a record left by a killed daemon can be
+		// running, so this should not arise - but a record left by a killed daemon can be
 		// claimed by the next one, and that one exiting must not delete a third's.
 		if p, ok := Running(); ok && p.PID == os.Getpid() {
 			_ = os.Remove(path)
@@ -73,7 +73,7 @@ func MarkRunning(providerName string) func() {
 
 // Running reports the daemon on this machine, if there is one.
 //
-// A stale file — written by a daemon that was killed rather than stopped — is the common
+// A stale file - written by a daemon that was killed rather than stopped - is the common
 // case on a laptop, so the pid is verified rather than trusted. Signal 0 is the portable
 // "does this process exist" question and delivers nothing.
 func Running() (Presence, bool) {

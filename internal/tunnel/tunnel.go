@@ -4,7 +4,7 @@ package tunnel
 //
 //	sbx url feature-x app
 //
-// The point is not the tunnel — it is what the tunnel points at. It is aimed at the wake
+// The point is not the tunnel - it is what the tunnel points at. It is aimed at the wake
 // port, the one `sbx serve` owns, so the sandbox behind a shared link is asleep until
 // somebody opens it and costs nothing the rest of the time. A reviewer clicks a URL, waits
 // about a second, and sees the app.
@@ -77,7 +77,7 @@ func tunnelBackends() []tunnelBackend {
 			// Opt-in only, via --via ssh.
 			//
 			// It routes your traffic through localhost.run, a third party with no account,
-			// no access control, and — checked, not assumed — no published host key
+			// no access control, and - checked, not assumed - no published host key
 			// fingerprint to pin against. All three are fine to choose deliberately and
 			// wrong to arrive at because something else failed.
 			name:     "ssh",
@@ -96,7 +96,7 @@ func tunnelBackends() []tunnelBackend {
 			},
 			url: regexp.MustCompile(`https://[a-z0-9-]+\.lhr\.life`),
 			note: "localhost.run: third party, no account, no access control, and no published\n" +
-				"        host key — so this trusts the entry already in your known_hosts",
+				"        host key - so this trusts the entry already in your known_hosts",
 		},
 	}
 }
@@ -139,7 +139,7 @@ func pickTunnels(preferred string) ([]tunnelBackend, error) {
 	}
 
 	return nil, fmt.Errorf(
-		"no tunnel available. Install one — cloudflared needs no account:\n" +
+		"no tunnel available. Install one - cloudflared needs no account:\n" +
 			"  brew install cloudflared   |   https://github.com/cloudflare/cloudflared\n" +
 			"Or pass --via ssh to route through localhost.run, a third party with no access control.")
 }
@@ -163,7 +163,7 @@ func Open(ctx context.Context, label string, port int, preferred string) error {
 		if i < len(backends)-1 {
 			// Only ever between backends the caller already consented to; an explicit one is
 			// not in this list unless it was named.
-			fmt.Printf("  %s did not come up (%v) — trying %s\n", b.name, err, backends[i+1].name)
+			fmt.Printf("  %s did not come up (%v) - trying %s\n", b.name, err, backends[i+1].name)
 		} else {
 			return fmt.Errorf("no tunnel came up; last was %s: %w", b.name, err)
 		}
@@ -191,7 +191,7 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) err
 	// and scanning one of them is the whole job.
 	//
 	// Nothing else is needed here. StderrPipe() used to be called straight after this and its
-	// error ignored — but Cmd.StderrPipe returns an error whenever Cmd.Stderr is already set,
+	// error ignored - but Cmd.StderrPipe returns an error whenever Cmd.Stderr is already set,
 	// which it now is, so that goroutine never ran. Dead code that reads as working is worse
 	// than none: the next person to rely on it gets silence.
 	cmd.Stderr = cmd.Stdout.(io.Writer)
@@ -203,7 +203,7 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) err
 	found := false
 	scanner := bufio.NewScanner(stdout)
 
-	// A tunnel binary announcing something long — a banner, a JSON blob — would otherwise
+	// A tunnel binary announcing something long - a banner, a JSON blob - would otherwise
 	// exceed bufio's 64 KB default, end the scan silently, and leave the child blocked
 	// writing into a pipe nobody reads. `sbx url` would hang rather than fail.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

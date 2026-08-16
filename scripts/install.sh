@@ -29,7 +29,7 @@ case "$os" in
     # Named pipes need a dialer outside Go's standard library, so a native Windows build
     # cannot reach Docker Desktop. Saying so here is kinder than installing something that
     # runs and then cannot find a daemon.
-    fail "on Windows, install inside WSL2 — sbx cannot dial a Windows named pipe" ;;
+    fail "on Windows, install inside WSL2 - sbx cannot dial a Windows named pipe" ;;
   *) fail "unsupported OS: $os" ;;
 esac
 
@@ -43,7 +43,7 @@ if [ "$VERSION" = "latest" ]; then
   if [ -z "$VERSION" ]; then
     echo "install: no published release found for ${REPO}." >&2
     echo "" >&2
-    echo "  Install from source instead — it needs nothing but a Go toolchain:" >&2
+    echo "  Install from source instead - it needs nothing but a Go toolchain:" >&2
     echo "" >&2
     echo "      go install github.com/${REPO}@latest" >&2
     echo "" >&2
@@ -73,18 +73,18 @@ if curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUM
     [ "$want" = "$got" ] || fail "checksum mismatch for ${asset}: expected $want, got $got"
     echo "install: checksum ok"
   else
-    echo "install: WARNING — ${asset} is not listed in SHA256SUMS, so it was not verified" >&2
+    echo "install: WARNING - ${asset} is not listed in SHA256SUMS, so it was not verified" >&2
   fi
 else
-  # Said out loud. Skipping verification silently means an outage — or anything that can
-  # block one small file while letting the binary through — defeats the check invisibly, and
+  # Said out loud. Skipping verification silently means an outage - or anything that can
+  # block one small file while letting the binary through - defeats the check invisibly, and
   # a verified install then looks identical to an unverified one.
-  echo "install: WARNING — could not fetch SHA256SUMS, so the binary was not verified" >&2
+  echo "install: WARNING - could not fetch SHA256SUMS, so the binary was not verified" >&2
 fi
 
 chmod +x "$tmp/sbx"
 
-# The destination may not exist yet — `DIR=~/bin`, which this script's own header suggests,
+# The destination may not exist yet - `DIR=~/bin`, which this script's own header suggests,
 # is a directory plenty of machines do not have. Without this the move fails with a message
 # about the file rather than about the directory.
 if [ -d "$DIR" ] && [ -w "$DIR" ]; then

@@ -2,7 +2,7 @@ package daemon
 
 // Throughput, which nothing here measured.
 //
-// The published proxy tax — ~15-33 µs — is a latency figure on a six-byte PING. Every
+// The published proxy tax - ~15-33 µs - is a latency figure on a six-byte PING. Every
 // benchmark and script in this repo moves six bytes. The workloads sbx actually fronts are
 // databases and headless browsers: a pg_dump, a COPY, a large result set, a CDP screenshot.
 // Whether sitting in that path costs 5% or 300% was simply unknown, which is the position

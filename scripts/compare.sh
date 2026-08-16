@@ -11,7 +11,7 @@
 # way a benchmark lies:
 #
 #   1. A sample counts only on a correct protocol reply. During development, Sablier's
-#      middleware failed to engage and returned 502 in 98 ms — faster than sbx's real
+#      middleware failed to engage and returned 502 in 98 ms - faster than sbx's real
 #      wake. A status code is not evidence; a reply is.
 #   2. A sample is VOID unless the target was verifiably asleep when the clock started.
 #      A rival whose mechanism never engaged otherwise scores a spectacular wake for
@@ -20,8 +20,8 @@
 #      the compared quantity is the difference. The arms do not share a network path,
 #      and pairing is what stops that asymmetry being credited to a contender.
 #
-# A contender that cannot do something by design reports N/A — that is a result.
-# A contender that could not be stood up here reports SKIPPED — that is not.
+# A contender that cannot do something by design reports N/A - that is a result.
+# A contender that could not be stood up here reports SKIPPED - that is not.
 set -uo pipefail
 
 RUNS="${1:-10}"
@@ -88,7 +88,7 @@ client_postgres() { # port
 # One connection, N requests, so the number is the per-request tax and not N process
 # starts. A curl invocation per request has a millisecond floor; the tax being measured
 # is ~15 us (internal/daemon/proxy_bench_test.go), which is three orders of magnitude
-# below it — that measurement would print "about zero" no matter what the proxy did.
+# below it - that measurement would print "about zero" no matter what the proxy did.
 #
 # The floor is measured, not assumed: the same client against a directly published
 # nginx. Anything that does not clear the floor is reported as below resolution rather
@@ -98,10 +98,10 @@ keepalive_us_per_req() { # url, count -> median microseconds per request, or n/a
   local args=(-s -w '%{time_total}\n')
   # -o binds to ONE url positionally. A single -o with N urls sends the first body to
   # /dev/null and the remaining N-1 to stdout, where they land in the numbers being
-  # parsed — which is exactly how this first reported "could not convert '<!DOCTYPE html>'".
+  # parsed - which is exactly how this first reported "could not convert '<!DOCTYPE html>'".
   for i in $(seq 1 "$count"); do args+=(-o /dev/null "$url"); done
   # Connection reuse comes from curl's default handling of sequential same-host transfers
-  # in one invocation, not from any flag — worth stating so nobody "cleans up" a flag
+  # in one invocation, not from any flag - worth stating so nobody "cleans up" a flag
   # believing it is what holds the connection open.
   curl "${args[@]}" 2>/dev/null \
     | python3 -c '
@@ -119,7 +119,7 @@ measure_noise_floor() {
   local i a b
   for i in $(seq 1 30); do client_nginx 18090 && break; sleep 1; done
   # Direct vs direct: the same client against the same directly published target, twice.
-  # One absolute latency is a baseline, not a floor — the floor is how much this apparatus
+  # One absolute latency is a baseline, not a floor - the floor is how much this apparatus
   # disagrees with itself, and only a delta larger than that is a measurement.
   a=$(keepalive_us_per_req "http://127.0.0.1:18090/" 50)
   b=$(keepalive_us_per_req "http://127.0.0.1:18090/" 50)
@@ -132,7 +132,7 @@ measure_noise_floor() {
 # wake_sample times a wake and reports whether the first attempt was served.
 #
 # Measured, 2026-08-15: Lazytainer refuses connections until its packet threshold is
-# crossed — attempts 1 to 5 were refused in about a millisecond each and the sixth was
+# crossed - attempts 1 to 5 were refused in about a millisecond each and the sixth was
 # served, 5150ms after the first. It never holds a connection. sbx holds it and answers
 # once the service is up, so an unmodified client sees one slow request instead of five
 # failures.
@@ -163,7 +163,7 @@ wake_sample() { # client-fn, port, seconds
 }
 
 # ── docker helpers shared by the container-hosted arms ──────────────────────────
-container_stopped() { # name — stopped OR paused counts as asleep
+container_stopped() { # name - stopped OR paused counts as asleep
   local st
   st=$(docker inspect -f '{{.State.Running}}/{{.State.Paused}}' "$1" 2>/dev/null)
   case "$st" in
@@ -191,7 +191,7 @@ client_for() { [ "$1" = nginx ] && echo client_nginx || echo client_postgres; }
 # ── sbx ─────────────────────────────────────────────────────────────────────────
 SBX_NAME=""
 sbx_available() {
-  [ -x "$SBX" ] || { REASON="no binary at $SBX — go build -o sbx ."; return 1; }
+  [ -x "$SBX" ] || { REASON="no binary at $SBX - go build -o sbx ."; return 1; }
 }
 sbx_up() { # target
   SBX_NAME="cmp-$1-$$"
@@ -207,7 +207,7 @@ sbx_up() { # target
   sleep 3
 }
 sbx_asleep() { wait_stopped "sbx-${SBX_NAME}-$1" 60; }
-# docker_provider.go:9 — client -> 20002 (wake, sbx serve listens) -> 30002 (backing,
+# docker_provider.go:9 - client -> 20002 (wake, sbx serve listens) -> 30002 (backing,
 # docker publishes). The backing port reaches the same container without the splice, so
 # through-minus-backing is the proxy's cost and nothing else's.
 sbx_floor_port() { echo $((PORT - 20000 + 30000)); }
@@ -228,7 +228,7 @@ sbx_down() {
 # HTTP only, by design: the wake is a Traefik middleware hook on an HTTP request, so
 # nothing in it can wake a postgres client. That is N/A, not a failure.
 sablier_available() { # target
-  [ "$1" = postgres ] && { REASON="HTTP only — a middleware on an HTTP request cannot wake a postgres client"; return 2; }
+  [ "$1" = postgres ] && { REASON="HTTP only - a middleware on an HTTP request cannot wake a postgres client"; return 2; }
   docker image inspect sablierapp/sablier:1.8.1 >/dev/null 2>&1 || \
     docker pull -q sablierapp/sablier:1.8.1 >/dev/null 2>&1 || { REASON="image unavailable"; return 1; }
 }
@@ -315,7 +315,7 @@ lazytainer_up() { # target
 
   local env_args=()
   [ "$1" = postgres ] && env_args=(-e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app)
-  # ${a[@]+"${a[@]}"} — bash 3.2, which macOS still ships, calls an empty array unbound
+  # ${a[@]+"${a[@]}"} - bash 3.2, which macOS still ships, calls an empty array unbound
   # under `set -u`. This expands to nothing when empty instead of aborting the adapter.
   docker run -d --name cmp-lazy-target --network "container:cmp-lazy" \
     -l lazytainer.group=cmp ${env_args[@]+"${env_args[@]}"} "$img" >/dev/null 2>&1 || return 1
@@ -329,7 +329,7 @@ lazytainer_up() { # target
 
   # Precondition: it must put the target to sleep, or there is nothing to measure.
   if ! wait_stopped cmp-lazy-target 75; then
-    REASON="target never slept in 75s — check its labels against the Lazytainer README"
+    REASON="target never slept in 75s - check its labels against the Lazytainer README"
     return 1
   fi
 }
@@ -346,13 +346,13 @@ lazytainer_down() { docker rm -f cmp-lazy-target cmp-lazy >/dev/null 2>&1; }
 # A containerd shim with CRIU, on Kubernetes. It does not stop the container: it
 # checkpoints while the pod stays Running, so neither `docker inspect` nor
 # `kubectl get pod` expresses "asleep". Until that observable is identified this arm
-# produces no table at all — not a SKIPPED row that reads as a bad day, and certainly
+# produces no table at all - not a SKIPPED row that reads as a bad day, and certainly
 # not a number taken without the gate.
 zeropod_available() {
   # The observable problem comes first because it is unconditional: even with a healthy
   # cluster we would have no way to tell asleep from awake, so "no cluster" would be a
   # misleading reason to print. Fix the gate before bothering with the infrastructure.
-  REASON="no verified 'checkpointed' observable: zeropod CRIU-checkpoints while the pod stays phase Running, so neither docker inspect nor kubectl get pod can express asleep. No gate means no table — scripts/zeropod-probe.sh gates on the zeropod_running metric instead"
+  REASON="no verified 'checkpointed' observable: zeropod CRIU-checkpoints while the pod stays phase Running, so neither docker inspect nor kubectl get pod can express asleep. No gate means no table - scripts/zeropod-probe.sh gates on the zeropod_running metric instead"
   return 3
 }
 zeropod_up()     { return 1; }
@@ -379,11 +379,11 @@ measure_one() { # contender, target
   # "failed" while bench.sh was measuring it fine on the same machine.
   REASON=""
   "${c}_available" "$t"; local rc=$?
-  # rc=3 — the contender cannot be gated at all, so it gets no row. A SKIPPED row reads
+  # rc=3 - the contender cannot be gated at all, so it gets no row. A SKIPPED row reads
   # as "a bad day"; the true fact is that nothing distinguishes its asleep from its awake,
   # and a reader comparing against it deserves that stated, not a dash in a table.
   if [ "$rc" = "3" ]; then
-    say "  OMITTED — $REASON"
+    say "  OMITTED - $REASON"
     return
   fi
   if [ "$rc" = "2" ]; then record "$c" "$t" "N/A" "$REASON"; return; fi
@@ -462,7 +462,7 @@ measure_one() { # contender, target
         # reason every wake carries its own paired baseline.
         # Distinct names: `pairs`, `dmed` and `dsd` already hold the WAKE pairing in this
         # same function, and reusing them here overwrote the published wake delta with the
-        # overhead delta — a corrupted number that still looked plausible in the table.
+        # overhead delta - a corrupted number that still looked plausible in the table.
         local opairs="" tu fu
         for _ in 1 2 3 4 5 6; do
           tu=$(keepalive_us_per_req "http://127.0.0.1:$port/" 20)
@@ -478,11 +478,11 @@ measure_one() { # contender, target
         fi
       else
         # No same-container baseline for this contender, so the only floor available is a
-        # separately published nginx — a different container, on a different bridge. The
+        # separately published nginx - a different container, on a different bridge. The
         # delta would fold those differences in and call the result "overhead"; one such
         # measurement came out at -852us/req, faster than direct, which is not a proxy tax
         # but an artifact of comparing two containers. Refused rather than published.
-        ovh="n/a — no same-container baseline; see BENCHMARKS.md"
+        ovh="n/a - no same-container baseline; see BENCHMARKS.md"
       fi
     fi
     record "$c" "$t" "OK" "n=$n median=${med}ms $spread stdev=${sd}ms | delta median=${dmed}ms $dspread stdev=${dsd}ms | void=$void failed=$failed transparent=$transparent/$n rss=$rss overhead=$ovh"
@@ -492,7 +492,7 @@ measure_one() { # contender, target
 
 # WINDOW_CHECK=1 runs the sbx arm at two very different idle windows and prints both
 # medians. If wake depends on how long the target slept, every cross-contender number is
-# biased by an experimental parameter that differs per arm — so this is measured rather
+# biased by an experimental parameter that differs per arm - so this is measured rather
 # than assumed.
 # The endpoints are the rivals' actual configured windows, not round numbers: lazytainer
 # runs at inactiveTimeout=10s and sablier at sessionDuration=1m. Testing at anything else
@@ -510,7 +510,7 @@ window_independence() {
   printf '  idle %-5s median %s\n' "$short" "${a:-n/a}"
   printf '  idle %-5s median %s\n' "$long"  "${b:-n/a}"
   say "  If these differ materially, wake is not window-independent and every"
-  say "  cross-contender comparison inherits that bias — bench.sh:64 assumes it does not."
+  say "  cross-contender comparison inherits that bias - bench.sh:64 assumes it does not."
   say
 }
 
@@ -524,9 +524,9 @@ main() {
   preflight
   measure_noise_floor
   measure_conditions "$SBX" extended
-  note "idle window" "$IDLE (sbx) — each arm's own window is its adapter's"
+  note "idle window" "$IDLE (sbx) - each arm's own window is its adapter's"
   note "runs" "$RUNS per contender per target"
-  note "noise floor" "${NOISE_FLOOR_US:-n/a} us/req ±${NOISE_JITTER_US:-?} — same client, nginx published directly, measured twice"
+  note "noise floor" "${NOISE_FLOOR_US:-n/a} us/req ±${NOISE_JITTER_US:-?} - same client, nginx published directly, measured twice"
   note "idle windows" "sbx $IDLE · sablier $SABLIER_WINDOW · lazytainer $LAZY_WINDOW"
   say
 

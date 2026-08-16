@@ -6,7 +6,7 @@
 # This exists because the first implementation of snapshot was wrong in a way that looked
 # right: `docker commit` does not capture mounted volumes, so both forks came up with a
 # healthy server and an empty database. Nothing short of writing a row, forking, and reading
-# it back in the fork would have caught it — a create that succeeds is not evidence.
+# it back in the fork would have caught it - a create that succeeds is not evidence.
 #
 # It also proves the forks are independent, which is the actual promise. One copy of the
 # data shared by every fork would be worse than no fork at all: it looks like isolation and
@@ -81,7 +81,7 @@ for s in "$A" "$B"; do
   got=$(query "$s" 'select v from t')
   [ "$got" = "seeded" ] \
     && ok "$s carries the seeded row" \
-    || bad "$s does not carry the seeded row" "got [$got] — docker commit does not capture volumes"
+    || bad "$s does not carry the seeded row" "got [$got] - docker commit does not capture volumes"
 done
 
 echo
@@ -97,10 +97,10 @@ seed=$(query "$SEED" 'select count(*) from t')
                || bad "the written fork has $a rows, want 2"
 
 [ "$b" = "1" ] && ok "the other fork is untouched" \
-               || bad "the other fork has $b rows, want 1 — the forks share a volume"
+               || bad "the other fork has $b rows, want 1 - the forks share a volume"
 
 [ "$seed" = "1" ] && ok "the original is untouched" \
-                  || bad "the original has $seed rows, want 1 — a fork wrote to its source"
+                  || bad "the original has $seed rows, want 1 - a fork wrote to its source"
 
 echo
 echo "───────────────────────────────────────────────────────────"

@@ -7,7 +7,7 @@
 # This asserts that things WORK, never that they produce a particular value. A wake has to
 # return a correct reply; it does not have to take 191 ms. A sandbox has to report its ports;
 # they do not have to be 20002. Timings and addresses differ per machine, and a suite that
-# pins them fails for reasons that have nothing to do with the software — which trains people
+# pins them fails for reasons that have nothing to do with the software - which trains people
 # to ignore it, which is worse than not having it.
 #
 # What it is for: usage, stability and reliability. Every case here is something the README
@@ -25,7 +25,7 @@ DAEMON=""
 
 ok()   { pass=$((pass + 1));    printf '    ✓ %s\n' "$1"; }
 bad()  { fail=$((fail + 1));    printf '    ✗ %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$2"; }
-skip() { skipped=$((skipped + 1)); printf '    – %s (%s)\n' "$1" "$2"; }
+skip() { skipped=$((skipped + 1)); printf '    - %s (%s)\n' "$1" "$2"; }
 case_() { printf '\n  %s\n' "$1"; }
 
 want() { case "$1" in *"$FILTER"*) return 0;; *) return 1;; esac; }
@@ -46,7 +46,7 @@ trap cleanup EXIT
 docker info >/dev/null 2>&1 || { echo "these are end-to-end cases and need a docker daemon" >&2; exit 1; }
 
 echo
-echo "sbx — the documented use cases"
+echo "sbx - the documented use cases"
 echo "=============================="
 
 # ── the tool tells you what it can do ─────────────────────────────────────────
@@ -230,7 +230,7 @@ if want "wake"; then
   # works once and not twice is the failure people actually hit.
   # How to reach the daemon from a psql that is itself in a container.
   #
-  # The daemon listens on 127.0.0.1 only, deliberately — these ports are not for the network.
+  # The daemon listens on 127.0.0.1 only, deliberately - these ports are not for the network.
   # So `host.docker.internal` cannot work on Linux: it resolves to the host GATEWAY
   # (172.17.0.1), and a listener bound to loopback does not accept from there. That is why
   # this case failed on every CI run while passing on a macOS laptop, where a VM-backed
@@ -238,7 +238,7 @@ if want "wake"; then
   # so 127.0.0.1 means the same thing on both sides.
   # Chosen by trying it, not by guessing from the platform. `--network host` starts fine on a
   # VM-backed docker and puts the container in the VM's network namespace, where 127.0.0.1 is
-  # the VM rather than the host — so "did the flag work" is the wrong question and "can this
+  # the VM rather than the host - so "did the flag work" is the wrong question and "can this
   # actually reach the daemon" is the right one.
   pg_host_args=""
   pg_host=""
@@ -356,7 +356,7 @@ JSON
     ok "a service declaring egress deny creates"
 
     docker exec "sbx-$name-web" sh -c 'wget -q -T 5 -O /dev/null http://example.com' 2>/dev/null \
-      && bad "it reached the internet — egress is not denied" \
+      && bad "it reached the internet - egress is not denied" \
       || ok "it cannot reach the internet"
 
     "$SBX" serve --idle 10m --refresh 5s >/dev/null 2>&1 &
@@ -432,7 +432,7 @@ JSON
     && ok "it serves what the Dockerfile put there" \
     || bad "the built image did not serve its own content"
 
-  # The whole point: same context, no build. Not "a faster build" — no build.
+  # The whole point: same context, no build. Not "a faster build" - no build.
   "$SBX" rm "$TAG-b1" >/dev/null 2>&1
   out=$("$SBX" create "$TAG-b2" --spec "$WORK/build.json" 2>&1)
   echo "$out" | grep -q 'cached' && ok "an unchanged context is a cache hit" \
@@ -448,7 +448,7 @@ JSON
   # b3 was created after the daemon started, so the daemon needs a refresh tick to notice it.
   # Polled rather than slept: a fixed wait is a guess that passes on an idle laptop and fails
   # on a loaded CI runner, and a suite that fails for machine reasons is one people learn to
-  # ignore. Unset first — a stale WEB_PORT from b1 points at a sandbox that no longer exists
+  # ignore. Unset first - a stale WEB_PORT from b1 points at a sandbox that no longer exists
   # and would fail for a reason that has nothing to do with the build.
   unset WEB_PORT
   eval "$("$SBX" env "$TAG-b3" --spec "$WORK/build.json" 2>/dev/null)"
@@ -488,8 +488,8 @@ fi
 if want "files"; then
   case_ "files: a mounted file arrives as a file, however the spec path was typed"
 
-  # Under $HOME, not $WORK. A VM-backed docker shares some host paths and not others —
-  # macOS mktemp lands in /var/folders, which Colima and Docker Desktop do not share — and a
+  # Under $HOME, not $WORK. A VM-backed docker shares some host paths and not others -
+  # macOS mktemp lands in /var/folders, which Colima and Docker Desktop do not share - and a
   # bind mount whose source the VM cannot see produces exactly the empty directory this case
   # exists to detect. Testing there would fail for the wrong reason.
   FILESDIR="$HOME/.sbx/uctest-$TAG"
@@ -501,7 +501,7 @@ if want "files"; then
   "files": { "./data.txt": "/tmp/data.txt" } } }, "exports": { "WEB_PORT": "web:80" } }
 JSON
 
-  # Relative, which is how anybody actually types it — and which used to leave the mount
+  # Relative, which is how anybody actually types it - and which used to leave the mount
   # source relative too. Docker reads a relative -v source as a NAMED VOLUME, so it created
   # an empty one and the container found a directory where its file should be.
   if ( cd "$FILESDIR" && "$SBX" create "$TAG-files" --spec sandbox.json >/dev/null 2>&1 ); then
@@ -554,11 +554,11 @@ JSON
   echo "$out" | grep -q 'pg_isready' \
     && ok "and names the command" || bad "the failing command is not named" "$out"
 
-  # Under 30s is generous — it is about a second — and does not pin a timing the way a
+  # Under 30s is generous - it is about a second - and does not pin a timing the way a
   # tighter bound would. What is being asserted is that it no longer waits out the timeout.
   [ "$took" -lt 30 ] \
     && ok "fails in ${took}s rather than waiting out the 2m timeout" \
-    || bad "took ${took}s — it is still waiting for the timeout"
+    || bad "took ${took}s - it is still waiting for the timeout"
 
   "$SBX" rm "$TAG-bh" >/dev/null 2>&1
 fi
@@ -674,7 +674,7 @@ if want "templates"; then
     echo "$list" | grep -q "$t" && ok "template $t is offered" || bad "template $t is missing"
   done
 
-  # Pinned, so the sandbox somebody creates today is the one CI tested — and dated, so the
+  # Pinned, so the sandbox somebody creates today is the one CI tested - and dated, so the
   # staleness that pinning buys is visible rather than silent.
   echo "$list" | grep -qE 'refreshed [0-9]{4}-[0-9]{2}-[0-9]{2}' \
     && ok "templates say when their images were pinned" \
@@ -695,7 +695,7 @@ if want "prewarm"; then
   echo "$out" | grep -qE '^[0-9]+ pulled, [0-9]+ already present' \
     && ok "reports what it pulled and what it skipped" || bad "no summary line" "$out"
 
-  # A spec, not just the templates — the shape CI actually uses.
+  # A spec, not just the templates - the shape CI actually uses.
   out=$("$SBX" prewarm --spec "$ROOT/examples/postgres/sandbox.json" 2>&1)
   echo "$out" | grep -q 'postgres' && ok "--spec warms that spec's images" || bad "--spec warmed nothing" "$out"
 

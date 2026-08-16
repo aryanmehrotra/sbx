@@ -32,7 +32,7 @@ func TestForkSpecRewritesImageAndKeepsVolume(t *testing.T) {
 	// was that the image carried the data, and `docker commit` does not capture volumes, so
 	// every fork started blank.
 	if svc["volume"] != "/var/lib/postgresql/data" {
-		t.Errorf("the volume was dropped: %v — a fork would start with nowhere to restore into", svc)
+		t.Errorf("the volume was dropped: %v - a fork would start with nowhere to restore into", svc)
 	}
 
 	// init has already run in the state being forked. Re-running it re-seeds a seeded

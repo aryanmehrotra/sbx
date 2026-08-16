@@ -32,7 +32,7 @@ func TestRemembersATemplate(t *testing.T) {
 }
 
 // The path is stored absolute: `sbx env` is very often run from a different directory than
-// the create that preceded it, and a relative path would resolve somewhere else — which is
+// the create that preceded it, and a relative path would resolve somewhere else - which is
 // the exact failure this feature exists to prevent.
 func TestASpecPathIsRecordedAbsolute(t *testing.T) {
 	withHome(t)
@@ -94,7 +94,7 @@ func TestForgetDropsIt(t *testing.T) {
 	Forget("gone")
 
 	if _, ok := Recall("gone"); ok {
-		t.Error("still recalled after Forget — the directory would accumulate one file per " +
+		t.Error("still recalled after Forget - the directory would accumulate one file per " +
 			"sandbox anybody ever made")
 	}
 }
@@ -109,7 +109,7 @@ func TestAnUnknownSandboxRecallsNothing(t *testing.T) {
 	}
 }
 
-// A record must never be a source of truth — a create that worked must not fail because the
+// A record must never be a source of truth - a create that worked must not fail because the
 // record could not be written.
 func TestRememberDoesNotFailOnAnUnwritableHome(t *testing.T) {
 	// A home that is a regular file, so creating ~/.sbx/origins under it cannot succeed.
@@ -129,7 +129,7 @@ func TestRememberDoesNotFailOnAnUnwritableHome(t *testing.T) {
 
 // A snapshot is not a sandbox and has no origin of its own, but `sbx fork <snapshot> <new>`
 // needs the spec the snapshotted sandbox was built from. Without this, the seed-and-fan-out
-// workflow makes you name the template three times for one lineage — and getting it wrong on
+// workflow makes you name the template three times for one lineage - and getting it wrong on
 // the third is a hard failure, not a nudge.
 func TestASnapshotInheritsItsSandboxsOrigin(t *testing.T) {
 	withHome(t)
@@ -140,7 +140,7 @@ func TestASnapshotInheritsItsSandboxsOrigin(t *testing.T) {
 
 	o, ok := Recall("golden")
 	if !ok {
-		t.Fatal("a snapshot did not inherit its sandbox's origin — `sbx fork golden x` would " +
+		t.Fatal("a snapshot did not inherit its sandbox's origin - `sbx fork golden x` would " +
 			"fall back to ./sandbox.json and fail")
 	}
 

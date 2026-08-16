@@ -10,8 +10,8 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// A provider that records what it was asked to pull, so the interesting behaviour — what
-// prewarm SKIPS and what it reports — can be exercised without a docker daemon.
+// A provider that records what it was asked to pull, so the interesting behaviour - what
+// prewarm SKIPS and what it reports - can be exercised without a docker daemon.
 type fakePuller struct {
 	provider.Provider
 
@@ -87,7 +87,7 @@ func TestPrewarmFailsLoudlyAndNamesTheImage(t *testing.T) {
 		t.Errorf("the failing image is not named:\n%s", out.String())
 	}
 
-	// The other image still got pulled — one bad image should not abandon the rest.
+	// The other image still got pulled - one bad image should not abandon the rest.
 	if len(f.pulled) != 1 || f.pulled[0] != "a:1" {
 		t.Errorf("pulled %v; one failure should not stop the others", f.pulled)
 	}

@@ -5,7 +5,7 @@ package cli
 // DECISIONS.md: "a method on the core interface is a promise that every provider keeps", so
 // snapshot, build, prewarm and collect are optional interfaces a provider either implements
 // or does not. The rule that makes that honest is that a provider which cannot do the thing
-// says so, naming itself — not a stub returning nil, and not a silent no-op.
+// says so, naming itself - not a stub returning nil, and not a silent no-op.
 //
 // Three of the four refusals had no test. A regression turning any of them into a silent
 // success would have shipped: `sbx snapshot` against a cluster would print that it saved
@@ -22,7 +22,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// bare implements Provider and nothing else — no Snapshotter, no Builder, no Collector, no
+// bare implements Provider and nothing else - no Snapshotter, no Builder, no Collector, no
 // Puller. This is what the kubernetes provider looks like to each of those type assertions.
 type bare struct {
 	provider.Provider
@@ -48,7 +48,7 @@ func (b *bare) Logs(_ context.Context, _ string, _ int, _ bool, w io.Writer) err
 }
 
 // Each refusal must name the backend. "not supported" sends someone to the wrong file; "the
-// kubernetes provider cannot …" tells them the answer is to use a different provider.
+// kubernetes provider cannot ..." tells them the answer is to use a different provider.
 func TestCapabilityRefusalsNameTheBackend(t *testing.T) {
 	p := &bare{}
 
@@ -62,7 +62,7 @@ func TestCapabilityRefusalsNameTheBackend(t *testing.T) {
 	for name, call := range cases {
 		err := call()
 		if err == nil {
-			t.Errorf("%s: a provider that cannot do this was accepted — the command would "+
+			t.Errorf("%s: a provider that cannot do this was accepted - the command would "+
 				"report success and do nothing", name)
 
 			continue
@@ -93,7 +93,7 @@ func TestCommandsRefuseWhenTheProviderCannot(t *testing.T) {
 	}
 }
 
-// README: "Everything wakes what it touches — except `logs`, because asking what a sandbox
+// README: "Everything wakes what it touches - except `logs`, because asking what a sandbox
 // said isn't using it."
 //
 // It was not true. `sbx logs <sandbox> <service>` resolved the container through the same
@@ -108,7 +108,7 @@ func TestLogsDoesNotWakeTheSandbox(t *testing.T) {
 	}
 
 	if len(p.started) > 0 {
-		t.Errorf("logs started %v — reading what a sandbox said is not using it, and "+
+		t.Errorf("logs started %v - reading what a sandbox said is not using it, and "+
 			"`sbx logs -f` would hold it awake for as long as somebody watched", p.started)
 	}
 }

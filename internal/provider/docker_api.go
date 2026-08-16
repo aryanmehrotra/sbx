@@ -111,7 +111,7 @@ func (d *dockerClient) list(ctx context.Context, label string) ([]container, err
 
 // health is the container's own opinion of whether it is serving.
 //
-// This exists because the obvious check — dial the published port — is a lie. Docker binds
+// This exists because the obvious check - dial the published port - is a lie. Docker binds
 // the host side of `-p` the instant the container starts, so a TCP connect succeeds against
 // a MySQL that is still opening its data directory, and the client that gets spliced to it
 // dies reading the initial handshake. Measured: the port answered in 139 ms; mysqld needed
@@ -171,12 +171,12 @@ func (d *dockerClient) stop(ctx context.Context, id string, timeout time.Duratio
 // exec runs a command inside a container over the API and returns its exit code.
 //
 // This is on the wake path. Probe used to shell out to `docker exec`, which is a process
-// spawn plus the docker CLI's own startup — measured at about 150 ms — and the wake loop
+// spawn plus the docker CLI's own startup - measured at about 150 ms - and the wake loop
 // calls it repeatedly until the workload answers. So the published 191 ms wake was mostly
 // this: not the container starting, but a CLI being started to ask whether it had.
 //
 // Three calls, because that is what the API requires: create the exec, start it, then read
-// the exit code. The output is read and discarded — the exit code is the whole answer, and
+// the exit code. The output is read and discarded - the exit code is the whole answer, and
 // a health command's stdout is not something sbx has any business interpreting.
 func (d *dockerClient) exec(ctx context.Context, id string, argv []string) (int, error) {
 	var created struct {
@@ -227,7 +227,7 @@ func (d *dockerClient) exec(ctx context.Context, id string, argv []string) (int,
 //
 // From the same endpoint healthy() already uses, so asking costs one request on a unix
 // socket rather than a `docker inspect` fork. That is why it is not cached: the previous
-// version cached by container NAME, and names are reused — `sbx rm x && sbx create x` with
+// version cached by container NAME, and names are reused - `sbx rm x && sbx create x` with
 // an edited health command left the old one in the map, on the wake path, for the life of a
 // daemon designed to run for weeks. A cache whose invalidation was reasoned about against a
 // key that does not carry the property.

@@ -49,11 +49,11 @@ func TestReadinessTrustsTheOpenPortOverThePresenceFile(t *testing.T) {
 func TestReadinessSaysWhatToRunWhenNothingAnswers(t *testing.T) {
 	// An empty HOME, so daemon.Running() cannot find this machine's real presence file.
 	// Without it this test takes 30 seconds on any machine that happens to have a daemon
-	// running — it would wait for the sandbox to be picked up, which never happens because
+	// running - it would wait for the sandbox to be picked up, which never happens because
 	// there is no sandbox.
 	t.Setenv("HOME", t.TempDir())
 
-	// A port bound and immediately released — nothing is listening on it now.
+	// A port bound and immediately released - nothing is listening on it now.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

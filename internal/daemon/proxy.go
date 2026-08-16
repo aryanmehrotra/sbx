@@ -17,7 +17,7 @@ import (
 // independently, so the analytics store a branch never queries costs nothing at all.
 //
 // Nothing here knows what a container is. It binds a port, asks a Provider to start
-// something, waits for that thing to say it is serving, and moves bytes — which is the same
+// something, waits for that thing to say it is serving, and moves bytes - which is the same
 // job on a laptop and in a cluster, and the reason the activator is this file plus a
 // different Provider rather than a second program.
 type unit struct {
@@ -143,7 +143,7 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 	if err != nil {
 		// This is where the fast path in wake() gets corrected. The daemon believed this
 		// unit was awake and skipped asking the workload; the dial says otherwise, so the
-		// belief was wrong — something outside sbx stopped or killed the container.
+		// belief was wrong - something outside sbx stopped or killed the container.
 		//
 		// Revoke it and wake properly, once. Without this the optimism would be permanent:
 		// a container removed by hand, or a docker daemon restart, would leave every future
@@ -171,8 +171,8 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 	//
 	// Waiting on one made the CloseWrite in pipe() dead: the moment either side saw EOF,
 	// handle() returned and the deferred Closes killed the other direction mid-flight. A
-	// client that says "that is all I am sending" by shutting down its write side — `nc -N`,
-	// several HTTP clients, any pipe-mode bulk loader — then had its response truncated
+	// client that says "that is all I am sending" by shutting down its write side - `nc -N`,
+	// several HTTP clients, any pipe-mode bulk loader - then had its response truncated
 	// rather than completed. Silently, which is the worst shape for a proxy whose job is to
 	// be invisible.
 	//
@@ -218,21 +218,21 @@ func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
 // first query pays this; nothing else ever does.
 func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
 	// A unit the daemon woke and has not slept is awake, and the daemon is the only thing
-	// that sleeps one. Asking the workload again costs a `docker exec` — measured at 68 ms
-	// median per connection against 0.8 ms straight to docker — and it was being paid on
+	// that sleeps one. Asking the workload again costs a `docker exec` - measured at 68 ms
+	// median per connection against 0.8 ms straight to docker - and it was being paid on
 	// every new connection for the life of the sandbox, not just the first.
 	//
 	// That made the docstring above false and the published proxy overhead (~33 µs) true
 	// only of bytes on an already-open connection. Anything that opens a connection per
-	// operation — psql, a CLI, a client with no pool — paid the exec every time.
+	// operation - psql, a CLI, a client with no pool - paid the exec every time.
 	//
-	// The lock is still taken on every connection — only the probe is skipped. That
+	// The lock is still taken on every connection - only the probe is skipped. That
 	// distinction is the whole fix: the 68 ms was `docker exec`, not the mutex, which is
 	// uncontended and costs nanoseconds.
 	//
 	// Taking it matters because sleep() holds the same lock. Checking awake outside it let a
 	// connection arrive, see "awake", and dial a container that sleep() was already
-	// committed to stopping — the client got a connection reset for a sandbox it had just
+	// committed to stopping - the client got a connection reset for a sandbox it had just
 	// woken. Rare, and reached twice in one run of the concurrent-wake suite on a busy
 	// machine. Serialising against sleep() is what makes "awake" mean anything.
 	u.waking.Lock()
@@ -255,7 +255,7 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 	// There used to be one, to catch a container someone had started outside sbx. It cost a
 	// round trip on every cold wake to answer a question Start answers for free: starting an
 	// already-running container is a 304 the provider treats as success. So on the path it
-	// was actually on — the unit is asleep, which is why we are here — it could only fail,
+	// was actually on - the unit is asleep, which is why we are here - it could only fail,
 	// and the poll loop below reaches the same conclusion one iteration later.
 	if err := p.Start(ctx, u.ref); err != nil {
 		return err
@@ -266,14 +266,14 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 	// A flat interval, after a backoff was tried and refuted.
 	//
 	// The argument for backing off from 5 ms is good on paper: a fixed 100 ms sleep rounds a
-	// fast workload up to the interval, and a counting test agreed — an 8 ms workload was
+	// fast workload up to the interval, and a counting test agreed - an 8 ms workload was
 	// declared awake in 102 ms with a flat poll and about 20 ms with a backoff.
 	//
 	// It is not what happens, because that test assumed probes are free and they are not.
 	// Each one is an Engine API exec, so probing at 5 ms does not sample sooner than the
 	// probe itself costs, and a real workload is not ready in 8 ms anyway. Measured
 	// end-to-end, interleaved with the order alternating, n=14: 162 ms flat against 166 ms
-	// backing off — no difference, with more traffic to produce it.
+	// backing off - no difference, with more traffic to produce it.
 	wait := 100 * time.Millisecond
 
 	for time.Now().Before(deadline) {
@@ -287,7 +287,7 @@ func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.
 			u.setAwake(true)
 			logs.Default.Event(logs.LevelWarn, u.sandbox, u.service, "woke",
 				time.Since(start).Milliseconds(),
-				"woke in %dms, unverified — no health check declared",
+				"woke in %dms, unverified - no health check declared",
 				time.Since(start).Milliseconds())
 
 			return nil
@@ -351,7 +351,7 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 		return
 	}
 	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",
-		u.idleFor().Milliseconds(), "slept — idle for %s", u.idleFor().Round(time.Second))
+		u.idleFor().Milliseconds(), "slept - idle for %s", u.idleFor().Round(time.Second))
 }
 
 func (u *unit) track(c net.Conn) {

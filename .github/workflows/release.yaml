@@ -4,8 +4,8 @@
 #
 # Everything below is what a person would otherwise do by hand and eventually do
 # inconsistently: build every target, checksum them, attach them to a release, and publish
-# the activator image. The binaries are built by scripts/release.sh — the same script used
-# locally — so a release is never the first time that path runs.
+# the activator image. The binaries are built by scripts/release.sh - the same script used
+# locally - so a release is never the first time that path runs.
 name: release
 
 on:

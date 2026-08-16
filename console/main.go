@@ -26,7 +26,7 @@ import (
 //
 // There is a window between closing and GoFr binding, and it is accepted deliberately: the
 // alternative is passing a listening fd into a framework that wants to open its own, which
-// buys a guarantee this does not need. What it must not do is use GoFr's defaults — GoFr
+// buys a guarantee this does not need. What it must not do is use GoFr's defaults - GoFr
 // refuses to start when a port is taken, and sbx is multi-instance by design (one daemon per
 // branch, per worktree, per CI job), so fixed ports mean the second console dies on boot.
 func freePort() (int, error) {
@@ -143,7 +143,7 @@ func main() {
 	app := gofr.New()
 
 	// GoFr binds the HTTP listener only when a route exists, so health and /alive are
-	// unreachable on a routeless app — the spike found this by getting 000 from both.
+	// unreachable on a routeless app - the spike found this by getting 000 from both.
 	app.GET("/api/sandboxes", sandboxes)
 
 	m := app.Metrics()

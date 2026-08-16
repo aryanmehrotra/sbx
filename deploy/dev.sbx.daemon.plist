@@ -10,7 +10,7 @@
   your database ports should not have it.
 
   KeepAlive restarts it if it dies. That is safe precisely because the daemon does not
-  own any state — it rediscovers every sandbox from container labels on startup, and it
+  own any state - it rediscovers every sandbox from container labels on startup, and it
   deliberately does not sleep anything on the way out.
 -->
 <plist version="1.0">

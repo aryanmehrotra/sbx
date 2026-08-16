@@ -32,7 +32,7 @@ func TestKubeAddressesByNameOnTheRealPort(t *testing.T) {
 	eps := k.Endpoints("feature-x", "mysql", 7, 3, []int{3306})
 
 	if eps[0].Port != 3306 {
-		t.Errorf("port = %d, want the container port 3306 — no remapping in a cluster", eps[0].Port)
+		t.Errorf("port = %d, want the container port 3306 - no remapping in a cluster", eps[0].Port)
 	}
 
 	if want := "sbx-feature-x-mysql.sbx.svc.cluster.local"; eps[0].Host != want {
@@ -62,7 +62,7 @@ func TestIsolationMapsToARuntime(t *testing.T) {
 	}
 
 	if Isolation("none").Valid() {
-		t.Error("an unknown isolation tier must not validate — silently weaker isolation than asked for is the failure that matters")
+		t.Error("an unknown isolation tier must not validate - silently weaker isolation than asked for is the failure that matters")
 	}
 }
 
@@ -70,7 +70,7 @@ func TestIsolationMapsToARuntime(t *testing.T) {
 //
 // spec.MaxOrdinals bounds how many ports one sandbox may claim; blockSize is how many the
 // provider reserves per slot. If MaxOrdinals ever exceeds blockSize, sandbox N's ordinals
-// land inside sandbox N+1's block and one sandbox answers with another's data — which is the
+// land inside sandbox N+1's block and one sandbox answers with another's data - which is the
 // failure scripts/e2e.sh exists to rule out, produced by a one-line change to an apparently
 // local constant.
 //
@@ -78,7 +78,7 @@ func TestIsolationMapsToARuntime(t *testing.T) {
 // that makes it safe was undocumented and unasserted.
 func TestOrdinalsFitInAPortBlock(t *testing.T) {
 	if spec.MaxOrdinals > blockSize {
-		t.Fatalf("spec.MaxOrdinals is %d and a provider slot reserves %d ports — a sandbox "+
+		t.Fatalf("spec.MaxOrdinals is %d and a provider slot reserves %d ports - a sandbox "+
 			"can now claim addresses inside the next sandbox's block",
 			spec.MaxOrdinals, blockSize)
 	}

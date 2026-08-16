@@ -9,7 +9,7 @@
 # already-open connection).
 #
 # Neither covers the case that turns out to be the common one. A client that opens a
-# connection per operation — psql, redis-cli, any CLI, any client without a pool — is not
+# connection per operation - psql, redis-cli, any CLI, any client without a pool - is not
 # paying the wake, because the sandbox is awake, and is not paying only the round-trip tax
 # either, because it opens a new connection each time. That path went unmeasured, and it was
 # costing 68 ms a connection: the daemon re-ran the health command through `docker exec` on
@@ -17,7 +17,7 @@
 #
 # Both sides of the same PING, interleaved, on the same awake container: through the daemon's
 # public port, and straight to the port docker published. The difference is the daemon's
-# per-connection cost and nothing else — same workload, same machine, same moment.
+# per-connection cost and nothing else - same workload, same machine, same moment.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,7 +64,7 @@ eval "$("$SBX" env "$NAME" --spec "$WORK/spec.json" 2>/dev/null)"
 BACKING=$(docker port "sbx-$NAME-redis" 6379/tcp 2>/dev/null | head -1 | sed 's/.*://')
 [ -n "${REDIS_PORT:-}" ] && [ -n "$BACKING" ] || { echo "could not resolve both ports" >&2; exit 1; }
 
-# Awake, and settled. This measures the steady state, not a wake — a wake here would be the
+# Awake, and settled. This measures the steady state, not a wake - a wake here would be the
 # 191 ms number wearing this one's name.
 redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1
 sleep 2
@@ -82,7 +82,7 @@ def one(port):
     s.sendall(b"PING\r\n")
     reply = s.recv(64)
     s.close()
-    # A sample counts only on a correct protocol reply — the same rule the rest of the
+    # A sample counts only on a correct protocol reply - the same rule the rest of the
     # harness uses. A refused or empty read is not a fast connection.
     if not reply.startswith(b"+PONG"):
         raise SystemExit(f"not a redis reply: {reply!r}")
@@ -109,7 +109,7 @@ show("straight to docker", direct)
 # PAIRED, because the samples are collected in pairs and throwing that away is what makes a
 # difference look like noise. measure.sh's own doctrine says so: an unpaired subtraction has
 # undefined spread. The first version of this script compared a difference of medians against
-# max-minus-min of the raw samples — a gate set by whichever single outlier was worst, which
+# max-minus-min of the raw samples - a gate set by whichever single outlier was worst, which
 # any small delta passes automatically. That is the one statistical test in this repo that was
 # chosen in the flattering direction, defending the repo's most load-bearing number.
 deltas = sorted(t - d for t, d in zip(through, direct))

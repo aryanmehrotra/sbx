@@ -40,7 +40,7 @@ func TestExplicitBackendIsAvailableWhenNamed(t *testing.T) {
 }
 
 // accept-new trusts whatever answers on first contact, which is the thing host key
-// checking exists to prevent — and it did it inside an automatic fallback, where nobody
+// checking exists to prevent - and it did it inside an automatic fallback, where nobody
 // was watching.
 func TestNoBackendAutoAcceptsHostKeys(t *testing.T) {
 	for _, b := range tunnelBackends() {

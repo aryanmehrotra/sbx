@@ -9,7 +9,7 @@ import (
 )
 
 // line is the subset of the daemon's JSON log this cares about. Everything else in the
-// stream is for humans and is passed over without complaint — a console that fell over on
+// stream is for humans and is passed over without complaint - a console that fell over on
 // an unfamiliar field would be a worse thing to run than no console.
 type line struct {
 	Sandbox    string `json:"sandbox"`
@@ -33,7 +33,7 @@ type observer interface {
 // This is a monitoring surface, so a missing sample is a gap in a graph, and a crash is an
 // outage of the thing that was supposed to tell you about outages.
 func Ingest(r io.Reader, o observer) error {
-	// A Reader, not a Scanner. Scanner gives up permanently on a line past its buffer —
+	// A Reader, not a Scanner. Scanner gives up permanently on a line past its buffer -
 	// one oversized line would end all metrics for the life of the process, which is a far
 	// larger blast radius than the dropped sample this is willing to accept.
 	br := bufio.NewReaderSize(r, 64*1024)

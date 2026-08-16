@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Measurement primitives shared by scripts/bench.sh and scripts/compare.sh.
 #
-# Computation and parsing only. Acquisition — running a client, reading `docker stats`,
-# asking a cluster — belongs to the caller, because the moment this file knows what a
+# Computation and parsing only. Acquisition - running a client, reading `docker stats`,
+# asking a cluster - belongs to the caller, because the moment this file knows what a
 # contender is it has two reasons to change and drags cluster knowledge into bench.sh,
 # which needs none of it.
 #
@@ -15,16 +15,16 @@
 # A benchmark that prints 0 for "no data" is the failure mode this whole harness exists
 # to prevent: 0 ms looks like a result, and it is the absence of one.
 
-# measure_ms — wall clock in milliseconds. Shared so the two scripts cannot drift into
+# measure_ms - wall clock in milliseconds. Shared so the two scripts cannot drift into
 # timing the same thing two ways.
 measure_ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
 
-# measure_conditions — what the machine was doing, printed before any result.
+# measure_conditions - what the machine was doing, printed before any result.
 # A wake on an idle laptop and a wake on one that is paging are not the same
 # measurement, and the numbers should say which.
 # `extended` adds the host triple and docker version, which compare.sh needs to make a
 # cross-contender run reproducible. bench.sh passes nothing and gets byte-identical output
-# to what it printed before the extraction — the acceptance criterion was that its behaviour
+# to what it printed before the extraction - the acceptance criterion was that its behaviour
 # does not change, and "we improved it" is not the same thing as "unchanged".
 measure_conditions() { # path to an sbx binary, [extended]
   local sbx="${1:-}" mode="${2:-}"
@@ -42,7 +42,7 @@ measure_conditions() { # path to an sbx binary, [extended]
   return 0
 }
 
-# measure_stat — one statistic from whitespace/newline separated numbers on stdin.
+# measure_stat - one statistic from whitespace/newline separated numbers on stdin.
 #   n · min · max · median · p90 · stdev
 # Integers in, integers out. p90 uses the nearest-rank index on the sorted set, which is
 # what bench.sh has always reported; changing it would silently move every published p90.
@@ -67,14 +67,14 @@ else:
 ' "$what"
 }
 
-# measure_pairs — paired differences from `wake:baseline` lines on stdin.
+# measure_pairs - paired differences from `wake:baseline` lines on stdin.
 #
 # Paired, not "median(wake) − median(baseline)": p90 and stdev of an unpaired subtraction
 # are undefined, and for a containerised client the client's own variance sits in both
 # terms and would dominate the spread of any unpaired delta.
 #
 # A negative difference is kept. It means the target answered faster than its own awake
-# baseline, which is real data about a noisy baseline — clamping it to zero would hide
+# baseline, which is real data about a noisy baseline - clamping it to zero would hide
 # exactly that. A line with no baseline is dropped: it is a sample, not a pair.
 measure_pairs() {
   python3 -c '
@@ -90,11 +90,11 @@ for line in sys.stdin.read().split():
 '
 }
 
-# measure_rss_kib — resident memory in KiB for one container, from
+# measure_rss_kib - resident memory in KiB for one container, from
 # `docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'` on stdin.
 #
 # Exact name match. A prefix match would let `sbx-bench` silently report
-# `sbx-bench-redis`, and an absent container answers `n/a` rather than 0 — a rival's
+# `sbx-bench-redis`, and an absent container answers `n/a` rather than 0 - a rival's
 # control plane that is not running is not a control plane that is free.
 measure_rss_kib() {
   python3 -c '
@@ -118,7 +118,7 @@ print("n/a")
 ' "$1"
 }
 
-# measure_overhead_verdict — is a measured delta bigger than the instrument?
+# measure_overhead_verdict - is a measured delta bigger than the instrument?
 #
 #   measure_overhead_verdict <through_us> <floor_us> <jitter_us>
 #

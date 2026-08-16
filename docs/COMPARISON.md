@@ -31,7 +31,7 @@ products that share almost nothing:
 ```
 
 **sbx is the right-hand column.** If you are running untrusted model-authored code and need a
-kernel boundary, the left-hand column is what you want, and this is not competing for that —
+kernel boundary, the left-hand column is what you want, and this is not competing for that -
 see [where to use something else](#where-to-use-something-else).
 
 ---
@@ -44,7 +44,7 @@ back**, because that determines who is allowed to be the client.
 | | wakes on | so the client can be | runs off-cloud |
 |---|---|---|---|
 | **sbx** | **any TCP connection** | anything with a socket | **laptop + cluster** |
-| E2B | `sandbox.connect()` — an SDK call | only your own code | ✗ hosted |
+| E2B | `sandbox.connect()` - an SDK call | only your own code | ✗ hosted |
 | Daytona | start/resume API call | only your own code | ✗ hosted |
 | Modal | SDK call | only your own code | ✗ hosted |
 | Vercel Sandbox | SDK call | only your own code | ✗ hosted |
@@ -56,14 +56,14 @@ back**, because that determines who is allowed to be the client.
 **Why this is the whole point.** A connection pool cannot call `sandbox.connect()`. Neither can
 `psql`, `pg_dump`, a migration tool, Playwright over CDP, or a test runner someone else wrote.
 On any SDK-triggered platform, *something in your code* has to know the sandbox is asleep and
-wake it first — which means every tool that touches it must be sandbox-aware.
+wake it first - which means every tool that touches it must be sandbox-aware.
 
 Here, the socket is the signal. The tools stay unmodified and don't know they're talking to
 something that was at 0 B a moment ago.
 
 Two platforms get this right and are worth naming honestly: **Fly Proxy** wakes on a real
 connection and supports TCP services, and **Neon** wakes on the Postgres protocol itself. Both
-are hosted, both are excellent, and the ideas here are not novel against them — what's
+are hosted, both are excellent, and the ideas here are not novel against them - what's
 different is that this runs on your laptop, with no account, on any protocol.
 
 ---
@@ -83,13 +83,13 @@ different is that this runs on your laptop, with no account, on any protocol.
 **The honest weakness, stated plainly.** E2B pauses to a memory snapshot: loaded variables and
 running processes come back exactly as they were, at roughly 4 s per GiB of RAM to pause and ~1 s to
 resume. sbx does not snapshot RAM. A sleeping sandbox is a stopped container with its volume
-intact, so a wake is a **cold process start against warm data** — Postgres replays its WAL and
+intact, so a wake is a **cold process start against warm data** - Postgres replays its WAL and
 comes up, it doesn't resume mid-transaction.
 
 That is a worse guarantee. It is also why sleeping costs nothing to *enter*.
 
 A sleeping sandbox holds **0 B of memory** and no storage beyond the volume it already had. A
-paused E2B or suspended Fly machine keeps a RAM image *on top of* its disk — written at about
+paused E2B or suspended Fly machine keeps a RAM image *on top of* its disk - written at about
 4 s per GiB of RAM before any saving starts.
 
 No checkpoint to pay for, and no meter on the disk it keeps.
@@ -104,7 +104,7 @@ Python REPL it is not, and E2B is the better tool.
 Two charts, because one of them flatters us and the other one doesn't, and only showing the
 first would be the kind of comparison this file exists to avoid.
 
-### 1 · Speed against breadth — the chart everyone draws
+### 1 · Speed against breadth - the chart everyone draws
 
 ```mermaid
 quadrantChart
@@ -129,34 +129,34 @@ quadrantChart
 Anything claiming to be top-right on its own comparison page has chosen its own axes.
 
 The breadth score deliberately excludes everything sbx is good at. It counts eight things we
-mostly don't do — VM-grade isolation, RAM snapshotting, GPU, arbitrary stateful services, a
-public URL, somebody else operating it, multi-tenant security, production-proven — at 1 for
+mostly don't do - VM-grade isolation, RAM snapshotting, GPU, arbitrary stateful services, a
+public URL, somebody else operating it, multi-tenant security, production-proven - at 1 for
 yes and ½ for partial. Scored on the rows *we* would have picked, every one of these charts
 would put us top-right, which is exactly why the score doesn't use them.
 
 | | wake, ms | source | breadth | of 8 |
 |---|---|---|---|---|
-| Daytona | *none published* | — | 0.81 | 6.5 |
+| Daytona | *none published* | - | 0.81 | 6.5 |
 | **sbx** docker | **191** | `scripts/bench.sh 20`, this repo | **0.25** | **2** |
 | Fly, suspended | a few hundred | [vendor][fly] | 0.95 | 7.5 |
 | Neon | a few hundred | [vendor][neon] | 0.60 | 4.8 |
 | E2B | ~1000 | [vendor][e2b] | 0.88 | 7 |
 | **sbx** kubernetes | **1534** | `scripts/bench.sh`, minikube | **0.30** | 2.5 |
 | Fly, stopped | ~2000+ | [vendor][fly] | 0.95 | 7.5 |
-| Knative | seconds, pod schedule | — | 0.50 | 4 |
+| Knative | seconds, pod schedule | - | 0.50 | 4 |
 
 Point positions are those scores, rounded a little so the labels don't sit on top of each
 other; the table is the data, the chart is the shape.
 
-⚠️ **The x-axis is not a fair race and is on a log scale.** Ours is loopback on an idle laptop;
+**The x-axis is not a fair race and is on a log scale.** Ours is loopback on an idle laptop;
 theirs is a multi-tenant fleet across a network, and E2B's second restores a RAM image while
 our 191 ms starts a process. [BENCHMARKS.md](BENCHMARKS.md#against-other-platforms) lists all
 four reasons, and they all favour us. Modal and Cloudflare are absent because we could not
-find a vendor-documented wake figure for either — a blank is better than a guess.
+find a vendor-documented wake figure for either - a blank is better than a guess.
 
 ### 2 · The chart that explains why this exists
 
-Same platforms, the two axes that are structural rather than measured — so no hardware,
+Same platforms, the two axes that are structural rather than measured - so no hardware,
 network or region can flatter anybody.
 
 ```mermaid
@@ -185,7 +185,7 @@ quadrantChart
 **The hosted platforms are all in the bottom-left, and the top-right is not ours alone.** Fly
 is far right because its proxy wakes on a real connection, but it's their proxy in their
 cloud. Knative is high because you run it yourself, but it only wakes on HTTP. Neon sits
-mid-x because the Postgres wire protocol *is* the trigger — the right idea, one protocol wide.
+mid-x because the Postgres wire protocol *is* the trigger - the right idea, one protocol wide.
 
 The three neighbours in that corner are the ones worth reading before this one, and they are
 covered next.
@@ -194,24 +194,24 @@ covered next.
 
 ## The closest prior art
 
-Not the hosted platforms — three self-hosted Go projects that solve the same problem, and the
+Not the hosted platforms - three self-hosted Go projects that solve the same problem, and the
 ones to read before this one. Two of them predate it.
 
 ### zeropod · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 939★ · **measured**
 
 A containerd shim. eBPF watches TCP activity; after an idle period CRIU checkpoints the
 container to disk; eBPF redirects traffic to an activator, which **restores on the first connection in tens
-to a few hundred milliseconds** — with memory, open files and processes intact.
+to a few hundred milliseconds** - with memory, open files and processes intact.
 
 **This is the same mechanism as ours, done at a lower layer, and on the RAM question it beats
 us outright.** What we restore is a disk. What it restores is the process.
 
 Measured rather than taken on trust: **272 ms median restore, n=4, and 4/4 first attempts
-served** — it holds the connection, as we do. `scripts/zeropod-probe.sh` runs it in CI. Their
+served** - it holds the connection, as we do. `scripts/zeropod-probe.sh` runs it in CI. Their
 documented "tens to a few hundred milliseconds" is accurate.
 
 Where it costs more: it replaces your container runtime. It needs a containerd shim installed
-on every node, CRIU, eBPF and a Kubernetes cluster — root-level infrastructure, configured per
+on every node, CRIU, eBPF and a Kubernetes cluster - root-level infrastructure, configured per
 node. Its README calls arm64 workloads in a Linux VM on macOS "somewhat flaky", which is
 precisely Docker Desktop on an Apple Silicon laptop. It is a cluster technology; this is a
 userspace binary you run as yourself.
@@ -224,11 +224,11 @@ docker, swarm, podman, kubernetes, Proxmox LXC. Blocking strategy holds the requ
 strategy shows a themed waiting page.
 
 **It is HTTP-only.** The wake is a middleware hook on an HTTP request, so there is no path by
-which `psql` wakes anything — you would need a reverse proxy that speaks the Postgres wire
-protocol, which is the problem it declines to solve. Steady-state overhead is ~1.5–2 ms per
+which `psql` wakes anything - you would need a reverse proxy that speaks the Postgres wire
+protocol, which is the problem it declines to solve. Steady-state overhead is ~1.5-2 ms per
 request against our ~15 µs, because a proxy that parses is not a proxy that splices.
 
-Worth stealing: the waiting page. A human who clicks a link and sees a themed "starting…"
+Worth stealing: the waiting page. A human who clicks a link and sees a themed "starting..."
 page has a better time than one who watches a spinner, and `sbx url` currently offers the
 spinner.
 
@@ -253,7 +253,7 @@ long-lived session can look idle. There is no spec file, no per-service readines
 
 The honest sentence is not "nobody does this". It is: **zeropod does it deeper and needs a
 cluster; Lazytainer does it cruder and needs your network; Sablier does it for HTTP and is the
-one most people actually run.** What is genuinely unoccupied is the intersection — arbitrary
+one most people actually run.** What is genuinely unoccupied is the intersection - arbitrary
 TCP, no runtime to replace, a committed spec file, and the same binary on a laptop and in a
 cluster.
 
@@ -268,25 +268,25 @@ state of that attempt:
 
 | claim in this file | status |
 |---|---|
-| Sablier is HTTP-only — cannot wake a `psql` client | **measured**: reports `N/A` for the postgres target, by design, not by failure |
-| Sablier's ~1.5–2 ms steady-state overhead | **unmeasured here** — its Traefik middleware would not engage under any plugin config tried, so no honest number was taken |
-| zeropod restores in tens to a few hundred ms, with RAM intact | **measured** — 272 ms median, n=4, 4/4 first attempts served, on a kind cluster in CI. Their claim holds |
-| Lazytainer wakes on any TCP | **measured** — it does, but it never holds the connection: attempts 1–5 refused, served on the 6th, 5150 ms later. 0/5 first attempts served against sbx's 5/5 |
-| sbx wakes on raw TCP (postgres) | **measured** — 5/5 first attempts served, median 931 ms |
-| sbx's proxy tax | **measured** — 33 µs/req over a same-container floor, ±21 µs, alongside benchstat's ~15 µs by a different method |
-| sbx drives a remote docker host | **measured** — `DOCKER_HOST=tcp://` creates and lists against a daemon reached over the network; `https://` is refused because sbx carries no client certificates, so the supported shape is a trusted network |
-| the sbx daemon is 4.5 MB | **measured and wrong** — 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
-| Neon wakes in 300–800 ms | **quoted and wrong** — the [vendor page][neon] says "a few hundred milliseconds" and publishes no range. The 300–800 was ours, attributed to them. Corrected here and in BENCHMARKS.md |
-| an E2B fork takes 5–30 ms | **quoted and wrong** — [their page][e2b-fork] gives no figure at all. It says a fork carries files, processes and memory, and that the pause scales with disk changes since the last snapshot. Corrected |
-| E2B spawns many sandboxes from a snapshot "in tens of milliseconds" | **quoted and wrong** — E2B publishes ~1 s to resume a paused sandbox and no fan-out figure at all. Off by roughly 20×, and it survived the correction above by ninety lines because the sweep that found the first one stopped at the table. Corrected here and in a Go comment that carried the same number |
-| Daytona wakes in ~90 ms p99 | **quoted and wrong twice over** — Daytona advertises a *cold start* "in under 90ms" and publishes no percentile and no wake figure. The "p99" was ours, and a cold start is not a wake. The row is now blank, on the same rule that keeps Modal and Cloudflare out |
-| E2B scales to zero after 5 minutes by default | **quoted and wrong** — the timeout is 5 minutes and `onTimeout` defaults to **kill**. Auto-pause is opt-in, and "scale to zero" appears nowhere in their docs. It credited a competitor with a default they do not have |
-| the Fly citation | **a 404** — both Fly figures were right and the link was dead, which for a document whose argument is "check it yourself" is the same failure as inventing them. `scripts/lint-docs.sh` now fetches every external URL |
+| Sablier is HTTP-only - cannot wake a `psql` client | **measured**: reports `N/A` for the postgres target, by design, not by failure |
+| Sablier's ~1.5-2 ms steady-state overhead | **unmeasured here** - its Traefik middleware would not engage under any plugin config tried, so no honest number was taken |
+| zeropod restores in tens to a few hundred ms, with RAM intact | **measured** - 272 ms median, n=4, 4/4 first attempts served, on a kind cluster in CI. Their claim holds |
+| Lazytainer wakes on any TCP | **measured** - it does, but it never holds the connection: attempts 1-5 refused, served on the 6th, 5150 ms later. 0/5 first attempts served against sbx's 5/5 |
+| sbx wakes on raw TCP (postgres) | **measured** - 5/5 first attempts served, median 931 ms |
+| sbx's proxy tax | **measured** - 33 µs/req over a same-container floor, ±21 µs, alongside benchstat's ~15 µs by a different method |
+| sbx drives a remote docker host | **measured** - `DOCKER_HOST=tcp://` creates and lists against a daemon reached over the network; `https://` is refused because sbx carries no client certificates, so the supported shape is a trusted network |
+| the sbx daemon is 4.5 MB | **measured and wrong** - 9.1 MB at rest. Corrected in BENCHMARKS.md, the README and the architecture diagram |
+| Neon wakes in 300-800 ms | **quoted and wrong** - the [vendor page][neon] says "a few hundred milliseconds" and publishes no range. The 300-800 was ours, attributed to them. Corrected here and in BENCHMARKS.md |
+| an E2B fork takes 5-30 ms | **quoted and wrong** - [their page][e2b-fork] gives no figure at all. It says a fork carries files, processes and memory, and that the pause scales with disk changes since the last snapshot. Corrected |
+| E2B spawns many sandboxes from a snapshot "in tens of milliseconds" | **quoted and wrong** - E2B publishes ~1 s to resume a paused sandbox and no fan-out figure at all. Off by roughly 20×, and it survived the correction above by ninety lines because the sweep that found the first one stopped at the table. Corrected here and in a Go comment that carried the same number |
+| Daytona wakes in ~90 ms p99 | **quoted and wrong twice over** - Daytona advertises a *cold start* "in under 90ms" and publishes no percentile and no wake figure. The "p99" was ours, and a cold start is not a wake. The row is now blank, on the same rule that keeps Modal and Cloudflare out |
+| E2B scales to zero after 5 minutes by default | **quoted and wrong** - the timeout is 5 minutes and `onTimeout` defaults to **kill**. Auto-pause is opt-in, and "scale to zero" appears nowhere in their docs. It credited a competitor with a default they do not have |
+| the Fly citation | **a 404** - both Fly figures were right and the link was dead, which for a document whose argument is "check it yourself" is the same failure as inventing them. `scripts/lint-docs.sh` now fetches every external URL |
 
 **Two of those are worse than being wrong about ourselves.** A number invented and hung on a
 vendor's link is the one thing a reader cannot check without doing the work themselves, and
 it is exactly what this document claims never to do. Both ran in directions that flattered
-this table — a fabricated 800 ms upper bound put Neon behind sbx on the chart below, and a
+this table - a fabricated 800 ms upper bound put Neon behind sbx on the chart below, and a
 fabricated 5 ms put E2B's fork somewhere no vendor claimed. They were found by a review that
 opened the linked pages, which is the check that should have happened before either was
 written.
@@ -296,7 +296,7 @@ was: an E2B fork is copy-on-write from a snapshot, so it is O(1) in dataset size
 `sbx fork` copies the volume byte for byte and is O(n). For the 8 GB fixture this document
 names two sections later, that is the whole story, and it does not need a number from anyone.
 
-One of eight is still read rather than run — Sablier's overhead, because its middleware
+One of eight is still read rather than run - Sablier's overhead, because its middleware
 would not engage. Everything else has been run, and one of the measurements refuted a claim
 of our own rather than a rival's.
 
@@ -327,11 +327,11 @@ only one of them works for a client that does not retry.
 ### Rows chosen by them, not by us
 
 The table above still asks "does everyone else do what we do". These are the ones their
-documentation leads with — the rows the competition would choose.
+documentation leads with - the rows the competition would choose.
 
 | | sbx | E2B | Daytona | Modal | Cloudflare | Northflank |
 |---|---|---|---|---|---|---|
-| **Network egress control** — allow/deny by IP, CIDR, domain | ◐ `egress: deny`, all-or-nothing | ● wildcards | ● firewall | ● | ● | ● |
+| **Network egress control** - allow/deny by IP, CIDR, domain | ◐ `egress: deny`, all-or-nothing | ● wildcards | ● firewall | ● | ● | ● |
 | **Fork N sandboxes from one snapshot** | ◐ `sbx fork`, copies the volume | ● files, processes and memory | ● | ● | ◐ | ○ |
 | **Prebuilt templates, versioned and cached** | ● five, embedded, digest-pinned, `sbx prewarm` | ● | ● 24 h cache | ● | ● | ● |
 | **Declarative image builder** | ● `build:`, cached by content hash | ◐ | ● | ● | ◐ | ● |
@@ -358,16 +358,16 @@ What is still open, honestly:
 - **Egress by domain.** `egress: "deny"` is all-or-nothing. The rivals allow and deny by
   domain, CIDR and IP.
 - **Shared volumes.** One volume per service, and no way to mount a dataset read-only into
-  many sandboxes — which is the natural answer to "every agent needs the same 8 GB fixture".
+  many sandboxes - which is the natural answer to "every agent needs the same 8 GB fixture".
 - **Language SDKs.** Deliberate, and the whole thesis of this document: a sandbox that only
   wakes for code you wrote is a sandbox `pg_dump` cannot use. See
   [the axis that actually separates them](#the-axis-that-actually-separates-them). The `○` is
-  a choice, not a gap — but it is a real difference for anyone who wants `Sandbox.create()`.
+  a choice, not a gap - but it is a real difference for anyone who wants `Sandbox.create()`.
 - **SSH and VNC.** `exec -t` is a PTY; neither of the other two is there.
 - **Memory restore**, which is the row above and the one sbx loses outright.
 
 The egress row was the most serious and is now half closed. `egress: "deny"` gives a service
-no route off the host while leaving it reachable and wakeable — verified in both directions.
+no route off the host while leaving it reachable and wakeable - verified in both directions.
 What it is not is what the rivals actually ship: allow and deny **by domain, CIDR and IP**.
 All-or-nothing is a real control and a coarse one, and the gap between it and a wildcard
 allow-list is where a filtering proxy would have to go.
@@ -376,8 +376,8 @@ The second is nearly as important and is not the same thing as CRIU: E2B can spa
 sandboxes from one snapshot, copy-on-write. That is a different capability from
 "resume the one you paused", and it is what makes per-task fan-out cheap for them.
 
-`sbx snapshot` / `sbx fork` now do the fan-out half — many sandboxes from one saved state,
-each with its own copy of the data — but the state is a filesystem, not a memory image. A
+`sbx snapshot` / `sbx fork` now do the fan-out half - many sandboxes from one saved state,
+each with its own copy of the data - but the state is a filesystem, not a memory image. A
 fork starts cold. Half a row, marked as half.
 
 **Read the bottom two rows before the top two.** Every hosted platform on this table has real
@@ -405,41 +405,41 @@ somebody else's code.
 
 Vendor documentation, read August 2026:
 
-- [E2B — sandbox persistence](https://docs.e2b.dev/sandbox/persistence): `sandbox.connect()` to
+- [E2B - sandbox persistence](https://docs.e2b.dev/sandbox/persistence): `sandbox.connect()` to
   resume; ~4 s per GiB of RAM to pause, ~1 s to resume; filesystem *and* memory state preserved.
 - [Fly Proxy autostop/autostart](https://fly.io/docs/reference/fly-proxy-autostop-autostart/):
-  "The proxy waits for a request to your app… starts a stopped or suspended Machine". Also:
+  "The proxy waits for a request to your app... starts a stopped or suspended Machine". Also:
   "only works on existing Machines and never creates or destroys Machines for you."
-- [Fly — machine suspend and resume](https://fly.io/docs/reference/suspend-resume/)
+- [Fly - machine suspend and resume](https://fly.io/docs/reference/suspend-resume/)
 - [Cloudflare Sandbox SDK](https://developers.cloudflare.com/sandbox/): `sleepAfter` idle sleep;
   [tunnels API](https://developers.cloudflare.com/sandbox/api/tunnels/) via `cloudflared`, which
   [replaced `exposePort()`](https://developers.cloudflare.com/changelog/post/2026-06-09-deprecating-sandbox-sdk-features/)
-  in 2026 — the same conclusion this repo reached about its own tunnel, independently.
-- [Knative — configuring scale to zero](https://knative.dev/docs/serving/autoscaling/scale-to-zero/)
+  in 2026 - the same conclusion this repo reached about its own tunnel, independently.
+- [Knative - configuring scale to zero](https://knative.dev/docs/serving/autoscaling/scale-to-zero/)
   and [the activator on the data path](https://knative.dev/blog/articles/demystifying-activator-on-path/).
-- [Neon — connection latency](https://neon.com/docs/connect/connection-latency): a few hundred ms
-- [E2B — forking a sandbox](https://docs.e2b.dev/sandbox/fork): files, processes and memory; no latency published
-  from idle; default timeout 5 minutes, with `onTimeout` defaulting to **kill** —
+- [Neon - connection latency](https://neon.com/docs/connect/connection-latency): a few hundred ms
+- [E2B - forking a sandbox](https://docs.e2b.dev/sandbox/fork): files, processes and memory; no latency published
+  from idle; default timeout 5 minutes, with `onTimeout` defaulting to **kill** -
   auto-pause is opt-in.
 - [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), [Modal sandboxes](https://modal.com/docs/guide/sandbox),
   [Daytona](https://www.daytona.io/docs/), [Northflank preview environments](https://northflank.com/blog/preview-environment-platforms).
 
 The self-hosted prior art, read from the repositories themselves:
 
-- [ctrox/zeropod](https://github.com/ctrox/zeropod) — containerd shim, CRIU checkpoint, eBPF
+- [ctrox/zeropod](https://github.com/ctrox/zeropod) - containerd shim, CRIU checkpoint, eBPF
   activity tracking, restore "in tens to a few hundred milliseconds"; README notes arm64 in a
   Linux VM on macOS is "somewhat flaky".
-- [sablierapp/sablier](https://github.com/sablierapp/sablier) — API server plus reverse-proxy
+- [sablierapp/sablier](https://github.com/sablierapp/sablier) - API server plus reverse-proxy
   middleware; docker, swarm, podman, kubernetes and Proxmox providers; blocking and dynamic
-  strategies; ~1.5–2 ms steady-state overhead per request.
-- [vmorganp/Lazytainer](https://github.com/vmorganp/Lazytainer) — packet-count thresholds on a
+  strategies; ~1.5-2 ms steady-state overhead per request.
+- [vmorganp/Lazytainer](https://github.com/vmorganp/Lazytainer) - packet-count thresholds on a
   monitored interface; "you must apply a label to them and proxy their traffic through the
   Lazytainer container".
 
 Third-party roundup figures are **no longer quoted here at all.**
 
 Daytona advertises a cold start "in under 90ms". It publishes no percentile and no wake
-figure — and a cold start is not a wake. That number used to appear here as "~90 ms p99" in a
+figure - and a cold start is not a wake. That number used to appear here as "~90 ms p99" in a
 column headed *wake*: a percentile this repo added to a measurement Daytona never made.
 
 It is gone, on the same rule that keeps Modal and Cloudflare out: a blank beats a guess.

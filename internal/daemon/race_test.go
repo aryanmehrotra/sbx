@@ -8,9 +8,9 @@ package daemon
 // per connection, a discovery loop and a reaper all touching the same units. Every previous
 // test drove one connection at a time, which is the shape least likely to find anything.
 //
-// These drive the paths that actually overlap in production — many callers waking one
+// These drive the paths that actually overlap in production - many callers waking one
 // sandbox at once, and the reaper deciding to sleep something while a connection is
-// arriving — because that is where a data race would be, and where the damage would be a
+// arriving - because that is where a data race would be, and where the damage would be a
 // sandbox stopped underneath a live query.
 
 import (

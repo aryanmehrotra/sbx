@@ -6,7 +6,7 @@ package cli
 // the same sandbox. Forgetting it produced one of two things, and the second is worse than
 // the first:
 //
-//   - with no sandbox.json in the working directory, `open sandbox.json: no such file` —
+//   - with no sandbox.json in the working directory, `open sandbox.json: no such file` -
 //     confusing, but at least a failure;
 //   - with an unrelated sandbox.json there, a clean success against the wrong spec. Ordinals
 //     are assigned alphabetically over the declared service names, so a different-but-valid
@@ -18,7 +18,7 @@ package cli
 // Deliberately a *default*, never a source of truth. An explicit --spec or --template always
 // wins, a missing or unreadable record changes nothing about how sbx behaves, and no command
 // fails because of it. That is what keeps this a convenience rather than a second place where
-// the truth about a sandbox lives — the containers and their labels remain the only one.
+// the truth about a sandbox lives - the containers and their labels remain the only one.
 
 import (
 	"encoding/json"
@@ -58,7 +58,7 @@ func Remember(sandbox, template, spec string) {
 	o := Origin{Template: template}
 
 	// Absolute, because `sbx env` is very often run from a different directory than the
-	// `sbx create` that preceded it — a relative path recorded here would resolve somewhere
+	// `sbx create` that preceded it - a relative path recorded here would resolve somewhere
 	// else, which is the exact failure this exists to prevent.
 	if template == "" && spec != "" {
 		abs, err := filepath.Abs(spec)
@@ -120,7 +120,7 @@ func Forget(sandbox string) {
 
 // Inherit copies one record onto another name.
 //
-// A snapshot is not a sandbox, so it has no origin of its own — but `sbx fork <snapshot>
+// A snapshot is not a sandbox, so it has no origin of its own - but `sbx fork <snapshot>
 // <new>` needs the same spec the snapshotted sandbox was built from, and asking the user to
 // name it again is the repetition this file exists to remove. So `sbx snapshot main golden`
 // gives "golden" whatever "main" had, and a fork of golden inherits it in turn.

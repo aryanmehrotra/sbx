@@ -4,7 +4,7 @@ package daemon
 //
 // This is the gate from a real incident, recorded in DECISIONS.md: the activator scaled a
 // sandbox to zero 39 seconds into its own creation, while the command creating it was still
-// waiting for the first health check. Nothing was idle — it had simply never had a byte,
+// waiting for the first health check. Nothing was idle - it had simply never had a byte,
 // because it was not up yet.
 //
 // Every other daemon test starts from served=true to get past this gate and test something
@@ -29,7 +29,7 @@ type notYetServing struct {
 }
 
 func (n *notYetServing) Healthy(context.Context, string) (bool, bool) {
-	return false, true // not serving, and it did declare a check — so the answer is real
+	return false, true // not serving, and it did declare a check - so the answer is real
 }
 
 func TestReapDoesNotSleepAUnitThatWasNeverServing(t *testing.T) {
@@ -47,14 +47,14 @@ func TestReapDoesNotSleepAUnitThatWasNeverServing(t *testing.T) {
 	// Swept repeatedly, with the idle clock forced back to long-ago before each pass. One
 	// tick is not enough to catch this: a gate that merely fails to sleep it on the first
 	// pass, while wrongly recording that it HAS been seen serving, sleeps it on the next one
-	// — which is precisely the 39-seconds-into-creation shape of the original incident.
+	// - which is precisely the 39-seconds-into-creation shape of the original incident.
 	for i := range 5 {
 		u.lastByte.Store(time.Now().Add(-time.Hour).UnixNano())
 
 		d.reap(context.Background())
 
 		if got := p.stops.Load(); got != 0 {
-			t.Fatalf("sweep %d stopped a sandbox that had never served (%d times) — this is "+
+			t.Fatalf("sweep %d stopped a sandbox that had never served (%d times) - this is "+
 				"the incident that put a creating sandbox to sleep 39 seconds in", i+1, got)
 		}
 	}
@@ -77,13 +77,13 @@ func TestReapSleepsOnceItHasBeenSeenServing(t *testing.T) {
 
 	d := &daemon{provider: p, idle: time.Minute, units: map[string]*unit{u.name: u}}
 
-	// First pass: healthy, so sleepable() records that it has been seen serving — and
+	// First pass: healthy, so sleepable() records that it has been seen serving - and
 	// restarts the idle clock, because being seen serving is the first moment idleness can
 	// mean anything. So this pass must NOT sleep it.
 	d.reap(context.Background())
 
 	if got := p.stops.Load(); got != 0 {
-		t.Fatalf("slept on the very first healthy observation (%d) — the idle clock had not "+
+		t.Fatalf("slept on the very first healthy observation (%d) - the idle clock had not "+
 			"yet had a chance to run from a meaningful start", got)
 	}
 

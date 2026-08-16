@@ -16,7 +16,7 @@ import (
 // the job and looks like sbx being slow. `sbx prewarm` moves it to a step that can be cached.
 //
 // It reports what it did rather than a spinner, because the one question worth answering is
-// which images were already there — an unchanged CI cache should print "already present" for
+// which images were already there - an unchanged CI cache should print "already present" for
 // everything, and a run that pulls when it should not is the cache being broken.
 
 // Prewarm fetches images so a later create does not have to.
@@ -27,7 +27,7 @@ func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []str
 	}
 
 	// Present-checking is a capability too, and a provider that can pull but cannot inspect
-	// still works here — it just pulls, and docker's own pull is a no-op when the digest is
+	// still works here - it just pulls, and docker's own pull is a no-op when the digest is
 	// already local.
 	has, _ := p.(provider.Builder)
 

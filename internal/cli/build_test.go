@@ -64,7 +64,7 @@ func TestChangedContentChangesTag(t *testing.T) {
 }
 
 // The reason this hashes content rather than timestamps. A fresh clone rewrites every
-// mtime, and a time-based key would miss the cache on every CI runner — which is exactly
+// mtime, and a time-based key would miss the cache on every CI runner - which is exactly
 // where it is worth the most.
 func TestTouchingAFileDoesNotChangeTheTag(t *testing.T) {
 	a := ctxDir(t, map[string]string{"Dockerfile": "FROM nginx\n", "app.txt": "hello"})
@@ -76,7 +76,7 @@ func TestTouchingAFileDoesNotChangeTheTag(t *testing.T) {
 	}
 
 	if tagOf(t, a) != before {
-		t.Error("changing an mtime changed the tag — the cache would miss on every fresh clone")
+		t.Error("changing an mtime changed the tag - the cache would miss on every fresh clone")
 	}
 }
 
@@ -109,7 +109,7 @@ func TestGitDirIsIgnored(t *testing.T) {
 	}
 
 	if tagOf(t, a) != before {
-		t.Error("a .git directory changed the tag — every commit would bust the cache")
+		t.Error("a .git directory changed the tag - every commit would bust the cache")
 	}
 }
 
@@ -120,7 +120,7 @@ func TestMissingContextIsAnError(t *testing.T) {
 }
 
 // node_modules is excluded for the same reason .git is: it is enormous, it is derived, and
-// hashing it would make the tag change whenever a lockfile install did — busting the cache
+// hashing it would make the tag change whenever a lockfile install did - busting the cache
 // for a reason that has nothing to do with what goes into the image.
 func TestNodeModulesIsIgnored(t *testing.T) {
 	a := ctxDir(t, map[string]string{"Dockerfile": "FROM node:22\n"})
@@ -136,12 +136,12 @@ func TestNodeModulesIsIgnored(t *testing.T) {
 	}
 
 	if tagOf(t, a) != before {
-		t.Error("node_modules changed the tag — an npm install would rebuild the image")
+		t.Error("node_modules changed the tag - an npm install would rebuild the image")
 	}
 }
 
-// A symlink's target is either already inside the context — in which case it is hashed once,
-// where it lives — or outside it, in which case following it would put part of the host's
+// A symlink's target is either already inside the context - in which case it is hashed once,
+// where it lives - or outside it, in which case following it would put part of the host's
 // filesystem into the tag and make the build unreproducible on any other machine.
 func TestSymlinksAreSkipped(t *testing.T) {
 	a := ctxDir(t, map[string]string{"Dockerfile": "FROM nginx\n"})
@@ -157,7 +157,7 @@ func TestSymlinksAreSkipped(t *testing.T) {
 	}
 
 	if tagOf(t, a) != before {
-		t.Error("a symlink out of the context changed the tag — the host's filesystem is in " +
+		t.Error("a symlink out of the context changed the tag - the host's filesystem is in " +
 			"the cache key, so the same context hashes differently on another machine")
 	}
 }

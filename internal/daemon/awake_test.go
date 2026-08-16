@@ -4,11 +4,11 @@ package daemon
 //
 // wake() used to Probe on every single connection. Probe shells out to `docker exec` to run
 // the health command, which measured at 68 ms median per connection against 0.8 ms straight
-// to docker — paid forever, not once. It made the proxy's own docstring ("the caller's first
+// to docker - paid forever, not once. It made the proxy's own docstring ("the caller's first
 // query pays this; nothing else ever does") false, and it made the published ~33 µs proxy
 // overhead a statement about bytes on an already-open connection rather than about using the
-// thing. Anything opening a connection per operation — psql, a CLI, any client without a
-// pool — paid the exec every time.
+// thing. Anything opening a connection per operation - psql, a CLI, any client without a
+// pool - paid the exec every time.
 //
 // The fast path is optimistic, so the tests that matter are the two halves of that bet: it
 // must not ask when it already knows, and it must find out when it was wrong.
@@ -25,7 +25,7 @@ import (
 )
 
 // The regression this file exists for. Once a unit is awake, waking it again must cost
-// nothing — no probe, no exec, no docker.
+// nothing - no probe, no exec, no docker.
 func TestAnAwakeUnitIsNotProbedAgain(t *testing.T) {
 	p := &countingProvider{}
 	u := newUnit("s", "svc", "ref", "s/svc", nil, false)
@@ -36,7 +36,7 @@ func TestAnAwakeUnitIsNotProbedAgain(t *testing.T) {
 
 	after := p.probes.Load()
 	if after == 0 {
-		t.Fatal("the first wake did not probe at all — this test would then prove nothing")
+		t.Fatal("the first wake did not probe at all - this test would then prove nothing")
 	}
 
 	for range 50 {
@@ -51,7 +51,7 @@ func TestAnAwakeUnitIsNotProbedAgain(t *testing.T) {
 }
 
 // The other half of the bet. The daemon is the only thing that sleeps a unit, but it is not
-// the only thing that can stop a container — a `docker stop`, a daemon restart, an OOM kill.
+// the only thing that can stop a container - a `docker stop`, a daemon restart, an OOM kill.
 // Believing "awake" forever would leave every future connection failing.
 func TestAFailedDialRevokesAwake(t *testing.T) {
 	p := &countingProvider{}
@@ -76,7 +76,7 @@ func TestAFailedDialRevokesAwake(t *testing.T) {
 	}
 
 	if p.starts.Load() == startsBefore {
-		t.Error("the re-wake did not start the container — a unit stopped behind sbx's back stays down")
+		t.Error("the re-wake did not start the container - a unit stopped behind sbx's back stays down")
 	}
 
 	if !u.isAwake() {
@@ -85,7 +85,7 @@ func TestAFailedDialRevokesAwake(t *testing.T) {
 }
 
 // End to end through handle(), which is where the revoke actually lives: a client connects,
-// the upstream is dead, and the connection must not hang — it either recovers or closes.
+// the upstream is dead, and the connection must not hang - it either recovers or closes.
 func TestHandleDoesNotHangOnADeadUpstream(t *testing.T) {
 	p := &countingProvider{}
 	p.serving.Store(true)
@@ -134,7 +134,7 @@ func TestHandleDoesNotHangOnADeadUpstream(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
-		t.Fatal("handle never returned against a dead upstream — a client would hang here")
+		t.Fatal("handle never returned against a dead upstream - a client would hang here")
 	}
 
 	// And the belief was revoked rather than kept: a second connection must probe again.
@@ -165,7 +165,7 @@ func (s *slowStopper) Stop(_ context.Context, _ string) error {
 // The first version of the awake fast path checked `isAwake()` BEFORE taking `u.waking`,
 // which made it cheap and wrong: sleep() holds that lock across `p.Stop()`, so a connection
 // could see "awake", skip straight to dialling, and reach a container that was already being
-// stopped. The client got a connection reset for a sandbox it had just woken — reached twice
+// stopped. The client got a connection reset for a sandbox it had just woken - reached twice
 // in one run of the concurrent-wake suite on a busy machine.
 //
 // Only the probe was ever expensive. The lock costs nanoseconds, and taking it is what makes
@@ -193,7 +193,7 @@ func TestWakeWaitsForACommittedSleep(t *testing.T) {
 
 	select {
 	case <-woke:
-		t.Fatal("wake returned while a sleep was mid-Stop — it did not take the lock, so a " +
+		t.Fatal("wake returned while a sleep was mid-Stop - it did not take the lock, so a " +
 			"caller would dial a container that is being stopped")
 	case <-time.After(200 * time.Millisecond):
 		// Correct: blocked behind the sleep.
@@ -215,7 +215,7 @@ func TestWakeWaitsForACommittedSleep(t *testing.T) {
 	}
 
 	if p.starts.Load() == 0 {
-		t.Error("the unit was reported awake without ever being started — the stale 'awake' " +
+		t.Error("the unit was reported awake without ever being started - the stale 'awake' " +
 			"survived the sleep that cleared it")
 	}
 }
@@ -223,7 +223,7 @@ func TestWakeWaitsForACommittedSleep(t *testing.T) {
 // The structural assertion behind the test above: wake() decides nothing until it holds
 // u.waking, even when the unit is already believed awake.
 //
-// This is stated directly because the racing version cannot reach the window on demand —
+// This is stated directly because the racing version cannot reach the window on demand -
 // sleep() clears `awake` before it calls Stop, so a racing wake almost always sees the
 // cleared flag and blocks anyway. The gap is between sleep's idle re-check and that clear,
 // and it is real but too narrow to hit deterministically from a test.
@@ -247,7 +247,7 @@ func TestWakeTakesTheLockEvenWhenAwake(t *testing.T) {
 	select {
 	case <-woke:
 		u.waking.Unlock()
-		t.Fatal("wake answered from the awake flag without taking u.waking — sleep() holds " +
+		t.Fatal("wake answered from the awake flag without taking u.waking - sleep() holds " +
 			"that lock across p.Stop(), so this caller would dial a container being stopped")
 	case <-time.After(150 * time.Millisecond):
 	}
@@ -265,14 +265,14 @@ func TestWakeTakesTheLockEvenWhenAwake(t *testing.T) {
 
 	// And it still cost no probe: the lock is the fix, not a return to asking docker.
 	if got := p.probes.Load(); got != 0 {
-		t.Errorf("an awake unit was probed %d times — the 68 ms per connection is back", got)
+		t.Errorf("an awake unit was probed %d times - the 68 ms per connection is back", got)
 	}
 }
 
 // A client that half-closes must still get its whole response.
 //
 // handle() waited on one of two pipe goroutines, so whichever direction finished first tore
-// down both — undoing the CloseWrite that pipe() performs one line earlier. A client that
+// down both - undoing the CloseWrite that pipe() performs one line earlier. A client that
 // signals end-of-input with shutdown(SHUT_WR) and then reads (`nc -N`, several HTTP clients,
 // pipe-mode bulk loaders) got a truncated response and no error.
 func TestAHalfClosedClientStillGetsTheWholeResponse(t *testing.T) {
@@ -337,7 +337,7 @@ func TestAHalfClosedClientStillGetsTheWholeResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// "That is all I am sending" — and now the whole reply must come back.
+	// "That is all I am sending" - and now the whole reply must come back.
 	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestAHalfClosedClientStillGetsTheWholeResponse(t *testing.T) {
 	}
 
 	if len(got) != replySize {
-		t.Errorf("got %d bytes of a %d byte response — the response was truncated when the "+
+		t.Errorf("got %d bytes of a %d byte response - the response was truncated when the "+
 			"client half-closed", len(got), replySize)
 	}
 }

@@ -7,11 +7,11 @@
 # already reach, and a process holding your database ports has no business being root.
 #
 # If your Docker is rootless, this already works. If it is the system daemon, your user
-# needs to be in the docker group — which is the same permission `docker ps` needs, so if
+# needs to be in the docker group - which is the same permission `docker ps` needs, so if
 # that works, this will.
 
 [Unit]
-Description=sbx — wakes per-branch sandboxes on demand, sleeps them when idle
+Description=sbx - wakes per-branch sandboxes on demand, sleeps them when idle
 Documentation=https://github.com/aryanmehrotra/sbx
 After=docker.service
 Wants=docker.service
@@ -37,7 +37,7 @@ ProtectHome=read-only
 
 # One exception to the read-only home: the daemon records that it is running in
 # ~/.sbx/daemon.json, which is how `sbx create` tells "no daemon" from "the daemon has not
-# noticed this sandbox yet" — two problems that look identical from a refused connection and
+# noticed this sandbox yet" - two problems that look identical from a refused connection and
 # need opposite advice. Without this the daemon still works, and every sbx command run
 # outside this unit gives the worse of the two messages.
 ReadWritePaths=%h/.sbx

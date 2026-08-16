@@ -105,7 +105,7 @@ func TestACycleIsRefused(t *testing.T) {
 	}
 }
 
-// A typo in a dependency name would otherwise be a rule that silently never applied —
+// A typo in a dependency name would otherwise be a rule that silently never applied -
 // indistinguishable from the race it was added to prevent, and much harder to find.
 func TestADependencyOnSomethingUndeclaredIsRefused(t *testing.T) {
 	s := specOf(map[string][]string{"api": {"postgress"}, "postgres": nil})
@@ -143,14 +143,14 @@ func TestDependenciesDoNotChangeOrdinals(t *testing.T) {
 		y, _ := withDeps.StartIndex(b, name)
 
 		if x != y {
-			t.Errorf("%s moved from ordinal %d to %d because a dependency was declared — "+
+			t.Errorf("%s moved from ordinal %d to %d because a dependency was declared - "+
 				"that changes the port an existing sandbox exports", name, x, y)
 		}
 	}
 }
 
 // A required service depending on an optional one is only a problem when the optional one is
-// skipped — which is the default. Create refuses it there rather than bringing up a service
+// skipped - which is the default. Create refuses it there rather than bringing up a service
 // without the dependency it declared, because that would be the exact failure depends_on
 // exists to prevent with the cause moved from "alphabetical accident" to "optional accident".
 //

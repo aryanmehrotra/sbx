@@ -56,7 +56,7 @@ func TestPlainLogHasNoEventFields(t *testing.T) {
 	}
 }
 
-// An event with no duration — a failed wake — must not report a zero-millisecond one. A
+// An event with no duration - a failed wake - must not report a zero-millisecond one. A
 // histogram observation of 0 ms for a wake that never happened is worse than no observation.
 func TestZeroDurationIsOmitted(t *testing.T) {
 	var buf bytes.Buffer

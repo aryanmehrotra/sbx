@@ -16,7 +16,7 @@ import (
 // Doctor answers the question you have before you trust a sandbox with anything: what can
 // this machine actually do?
 //
-// sbx already refuses rather than silently downgrades — asking for gVisor on a host without
+// sbx already refuses rather than silently downgrades - asking for gVisor on a host without
 // it fails, and it says why. That is the right behaviour and it is also the wrong moment to
 // find out. Everything here is a capability someone reads about in the docs and then has to
 // discover by trying, which is a bad way to learn that your isolation tier is not available.

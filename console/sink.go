@@ -8,7 +8,7 @@ import (
 
 // sink is the seam between the log stream and the metrics backend. It updates the in-memory
 // store that /api/sandboxes serves and the Prometheus series that /metrics serves, and it is
-// the only thing in this program that knows GoFr exists — which is why ingest.go and its
+// the only thing in this program that knows GoFr exists - which is why ingest.go and its
 // tests do not import it.
 type sink struct{ m metrics.Manager }
 

@@ -4,7 +4,7 @@
 #   scripts/e2e.sh [count]        # default 3
 #
 # `sbx selftest` proves one sandbox works. That is not the claim. The claim is that a dozen
-# branches can each have their own, sleeping independently, without colliding — and the
+# branches can each have their own, sleeping independently, without colliding - and the
 # failure that would matter most is the quiet one: sandbox A's client being handed sandbox
 # B's data. Nothing until now would have noticed that.
 #
@@ -121,7 +121,7 @@ for n in $NAMES; do
   #
   # No -t: Homebrew's redis-cli takes it as a timeout and Ubuntu's redis-tools rejects it
   # outright, which turned every read here into "Unrecognized option" on CI while the
-  # sandboxes themselves were fine. None is needed — sbx holds the connection open during a
+  # sandboxes themselves were fine. None is needed - sbx holds the connection open during a
   # wake, so the client is connected and waiting for a reply, not waiting to connect.
   ( redis-cli -h 127.0.0.1 -p "$p" get owner > "$tmp/$n" 2>&1 ) &
   clients="$clients $!"
@@ -139,7 +139,7 @@ for n in $NAMES; do
   if [ "$got" = "$n" ]; then
     ok "$n answered with its own data"
   else
-    bad "$n answered with '$got' — cross-talk or lost state"
+    bad "$n answered with '$got' - cross-talk or lost state"
   fi
 done
 

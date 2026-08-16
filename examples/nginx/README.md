@@ -15,7 +15,7 @@ Put your own site in it:
 sbx cp my-site nginx ./dist :/usr/share/nginx/html
 ```
 
-Or give somebody else a link — the tunnel points at the wake port, so the server is asleep
+Or give somebody else a link - the tunnel points at the wake port, so the server is asleep
 until they open it:
 
 ```sh

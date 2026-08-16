@@ -10,7 +10,7 @@ import (
 )
 
 // A fake collector, so the rules can be tested without a docker daemon. What matters here
-// is which artifacts are OFFERED and whether anything is deleted — deleting data is the
+// is which artifacts are OFFERED and whether anything is deleted - deleting data is the
 // one operation that cannot be taken back.
 type fakeCollector struct {
 	items     []provider.Artifact

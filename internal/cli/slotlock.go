@@ -4,7 +4,7 @@ package cli
 //
 // AllocSlot reads the sandboxes that exist and returns the first free slot. Two creates
 // running at the same moment read the same state and pick the same slot, and the ports only
-// actually get claimed when a container is created — so the loser fails at `docker run` with
+// actually get claimed when a container is created - so the loser fails at `docker run` with
 // "failed to set up container networking: driver failed programming external connectivity".
 // Measured, four concurrent creates on one machine: three of them failed.
 //
@@ -13,7 +13,7 @@ package cli
 //
 // The lock is held from AllocSlot until the FIRST container exists, not for the whole create.
 // Once a container carries the slot label and holds the ports, every other AllocSlot can see
-// it, and the rest of the work — pulls, health checks, init — happens unserialised. A create
+// it, and the rest of the work - pulls, health checks, init - happens unserialised. A create
 // that pulls a two-gigabyte image must not block every other create on the machine.
 //
 // Advisory, and deliberately not fatal. It is a file under $HOME, so it covers one machine
@@ -37,7 +37,7 @@ const (
 )
 
 // Within one process too, not only between them. The file lock records a pid, and a pid
-// cannot distinguish two goroutines — so concurrent callers here would each see their own
+// cannot distinguish two goroutines - so concurrent callers here would each see their own
 // pid in the file, conclude the holder is alive, and spin, which is correct but only by
 // accident. This makes the in-process case exclusive by construction and is what lets the
 // property be tested at all.
@@ -70,7 +70,7 @@ func lockSlots() func() {
 			return releaseOnce(func() { _ = os.Remove(path) })
 		}
 
-		// Held by something. If that something is gone — a create that was killed — the lock
+		// Held by something. If that something is gone - a create that was killed - the lock
 		// is rubbish and must not block the machine for ever.
 		if clearStaleSlotLock(path) {
 			continue

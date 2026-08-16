@@ -6,7 +6,7 @@ package provider
 //
 // **Addressing is not portable.** Locally every sandbox shares one loopback, so services
 // get remapped into a per-slot port block. In a cluster every pod has its own address, so
-// MySQL is simply :3306 on a name — port arithmetic is a workaround for a constraint that
+// MySQL is simply :3306 on a name - port arithmetic is a workaround for a constraint that
 // does not exist there. Callers therefore ask for an *endpoint*, never a port, and the
 // provider decides what that means.
 //
@@ -125,7 +125,7 @@ type Provider interface {
 	//
 	// This exists because Healthy is the wrong question on the wake path. The caller is
 	// holding an open connection while it waits, so it wants the truth at its own cadence,
-	// not at the platform's — the difference between the two was 98% of a wake.
+	// not at the platform's - the difference between the two was 98% of a wake.
 	Probe(ctx context.Context, ref string) (serving, declared bool)
 
 	// List returns every unit of a sandbox, or of all sandboxes when sandbox is empty.
@@ -187,7 +187,7 @@ func For(kind, socket, namespace string) (Provider, error) {
 // Capabilities beyond the core.
 //
 // Not every backend can do everything, and the ones that cannot should not be made to write
-// stubs that return errors — a method on the core interface is a promise that every provider
+// stubs that return errors - a method on the core interface is a promise that every provider
 // keeps, and four methods that only docker implements is not an interface, it is a docker
 // client with a kubernetes-shaped hole in it.
 //
@@ -197,11 +197,11 @@ func For(kind, socket, namespace string) (Provider, error) {
 // plainly when this backend cannot give it to you.
 //
 // The rule for adding one: the capability is named for what the USER wants, never for how a
-// backend happens to do it. Snapshotter, not Committer — because the kubernetes answer is a
+// backend happens to do it. Snapshotter, not Committer - because the kubernetes answer is a
 // volume snapshot through its own CSI, not `docker commit`, and an interface named after
 // docker's verb would have made that implementation look like a workaround.
 
-// Snapshotter saves and restores a service's state. Filesystem state — memory and running
+// Snapshotter saves and restores a service's state. Filesystem state - memory and running
 // processes are not included, and the docs say so wherever the word snapshot appears.
 type Snapshotter interface {
 	// Commit saves a unit's filesystem as a named image.
@@ -245,7 +245,7 @@ type Artifact struct {
 // the cluster operator's decision and not sbx's to make on their behalf.
 type Collector interface {
 	// Orphans lists artifacts whose sandbox no longer exists. It never returns anything
-	// belonging to a live sandbox, asleep or awake — asleep is the normal state here.
+	// belonging to a live sandbox, asleep or awake - asleep is the normal state here.
 	Orphans(ctx context.Context) ([]Artifact, error)
 
 	// Reclaim removes one artifact.
@@ -284,7 +284,7 @@ func BuilderFor(p Provider) (Builder, error) {
 	if !ok {
 		return nil, fmt.Errorf("the %s provider cannot build images: in a cluster that means "+
 			"pushing to a registry it can pull from, which needs credentials and a decision "+
-			"about where images live — build it yourself and name it with `image`", p.Name())
+			"about where images live - build it yourself and name it with `image`", p.Name())
 	}
 
 	return b, nil
@@ -293,7 +293,7 @@ func BuilderFor(p Provider) (Builder, error) {
 // Puller fetches an image ahead of time, so the first create is not a download.
 //
 // Optional for the same reason as the rest: on docker this is one command against the local
-// daemon, and in a cluster there is no "local" — the image has to land on whichever node the
+// daemon, and in a cluster there is no "local" - the image has to land on whichever node the
 // scheduler later picks, which means a DaemonSet whose only job is to pull. That is a
 // workload sbx would be creating in the operator's cluster without being asked, so it
 // refuses and says so.
@@ -307,7 +307,7 @@ func PullerFor(p Provider) (Puller, error) {
 	pl, ok := p.(Puller)
 	if !ok {
 		return nil, fmt.Errorf("the %s provider cannot prewarm: there is no local image store "+
-			"to warm — an image has to be on whichever node the scheduler picks, which means "+
+			"to warm - an image has to be on whichever node the scheduler picks, which means "+
 			"a DaemonSet sbx would be creating in your cluster uninvited. Prewarm the nodes "+
 			"with your own tooling, or let the kubelet pull on first create", p.Name())
 	}

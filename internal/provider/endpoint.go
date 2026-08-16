@@ -73,7 +73,7 @@ func parseDockerHost(raw string) (dockerEndpoint, error) {
 	case "npipe":
 		// Named pipes need a Windows-only dialer that is not in the standard library, and
 		// this binary's whole argument is that it has no dependencies. On Windows, run
-		// under WSL2 — which is where Docker Desktop exposes a unix socket anyway.
+		// under WSL2 - which is where Docker Desktop exposes a unix socket anyway.
 		return dockerEndpoint{}, fmt.Errorf("docker host %q uses a Windows named pipe, which sbx cannot dial; "+
 			"run sbx inside WSL2, or set DOCKER_HOST to a tcp:// endpoint", raw)
 	default:

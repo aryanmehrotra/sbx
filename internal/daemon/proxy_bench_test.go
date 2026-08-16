@@ -127,7 +127,7 @@ func roundTrips(b *testing.B, addr string) {
 
 // BenchmarkRoundTripDirect is the floor: a client talking straight to the upstream.
 // The daemon logs a line per listener. Attached to a benchmark those land in the same
-// stream as the results, and benchstat drops every row it cannot parse — which is how the
+// stream as the results, and benchstat drops every row it cannot parse - which is how the
 // proxied row silently ended up with n=1 while the direct row had six. None of these
 // benchmarks are measuring the logger.
 func init() { logs.Default = logs.New(io.Discard) }

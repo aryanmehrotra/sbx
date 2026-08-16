@@ -4,7 +4,7 @@
 > says when to start or stop them. `sbx init > sandbox.json` gives you a working one;
 > `sbx validate` checks it without creating anything.
 
-`sandbox.json` — one file, committed to your repo, describing what a branch needs to run.
+`sandbox.json` - one file, committed to your repo, describing what a branch needs to run.
 
 A spec never says **when** to start or stop anything. It says what exists, how to tell when it
 is serving, and how to reach it. Lifecycle belongs to `sbx serve`, which watches the ports. If
@@ -43,8 +43,8 @@ a spec could start something, the spec would eventually be the thing that left i
 }
 ```
 
-⚠️ **Note the postgres health command.** It is `psql … select 1`, not `pg_isready`.
-`pg_isready` answers yes while postgres is still bootstrapping — before `POSTGRES_DB` exists —
+**Note the postgres health command.** It is `psql ... select 1`, not `pg_isready`.
+`pg_isready` answers yes while postgres is still bootstrapping - before `POSTGRES_DB` exists -
 so `init` would run against a database that is not there yet. Every bundled template uses the
 `psql` form for this reason, and so does `sbx init`.
 
@@ -58,13 +58,13 @@ digest, which is what `scripts/pin-templates.sh` maintains.
 | field | required | does |
 |---|---|---|
 | `version` | ● | `1`. Lets a future format change be detected rather than silently misread |
-| `services` | ● | The declared set, keyed by name — a map, so a name is unambiguous when merging |
-| `exports` | | Maps port assignments onto the variables your scripts already read — each also yields a matching `_HOST` |
+| `services` | ● | The declared set, keyed by name - a map, so a name is unambiguous when merging |
+| `exports` | | Maps port assignments onto the variables your scripts already read - each also yields a matching `_HOST` |
 
 ### Every port export gets a host to go with it
 
 A declared export produces two variables, not one. `DATABASE_PORT` also yields
-`DATABASE_HOST`; `PGPORT` yields `PGHOST` — no underscore, because that is what libpq itself
+`DATABASE_HOST`; `PGPORT` yields `PGHOST` - no underscore, because that is what libpq itself
 reads, and it is why `psql -U app -d app` with no host or port argument reaches the sandbox at
 all. `MYSQL_PORT` yields `MYSQL_HOST` by the same rule.
 
@@ -85,20 +85,20 @@ script that already knows a port.
 | `image` | ●* | Any container image |
 | `build` | ●* | Build one instead: `{ "context": "./app", "dockerfile": "Dockerfile" }` |
 | `ports` | ● | Container-side ports. The public and backing ports are **assigned from the sandbox's slot**, never chosen here |
-| `health` | | A command run **inside** the container — how sbx knows it is serving |
+| `health` | | A command run **inside** the container - how sbx knows it is serving |
 | `env` | | Environment variables |
 | `args` | | Command arguments, appended to the image's entrypoint |
 | `volume` | | One container path to persist. What makes sleeping safe |
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `depends_on` | | Services that must be healthy before this one is created |
-| `optional` | | Not created unless `--optional` — but still reserves its ports |
-| `egress` | | `"deny"` — no routed egress. It can still be reached, and can still talk to its own sandbox |
+| `optional` | | Not created unless `--optional` - but still reserves its ports |
+| `egress` | | `"deny"` - no routed egress. It can still be reached, and can still talk to its own sandbox |
 | `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
 | `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
 
-### `image` or `build` — exactly one
+### `image` or `build` - exactly one
 
 \* Every service needs something to run. Give it an `image` to pull, or a `build` to make:
 
@@ -107,7 +107,7 @@ script that already knows a port.
 ```
 
 `context` is relative to the spec file. `dockerfile` defaults to `Dockerfile` and is relative
-to the context. Both is an error rather than a precedence rule — which of the two wins is
+to the context. Both is an error rather than a precedence rule - which of the two wins is
 exactly the thing a reader guesses wrong, and guessing means running an image the file does
 not appear to describe.
 
@@ -116,7 +116,7 @@ runs at all:
 
 ```
 $ sbx create feat-x            # first time
-  web          building…
+  web          building...
 $ sbx create feat-y            # same context
   web          build cached (sbx-build-bc02342a9ba51b10)
 ```
@@ -128,16 +128,16 @@ Three things are deliberately in or out of the hash:
 
 | | |
 |---|---|
-| **timestamps — out** | a fresh `git clone` rewrites every mtime, so a time-based key misses on every CI runner, which is exactly where the cache is worth most |
-| **file modes — in** | a script that stops being executable is a different image, and a silent cache hit there fails at runtime |
-| **`.git`, `node_modules` — out** | otherwise every commit and every install busts the cache |
+| **timestamps - out** | a fresh `git clone` rewrites every mtime, so a time-based key misses on every CI runner, which is exactly where the cache is worth most |
+| **file modes - in** | a script that stops being executable is a different image, and a silent cache hit there fails at runtime |
+| **`.git`, `node_modules` - out** | otherwise every commit and every install busts the cache |
 
-Why not expire it on a timer instead? Because a clock is wrong in both directions at once —
+Why not expire it on a timer instead? Because a clock is wrong in both directions at once -
 it rebuilds what has not changed and reuses what has.
 → [DECISIONS.md](DECISIONS.md#a-built-image-is-keyed-by-its-content-never-by-its-age)
 
-Docker only. In a cluster, building means pushing to a registry the nodes can pull from —
-credentials and a registry sbx has no business assuming — so `sbx create` says so and stops
+Docker only. In a cluster, building means pushing to a registry the nodes can pull from -
+credentials and a registry sbx has no business assuming - so `sbx create` says so and stops
 rather than half-working.
 
 ### Why ports aren't yours to choose
@@ -148,11 +148,11 @@ tooling.
 
 ### `health` is close to required
 
-Without it the daemon can only dial the published port — and Docker answers that before the
+Without it the daemon can only dial the published port - and Docker answers that before the
 server inside does. The first query after a wake then lands on a socket that is about to
 close. → [DECISIONS.md](DECISIONS.md#a-published-port-is-not-readiness)
 
-⚠️ **The health command must exist in the image.** A Chrome image with no `wget` cannot be
+**The health command must exist in the image.** A Chrome image with no `wget` cannot be
 health-checked with `wget`, and the failure looks like a service that never starts. Check
 first:
 
@@ -167,7 +167,7 @@ docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
   "postgres": { "image": "postgres:16-alpine", "ports": [5432], "health": "pg_isready -U app" } }
 ```
 
-Without it, services are created alphabetically — so `api` comes up before `postgres`, and an
+Without it, services are created alphabetically - so `api` comes up before `postgres`, and an
 app that dials its database at boot fails for a reason that is nowhere in the file. This
 mattered much less before `build:` existed, when everything in a spec was a backing service
 that waited for nobody.
@@ -180,7 +180,7 @@ colleague declared a dependency would be a worse bug than the race it fixes.
 
 **It does not order wakes.** The daemon wakes what is connected to, and after a sleep there is
 no "startup" for an ordering rule to attach to. A service that needs another at runtime should
-retry — which it has to anyway, because that is what waking looks like from the inside.
+retry - which it has to anyway, because that is what waking looks like from the inside.
 
 A dependency on a service the spec does not declare is refused, rather than being a rule that
 silently never applied. So is a cycle.
@@ -198,17 +198,17 @@ environment sbx was invoked with.
 
 Deliberately the smallest version of this:
 
-- **`env` values only.** Not images, not health commands, not init steps — expansion inside a
+- **`env` values only.** Not images, not health commands, not init steps - expansion inside a
   command is where this stops being substitution and starts being a shell.
 - **No defaults or nesting.** No `${VAR:-fallback}`. Each of those is a small syntax nobody
   asked for and everyone has to learn, and your shell already has all of them.
 - **An unset variable is an error**, reported before anything is created, listing every
   missing name at once. A database that came up with an empty password because a variable was
   not exported is a failure that looks like success.
-- **`${...}` only** — a bare `$NAME` is left alone, so a password containing a dollar sign
+- **`${...}` only** - a bare `$NAME` is left alone, so a password containing a dollar sign
   survives.
 
-Anything further — Vault, 1Password, a cloud secret manager — stays out: a dependency, a
+Anything further - Vault, 1Password, a cloud secret manager - stays out: a dependency, a
 network call, and a credential needed to fetch the credential, in a binary whose whole claim
 is that it has none of those.
 
@@ -216,7 +216,7 @@ is that it has none of those.
 
 `--template postgres` had to be repeated on `create`, then `env`, then `fork`. Forgetting it
 gave you one of two things, and the second is worse: `open sandbox.json: no such file` if the
-directory had none, or — if an unrelated `sandbox.json` happened to be there — a clean success
+directory had none, or - if an unrelated `sandbox.json` happened to be there - a clean success
 against the wrong spec. Ordinals are assigned alphabetically over the declared service names,
 so a different-but-valid spec shifts them and `sbx env` prints a plausible, wrong port.
 
@@ -243,7 +243,7 @@ sbx validate                    # ./sandbox.json
 sbx validate path/to/spec.json
 ```
 
-Reads the file, resolves ports and ordering, and creates nothing — so a pre-commit hook or a
+Reads the file, resolves ports and ordering, and creates nothing - so a pre-commit hook or a
 lint job can check a change to a committed spec without a docker daemon. It runs the same
 loader `create` does, which is the only way it is worth having: a separate validator would
 drift, and a spec that passes lint and fails create is worse than no lint.
@@ -264,7 +264,7 @@ it would be at best wasted and at worst destructive.
 Unset means unlimited, which is fine for one sandbox and stops being fine at twenty: a
 machine running a sandbox per branch otherwise has no ceiling at all, and the thing that
 fails is the machine rather than the sandbox. Docker gets `--cpus`/`--memory`; a cluster gets
-`resources.limits`. Requests are deliberately left alone in the cluster case — those change
+`resources.limits`. Requests are deliberately left alone in the cluster case - those change
 scheduling, which is the operator's business.
 
 ### `egress: "deny"` blocks the way out, not the way in
@@ -274,7 +274,7 @@ scheduling, which is the operator's business.
 ```
 
 Docker gets a per-sandbox bridge with IP masquerade disabled: no NAT off the host, so nothing
-routed leaves — and docker still publishes ports into it, so waking is untouched. Verified
+routed leaves - and docker still publishes ports into it, so waking is untouched. Verified
 both directions: the service could not fetch `example.com`, and it still woke on a connection
 and answered 200.
 
@@ -284,7 +284,7 @@ woken. → [DECISIONS.md](DECISIONS.md)
 
 It is **not a domain allow-list**. Docker has no primitive for that; doing it properly needs a
 filtering proxy in the data path, which is a component with a lifecycle rather than a flag.
-DNS still resolves — docker's resolver sits on the bridge and needs no route out.
+DNS still resolves - docker's resolver sits on the bridge and needs no route out.
 
 The kubernetes provider **refuses** a service that declares it rather than starting one with
 egress open: the cluster answer is a NetworkPolicy, only some CNIs enforce them, and a
@@ -305,7 +305,7 @@ sbx templates                             # analytics browser nginx postgres web
 sbx create my-site --template nginx
 ```
 
-The templates are the [`examples/`](../examples/), embedded in the binary — so an agent asked
+The templates are the [`examples/`](../examples/), embedded in the binary - so an agent asked
 to spin up a Postgres can do it in one line, with nothing on disk.
 
 ---
@@ -319,7 +319,7 @@ service is close to isomorphic to an sbx one. The mapping, field for field:
 |---|---|---|
 | `image` | `image` | the same, and pin it |
 | `build.context` / `build.dockerfile` | `build.context` / `build.dockerfile` | sbx tags by a hash of the context |
-| `ports: ["5432:5432"]` | `ports: [5432]` | **container side only** — the host side is assigned from the sandbox's slot |
+| `ports: ["5432:5432"]` | `ports: [5432]` | **container side only** - the host side is assigned from the sandbox's slot |
 | `environment` | `env` | `${VAR}` works in both |
 | `command` | `args` | appended to the image's entrypoint |
 | `volumes: ["pgdata:/var/lib/postgresql/data"]` | `volume: "/var/lib/postgresql/data"` | one per service, named after the sandbox |
@@ -328,7 +328,7 @@ service is close to isomorphic to an sbx one. The mapping, field for field:
 | `depends_on` | `depends_on` | ordering only, as in compose without a condition |
 | `deploy.resources.limits` | `cpu`, `memory` | |
 | `profiles` | `optional` | created with `--optional` |
-| — | `exports` | the piece compose has no equivalent of, and the reason adoption is cheap |
+| - | `exports` | the piece compose has no equivalent of, and the reason adoption is cheap |
 
 **The one that surprises people is `ports`.** Compose lets you choose the host port; sbx does
 not, because two repos that both chose 5432 collide the moment somebody opens both. You
@@ -372,7 +372,7 @@ Anything reading `DATABASE_PORT` keeps working; `docker compose up` had it on 54
 has it wherever this sandbox's slot puts it.
 
 **What does not carry over**: compose's `networks` (each sandbox gets its own), `restart`
-(the daemon owns lifecycle — there is no start and no stop), and `depends_on` *conditions*
+(the daemon owns lifecycle - there is no start and no stop), and `depends_on` *conditions*
 (sbx waits for health before creating a dependent, which is the `service_healthy` behaviour;
 there is no other condition to choose).
 

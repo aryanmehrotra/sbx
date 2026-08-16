@@ -3,8 +3,8 @@
 # The unit tests, the race detector and the shell tests run on Linux AND macOS, because
 # "one static binary, anywhere" is a claim this project makes out loud and testing it on
 # one platform proves nothing. That is not theoretical: two bugs in this repo were macOS
-# only — bash 3.2, which macOS still ships, treats an empty array as unbound under `set -u`
-# — and both were found by hand on a laptop rather than here.
+# only - bash 3.2, which macOS still ships, treats an empty array as unbound under `set -u`
+# - and both were found by hand on a laptop rather than here.
 #
 # The end-to-end tests need a Docker daemon and stay Linux-only. GitHub's macOS runners
 # have no daemon, and skipping them there is honest; pretending otherwise is not.
@@ -57,7 +57,7 @@ jobs:
           fetch-depth: 2
       - id: filter
         run: |
-          # Anything other than a push with a parent — a PR, a schedule, a manual run — is
+          # Anything other than a push with a parent - a PR, a schedule, a manual run - is
           # treated as "code changed", because the cheap check is only safe when there is
           # exactly one commit to compare against.
           if [ "${{ github.event_name }}" != "push" ]; then
@@ -71,12 +71,12 @@ jobs:
           fi
 
           # A markdown file cannot change what the binary does. Nothing in the build, the
-          # tests or the scripts reads one — except lint-docs.sh, which runs either way.
+          # tests or the scripts reads one - except lint-docs.sh, which runs either way.
           if echo "$changed" | grep -qvE '(\.md$|^LICENSE$)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "documentation only — the Docker suites are skipped:"
+            echo "documentation only - the Docker suites are skipped:"
             echo "$changed" | sed 's/^/  /'
           fi
 
@@ -89,7 +89,7 @@ jobs:
     strategy:
       fail-fast: false # one platform failing should not hide the other's result
       matrix:
-        # macOS bills at 10x, so its unit-test run is daily rather than per push — see the
+        # macOS bills at 10x, so its unit-test run is daily rather than per push - see the
         # header. The macOS *shell* job stays on every push, because that is the one that has
         # actually caught bugs here.
         os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest","macos-latest"]') }}
@@ -173,7 +173,7 @@ jobs:
       matrix:
         # Always Linux: this job carries lint-docs, lint-workflows and shellcheck, which are
         # the checks a documentation change most needs. macOS joins it only when code
-        # changed — it bills at 10x and no .md file has ever broken bash 3.2.
+        # changed - it bills at 10x and no .md file has ever broken bash 3.2.
         os: ${{ needs.changes.outputs.code == 'true' && fromJSON('["ubuntu-latest","macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
@@ -266,7 +266,7 @@ jobs:
 
   # The daemon dying is the one failure nobody schedules. This kills it and asserts a running
   # sandbox is untouched, that a restarted daemon re-adopts sandboxes from container labels,
-  # and that data survives — claims that were only ever checked when a human remembered to
+  # and that data survives - claims that were only ever checked when a human remembered to
   # run the script, which is not a regression barrier.
   recovery:
     needs: changes
@@ -324,7 +324,7 @@ jobs:
   #
   # This installs gVisor and proves three things: the sandbox runs under runsc rather than
   # runc, the whole sleep/wake cycle still works there, and the kernel it sees is gVisor's
-  # rather than the host's — which is the actual claim isolation makes.
+  # rather than the host's - which is the actual claim isolation makes.
   isolation:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -381,14 +381,14 @@ jobs:
 
   # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
   # processes, where sbx restores a disk and starts the process cold. It went unmeasured for
-  # a reason that was honest and self-serving — its README calls arm64-in-a-VM-on-macOS
+  # a reason that was honest and self-serving - its README calls arm64-in-a-VM-on-macOS
   # flaky, which is the author's laptop. That is an argument for measuring it elsewhere.
   #
   # Not required to pass. It installs a containerd shim into a throwaway kind cluster and
   # depends on an upstream project's manifests, so a red tick here would mean "their release
   # moved", not "this repo is broken". It reports, and the report is read.
   zeropod:
-    # Scheduled, not per push. This measures a rival's wake path for BENCHMARKS.md — it says
+    # Scheduled, not per push. This measures a rival's wake path for BENCHMARKS.md - it says
     # nothing about whether this commit is correct, and it stands up a kind cluster to do it.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

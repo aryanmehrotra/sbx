@@ -12,7 +12,7 @@ curl "http://$CDP_HOST:$CDP_PORT/json/version"
 ```
 
 Measured: asleep at **0 B**, woken by that request in about **4.4 s cold** and **0.75 s warm**
-(n=5, macOS arm64 — see [BENCHMARKS.md](../../docs/BENCHMARKS.md)), then driven over CDP.
+(n=5, macOS arm64 - see [BENCHMARKS.md](../../docs/BENCHMARKS.md)), then driven over CDP.
 Chrome is a heavy thing to start; the wake is its own startup, not sbx's.
 
 Point Playwright or chromedp at it:

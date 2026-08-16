@@ -142,7 +142,7 @@ seconds into its own creation, while the command creating it was still waiting.
                                       │
         slot 0 ──▶ public  20000 + 0×20 + ordinal
                    backing 30000 + 0×20 + ordinal
-        slot 1 ──▶ public  20020…
+        slot 1 ──▶ public  20020...
 ```
 
 **Allocated, not hashed.** Hashing names into 60 slots collided on the first six branch

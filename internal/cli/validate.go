@@ -11,7 +11,7 @@ import (
 
 // Checking a spec without creating anything.
 //
-// sandbox.json is a committed file, so a change to it can break every branch at once — and
+// sandbox.json is a committed file, so a change to it can break every branch at once - and
 // until now the only way to find out was `sbx create`, which needs a docker daemon, pulls
 // images and leaves containers behind. That is not something a pre-commit hook or a lint job
 // can run, so in practice nobody checked.
@@ -37,7 +37,7 @@ func Validate(w io.Writer, path string) error {
 		return err
 	}
 
-	fmt.Fprintf(w, "%s — %d service(s), spec version %d\n\n", path, len(sp.Services), sp.Version)
+	fmt.Fprintf(w, "%s - %d service(s), spec version %d\n\n", path, len(sp.Services), sp.Version)
 
 	for _, name := range order {
 		svc := sp.Services[name]
@@ -65,7 +65,7 @@ func Validate(w io.Writer, path string) error {
 		// difference between a wake that is verified and one that guesses, and it is the
 		// single most common reason a sandbox behaves oddly.
 		if svc.Health == "" {
-			fmt.Fprintf(w, "  %-14s   no health command — the daemon can only dial the port, "+
+			fmt.Fprintf(w, "  %-14s   no health command - the daemon can only dial the port, "+
 				"and docker answers that before the server does\n", "")
 		}
 	}
@@ -78,7 +78,7 @@ func Validate(w io.Writer, path string) error {
 		}
 	}
 
-	fmt.Fprintf(w, "\nvalid. Nothing was created — this only reads the file.\n")
+	fmt.Fprintf(w, "\nvalid. Nothing was created - this only reads the file.\n")
 
 	return nil
 }

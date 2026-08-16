@@ -4,7 +4,7 @@ package spec
 //
 // Until `build:` existed this did not matter: everything in a spec was a backing service
 // that came up on its own and waited for nobody. Now a service can be your own application,
-// and an app that dials its database at boot races a database that is created after it —
+// and an app that dials its database at boot races a database that is created after it -
 // alphabetically, which is to say by accident. `api` before `postgres` fails; `web` after it
 // works; nothing in the spec expresses the difference.
 //
@@ -16,7 +16,7 @@ package spec
 //     bug than the one this fixes.
 //   - It is not a wake order. The daemon wakes what is connected to, and after a sleep there
 //     is no "startup" for an ordering rule to attach to. A service that needs another at
-//     runtime retries — which it must anyway, because that is what waking looks like from
+//     runtime retries - which it must anyway, because that is what waking looks like from
 //     the inside.
 
 import (
@@ -40,7 +40,7 @@ func (s *Spec) CreationOrder() ([]string, error) {
 		visiting = map[string]bool{}
 	)
 
-	// Depth-first, entered in alphabetical order, so the result is deterministic — the same
+	// Depth-first, entered in alphabetical order, so the result is deterministic - the same
 	// spec must always create in the same order or a failure is not reproducible.
 	var visit func(string) error
 
@@ -50,7 +50,7 @@ func (s *Spec) CreationOrder() ([]string, error) {
 		}
 
 		if visiting[name] {
-			return fmt.Errorf("services depend on each other in a cycle, at %q — "+
+			return fmt.Errorf("services depend on each other in a cycle, at %q - "+
 				"nothing can be created first", name)
 		}
 

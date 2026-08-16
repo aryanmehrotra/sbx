@@ -6,7 +6,7 @@ package cli
 //	sbx selftest --provider kubernetes
 //
 // The honest weakness of this tool is that one person has run it. That cannot be fixed by
-// writing more of it — only by somebody else running it — so the least this can do is make
+// writing more of it - only by somebody else running it - so the least this can do is make
 // running it a single command that either proves the claim or says exactly which part of it
 // failed.
 //
@@ -149,7 +149,7 @@ func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, 
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		return fmt.Errorf("still running after 90s — the reaper never slept it")
+		return fmt.Errorf("still running after 90s - the reaper never slept it")
 	}) {
 		return fmt.Errorf("selftest failed at sleep")
 	}

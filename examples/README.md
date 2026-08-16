@@ -9,7 +9,7 @@ sbx create my-branch
 eval "$(sbx env my-branch)"
 ```
 
-They are ordinary specs — nothing here is special-cased by sbx.
+They are ordinary specs - nothing here is special-cased by sbx.
 
 | | what it gives you | why it is here |
 |---|---|---|

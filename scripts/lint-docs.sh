@@ -3,7 +3,7 @@
 #
 #   scripts/lint-docs.sh
 #
-# `[vendor][neon]` with no `[neon]:` definition does not fail anything — it renders as the
+# `[vendor][neon]` with no `[neon]:` definition does not fail anything - it renders as the
 # literal text "[vendor][neon]" and looks, at a glance, like a citation. Four of them sat in
 # COMPARISON.md's vendor table, which is the one place in this repo where a citation that is
 # not a link is worse than no citation at all: the document's whole claim is that every
@@ -38,7 +38,7 @@ done
 
 # A #fragment must match a heading in the file it points at.
 #
-# `](../README.md#use-it)` is not a broken link — the file is there — so the target check
+# `](../README.md#use-it)` is not a broken link - the file is there - so the target check
 # above passes it, and the reader lands at the top of the page wondering what they missed.
 # One of those shipped in the first line of USE-CASES.md.
 python3 - "$ROOT" <<'PYANCHOR' || fail=1
@@ -75,22 +75,22 @@ PYANCHOR
 
 # And the external ones must actually be there.
 #
-# Six rounds of review produced five separate vendor-sourcing defects in these files —
+# Six rounds of review produced five separate vendor-sourcing defects in these files -
 # invented ranges, a percentile nobody published, a cold start quoted as a wake, an inverted
 # default, and a citation that 404s. It is the only defect class here with no automated gate,
 # and it is the one this project can least afford: an unsourced number does not just mislead
 # about the vendor, it discredits every measured number sitting beside it.
 #
-# This catches the dead-link half. The other half — a live URL whose page no longer says what
-# is attributed to it — a linter cannot check, and the corrections table in COMPARISON.md is
+# This catches the dead-link half. The other half - a live URL whose page no longer says what
+# is attributed to it - a linter cannot check, and the corrections table in COMPARISON.md is
 # where that is tracked by hand.
 #
 # Skipped without a network rather than failing: a lint that fails on a plane is a lint people
 # learn to bypass.
 if [ "${SKIP_LINK_CHECK:-0}" = "1" ]; then
-  echo "  – external links not checked (SKIP_LINK_CHECK=1)"
+  echo "  - external links not checked (SKIP_LINK_CHECK=1)"
 elif ! curl -fsS -m 10 -o /dev/null https://example.com 2>/dev/null; then
-  echo "  – external links not checked (no network)"
+  echo "  - external links not checked (no network)"
 else
   urls=$(grep -ho 'https://[A-Za-z0-9._~:/?#@!$&*+,;=%-]*' \
            "$ROOT"/docs/*.md "$ROOT"/README.md 2>/dev/null \
@@ -114,7 +114,7 @@ else
 
     case "$code" in
       2*|3*) continue ;;
-      000)   printf '  – %s could not be reached (network, not a bad link)\n' "$u" ;;
+      000)   printf '  - %s could not be reached (network, not a bad link)\n' "$u" ;;
       *)     printf '  ✗ %s returns %s\n' "$u" "$code"; fail=1 ;;
     esac
   done

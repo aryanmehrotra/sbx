@@ -19,12 +19,12 @@ threat model is not "untrusted users share one daemon".**
 
 - **No authentication, no per-user isolation, no quotas.** Anyone who can reach the daemon's
   ports can use any sandbox on that machine, and anyone who can run `sbx` can destroy any of
-  them. This is deliberate and is not going to change —
+  them. This is deliberate and is not going to change -
   [DECISIONS.md](docs/DECISIONS.md#sbx-is-a-tool-people-run-not-a-service-anyone-offers) has
   the reasoning. The supported shape is a machine whose users already trust each other.
 - **Ports bind to loopback only.** `sbx serve` listens on `127.0.0.1`, and docker publishes
   backing ports on `127.0.0.1`. Nothing is exposed to the network unless you deliberately
-  expose it, and `sbx url` — which does — is opt-in per invocation and prints the URL it
+  expose it, and `sbx url` - which does - is opt-in per invocation and prints the URL it
   created.
 - **A container shares the host kernel.** `--isolation gvisor|kata` asks for a stronger
   boundary and is *refused with a reason* where the runtime is absent rather than silently
@@ -52,13 +52,13 @@ Roughly: anything that breaks a boundary sbx claims to hold.
 - `--isolation gvisor|kata` reporting success while running under the default runtime.
 - A public port serving a different sandbox than the one `sbx env` named.
 - `sbx gc` deleting an artifact belonging to a live sandbox.
-- Anything in the spec reaching a shell it should not — the values are passed as arguments,
+- Anything in the spec reaching a shell it should not - the values are passed as arguments,
   not interpolated into a command line, and a case where that is not true is a bug.
 - Path traversal out of `~/.sbx`, or a sandbox/service/snapshot name that escapes the
   container, volume or image name it is meant to become.
 
 Several of these are pinned by tests that were written by breaking the code and confirming
-the test failed. That does not mean they are all correct — it means the intent is written
+the test failed. That does not mean they are all correct - it means the intent is written
 down and checked.
 
 ## Supported versions

@@ -5,8 +5,8 @@ import "testing"
 // The message a user sees when their health command is not in the image.
 //
 // This used to be two minutes of nothing followed by "never became ready within 2m0s". The
-// exit code was available on the very first probe — 127 is "not found" and no amount of
-// waiting changes it — and was thrown away. Three docs name this as the most common first-run
+// exit code was available on the very first probe - 127 is "not found" and no amount of
+// waiting changes it - and was thrown away. Three docs name this as the most common first-run
 // failure, which made it the one place the tool said least.
 func TestShellReasonKeepsOnlyTheCommandsComplaint(t *testing.T) {
 	cases := map[string]string{
