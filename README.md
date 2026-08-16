@@ -89,6 +89,21 @@ actually do.
 
 ---
 
+## The dashboard
+
+`sbx ui` - the fleet, what each service is using against what it is allowed, and where it has
+been. Recorded from a real run by [`scripts/ui-shot.sh`](scripts/ui-shot.sh) rather than drawn,
+for the same reason as the demo above: a hand-drawn dashboard keeps a column that was renamed
+and a key that was rebound.
+
+<img src="docs/ui.svg" width="900" alt="The sbx dashboard: a table of every sandbox and service with its state, cpu and memory against the limit it is allowed, a detail block for the selected service showing its address, connect command and a trace of cpu and memory over time, a log of recent wake and sleep events, and the key hints along the bottom.">
+
+The bars and the traces are scaled to each service's own ceiling, so height means fullness, and
+every point is coloured by what was happening when it was drawn - a line can be red on the left
+and green on the right. `L` sets a limit on the selected service without leaving the dashboard.
+
+---
+
 ## How to use
 
 ```sh
