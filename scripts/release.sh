@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build every published binary, reproducibly, with nothing installed but Go.
+# Build every published binary with nothing installed but Go, reproducibly from a clean
+# checkout on a matching Go version - see the note on the build below for both qualifiers.
 #
 #   scripts/release.sh v0.1.0
 #
@@ -40,7 +41,26 @@ for t in $TARGETS; do
   [ "$os" = "windows" ] && out="${out}.exe"
 
   # CGO off is what makes these static and portable across libc versions; trimpath and the
-  # zeroed build id are what make two builds of the same commit identical.
+  # zeroed build id remove the two things that would otherwise differ between machines - the
+  # build path and a random id.
+  #
+  # Two conditions have to hold for the bytes to match, and both are things Go stamps into the
+  # binary rather than anything this script controls:
+  #
+  #   the same Go version      1.26.3 and 1.26.5 give different checksums for one commit.
+  #                            release.yaml pins an exact patch so re-running a tag reproduces
+  #   a clean checkout         a modified tree is stamped vcs.modified=true and the module
+  #                            version becomes v0.1.0+dirty. Building from your working copy
+  #                            will not match a release even when nothing you changed is
+  #                            compiled in
+  #
+  # The host does not have to match: darwin/arm64 and linux/amd64 both produce the published
+  # linux/amd64 binary bit for bit. Verified against v0.1.0 rather than assumed.
+  #
+  #   git clone --branch vX.Y.Z --depth 1 <repo> && cd <repo>
+  #   go version -m ./sbx_vX.Y.Z_linux_amd64   # read the toolchain out of the release binary
+  #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 goX.Y.Z build -trimpath \
+  #     -ldflags "-s -w -X main.version=vX.Y.Z -buildid=" -o sbx .
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -buildid=" -o "$out" .
 
