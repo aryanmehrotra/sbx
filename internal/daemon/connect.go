@@ -79,7 +79,18 @@ func (d *daemon) Connect(opt ConnectOptions) (*http.Server, error) {
 
 	// Unauthenticated on purpose: a platform's probe carries no credential, and this says
 	// nothing about what exists. Same reasoning as console/'s health endpoints.
+	//
+	// Liveness, not readiness. It answers 200 whenever the process is up, including when there
+	// is no container runtime behind it - because a probe that fails there would have the
+	// platform restart a process whose problem a restart cannot fix, and the restart loop is
+	// what hides the reason. The reason goes in the body and in /v1/fleet.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if d.startupErr != nil {
+			_, _ = fmt.Fprintf(w, "degraded: no container runtime\n\n%v\n", d.startupErr)
+
+			return
+		}
+
 		_, _ = io.WriteString(w, "ok\n")
 	})
 
@@ -154,6 +165,23 @@ type fleetService struct {
 // fleetHandler answers what this daemon is fronting. Read-only, and it carries nothing that is
 // not already on a `sbx list` screen.
 func (d *daemon) fleetHandler(w http.ResponseWriter, _ *http.Request) {
+	// 503 rather than an empty list. "No sandboxes" and "I cannot see any sandboxes" are
+	// different answers, and a client that cannot tell them apart will report the first.
+	if d.startupErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  "this sbx has no container runtime, so it is fronting nothing",
+			"detail": d.startupErr.Error(),
+			"hint": "sbx manages containers on the machine it runs on. Mount the docker socket " +
+				"into this container, or run it in a cluster with deploy/activator.yaml. A " +
+				"platform that gives only a port and env vars cannot host it.",
+		})
+
+		return
+	}
+
 	d.mu.Lock()
 
 	out := make([]fleetService, 0, len(d.units))

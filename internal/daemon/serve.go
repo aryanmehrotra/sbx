@@ -92,9 +92,13 @@ func (d *daemon) Run(ctx context.Context) { d.run(ctx) }
 
 type daemon struct {
 	provider provider.Provider
-	idle     time.Duration
-	ready    time.Duration
-	refresh  time.Duration
+
+	// startupErr is why there is no provider, when there is none. Set only where the connect
+	// endpoint was asked for, because that is the only case where staying up beats exiting.
+	startupErr error
+	idle       time.Duration
+	ready      time.Duration
+	refresh    time.Duration
 
 	mu    sync.Mutex
 	units map[string]*unit              // ref -> unit
@@ -136,17 +140,40 @@ func Serve(args []string) error {
 	}
 
 	p, err := provider.For(*kind, *socket, *namespace)
-	if err != nil {
+
+	// A daemon that cannot reach its runtime exits - unless it was asked to serve the connect
+	// endpoint, in which case it starts anyway and says so there.
+	//
+	// The two cases genuinely differ. On a laptop, failing fast is right: you typed a command,
+	// you get the reason, you fix it. Deployed, exiting is the worst thing it can do - the
+	// process vanishes, the platform's scale-to-zero never completes a wake, and the operator
+	// gets a holding page forever with nothing to read. Measured on zopcloud: the deploy
+	// reported active and the endpoint served the platform's "Starting up..." page for four
+	// minutes, because there was nothing listening to say otherwise.
+	//
+	// So: listen, answer, and be honest about being useless. `/healthz` still answers because
+	// the process IS alive - that is what liveness means - and `/v1/fleet` carries the reason.
+	if err != nil && *connectAddr == "" {
 		return err
 	}
 
+	var startupErr error
+
+	if err != nil {
+		startupErr = err
+
+		logs.Default.Info("", "", "no container runtime: %v", err)
+		logs.Default.Info("", "", "serving the connect endpoint anyway so the reason is reachable")
+	}
+
 	d := &daemon{
-		provider: p,
-		idle:     *idle,
-		ready:    *ready,
-		refresh:  *refresh,
-		units:    map[string]*unit{},
-		stop:     map[string]context.CancelFunc{},
+		provider:   p,
+		startupErr: startupErr,
+		idle:       *idle,
+		ready:      *ready,
+		refresh:    *refresh,
+		units:      map[string]*unit{},
+		stop:       map[string]context.CancelFunc{},
 	}
 
 	var connectSrv *http.Server
@@ -167,9 +194,16 @@ func Serve(args []string) error {
 
 	// Say so, in a file, so `sbx create` can tell "no daemon" from "the daemon has not
 	// noticed this sandbox yet" - those need opposite advice.
-	defer MarkRunning(p.Name())()
+	// Named even when there is no provider to ask: this path exists precisely because p is nil,
+	// and a presence record that panics is worse than one that says "unknown".
+	name := "none"
+	if p != nil {
+		name = p.Name()
+	}
 
-	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, p.Name(), d.idle, InCluster())
+	defer MarkRunning(name)()
+
+	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, name, d.idle, InCluster())
 
 	if connectSrv != nil {
 		logs.Default.Info("", "", "connect endpoint on %s", connectSrv.Addr)
@@ -183,7 +217,13 @@ func Serve(args []string) error {
 		defer func() { _ = connectSrv.Close() }()
 	}
 
-	d.run(ctx)
+	if startupErr == nil {
+		d.run(ctx)
+	} else {
+		// Nothing to discover and nothing to reap; just hold the endpoint open so the reason
+		// stays readable until somebody fixes the deployment.
+		<-ctx.Done()
+	}
 
 	// Deliberately does not sleep anything on the way out. The daemon dying is not a reason
 	// to tear down a database somebody is mid-migration on.

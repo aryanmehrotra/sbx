@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -355,5 +357,56 @@ func TestFleetCarriesWhatTheClientNeeds(t *testing.T) {
 
 	if strings.TrimSpace(got[0].Sandbox) == "" {
 		t.Error("fleet does not say which sandbox a service belongs to")
+	}
+}
+
+// A deployed daemon that cannot reach a container runtime must stay up and say so.
+//
+// Exiting is right on a laptop and wrong once deployed: the process vanishes, the platform's
+// scale-to-zero never completes a wake, and the operator gets a holding page forever with
+// nothing to read. Measured on zopcloud before this existed - four minutes of "Starting up…".
+func TestADaemonWithNoRuntimeStaysUpAndExplains(t *testing.T) {
+	d := daemonFronting(1, "i1")
+	d.startupErr = errors.New("no docker daemon found on linux: set DOCKER_HOST, or pass --socket")
+
+	ts := serverFor(t, d)
+
+	// Liveness answers, because the process IS alive. A failing probe here would have the
+	// platform restart something a restart cannot fix, and the loop hides the reason.
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("healthz got %d with no runtime, want 200 - liveness is not readiness", resp.StatusCode)
+	}
+
+	if !strings.Contains(string(body), "degraded") || !strings.Contains(string(body), "DOCKER_HOST") {
+		t.Errorf("healthz body = %q, want it to say degraded and carry the reason", body)
+	}
+
+	// The fleet must not answer "no sandboxes", which is a different claim from "I cannot see
+	// any sandboxes" and is the one a client would report.
+	r, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/fleet", nil)
+	r.Header.Set("Authorization", "Bearer "+testToken)
+
+	fr, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fb, _ := io.ReadAll(fr.Body)
+	_ = fr.Body.Close()
+
+	if fr.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("fleet got %d with no runtime, want 503 rather than an empty list", fr.StatusCode)
+	}
+
+	if !strings.Contains(string(fb), "docker socket") {
+		t.Errorf("fleet body = %q, want it to say what would fix this", fb)
 	}
 }
