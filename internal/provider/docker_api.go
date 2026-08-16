@@ -254,6 +254,29 @@ func (d *dockerClient) healthCommand(ctx context.Context, id string) (string, bo
 	return "", false
 }
 
+// hostLimits is the part of a container's inspect document that carries its ceilings.
+//
+// Read from inspect rather than from stats because stats does not carry a CPU quota at all,
+// and its memory limit is the host's own memory when nothing was capped - a number that looks
+// like a limit and is not one. HostConfig has what was actually asked for, and says zero when
+// nothing was.
+type hostLimits struct {
+	HostConfig struct {
+		Memory   uint64 `json:"Memory"`
+		NanoCpus int64  `json:"NanoCpus"`
+	} `json:"HostConfig"`
+}
+
+// limits reads one container's ceilings. Same endpoint the health check uses, different
+// corner of the same document.
+func (d *dockerClient) limits(ctx context.Context, id string) (hostLimits, error) {
+	var h hostLimits
+
+	err := d.do(ctx, http.MethodGet, "/containers/"+id+"/json", &h)
+
+	return h, err
+}
+
 // statsSample is the part of docker's stats document this needs. The endpoint returns a large
 // object; naming four fields keeps the parse cheap and stops an unrelated schema change from
 // breaking it.

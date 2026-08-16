@@ -713,6 +713,20 @@ func (d *dockerProvider) backingPortsFree(slot int) bool {
 // difference between a dashboard that redraws in 40ms and one that visibly stutters at twenty
 // sandboxes. Bounded, because firing two hundred requests at a laptop's docker daemon to draw
 // a table is its own kind of rude.
+// Limits reports what one container is allowed. A container that is asleep has no limits to
+// report and says so with an error, the same way Stats omits it.
+func (d *dockerProvider) Limits(ctx context.Context, ref string) (Limits, error) {
+	h, err := d.api.limits(ctx, ref)
+	if err != nil {
+		return Limits{}, err
+	}
+
+	return Limits{
+		NanoCPUs: h.HostConfig.NanoCpus,
+		MemBytes: h.HostConfig.Memory,
+	}, nil
+}
+
 func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]Usage, error) {
 	const parallel = 8
 

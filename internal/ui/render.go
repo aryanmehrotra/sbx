@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // messageLife is how long feedback from a keypress stays in the footer before the key hints
@@ -78,7 +79,7 @@ func render(m model, rows, cols int) string {
 		return "terminal too small"
 	}
 
-	l := plan(rows, len(m.rows))
+	l := plan(rows, len(m.rows), wantDetail(m))
 	w := widths(m.rows, cols)
 
 	var out []string
@@ -120,11 +121,22 @@ func render(m model, rows, cols int) string {
 
 // title is the top line: what this is, how much of it there is, and anything urgent.
 func title(m model, cols int) string {
-	sandboxes, awake := m.counts()
+	sandboxes, services, awake := m.counts()
 
 	left := fmt.Sprintf(" %ssbx%s %s%s%s", bold, reset, dim, m.version, reset)
 
-	right := fmt.Sprintf("%d sandbox%s · %d awake", sandboxes, plural(sandboxes), awake)
+	// Both numbers count services, and the denominator says so. Without it the two figures
+	// were a sandbox count and a service count sitting side by side, which is how "3
+	// sandboxes · 4 awake" came to be printed on a screen listing seven services.
+	right := fmt.Sprintf("%s · %d of %s awake",
+		plural(sandboxes, "sandbox"), awake, plural(services, "service"))
+
+	// Spelling it out costs about twenty columns, which a narrow terminal does not have. The
+	// short form keeps the denominator and drops the words, because "4/7" still cannot be
+	// misread as a count of sandboxes.
+	if visibleLen(left)+len(right)+len(m.provider)+4 > cols {
+		right = fmt.Sprintf("%d sbx · %d/%d awake", sandboxes, awake, services)
+	}
 
 	if m.provider != "" {
 		right += " · " + m.provider
@@ -294,10 +306,28 @@ func detailBlock(m model, space, cols int) []string {
 	field("address", r.Address)
 	field("connect", fmt.Sprintf("%seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset))
 
-	if r.Awake {
+	// The meters only appear when the block is tall enough to hold them and the service is
+	// awake enough to have readings. When they do, the state line stops repeating the memory
+	// figure, because it is on the line below in more useful company.
+	meters := r.Awake && space >= detailWithMeters
+
+	switch {
+	case r.Awake && meters:
+		field("state", green+"awake"+reset)
+	case r.Awake:
 		field("state", green+"awake"+reset+dim+" · using "+reset+humanBytes(r.MemBytes))
-	} else {
+	default:
 		field("state", dim+"asleep · 0 B of memory, volume intact, wakes on connect"+reset)
+	}
+
+	// With room for only one of them it is memory, because exceeding a memory ceiling kills
+	// the container and exceeding a CPU one only makes it slower.
+	if meters {
+		if space >= detailFull {
+			field("cpu", cpuMeter(r, m.limits))
+		}
+
+		field("memory", memMeter(r, m.limits))
 	}
 
 	field("ref", dim+r.Ref+reset)
@@ -307,6 +337,90 @@ func detailBlock(m model, space, cols int) []string {
 	}
 
 	return out[:space]
+}
+
+// barCells is how wide a usage bar is drawn. Sixteen, because its job is "roughly how full"
+// - the figure printed beside it is there for people who want exactly, and a bar wide enough
+// to answer that question would crowd out the numbers that answer it better.
+const barCells = 16
+
+// bar draws a proportion, and colours it by how alarming it is.
+//
+// Anything at all is at least one cell. A service sitting at half a percent of its ceiling is
+// not the same as one that is switched off, and an empty bar says the second.
+func bar(frac float64) string {
+	if frac < 0 {
+		frac = 0
+	}
+
+	filled := int(frac * barCells)
+
+	switch {
+	case filled < 1 && frac > 0:
+		filled = 1
+	case filled > barCells:
+		filled = barCells
+	}
+
+	colour := green
+
+	switch {
+	case frac >= 0.9:
+		colour = red
+	case frac >= 0.75:
+		colour = yellow
+	}
+
+	return dim + "[" + reset + colour + strings.Repeat("█", filled) + reset +
+		dim + strings.Repeat("·", barCells-filled) + "]" + reset
+}
+
+// cpuMeter is what the selected service is using against what it is allowed.
+//
+// Without a ceiling this can only report a share of one core, and it says so in those words.
+// "86.8%" on its own is the number that reads as nearly-full and is usually nothing of the
+// kind: on an eight-core machine it is about a ninth of the host.
+func cpuMeter(r row, l provider.Limits) string {
+	if !r.CPUKnown {
+		return dim + "not sampled yet" + reset
+	}
+
+	cores := r.CPU / 100
+
+	if l.NanoCPUs <= 0 {
+		return fmt.Sprintf("%s%.2f%s%s of %d cores · no limit set%s",
+			reset, cores, reset, dim, max(1, r.OnlineCPUs), reset)
+	}
+
+	allowed := float64(l.NanoCPUs) / 1e9
+
+	return fmt.Sprintf("%s  %s%.2f%s%s of %s cores%s",
+		bar(cores/allowed), reset, cores, reset, dim, trimZeros(allowed), reset)
+}
+
+// memMeter is the same for memory, where docker does report a ceiling - but reports the
+// host's entire memory when nothing was capped, which is why an uncapped service is told
+// apart by Limits rather than by that number.
+func memMeter(r row, l provider.Limits) string {
+	if !r.MemKnown {
+		return dim + "not sampled yet" + reset
+	}
+
+	if l.MemBytes == 0 {
+		return fmt.Sprintf("%s%s%s%s · no limit set%s", reset, humanBytes(r.MemBytes), reset, dim, reset)
+	}
+
+	return fmt.Sprintf("%s  %s%s%s%s of %s%s",
+		bar(float64(r.MemBytes)/float64(l.MemBytes)), reset, humanBytes(r.MemBytes), reset,
+		dim, humanBytes(l.MemBytes), reset)
+}
+
+// trimZeros writes a core count the way somebody would say it: "0.5", "2", not "2.00".
+func trimZeros(v float64) string {
+	s := fmt.Sprintf("%.2f", v)
+	s = strings.TrimRight(s, "0")
+
+	return strings.TrimSuffix(s, ".")
 }
 
 // painted puts a block of already-built lines on the ground.
@@ -550,12 +664,21 @@ func eventText(e history.Record) string {
 	}
 }
 
-func plural(n int) string {
+// plural writes a count and its noun, pluralised. It takes the word because the suffix is not
+// a property of the number: the first version returned "es" for anything that was not one,
+// which is right for "sandbox" and gave "7 servicees" the moment it was used for anything
+// else.
+func plural(n int, word string) string {
 	if n == 1 {
-		return ""
+		return fmt.Sprintf("%d %s", n, word)
 	}
 
-	return "es"
+	suffix := "s"
+	if strings.HasSuffix(word, "x") || strings.HasSuffix(word, "s") {
+		suffix = "es"
+	}
+
+	return fmt.Sprintf("%d %s%s", n, word, suffix)
 }
 
 func pad(left, right string, cols int) string {

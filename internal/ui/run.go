@@ -142,6 +142,7 @@ func (d *dash) poll(ctx context.Context) {
 		case <-t.C:
 			d.refresh(ctx)
 			d.followLogs(ctx)
+			d.followLimits(ctx)
 		}
 	}
 }
@@ -201,6 +202,7 @@ func (d *dash) refresh(ctx context.Context) {
 		}
 
 		rows[i].MemBytes, rows[i].MemKnown = cur.MemBytes, true
+		rows[i].OnlineCPUs = cur.OnlineCPUs
 
 		if prev, ok := d.prev[rows[i].Ref]; ok {
 			rows[i].CPU, rows[i].CPUKnown = cpuPercent(prev, cur)
@@ -547,15 +549,69 @@ func (d *dash) followLogs(ctx context.Context) {
 // followSelection keeps the log pane pointed at the highlighted row. Called with the lock
 // held, so the fetch itself is a goroutine.
 func (d *dash) followSelection(ctx context.Context) {
-	if d.model.pane != paneLogs {
+	r, ok := d.model.currentRow()
+
+	if d.model.pane == paneLogs {
+		d.model.logs = nil
+
+		if ok {
+			go d.loadLogs(context.WithoutCancel(ctx), r)
+		}
+	}
+
+	if ok && d.model.staleLimits(r) {
+		go d.loadLimits(context.WithoutCancel(ctx), r)
+	}
+}
+
+// followLimits re-reads the selected service's ceilings when they can have changed.
+//
+// Called from the poll rather than only from the arrow keys because the thing that makes them
+// appear is usually not a keypress: a service that was asleep when it was selected has no
+// container to inspect, and the ceilings only become readable when something wakes it.
+func (d *dash) followLimits(ctx context.Context) {
+	d.mu.Lock()
+
+	r, ok := d.model.currentRow()
+	stale := ok && d.model.staleLimits(r)
+
+	d.mu.Unlock()
+
+	if stale {
+		d.loadLimits(ctx, r)
+	}
+}
+
+// loadLimits asks what one service is allowed. Not every backend can say, and a backend that
+// cannot is not an error - the detail block simply has no ceiling to draw.
+func (d *dash) loadLimits(ctx context.Context, r row) {
+	lim, ok := d.opt.Provider.(provider.Limiter)
+	if !ok {
 		return
 	}
 
-	d.model.logs = nil
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	if r, ok := d.model.currentRow(); ok {
-		go d.loadLogs(context.WithoutCancel(ctx), r)
+	got, err := lim.Limits(ctx, r.Ref)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// The selection can move while an inspect is in flight, and one service's ceiling drawn
+	// under another's usage is worse than no ceiling at all.
+	if cur, ok := d.model.currentRow(); !ok || cur.Ref != r.Ref {
+		return
 	}
+
+	// A failure records the attempt rather than retrying every tick. An asleep container has
+	// nothing to inspect, which is the ordinary case and not worth a round trip a second.
+	if err != nil {
+		got = provider.Limits{}
+	}
+
+	d.model.limits = got
+	d.model.limitsFor, d.model.limitsAwake = r.Ref, r.Awake
 }
 
 // printOnce is the non-interactive path: the same information, printed and gone.

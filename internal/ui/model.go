@@ -30,6 +30,10 @@ type row struct {
 	CPU      float64
 	CPUKnown bool
 
+	// OnlineCPUs is how many cores the host has, which is the ceiling a share-of-one-core
+	// figure is measured against when the service itself has no cap.
+	OnlineCPUs int
+
 	MemBytes uint64
 	MemKnown bool
 }
@@ -88,6 +92,17 @@ type model struct {
 	// stops updating when docker dies is worse than one that says docker died.
 	err error
 
+	// limits is what the selected service is allowed, and limitsFor is the ref they were read
+	// for. Held for one service rather than all of them because that is all the detail block
+	// shows, and a ceiling cannot change while a container lives.
+	limits    provider.Limits
+	limitsFor string
+
+	// limitsAwake is the state the service was in when they were read. An asleep container
+	// has no ceilings to report, so without this the first look at a sleeping service would
+	// cache "no limits" and never ask again once it woke.
+	limitsAwake bool
+
 	// confirm is a pending destructive action.
 	confirm string
 
@@ -133,7 +148,16 @@ func summarise(events []history.Record) map[string]serviceStat {
 }
 
 // counts summarises the fleet for the header.
-func (m model) counts() (sandboxes, awake int) {
+// counts summarises the fleet: how many sandboxes, how many services in them, and how many of
+// those services are awake.
+//
+// Services as well as sandboxes because the first version returned only the two numbers the
+// header printed, and they counted different things: "3 sandboxes · 1 awake" was three
+// sandboxes and one awake *service*, which reads as one awake sandbox and is not. With four
+// services up it said "3 sandboxes · 4 awake", and four out of three is the kind of arithmetic
+// a reader has to stop and work out. A service is one container - see spec.Service - so this
+// is also the container count.
+func (m model) counts() (sandboxes, services, awake int) {
 	seen := map[string]bool{}
 
 	for _, r := range m.rows {
@@ -142,12 +166,14 @@ func (m model) counts() (sandboxes, awake int) {
 			sandboxes++
 		}
 
+		services++
+
 		if r.Awake {
 			awake++
 		}
 	}
 
-	return sandboxes, awake
+	return sandboxes, services, awake
 }
 
 // rowsFrom flattens the provider's units into display rows, in a stable order.
@@ -190,6 +216,12 @@ func addressOf(u provider.Unit) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+// staleLimits reports whether what is held no longer describes the given row: a different
+// service, or the same one that has woken or gone to sleep since it was asked.
+func (m model) staleLimits(r row) bool {
+	return r.Ref != m.limitsFor || r.Awake != m.limitsAwake
 }
 
 // cpuPercent turns two samples into a share of one core.

@@ -315,6 +315,43 @@ type Usage struct {
 	MemLimit uint64
 }
 
+// Limits is what a service is allowed, as against what it is using.
+//
+// Kept apart from Usage because the two have different lifetimes and different costs. Usage
+// is sampled every second and is expected to change; a limit is fixed when the container is
+// created and is only worth fetching when the reader asks to look at one service.
+//
+// A limit is also the thing that makes a usage figure mean anything. "86.8%" is a share of
+// one core, so on an eight-core machine it is about a ninth of the host - unless the service
+// is capped at one core, in which case it is nearly full. The same number, two opposite
+// readings, and nothing on screen to tell them apart.
+type Limits struct {
+	// NanoCPUs is the ceiling in billionths of a core, the unit docker stores it in:
+	// 500000000 is half a core. Zero means uncapped.
+	NanoCPUs int64
+
+	// MemBytes is the memory ceiling, and zero means uncapped.
+	//
+	// Zero rather than the host's memory, which is what docker's stats endpoint reports for
+	// an uncapped container. Passing that on as a denominator would say a redis holding 3 MB
+	// on a laptop is "0.04% full", which is arithmetic nobody asked for about a limit that
+	// does not exist.
+	MemBytes uint64
+}
+
+// Capped reports whether anything is actually capped, so a caller can tell "allowed nothing"
+// from "allowed everything" without repeating the zero-means-unlimited rule at every use.
+func (l Limits) Capped() bool { return l.NanoCPUs > 0 || l.MemBytes > 0 }
+
+// Limiter reports what one service is allowed to use.
+//
+// Optional like the rest, and per-ref rather than in a batch: the only caller shows it for
+// the service the reader has selected, and asking for the whole fleet every second would be a
+// round trip per service to re-learn a number that cannot change while the container lives.
+type Limiter interface {
+	Limits(ctx context.Context, ref string) (Limits, error)
+}
+
 // Meter reports what running services are costing.
 //
 // Optional like the rest. A service that is asleep has no sample and is not an error: it is a
