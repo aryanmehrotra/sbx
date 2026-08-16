@@ -548,7 +548,8 @@ func legend(values []float64, ceiling float64, isCPU bool, width int) string {
 		peak = max(peak, v)
 	}
 
-	shown := min(len(values), width)
+	// Two samples to a cell, so the window a graph covers is twice its width.
+	shown := min(len(values), width*2)
 	span := shortDuration(time.Duration(shown) * Refresh)
 
 	unit := func(v float64) string {
@@ -589,17 +590,34 @@ func padVisible(s string, n int) string {
 	return s + " "
 }
 
-// sparkGlyphs are eight heights, which is as much resolution as one terminal cell has.
-var sparkGlyphs = []rune("▁▂▃▄▅▆▇█")
+// brailleDots maps a position in a braille cell to the bit that lights it.
+//
+// A cell is two columns of four dots, which is what makes it the right glyph for a line: two
+// samples fit side by side in the space one block character would take, and the dot can sit at
+// a height rather than filling everything below it. The numbering is not sequential - dots 7
+// and 8 were added to the standard later and kept the high bits - so it is written out.
+var brailleDots = [4][2]rune{
+	{0x01, 0x08}, // top
+	{0x02, 0x10},
+	{0x04, 0x20},
+	{0x40, 0x80}, // bottom
+}
+
+const brailleBlank = 0x2800
 
 // spark draws a series as one line of text.
 //
-// Scaled to the ceiling when there is one, so two services with the same limit are directly
-// comparable and a line near the top means near the limit. Without a ceiling it scales to the
-// window's own peak, which is the only reference there is - and says nothing about how full
-// anything is, only about shape.
-func spark(values []float64, ceiling float64, width int) string {
-	if width < 4 {
+// A trace rather than a bar chart. The block glyphs it used to draw filled everything below
+// the reading, which turns a line that is merely high into a solid wall and hides the shape
+// inside it - and shape is the entire reason the graph is there. Braille plots the reading
+// where it happened and joins it to the one before, so a service holding steady near its
+// ceiling looks different from one climbing towards it.
+//
+// Scaled to the ceiling when there is one, so height means fullness and two services with the
+// same limit are directly comparable. Without a ceiling it scales to the window's own peak,
+// which says nothing about how full anything is and everything about shape.
+func spark(values []float64, ceiling float64, cells int) string {
+	if cells < 4 {
 		return ""
 	}
 
@@ -607,8 +625,9 @@ func spark(values []float64, ceiling float64, width int) string {
 		return dim + "no readings yet" + reset
 	}
 
-	if len(values) > width {
-		values = values[len(values)-width:]
+	// Two samples to a cell.
+	if n := cells * 2; len(values) > n {
+		values = values[len(values)-n:]
 	}
 
 	top := ceiling
@@ -620,25 +639,45 @@ func spark(values []float64, ceiling float64, width int) string {
 	}
 
 	if top <= 0 {
-		return dim + strings.Repeat("▁", len(values)) + reset
+		return dim + strings.Repeat("⠄", (len(values)+1)/2) + reset
+	}
+
+	// row 0 is the top of the cell, so a full reading is row 0 and an empty one row 3.
+	row := func(v float64) int {
+		return 3 - clamp(int(v/top*3+0.5), 0, 3)
 	}
 
 	var (
 		b    strings.Builder
-		last float64
+		prev = row(values[0])
 	)
 
-	for _, v := range values {
-		i := int(v / top * float64(len(sparkGlyphs)-1))
-		b.WriteRune(sparkGlyphs[clamp(i, 0, len(sparkGlyphs)-1)])
+	for i := 0; i < len(values); i += 2 {
+		cell := rune(brailleBlank)
 
-		last = v
+		for half := range 2 {
+			if i+half >= len(values) {
+				break
+			}
+
+			at := row(values[i+half])
+
+			// Joined to the sample before it. Without this a series that jumps leaves two
+			// unrelated dots and reads as noise rather than as a line that moved.
+			for r := min(prev, at); r <= max(prev, at); r++ {
+				cell |= brailleDots[r][half]
+			}
+
+			prev = at
+		}
+
+		b.WriteRune(cell)
 	}
 
 	colour := green
 
 	if ceiling > 0 {
-		switch frac := last / ceiling; {
+		switch frac := values[len(values)-1] / ceiling; {
 		case frac >= 0.9:
 			colour = red
 		case frac >= 0.75:

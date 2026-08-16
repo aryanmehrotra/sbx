@@ -94,25 +94,78 @@ func TestTheGraphWithNoReadings(t *testing.T) {
 	}
 }
 
+// litRows reports which of a braille cell's four rows have a dot in them, top first. The
+// graph's whole claim is that height means something, so the tests read the height back.
+func litRows(s string) map[int]bool {
+	out := map[int]bool{}
+
+	for _, r := range s {
+		if r < 0x2800 || r > 0x28ff {
+			continue
+		}
+
+		bits := r - 0x2800
+
+		for row := range 4 {
+			if bits&brailleDots[row][0] != 0 || bits&brailleDots[row][1] != 0 {
+				out[row] = true
+			}
+		}
+	}
+
+	return out
+}
+
 // Scaled to the ceiling when there is one, so a line near the top means near the limit and
 // two services with the same limit are directly comparable.
 func TestTheGraphScalesToTheCeiling(t *testing.T) {
-	full := plainText(spark([]float64{1, 1, 1}, 1, 10))
+	full := litRows(spark([]float64{1, 1, 1, 1}, 1, 10))
 
-	if !strings.Contains(full, "█") {
-		t.Errorf("a series sitting at its ceiling = %q, want it drawn at full height", full)
+	if !full[0] {
+		t.Error("a series sitting at its ceiling was not drawn at the top of the cell")
 	}
 
-	tenth := plainText(spark([]float64{0.1, 0.1, 0.1}, 1, 10))
+	if full[3] {
+		t.Error("a series sitting at its ceiling also lit the bottom row")
+	}
 
-	if strings.Contains(tenth, "█") {
-		t.Errorf("a series at a tenth of its ceiling = %q, want it drawn low", tenth)
+	tenth := litRows(spark([]float64{0.1, 0.1, 0.1, 0.1}, 1, 10))
+
+	if !tenth[3] {
+		t.Error("a series at a tenth of its ceiling was not drawn at the bottom")
+	}
+
+	if tenth[0] {
+		t.Error("a series at a tenth of its ceiling reached the top row")
 	}
 
 	// And it never draws more cells than the width it was given.
 	long := make([]float64, 500)
 	if got := len([]rune(plainText(spark(long, 1, 12)))); got > 12 {
 		t.Errorf("spark drew %d cells into a width of 12", got)
+	}
+}
+
+// A trace is a line, not a bar chart: a reading does not fill everything beneath it, or a
+// service holding steady near its ceiling looks identical to one that climbed there.
+func TestTheGraphDrawsALineNotAWall(t *testing.T) {
+	rows := litRows(spark([]float64{1, 1, 1, 1}, 1, 10))
+
+	if rows[1] || rows[2] || rows[3] {
+		t.Errorf("a flat series at its ceiling filled the rows below it: %v", rows)
+	}
+}
+
+// A jump has to stay joined, or two unrelated dots read as noise rather than as a line that
+// moved.
+func TestTheLineJoinsAcrossAJump(t *testing.T) {
+	rows := litRows(spark([]float64{0, 1}, 1, 10))
+
+	for r := range 4 {
+		if !rows[r] {
+			t.Errorf("a jump from empty to full left row %d unlit, so the line is broken: %v",
+				r, rows)
+		}
 	}
 }
 
