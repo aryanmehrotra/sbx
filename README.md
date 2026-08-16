@@ -59,7 +59,7 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 | **Isolation tiers** | `--isolation gvisor\|kata`, refused with a reason where the runtime is absent |
 | **Two backends** | the same spec on docker or kubernetes; `sbx doctor` tells you what this host can do |
 | **Housekeeping** | `sbx gc` reclaims what dead sandboxes left, listing by default and deleting only with `--force` |
-| **A live dashboard** | `sbx ui` - every sandbox, awake or not, with cpu and memory per service. Wake, sleep, read logs and remove from the keyboard |
+| **A live dashboard** | `sbx ui` - every sandbox, awake or not, with cpu and memory per service against what it is allowed, and a trace of where each has been. Wake, sleep, read logs, set a limit and remove from the keyboard |
 | **History and audit** | `sbx history` records what changed and every wake, with secrets redacted. It reads a file, so it works when docker does not |
 | **Observability** | structured logs on one stdout; [`console/`](console/) adds metrics and health - a *separate* module, so it has dependencies and the daemon still has none |
 
