@@ -65,6 +65,30 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 
 ---
 
+## What each backend can do
+
+The same spec runs on both, and not every capability exists on both. Where one is missing it
+is refused with a reason rather than approximated, and `sbx doctor` says what this host can
+actually do.
+
+| | docker | kubernetes | |
+|---|:---:|:---:|---|
+| Create, wake on connect, sleep when idle | ✅ | ✅ | the whole point, and it works the same on both |
+| `list`, `env`, `logs`, `exec`, `cp`, `rm` | ✅ | ✅ | the everyday commands |
+| `ready` for CI | ✅ | ✅ | |
+| **cpu / memory limits** | ✅ | ✅ | `cpu` and `memory` per service, and `L` in `sbx ui`. Docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** |
+| **removing a limit once set** | ❌ | ✅ | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until it is recreated |
+| **cpu / memory usage** | ✅ | ❌ | reading it from a cluster needs metrics-server, which is the operator's decision. Rows read `n/a` there rather than pretending a sample is coming |
+| `snapshot` and `fork` | ✅ | ❌ | a cluster's answer is a volume snapshot through its own CSI, which is not `docker commit` in a hat |
+| `gc` | ✅ | ❌ | |
+| `build:` instead of `image:` | ✅ | ❌ | refused in a cluster - see [USE-CASES.md](docs/USE-CASES.md) |
+| `prewarm` | ✅ | ❌ | |
+| `egress: "deny"` | ✅ | ❌ | refused in a cluster rather than approximated with a NetworkPolicy that means something else |
+| `--isolation gvisor\|kata` | ✅ | ✅ | a RuntimeClass in a cluster; refused with a reason wherever the runtime is absent |
+| `sbx url` | ✅ | ❌ | in a cluster the public link is an Ingress in front of the Service, not a tunnel from your laptop - so it is refused and says so |
+
+---
+
 ## How to use
 
 ```sh
