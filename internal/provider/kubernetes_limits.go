@@ -99,10 +99,28 @@ func (k *kubeProvider) SetLimits(_ context.Context, ref string, l Limits) error 
 	}
 
 	if _, err := k.kc("", "patch", "deployment", ref, "--type=strategic", "-p", string(raw)); err != nil {
-		return fmt.Errorf("setting limits on %s: %w", ref, err)
+		return limitsPatchError(ref, err)
 	}
 
 	return nil
+}
+
+// limitsPatchError explains a refusal that is otherwise a wall of RBAC text.
+//
+// Setting a ceiling patches the Deployment, and the Role this project ships for its in-cluster
+// component grants `deployments/scale` and nothing else - deliberately, so the activator can
+// wake and sleep a sandbox and can never reshape one. So the credentials that run the
+// dashboard from a laptop can do this and the credentials inside the cluster cannot, which is
+// a sentence worth reading once rather than deducing from an apiserver message.
+func limitsPatchError(ref string, err error) error {
+	if !strings.Contains(err.Error(), "forbidden") && !strings.Contains(err.Error(), "Forbidden") {
+		return fmt.Errorf("setting limits on %s: %w", ref, err)
+	}
+
+	return fmt.Errorf("these credentials may not set limits on %s: patching a Deployment needs "+
+		"`patch` on `deployments`, and sbx's own activator Role grants only `deployments/scale` "+
+		"so that it can wake and sleep a sandbox and never reshape one - use a kubeconfig that "+
+		"may patch Deployments, or bind a Role that adds it: %w", ref, err)
 }
 
 // kubeCPU writes a core count the way a cluster wants it: millicores, which is the unit that
