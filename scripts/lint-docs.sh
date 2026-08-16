@@ -123,4 +123,48 @@ else
 fi
 
 [ "$fail" = 0 ] && echo "  ✓ every documentation link resolves"
+
+# ── the demo must be readable without animation ───────────────────────────────
+#
+# docs/demo.svg is the first thing anyone sees. Three versions of it shipped with the lines
+# revealed one at a time by CSS, and every one of them rendered a blank terminal in a static
+# snapshot - the social preview card, PDF export, editor previews, any screenshot - because
+# the first frame of a reveal is by definition empty. Each time it looked perfect in a
+# browser and the bug was found by accident. This is the check that finds it in a second.
+if [ -f docs/demo.svg ]; then
+  echo
+  echo "the demo renders in a static snapshot"
+
+  # The only animation allowed is the cursor blink, which is opaque at t=0. Anything else
+  # animating opacity means some line is invisible in the first frame.
+  if python3 - docs/demo.svg <<'PY'
+import re, sys
+
+css = "".join(re.findall(r"<style>(.*?)</style>", open(sys.argv[1]).read(), re.S))
+
+# Drop the cursor blink and its keyframes; it is transparent for half a cycle by design and
+# opaque in the frame a snapshot captures.
+css = re.sub(r"\.cur\{[^}]*\}", "", css)
+css = re.sub(r"@keyframes\s+blink\s*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", css)
+
+sys.exit(1 if re.search(r"opacity|animation", css) else 0)
+PY
+  then
+    echo "  ✓ nothing but the cursor animates, so the first frame is the whole demo"
+  else
+    echo "  ✗ something other than the cursor animates or sets opacity - the demo will be"
+    echo "    blank or partial in any static snapshot. Draw the lines, do not reveal them."
+    fail=1
+  fi
+
+  texts=$(grep -c '<text' docs/demo.svg)
+
+  if [ "$texts" -ge 20 ]; then
+    echo "  ✓ $texts lines of real captured output"
+  else
+    echo "  ✗ only $texts lines - the recording was cut short"
+    fail=1
+  fi
+fi
+
 exit "$fail"

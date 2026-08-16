@@ -1,0 +1,40 @@
+cmd	sbx create feature-x --template web-stack
+out	sandbox "feature-x"  provider docker  isolation container
+ok	  postgres     ✓ 127.0.0.1:20040
+ok	  redis        ✓ 127.0.0.1:20041
+dim	ready. Nothing needs starting again - connecting wakes it, idleness sleeps it.
+blank	
+cmd	eval "$(sbx env feature-x)"    # it remembers what it was made from
+out	export SBX_SANDBOX='feature-x'
+out	export SBX_PROVIDER='docker'
+out	export DATABASE_HOST='127.0.0.1'
+out	export DATABASE_PORT='20040'
+out	export REDIS_HOST='127.0.0.1'
+out	export REDIS_PORT='20041'
+blank	
+cmd	sbx env feature-x --shell json          # no SDK; an agent parses this
+out	{
+out	  "DATABASE_HOST": "127.0.0.1",
+out	  "DATABASE_PORT": "20040",
+out	  "REDIS_HOST": "127.0.0.1",
+out	  "REDIS_PORT": "20041",
+out	  "SBX_PROVIDER": "docker",
+out	  ...
+blank	
+cmd	sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'
+ok	  cache        ✓ 127.0.0.1:20042
+blank	
+cmd	sbx snapshot main golden && sbx fork golden agent-1
+out	  postgres     → sbx-snap-golden-postgres:latest  + volume sbx-snapvol-golden-postgres
+out	  postgres     restored from sbx-snapvol-golden-postgres
+out	  forked from snapshot "golden" - filesystem state only, processes start cold.
+ok	  agent-1 carries the seeded row: seeded
+blank	
+cmd	# nobody touches it for a few seconds
+INFO	feature-x/redis  slept - idle for 8s
+ok	  asleep - 0 B of memory, the volume untouched
+blank	
+cmd	redis-cli ping        # an ordinary client; no SDK, no wrapper
+out	PONG
+INFO	feature-x/redis  woke in 137ms
+ok	  served in 167ms - the client waited, it was never refused

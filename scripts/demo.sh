@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Record the README's demo from a real run.
 #
-#   scripts/demo.sh                 # writes docs/demo.svg
+#   scripts/demo.sh                 # record: run everything, write docs/demo.svg + .lines
+#   scripts/demo.sh --render-only   # redraw docs/demo.svg from the committed capture
 #
 # The previous demo was hand-drawn, and a hand-drawn demo drifts: it showed a `sbx create`
 # message the binary had stopped printing, and it kept a typographic dash after every other
@@ -14,10 +15,25 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SBX="$ROOT/sbx"
+
+RENDER_ONLY=0
+if [ "${1-}" = "--render-only" ]; then RENDER_ONLY=1; shift; fi
+
 OUT="${1:-$ROOT/docs/demo.svg}"
+LINES="${OUT%.svg}.lines"
 WORK="$(mktemp -d)"
 TAG="demo$$"
 DAEMON=""
+
+# Redraw the committed capture. Nothing runs, nothing is measured, and the numbers in the
+# picture stay the ones that were recorded - which is the point: a change to how this is
+# drawn should not be able to change what it claims.
+if [ "$RENDER_ONLY" = 1 ]; then
+  [ -f "$LINES" ] || { echo "no capture at $LINES - record one first" >&2; exit 1; }
+  python3 "$ROOT/scripts/lib/render-demo.py" "$LINES" "$OUT" || exit 1
+  echo "wrote $OUT from $LINES" >&2
+  exit 0
+fi
 
 cleanup() {
   [ -n "$DAEMON" ] && kill "$DAEMON" 2>/dev/null
@@ -45,14 +61,58 @@ norm() { cat; }
 # A demo is a measurement, and this project does not publish measurements taken on a
 # machine that is busy doing something else. One recording came back with a 66-second wake
 # and a reset connection at load 23; nothing was wrong with sbx.
-load=$(uptime | sed -E 's/.*load averages?: *([0-9.]+).*/\1/' | tr -d ' ')
+#
+# The threshold is load per core, not raw load. A raw number cannot mean the same thing on a
+# 4-core laptop and a 64-core box, and the first version of this guard - raw load >= 4 -
+# refused to record on any developer machine with a few background containers running, which
+# is every developer machine. A guard nobody can satisfy is one everybody overrides.
+cores=$( (getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu || nproc) 2>/dev/null | head -1)
+cores=${cores:-1}
 
-if [ "$(printf '%.0f' "${load:-0}" 2>/dev/null || echo 0)" -ge 4 ]; then
-  echo "demo: load average is ${load}. Record this on a quiet machine, or the picture" >&2
-  echo "      shows what the laptop was doing rather than what sbx does." >&2
-  echo "      Set DEMO_ANYWAY=1 to override." >&2
+loadnow() { uptime | sed -E 's/.*load averages?: *([0-9.]+).*/\1/' | tr -d ' '; }
+
+busy() { python3 -c "print(1 if float('${1:-0}') / max(1, ${cores}) >= 0.7 else 0)" 2>/dev/null || echo 0; }
+
+# Checked twice: once here, and again immediately before the wake is timed.
+#
+# Checking only here is not enough, and this is not hypothetical - a recording started on a
+# quiet machine, the machine got busy during the three minutes of docker work, and the run
+# published a 2507ms wake for something that takes about 130ms. The number a reader takes
+# away is measured at the end, so that is where the machine has to be quiet.
+#
+# The second check waits rather than refusing, because by then the sandbox is already asleep
+# and waiting costs nothing: nothing is running, no state moves, and the wake is timed from a
+# cold sandbox either way. It also lets the demo's own load decay - three minutes of docker
+# work leaves a load average that has nothing to do with how busy the machine is now, so a
+# check that refused on it would refuse on every machine, including a quiet one.
+wait_until_quiet() {
+  waited=0
+
+  while [ "$(busy "$(loadnow)")" = "1" ]; do
+    [ "$waited" -ge 300 ] && return 1
+
+    [ "$waited" = 0 ] && echo "demo: waiting for the machine to go quiet before timing the wake" >&2
+
+    sleep 15
+    waited=$((waited + 15))
+  done
+
+  return 0
+}
+
+refuse_if_busy() {
+  load=$(loadnow)
+
+  [ "$(busy "$load")" = "1" ] || return 0
+
+  echo "demo: load is ${load} across ${cores} cores${1:+ $1}. Record this on a quieter" >&2
+  echo "      machine, or the picture shows what the laptop was doing rather than what" >&2
+  echo "      sbx does. Set DEMO_ANYWAY=1 to override." >&2
+
   [ "${DEMO_ANYWAY:-0}" = "1" ] || exit 1
-fi
+}
+
+refuse_if_busy
 
 echo "recording..." >&2
 
@@ -112,7 +172,9 @@ until [ "$(docker inspect -f '{{.State.Status}}' "sbx-$TAG-branch-redis" 2>/dev/
   sleep 2; waited=$((waited + 2)); [ "$waited" -ge 40 ] && break
 done
 
-grep -h 'slept' "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | tail -1 \
+# The service that sleeps here has to be the one that wakes below, or the two lines name
+# different services and the cycle the demo exists to show does not read as one.
+grep -h 'slept' "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep redis | tail -1 \
   | python3 -c 'import sys,json
 for line in sys.stdin:
     try: d=json.loads(line)
@@ -123,12 +185,24 @@ for line in sys.stdin:
 say ok '  asleep - 0 B of memory, the volume untouched'
 
 say blank
-say cmd 'redis-cli ping        # any TCP connection; no SDK, no wrapper'
 
 # shellcheck disable=SC1090
 eval "$("$SBX" env "$TAG-branch" 2>/dev/null)"
-start=$(python3 -c 'import time;print(int(time.time()*1000))')
-reply=$(python3 - "${REDIS_PORT:-0}" <<'PYWAKE'
+
+# Wake it with whatever this machine actually has, and label the line with the command that
+# really ran. The two differ in their reply - redis-cli prints PONG, a socket sees the +PONG
+# on the wire - and a demo that captions itself "recorded from a real run" cannot show one
+# command's name above the other one's output.
+wait_until_quiet || refuse_if_busy "and stayed busy for five minutes"
+
+if command -v redis-cli >/dev/null 2>&1; then
+  say cmd 'redis-cli ping        # an ordinary client; no SDK, no wrapper'
+  start=$(python3 -c 'import time;print(int(time.time()*1000))')
+  reply=$(redis-cli -h 127.0.0.1 -p "${REDIS_PORT:-0}" ping 2>&1 | tail -1)
+else
+  say cmd 'printf "PING\r\n" | nc 127.0.0.1 $REDIS_PORT   # any TCP connection at all'
+  start=$(python3 -c 'import time;print(int(time.time()*1000))')
+  reply=$(python3 - "${REDIS_PORT:-0}" <<'PYWAKE'
 import socket, sys
 try:
     s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=90)
@@ -139,6 +213,7 @@ except Exception as e:
     print("ERR", e)
 PYWAKE
 )
+fi
 took=$(( $(python3 -c 'import time;print(int(time.time()*1000))') - start ))
 say out "$reply"
 
@@ -166,6 +241,13 @@ if grep -q "$TAG" "$SCRIPT"; then
 fi
 
 # ── render ────────────────────────────────────────────────────────────────────
-python3 "$ROOT/scripts/lib/render-demo.py" "$SCRIPT" "$OUT" || exit 1
+#
+# The capture is kept beside the picture. Changing how the demo is drawn then costs a
+# re-render rather than a docker run on a quiet machine, which matters more than it sounds:
+# three separate rendering bugs shipped because re-checking one meant re-running everything,
+# and so nobody did.
+cp "$SCRIPT" "$LINES"
 
-echo "wrote $OUT" >&2
+python3 "$ROOT/scripts/lib/render-demo.py" "$LINES" "$OUT" || exit 1
+
+echo "wrote $OUT and $LINES" >&2

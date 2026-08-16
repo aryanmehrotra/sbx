@@ -6,9 +6,10 @@
 The input is one `kind<TAB>text` per line, written by scripts/demo.sh from real command
 output. Kinds: cmd, out, ok, info, dim, blank.
 
-Self-contained by construction: no external libraries, no fonts to fetch, no scripts. GitHub
-strips <script> from rendered SVG and blocks remote references, so the typing effect is CSS
-keyframes and the type is whatever monospace the reader already has.
+Self-contained by construction: no external libraries, no fonts to fetch, no scripts, and
+no reveal animation - GitHub strips <script> from rendered SVG and blocks remote references,
+and anything that fades in renders blank in a static snapshot. The type is whatever monospace
+the reader already has.
 """
 
 import html
@@ -55,38 +56,30 @@ def main() -> int:
     height = int(TOP + LINE_H * (len(rows) + 1) + 24)
     width = 900
 
-    # Each line appears in turn, then the whole thing loops. A command line dwells a little
-    # longer than its output, which is roughly how a person reads it.
-    steps, t = [], 0.0
-    for kind, _ in rows:
-        steps.append(t)
-        t += 0.55 if kind == "cmd" else 0.30
-    total = round(t + 2.4, 2)
-
-    # Everything is visible by default, and the typing effect is layered on top only where
-    # motion is welcome.
+    # No reveal animation. Every line is simply visible.
     #
-    # The obvious way round - start every line at opacity:0 and animate it in - renders a
-    # completely empty terminal anywhere the animation does not run: a static rasteriser, a
-    # reader with prefers-reduced-motion, a markdown viewer that strips CSS. The previous
-    # demo had exactly that bug, and it was invisible until someone rasterised it.
+    # Three versions of this file tried to type the lines out one at a time, and all three
+    # rendered a blank terminal somewhere that matters. The last one was the instructive
+    # failure: the hidden state was correct CSS, sitting only in the keyframes, and it still
+    # came out empty - because a thumbnailer snapshots the animation at t=0, and at t=0 an
+    # unrevealed line is *supposed* to be transparent. There is no way to write a reveal that
+    # a static snapshot survives, because the first frame of a reveal is by definition empty.
+    #
+    # That trade is a bad one for a README hero. It buys a typing effect on GitHub's rendered
+    # page and pays with an empty rectangle in the social preview card, in PDF export, in
+    # editor previews and in every screenshot anyone takes of it. The content is the point;
+    # the motion was decoration.
+    #
+    # The cursor still blinks: at t=0 it is opaque, so it costs nothing in a snapshot.
     css = [
         "text{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;"
         f"font-size:{FONT}px;white-space:pre}}",
         ".b{font-weight:600}",
-        "@media (prefers-reduced-motion:no-preference){",
-    ]
-    for i, at in enumerate(steps):
-        pct = round(100.0 * at / total, 2)
-        css.append(
-            f".l{i}{{opacity:0;animation:k{i} {total}s steps(1) infinite}}"
-            f"@keyframes k{i}{{0%,{pct}%{{opacity:0}}{pct}%,100%{{opacity:1}}}}"
-        )
-    css.append(
+        "@media (prefers-reduced-motion:no-preference){"
         ".cur{animation:blink 1s steps(1) infinite}"
         "@keyframes blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}"
-    )
-    css.append("}")
+        "}",
+    ]
 
     alt = (
         "A terminal running sbx: a sandbox is created from a template, its addresses are "
@@ -108,7 +101,7 @@ def main() -> int:
     ]
 
     y = TOP
-    for i, (kind, text) in enumerate(rows):
+    for kind, text in rows:
         if kind == "blank":
             y += LINE_H
             continue
@@ -117,31 +110,33 @@ def main() -> int:
 
         if kind == "cmd" and text.lstrip().startswith("#"):
             out.append(
-                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve" fill="{DIM}" '
-                f'class="l{i}">{esc}</text>'
+                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve" fill="{DIM}">{esc}</text>'
             )
         elif kind == "cmd":
             out.append(
-                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve" class="l{i}">'
+                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve">'
                 f'<tspan fill="{BLUE}" class="b">$ </tspan>'
                 f'<tspan fill="{FG}" class="b">{esc}</tspan></text>'
             )
         elif kind == "info":
             label, _, rest = text.partition("\t")
             out.append(
-                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve" class="l{i}">'
+                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve">'
                 f'<tspan fill="{CYAN}" class="b">INFO </tspan>'
                 f'<tspan fill="{DIM}">{html.escape(label)}</tspan>'
                 f'<tspan fill="{FG}">  {html.escape(rest)}</tspan></text>'
             )
         else:
             out.append(
-                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve" fill="{colour(kind)}" class="l{i}">{esc}</text>'
+                f'<text x="{PAD_X}" y="{y:.1f}" xml:space="preserve" '
+                f'fill="{colour(kind)}">{esc}</text>'
             )
 
         y += LINE_H
 
-    out.append(f'<rect x="{PAD_X}" y="{y - 12:.1f}" width="8" height="15" fill="{FG}" class="cur"/>')
+    out.append(
+        f'<rect x="{PAD_X}" y="{y - 12:.1f}" width="8" height="15" fill="{FG}" class="cur"/>'
+    )
     out.append("</svg>")
 
     with open(sys.argv[2], "w", encoding="utf-8") as f:
