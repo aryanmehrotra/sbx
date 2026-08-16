@@ -117,16 +117,14 @@ type model struct {
 	// stops updating when docker dies is worse than one that says docker died.
 	err error
 
-	// limits is what the selected service is allowed, and limitsFor is the ref they were read
-	// for. Held for one service rather than all of them because that is all the detail block
-	// shows, and a ceiling cannot change while a container lives.
-	limits    provider.Limits
-	limitsFor string
-
-	// limitsAwake is the state the service was in when they were read. An asleep container
-	// has no ceilings to report, so without this the first look at a sleeping service would
-	// cache "no limits" and never ask again once it woke.
-	limitsAwake bool
+	// limits is what each service is allowed, by ref.
+	//
+	// All of them rather than only the selected one, because the table draws a meter per row
+	// and a table that could only fill in the highlighted line would be worse than one that
+	// filled in none. What makes that affordable is that a ceiling cannot change unless this
+	// program changes it or the container is recreated, so they are read rarely - see
+	// limitTTL - rather than on every refresh.
+	limits map[string]provider.Limits
 
 	// input is a line being typed, if one is.
 	input prompt
@@ -246,11 +244,9 @@ func addressOf(u provider.Unit) string {
 	return strings.Join(parts, " ")
 }
 
-// staleLimits reports whether what is held no longer describes the given row: a different
-// service, or the same one that has woken or gone to sleep since it was asked.
-func (m model) staleLimits(r row) bool {
-	return r.Ref != m.limitsFor || r.Awake != m.limitsAwake
-}
+// limitOf is what one service is allowed, or nothing known yet, which reads the same as
+// uncapped and is the only honest thing to draw before the answer arrives.
+func (m model) limitOf(ref string) provider.Limits { return m.limits[ref] }
 
 // cpuPercent turns two samples into a share of one core.
 //

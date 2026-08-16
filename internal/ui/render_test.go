@@ -317,7 +317,7 @@ func TestRowOverheadMatchesTheLayout(t *testing.T) {
 	t.Run("without an address column", func(t *testing.T) {
 		w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7}
 
-		got := visibleLen(renderRow(r, false, w))
+		got := visibleLen(renderRow(r, provider.Limits{}, false, w))
 		want := rowOverhead + w.sandbox + w.service + w.cpu + w.mem
 
 		if got != want {
@@ -329,7 +329,7 @@ func TestRowOverheadMatchesTheLayout(t *testing.T) {
 	t.Run("with one", func(t *testing.T) {
 		w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7, address: len(r.Address)}
 
-		got := visibleLen(renderRow(r, false, w))
+		got := visibleLen(renderRow(r, provider.Limits{}, false, w))
 
 		// The two extra columns are the gap before the address, which widths() budgets for
 		// separately when it works out what is left over.

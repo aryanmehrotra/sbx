@@ -216,6 +216,89 @@ func TestTheSleepSentenceIsNeverCutMidPhrase(t *testing.T) {
 	}
 }
 
+// The per-row meters are the last thing in line for width and the first to go, because a
+// ceiling is context and an address is the thing somebody came to copy.
+func TestTheMetersOnlyTakeSpareWidth(t *testing.T) {
+	rows := []row{
+		{Sandbox: "zn-dev", Service: "clickhouse", Awake: true,
+			Address: "127.0.0.1:20000 127.0.0.1:20001"},
+		{Sandbox: "zn-dev", Service: "redis", Address: "127.0.0.1:20003"},
+	}
+
+	for _, c := range []struct {
+		cols int
+		want bool
+	}{
+		{80, false},
+		{118, false},
+		{200, true},
+	} {
+		w := widths(rows, c.cols)
+
+		if got := w.meters > 0; got != c.want {
+			t.Errorf("at %d columns meters=%d, want present=%v", c.cols, w.meters, c.want)
+		}
+
+		// Whatever it decided, the address must still fit its longest value.
+		if w.meters > 0 && w.address < len(rows[0].Address) {
+			t.Errorf("at %d columns the meters took the address's room: address=%d, needs %d",
+				c.cols, w.address, len(rows[0].Address))
+		}
+	}
+}
+
+// A row must never be wider than the terminal, meters or not.
+func TestARowWithMetersStillFits(t *testing.T) {
+	m := model{rows: []row{
+		{Sandbox: "zn-dev", Service: "clickhouse", Awake: true, Ref: "r1",
+			Address: "127.0.0.1:20000 127.0.0.1:20001",
+			CPU:     54.5, CPUKnown: true, MemBytes: 467 << 20, MemKnown: true},
+		{Sandbox: "two", Service: "sleeper", Ref: "r2", Address: "127.0.0.1:20003"},
+	}}
+
+	m.limits = map[string]provider.Limits{
+		"r1": {NanoCPUs: 500_000_000, MemBytes: 512 << 20},
+	}
+
+	for _, cols := range []int{80, 118, 160, 200, 300} {
+		for _, line := range strings.Split(render(m, 24, cols), "\n") {
+			if n := visibleLen(line); n > cols {
+				t.Fatalf("at %d columns a line is %d wide: %q", cols, n, plainText(line))
+			}
+		}
+	}
+}
+
+// An uncapped service gets a dash, not an empty bar: an empty bar is a proportion of nothing,
+// drawn as though it meant something.
+func TestAnUncappedRowDrawsNoBar(t *testing.T) {
+	got := plainText(cell(true, 0.3, 0, "—"))
+
+	if strings.Contains(got, "[") {
+		t.Errorf("an uncapped cell drew a bar: %q", got)
+	}
+
+	if !strings.Contains(got, "—") {
+		t.Errorf("an uncapped cell = %q, want a dash", got)
+	}
+}
+
+func TestShortBytesReadsLikeSomebodyWouldSayIt(t *testing.T) {
+	for _, c := range []struct {
+		in   uint64
+		want string
+	}{
+		{512 << 20, "512m"},
+		{4 << 30, "4g"},
+		{1536 << 20, "1.5g"},
+		{0, "—"},
+	} {
+		if got := shortBytes(c.in); got != c.want {
+			t.Errorf("shortBytes(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // plainText strips the escape sequences so a test can assert about what a reader sees.
 func plainText(s string) string {
 	var (

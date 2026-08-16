@@ -59,8 +59,9 @@ func (f *fakeProvider) took() ([]string, []string) {
 
 func newDash(p provider.Provider) *dash {
 	return &dash{
-		opt:  Options{Provider: p, Version: "v0.1.0"},
-		prev: map[string]provider.Usage{},
+		opt:        Options{Provider: p, Version: "v0.1.0"},
+		prev:       map[string]provider.Usage{},
+		limitsSeen: map[string]time.Time{},
 		model: model{
 			version: "v0.1.0",
 			rows: []row{

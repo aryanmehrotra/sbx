@@ -210,8 +210,7 @@ func TestAnUnmentionedHalfIsLeftAlone(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	p.have = provider.Limits{NanoCPUs: 2e9, MemBytes: 1 << 30}
-	d.model.limits = p.have
-	d.model.limitsFor = "sbx-one-db"
+	d.model.limits = map[string]provider.Limits{"sbx-one-db": p.have}
 
 	d.handle(context.Background(), rkey('L'))
 	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
@@ -239,7 +238,7 @@ func TestClearingIsRefusedRatherThanFaked(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	p.have = provider.Limits{NanoCPUs: 2e9, MemBytes: 1 << 30}
-	d.model.limits = p.have
+	d.model.limits = map[string]provider.Limits{"sbx-one-db": p.have}
 
 	d.handle(context.Background(), rkey('L'))
 	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
@@ -264,7 +263,7 @@ func TestNoneOnAnAlreadyUncappedHalfIsNotRefused(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	p.have = provider.Limits{MemBytes: 1 << 30} // cpu already uncapped
-	d.model.limits = p.have
+	d.model.limits = map[string]provider.Limits{"sbx-one-db": p.have}
 
 	d.handle(context.Background(), rkey('L'))
 	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size

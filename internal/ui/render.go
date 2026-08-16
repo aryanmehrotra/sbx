@@ -158,10 +158,14 @@ func tableHeader(w cols) string {
 		dim, w.sandbox, "SANDBOX", w.service, "SERVICE", "STATE", w.cpu, "CPU", w.mem, "MEMORY")
 
 	if w.address > 0 {
-		head += "  ADDRESS"
+		head += "  " + fmt.Sprintf("%-*s", w.address, "ADDRESS")
 	}
 
-	return head + reset
+	if w.meters > 0 {
+		head += "  " + fmt.Sprintf("%-*s  %-*s", meterCell, "CPU LIMIT", meterCell, "MEMORY LIMIT")
+	}
+
+	return strings.TrimRight(head, " ") + reset
 }
 
 // tableRows renders the visible slice of the table, scrolled to keep the selection in view.
@@ -187,7 +191,7 @@ func tableRows(m model, w cols, space, cols int) []string {
 	}
 
 	for i := start; i < len(m.rows) && len(out) < space; i++ {
-		line := truncate(renderRow(m.rows[i], i == m.selected, w), cols)
+		line := truncate(renderRow(m.rows[i], m.limitOf(m.rows[i].Ref), i == m.selected, w), cols)
 
 		if i == m.selected {
 			line = highlight(line, cols)
@@ -205,7 +209,7 @@ func tableRows(m model, w cols, space, cols int) []string {
 	return out[:space]
 }
 
-func renderRow(r row, selected bool, w cols) string {
+func renderRow(r row, l provider.Limits, selected bool, w cols) string {
 	marker := " "
 	if selected {
 		marker = "›"
@@ -242,10 +246,78 @@ func renderRow(r row, selected bool, w cols) string {
 		w.mem, mem)
 
 	if w.address > 0 {
-		line += "  " + dim + truncate(shortAddress(r.Address, w.address), w.address) + reset
+		addr := truncate(shortAddress(r.Address, w.address), w.address)
+		line += "  " + dim + addr + reset
+
+		if w.meters > 0 {
+			line += strings.Repeat(" ", max(0, w.address-visibleLen(addr)))
+		}
+	}
+
+	if w.meters > 0 {
+		line += "  " + cell(r.CPUKnown && r.Awake, r.CPU/100, float64(l.NanoCPUs)/1e9,
+			trimZeros(float64(l.NanoCPUs)/1e9)+"c") +
+			"  " + cell(r.MemKnown && r.Awake, float64(r.MemBytes), float64(l.MemBytes),
+				shortBytes(l.MemBytes))
 	}
 
 	return line
+}
+
+// cell draws one row's meter: a bar of how full, and the ceiling it is full of.
+//
+// An uncapped service gets a dash rather than an empty bar. An empty bar against no limit
+// would be a proportion of nothing, drawn as though it meant something.
+func cell(sampled bool, used, allowed float64, label string) string {
+	if allowed <= 0 {
+		return dim + fmt.Sprintf("%-*s", meterCell, "—") + reset
+	}
+
+	if !sampled {
+		return dim + fmt.Sprintf("%-*s", meterCell, "["+strings.Repeat("·", tableBarCells)+"]") + reset
+	}
+
+	return smallBar(used/allowed) + " " + dim + fmt.Sprintf("%*s", limitTextCols, label) + reset
+}
+
+// smallBar is the table's bar: the detail block's, at the width a column can afford.
+func smallBar(frac float64) string {
+	filled := int(frac * tableBarCells)
+
+	switch {
+	case filled < 1 && frac > 0:
+		filled = 1
+	case filled > tableBarCells:
+		filled = tableBarCells
+	case frac <= 0:
+		filled = 0
+	}
+
+	colour := green
+
+	switch {
+	case frac >= 0.9:
+		colour = red
+	case frac >= 0.75:
+		colour = yellow
+	}
+
+	return dim + "[" + reset + colour + strings.Repeat("█", filled) + reset +
+		dim + strings.Repeat("·", tableBarCells-filled) + "]" + reset
+}
+
+// shortBytes writes a ceiling the compact way a column has room for: "512m", "4g".
+func shortBytes(b uint64) string {
+	switch {
+	case b == 0:
+		return "—"
+	case b >= 1<<30:
+		return trimZeros(float64(b)/(1<<30)) + "g"
+	case b >= 1<<20:
+		return trimZeros(float64(b)/(1<<20)) + "m"
+	default:
+		return trimZeros(float64(b)/(1<<10)) + "k"
+	}
 }
 
 // highlight marks the selected row, across the full width.
@@ -328,10 +400,10 @@ func detailBlock(m model, space, cols int) []string {
 	// the container and exceeding a CPU one only makes it slower.
 	if meters {
 		if space >= detailFull {
-			field("cpu", cpuMeter(r, m.limits))
+			field("cpu", cpuMeter(r, m.limitOf(r.Ref)))
 		}
 
-		field("memory", memMeter(r, m.limits))
+		field("memory", memMeter(r, m.limitOf(r.Ref)))
 	}
 
 	field("ref", dim+r.Ref+reset)
@@ -687,7 +759,21 @@ func firstLine(s string) string {
 }
 
 // cols are the computed column widths.
-type cols struct{ sandbox, service, cpu, mem, address int }
+type cols struct{ sandbox, service, cpu, mem, address, meters int }
+
+// Sizes for the per-row meters. Ten cells rather than the sixteen the detail block uses,
+// because this one is drawn once per service and the column has to earn its width against the
+// address, which is what people actually came for.
+const (
+	tableBarCells = 10
+	limitTextCols = 6
+
+	// meterCell is "[..........] 512m": the bar, a space, and the ceiling right-aligned.
+	meterCell = tableBarCells + 2 + 1 + limitTextCols
+
+	// metersWidth is both cells and the gap between them.
+	metersWidth = 2*meterCell + 2
+)
 
 // rowOverhead is everything in a row that is not one of the sized columns: the selection
 // marker, the space after it, the four gaps before the address, and the state column.
@@ -725,6 +811,16 @@ func widths(rows []row, total int) cols {
 	// three characters and an ellipsis.
 	if w.address = spare - w.sandbox - w.service - 2; w.address < 8 {
 		w.address = 0
+	}
+
+	// The meters are last in line and first to go. They are worth having only on a terminal
+	// wide enough that the address is already comfortable, because a ceiling is context and an
+	// address is the thing somebody came to copy.
+	// The address keeps what it needs and no more; the meters take their fixed width out of
+	// what was going to be padding either way.
+	if w.address > 0 && w.address-want >= metersWidth+2 {
+		w.address = want
+		w.meters = metersWidth
 	}
 
 	return w

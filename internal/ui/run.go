@@ -61,6 +61,8 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 		opt:   opt,
 		model: model{version: opt.Version, update: update.Available(opt.Version)},
 		prev:  map[string]provider.Usage{},
+
+		limitsSeen: map[string]time.Time{},
 	}
 
 	d.refresh(ctx)
@@ -124,6 +126,10 @@ type dash struct {
 	// paneHeight is the height the renderer last drew the pane at, so the scroll keys can
 	// bound themselves without the model having to know the terminal's size.
 	paneHeight int
+
+	// limitsSeen is when each ref's ceilings were last read. Kept here rather than on the
+	// model because it is bookkeeping about fetching, not something the renderer draws.
+	limitsSeen map[string]time.Time
 }
 
 // eventBacklog is how many events the refresher keeps in memory. It is a ceiling on
@@ -577,9 +583,6 @@ func (d *dash) followSelection(ctx context.Context) {
 		}
 	}
 
-	if ok && d.model.staleLimits(r) {
-		go d.loadLimits(context.WithoutCancel(ctx), r)
-	}
 }
 
 // limitPresets are the ceilings offered by name.
@@ -677,7 +680,7 @@ func (d *dash) applyLimits(ctx context.Context, in prompt) {
 	}
 
 	d.mu.Lock()
-	current := d.model.limits
+	current := d.model.limitOf(in.ref)
 	d.mu.Unlock()
 
 	if asked, half := clearingSomething(cpu, mem, current); asked {
@@ -736,7 +739,7 @@ func (d *dash) setLimits(ctx context.Context, in prompt, want provider.Limits) {
 	// Force the meters to re-read rather than believing what was asked for: what docker
 	// accepted is the only thing worth drawing.
 	d.mu.Lock()
-	d.model.limitsFor = ""
+	delete(d.limitsSeen, in.ref)
 	d.mu.Unlock()
 
 	d.say("%s limited to %s", in.name, describeLimits(want))
@@ -771,54 +774,79 @@ func describeLimits(l provider.Limits) string {
 		trimZeros(float64(l.NanoCPUs)/1e9), humanBytes(l.MemBytes))
 }
 
-// followLimits re-reads the selected service's ceilings when they can have changed.
+// limitTTL is how long a ceiling is believed before it is read again.
 //
-// Called from the poll rather than only from the arrow keys because the thing that makes them
-// appear is usually not a keypress: a service that was asleep when it was selected has no
-// container to inspect, and the ceilings only become readable when something wakes it.
+// A ceiling only changes when this program changes it - which invalidates its own entry - or
+// when the container is recreated behind our back, which is the case this covers. Thirty
+// seconds means seven services cost about one inspect every four seconds between them, rather
+// than seven a second, which is what reading them on every refresh would have been.
+const limitTTL = 30 * time.Second
+
+// followLimits reads the ceilings of every service that has not been asked recently.
+//
+// Every service and not only the selected one, because the table draws a meter per row. The
+// cost is bounded by limitTTL rather than by the number of rows.
 func (d *dash) followLimits(ctx context.Context) {
-	d.mu.Lock()
-
-	r, ok := d.model.currentRow()
-	stale := ok && d.model.staleLimits(r)
-
-	d.mu.Unlock()
-
-	if stale {
-		d.loadLimits(ctx, r)
-	}
-}
-
-// loadLimits asks what one service is allowed. Not every backend can say, and a backend that
-// cannot is not an error - the detail block simply has no ceiling to draw.
-func (d *dash) loadLimits(ctx context.Context, r row) {
 	lim, ok := d.opt.Provider.(provider.Limiter)
 	if !ok {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	got, err := lim.Limits(ctx, r.Ref)
-
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
-	// The selection can move while an inspect is in flight, and one service's ceiling drawn
-	// under another's usage is worse than no ceiling at all.
-	if cur, ok := d.model.currentRow(); !ok || cur.Ref != r.Ref {
+	var stale []string
+
+	for _, r := range d.model.rows {
+		if seen, ok := d.limitsSeen[r.Ref]; !ok || time.Since(seen) > limitTTL {
+			stale = append(stale, r.Ref)
+		}
+	}
+
+	d.mu.Unlock()
+
+	if len(stale) == 0 {
 		return
 	}
 
-	// A failure records the attempt rather than retrying every tick. An asleep container has
-	// nothing to inspect, which is the ordinary case and not worth a round trip a second.
-	if err != nil {
-		got = provider.Limits{}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Bounded, because a fleet of forty on a laptop should not open forty sockets at once to
+	// answer a question none of them is being asked.
+	var (
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, 8)
+	)
+
+	for _, ref := range stale {
+		wg.Add(1)
+
+		go func(ref string) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			got, err := lim.Limits(ctx, ref)
+
+			d.mu.Lock()
+			defer d.mu.Unlock()
+
+			// A failure is recorded as "asked" rather than retried every tick. A container
+			// that vanished between the listing and this call is the ordinary case.
+			if err == nil {
+				if d.model.limits == nil {
+					d.model.limits = map[string]provider.Limits{}
+				}
+
+				d.model.limits[ref] = got
+			}
+
+			d.limitsSeen[ref] = time.Now()
+		}(ref)
 	}
 
-	d.model.limits = got
-	d.model.limitsFor, d.model.limitsAwake = r.Ref, r.Awake
+	wg.Wait()
 }
 
 // printOnce is the non-interactive path: the same information, printed and gone.
