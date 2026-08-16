@@ -77,6 +77,22 @@ type Service struct {
 	// repo next to the spec that references them.
 	Files map[string]string `json:"files,omitempty"`
 
+	// Mounts binds host directories read-write, host path to container path, relative to the
+	// spec like Files.
+	//
+	// Three things already persist state and none of them is this. `volume` is a named volume
+	// the runtime owns, which survives sleeping and is destroyed with the sandbox - right for a
+	// database's data directory, and deliberately not something you can open in an editor.
+	// `files` is read-only, for configs. This is the third case: a directory on YOUR disk that
+	// the service writes to and you can see - a source tree it rebuilds from, the dump it
+	// produces, the fixtures a test run leaves behind.
+	//
+	// It is a laptop feature and says so where a backend cannot do it. A cluster's hostPath is
+	// a node's disk rather than yours, which is a different thing wearing the same word, and
+	// the kubernetes provider refuses rather than mounting somebody else's filesystem and
+	// calling it success.
+	Mounts map[string]string `json:"mounts,omitempty"`
+
 	// Init runs once, after the service first reports healthy - schemas, users, seed data.
 	// Not on every start: a woken container already has whatever this created.
 	Init []string `json:"init,omitempty"`
@@ -153,6 +169,21 @@ func (s Service) validate(name string) error {
 	for _, p := range s.Ports {
 		if p < 1 || p > 65535 {
 			return fmt.Errorf("service %q: port %d out of range", name, p)
+		}
+	}
+
+	// A mount that does not name a place is a mount that lands somewhere else. Docker reads a
+	// relative container path as a *name* it invents rather than a directory, so the service
+	// starts, the mount appears to have worked, and the files are nowhere the author meant.
+	for host, container := range s.Mounts {
+		if strings.TrimSpace(host) == "" {
+			return fmt.Errorf("service %q: a mount has no host path", name)
+		}
+
+		if !strings.HasPrefix(container, "/") {
+			return fmt.Errorf("service %q: mount %q -> %q needs an absolute container path, "+
+				"because a relative one is a name the runtime invents rather than a place",
+				name, host, container)
 		}
 	}
 

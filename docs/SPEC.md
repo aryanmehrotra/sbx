@@ -89,6 +89,7 @@ script that already knows a port.
 | `env` | | Environment variables |
 | `args` | | Command arguments, appended to the image's entrypoint |
 | `volume` | | One container path to persist. What makes sleeping safe |
+| `mounts` | | Host directories bound read-write, `host: /container`. Your disk, visible to both - a source tree, a dump, fixtures a test run leaves behind. Docker only; a cluster refuses, because a hostPath is a node's disk rather than yours |
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `depends_on` | | Services that must be healthy before this one is created |

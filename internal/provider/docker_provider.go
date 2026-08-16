@@ -251,6 +251,33 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "-v", abs+":"+svc.Files[hostPath]+":ro")
 	}
 
+	// Read-write, and the host side is created if it is missing.
+	//
+	// Docker creates a missing bind source itself, as root - so the first run of a spec that
+	// mounts ./data leaves a directory the user cannot write to, and the failure surfaces
+	// later as a permission error from inside the container. Creating it here means it belongs
+	// to whoever ran sbx, which is the only owner that makes sense for a directory they are
+	// going to open.
+	for _, hostPath := range SortedKeys(svc.Mounts) {
+		abs := hostPath
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(specDir, hostPath)
+		}
+
+		abs, err := filepath.Abs(abs)
+		if err != nil {
+			return fmt.Errorf("mount %q: %w", hostPath, err)
+		}
+
+		if _, err := os.Stat(abs); os.IsNotExist(err) {
+			if err := os.MkdirAll(abs, 0o755); err != nil {
+				return fmt.Errorf("mount %q: could not create %s: %w", hostPath, abs, err)
+			}
+		}
+
+		args = append(args, "-v", abs+":"+svc.Mounts[hostPath])
+	}
+
 	args = append(args, svc.Image)
 	args = append(args, svc.Args...)
 

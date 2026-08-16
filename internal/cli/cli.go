@@ -199,7 +199,7 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 		return err
 	}
 
-	if err := checkMounts(ctx, p, ref, name, svc); err != nil {
+	if err := checkMounts(ctx, p, ref, name, svc, specDir); err != nil {
 		return err
 	}
 
@@ -230,7 +230,13 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 // directory, and the resulting error talks about config parsing or a missing file rather
 // than about a mount. This turns the most expensive silent failure in the project into one
 // line naming the path.
-func checkMounts(ctx context.Context, p provider.Provider, ref, name string, svc spec.Service) error {
+func checkMounts(ctx context.Context, p provider.Provider, ref, name string, svc spec.Service, specDir string) error {
+	for host, dest := range svc.Mounts {
+		if err := checkOneMount(ctx, p, ref, name, host, dest, specDir); err != nil {
+			return err
+		}
+	}
+
 	for host, dest := range svc.Files {
 		if _, err := p.Exec(ctx, ref, []string{"test", "-f", dest}); err != nil {
 			return fmt.Errorf(
@@ -240,6 +246,47 @@ func checkMounts(ctx context.Context, p provider.Provider, ref, name string, svc
 					"your home directory",
 				name, host, dest, host)
 		}
+	}
+
+	return nil
+}
+
+// checkOneMount proves a bind mount reaches the host directory it names.
+//
+// A directory mount cannot be checked the way a file can: the failure produces an empty
+// directory at the destination, and an empty directory is indistinguishable from a real one
+// that happens to be empty. So this writes a marker on the host and looks for it inside. It is
+// two syscalls and an exec, and it turns the most expensive silent failure in the project -
+// measured again while adding this feature - into one line naming the path.
+func checkOneMount(ctx context.Context, p provider.Provider, ref, name, host, dest, specDir string) error {
+	abs := host
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(specDir, host)
+	}
+
+	// Absolute, so the error names a place the reader can go and look at. `--spec sandbox.json`
+	// makes specDir "." and Join cleans "./shared" back to "shared", which is the one path in
+	// the message that has to be unambiguous.
+	if a, err := filepath.Abs(abs); err == nil {
+		abs = a
+	}
+
+	marker := ".sbx-mount-check"
+
+	if err := os.WriteFile(filepath.Join(abs, marker), []byte("sbx"), 0o644); err != nil {
+		return fmt.Errorf("service %q: could not write to %s, which it mounts at %s: %w",
+			name, abs, dest, err)
+	}
+
+	defer func() { _ = os.Remove(filepath.Join(abs, marker)) }()
+
+	if _, err := p.Exec(ctx, ref, []string{"test", "-e", dest + "/" + marker}); err != nil {
+		return fmt.Errorf(
+			"service %q: %s did not mount - the container has an empty directory at %s.\n"+
+				"The runtime could not reach %s, so it created one. A VM-backed docker only "+
+				"shares some host paths; move it somewhere the VM can see, such as under your "+
+				"home directory, or add the path to Docker Desktop's file sharing",
+			name, host, dest, abs)
 	}
 
 	return nil

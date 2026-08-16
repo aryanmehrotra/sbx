@@ -182,6 +182,18 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 			"enforced by some CNIs, so sbx will not pretend to have applied one", service)
 	}
 
+	// Refused rather than translated. A cluster's hostPath is a *node's* disk, not the laptop
+	// the spec was written on, so mounting one would satisfy the manifest and give the service
+	// a directory nobody asked for on a machine the author has never seen. The honest cluster
+	// answers are a PVC for state that should persist and a ConfigMap for files that should be
+	// read, and both are different enough to be written rather than guessed.
+	if len(svc.Mounts) > 0 {
+		return fmt.Errorf("service %q declares mounts, which the kubernetes provider does not "+
+			"implement: a hostPath is a node's filesystem rather than yours, and mounting one "+
+			"would look like it worked. Use `volume` for state that must persist, or `files` "+
+			"for configuration", service)
+	}
+
 	name := kubeName(sandbox, service)
 
 	if _, err := k.kc("", "get", "deployment", name); err == nil {
