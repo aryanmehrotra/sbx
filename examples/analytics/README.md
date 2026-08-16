@@ -3,6 +3,7 @@
 Postgres for the app, ClickHouse for the analytics — and ClickHouse marked `optional`.
 
 ```sh
+sbx serve --idle 5m &                 # once per machine; nothing answers without it
 sbx create my-branch              # postgres only
 sbx create my-branch --optional   # both
 ```

@@ -3,6 +3,7 @@
 Postgres and Redis — the shape most applications actually have.
 
 ```sh
+sbx serve --idle 5m &                 # once per machine; nothing answers without it
 sbx create my-branch
 eval "$(sbx env my-branch)"
 # DATABASE_HOST/PORT and REDIS_HOST/PORT are now set

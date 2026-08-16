@@ -3,6 +3,7 @@
 A real headless Chrome, asleep until something connects to it.
 
 ```sh
+sbx serve --idle 5m &                 # once per machine; nothing answers without it
 sbx create my-branch
 eval "$(sbx env my-branch)"
 
