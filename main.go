@@ -25,6 +25,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -129,7 +130,7 @@ func resolve(kind, socket, namespace, isolation string) (provider.Provider, prov
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		usage(os.Stderr)
 		os.Exit(2)
 	}
 
@@ -540,11 +541,11 @@ func dispatch(cmd string, args []string) error {
 		return nil
 
 	case "-h", "--help", "help":
-		usage()
+		usage(os.Stdout)
 		return nil
 
 	default:
-		usage()
+		usage(os.Stderr)
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 }
@@ -639,8 +640,13 @@ func splitPositional(args []string, n int) (positional, rest []string) {
 	return args[:i], args[i:]
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `sbx - per-branch sandboxes that sleep when nobody is using them
+// usage writes to w rather than always to stderr, because where it goes says whether
+// something went wrong. `sbx --help` was asked for and belongs on stdout, so it can be
+// piped into a pager or grepped; usage printed because a command was wrong is a diagnostic
+// and belongs on stderr, where it will not be mistaken for output. Found by Homebrew's
+// formula test, which read stdout, got nothing, and was right to fail.
+func usage(w io.Writer) {
+	fmt.Fprint(w, `sbx - per-branch sandboxes that sleep when nobody is using them
 
   sbx create <sandbox> [--spec sandbox.json | --template NAME] [--optional]
   sbx env    <sandbox> [--spec sandbox.json] [--shell posix|fish|powershell|cmd|json]

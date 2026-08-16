@@ -7,6 +7,14 @@
 # the activator image. The binaries are built by scripts/release.sh - the same script used
 # locally - so a release is never the first time that path runs.
 #
+# One step is deliberately still manual, because it writes to a different repository and
+# automating it would mean storing a token here that can push to one:
+#
+#   scripts/brew-formula.sh vX.Y.Z > ../homebrew-tap/Formula/sbx.rb
+#
+# Run it after this workflow finishes - it reads the checksums out of the release this
+# workflow published, so there is nothing for it to read until then.
+#
 # The Go version is pinned to an exact patch here, and only here. Go embeds its own version
 # in every binary it builds, so `1.26` - which resolves to whatever patch is newest that day -
 # means re-running this workflow on the same tag produces different bytes and a different

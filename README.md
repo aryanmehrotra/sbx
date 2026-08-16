@@ -66,6 +66,8 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 ## How to use
 
 ```sh
+brew install aryanmehrotra/tap/sbx
+# or
 curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh
 # or
 go install github.com/aryanmehrotra/sbx@latest
