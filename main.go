@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
@@ -460,6 +461,27 @@ func dispatch(cmd string, args []string) error {
 
 		return cli.Copy(context.Background(), p, positional[0], positional[1], positional[2], positional[3])
 
+	case "pack":
+		fs := newFlagSet("pack")
+		specPath := fs.String("spec", "sandbox.json", "the spec to pack")
+		out := fs.String("out", "sbx-pack", "directory to write the build contexts into")
+		positional, rest := splitPositional(args, 1)
+		_ = fs.Parse(rest)
+
+		service := ""
+		if len(positional) > 0 {
+			service = positional[0]
+		}
+
+		return cli.Pack(context.Background(), cli.PackOptions{
+			Spec:    *specPath,
+			Service: service,
+			Out:     *out,
+			Version: version,
+			Inspect: cli.InspectImage(dockerCLI),
+			Out2:    os.Stdout,
+		})
+
 	case "connect":
 		fs := newFlagSet("connect")
 		offset := fs.Int("port-offset", 0, "add this to every local port, for a machine already running its own sbx serve")
@@ -818,6 +840,7 @@ While you work
   sbx add    <sandbox> <service> --image IMG --port N   a service the spec never declared
   sbx url    <sandbox> <service>                a public link that wakes it on open
   sbx connect <url> [--sandbox NAME]            local ports for a DEPLOYED sbx, over one endpoint
+  sbx pack   [service] [--spec F]               build contexts for a platform that takes one container
   sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
 
 Data
@@ -847,4 +870,15 @@ func (m *multiFlag) Set(v string) error {
 	*m = append(*m, v)
 
 	return nil
+}
+
+// dockerCLI runs the docker CLI, for the few places that need to ask it something rather than
+// go through a provider - `sbx pack` reads an image's entrypoint before any sandbox exists.
+func dockerCLI(args ...string) (string, error) {
+	out, err := exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+
+	return strings.TrimSpace(string(out)), nil
 }

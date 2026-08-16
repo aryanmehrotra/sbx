@@ -45,6 +45,11 @@ const (
 
 	// relayChunk is how much is read from the sandbox at a time.
 	relayChunk = 32 << 10
+
+	// upstreamWait is how long a connection will wait for a workload that is still starting.
+	// A database opening its data directory takes seconds; a port that is wrong takes forever,
+	// so this is bounded rather than patient.
+	upstreamWait = 60 * time.Second
 )
 
 // ConnectOptions is what `sbx serve --connect-addr` was given.
@@ -317,7 +322,7 @@ func (d *daemon) connectHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Dialling the daemon's own wake port rather than the workload: a sleeping sandbox wakes
 	// here exactly as it would for a local client, because it is the same listener.
-	up, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 10*time.Second)
+	up, err := dialUpstream(port)
 	if err != nil {
 		logs.Default.Info("connect: upstream refused", "sandbox", u.sandbox, "service", u.service)
 
@@ -329,6 +334,32 @@ func (d *daemon) connectHandler(w http.ResponseWriter, r *http.Request) {
 	logs.Default.Info("connect: tunnelling", "sandbox", u.sandbox, "service", u.service)
 
 	relay(ws, up)
+}
+
+// dialUpstream connects to the workload, waiting for it if it is still starting.
+//
+// The retry is for the fronted case. A platform wakes a container and routes to it as soon as
+// the HTTP port answers, which sbx does immediately - while the database beside it is still
+// opening its data directory. Without this the first connection through a freshly woken tunnel
+// is refused, and the first connection through a tunnel is usually somebody finding out whether
+// it works at all. Doing it here rather than in a shell also means it works on any base image:
+// waiting for a port in POSIX sh needs tools a minimal image does not have.
+func dialUpstream(port int) (net.Conn, error) {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	deadline := time.Now().Add(upstreamWait)
+
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err == nil {
+			return conn, nil
+		}
+
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // relay splices a WebSocket and a TCP connection until either ends.

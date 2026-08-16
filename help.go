@@ -100,6 +100,17 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"Copy a file in or out. A path inside the service is prefixed with a colon.",
 		"sbx cp main postgres ./schema.sql :/tmp/schema.sql",
 	},
+	"pack": {
+		"sbx pack [service] [--spec sandbox.json] [--out DIR]",
+		"Build contexts for a platform that takes one container and one HTTP port.\n\n" +
+			"A sandbox is normally a set of containers on a machine sbx controls. A PaaS gives\n" +
+			"neither, so this writes the image that fits it: the workload exactly as it was, plus\n" +
+			"sbx carrying its ports over the one port the platform routes. Deploy that image with\n" +
+			"SBX_CONNECT_TOKEN set, then `sbx connect` turns it back into ordinary local ports.\n\n" +
+			"The generated image starts the base image's own process, read out of the image rather\n" +
+			"than guessed - so it works for whatever you packed, not just for postgres.",
+		"sbx pack db --spec sandbox.json",
+	},
 	"connect": {
 		"sbx connect <url> [--sandbox NAME] [--port-offset N]",
 		"Local ports for a sandbox that is running somewhere else.\n\n" +
