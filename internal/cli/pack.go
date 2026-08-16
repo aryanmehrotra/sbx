@@ -156,9 +156,7 @@ func writePack(dir, name string, svc spec.Service, start []string, version strin
 # contribute is storage - a service with no volume starts empty every time its container is
 # replaced, which is right for a branch's test data and wrong for anything you would miss.
 
-# %[3]s rather than @latest: the tunnel below is newer than the newest release, so "latest"
-# would install an sbx that does not have --connect-addr and this container would die at
-# startup on an unknown flag. Pin this to a release tag for anything you intend to keep.
+%[5]s
 FROM golang:1.26-alpine AS sbx
 RUN go install github.com/aryanmehrotra/sbx@%[3]s
 
@@ -170,7 +168,7 @@ ENV PORT=8080
 EXPOSE 8080
 
 ENTRYPOINT ["/sbx-start.sh"]
-`, svc.Image, portList(svc.Ports), version, envBlock)
+`, svc.Image, portList(svc.Ports), version, envBlock, pinNote(version))
 
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
 		return err
@@ -206,11 +204,30 @@ exec sbx serve --connect-addr=":${PORT}" --behind-proxy --front=%q
 
 // packVersion decides which sbx the generated image installs.
 //
-// Not `@latest`. The tunnel this image depends on is newer than the newest release, so `latest`
-// would build an sbx with no --connect-addr and the container would die at startup on an
-// unknown flag - a failure that reads as "the generated image is broken" rather than "it
-// installed the wrong version". A release tag is used when sbx is running as one, because then
-// the packed image and the thing that packed it are the same code.
+// Never `@latest`, which pins nothing: it is whatever was published most recently, so the
+// image silently changes underneath a deployment that nobody edited. Worse while the tunnel is
+// newer than the newest release - then @latest installs an sbx with no --connect-addr and the
+// container dies at startup on an unknown flag, a failure that reads as "the generated image is
+// broken" rather than "it installed the wrong version".
+//
+// A release tag is used when sbx is running as one, because then the packed image and the thing
+// that packed it are the same code. A development build has no tag worth pinning, so it takes
+// main and says so.
+// pinNote is the comment above the install line, which needs a different explanation
+// depending on which version is being pinned. Read by whoever opens the generated Dockerfile
+// and asks why it does not say @latest - a question worth answering where it is asked.
+func pinNote(version string) string {
+	if strings.HasPrefix(version, "v") {
+		return "# " + version + ` rather than @latest: it is the sbx that wrote this file, so
+# the image and the tool that packed it are the same code. @latest drifts the day the next
+# release lands, which is how a build that worked last week fails on a machine nobody touched.`
+	}
+
+	return `# main rather than @latest: this image needs a tunnel that is newer than the newest
+# release, so @latest would install an sbx with no --connect-addr and the container would die
+# at startup on an unknown flag. Once a release carries it, pin this to that tag.`
+}
+
 func packVersion(version string) string {
 	if strings.HasPrefix(version, "v") {
 		return version

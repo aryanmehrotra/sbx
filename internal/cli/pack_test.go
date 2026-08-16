@@ -87,6 +87,25 @@ func TestPackNeverInstallsLatest(t *testing.T) {
 	}
 }
 
+// The comment above the install line has to describe the line below it. It explained why main
+// was pinned instead of a release - true while there was no release carrying the tunnel, and
+// wrong the moment there was, in a file whose whole job is to be read by somebody asking why.
+func TestThePinExplainsItself(t *testing.T) {
+	released := pinNote("v0.3.0")
+	if !strings.Contains(released, "v0.3.0") {
+		t.Errorf("a release pin does not name the version it pins:\n%s", released)
+	}
+
+	if strings.Contains(released, "--connect-addr") {
+		t.Errorf("a release pin still explains itself as a workaround for releases that "+
+			"lack the tunnel, which is the thing it now has:\n%s", released)
+	}
+
+	if dev := pinNote("main"); !strings.Contains(dev, "--connect-addr") {
+		t.Errorf("a development pin no longer says why it cannot take a release:\n%s", dev)
+	}
+}
+
 // Several ports on one service each need their own name, or --front sees one entry twice.
 func TestPackNamesEveryPort(t *testing.T) {
 	if got := front("api", []int{8080}); got != "api=8080" {
