@@ -9,7 +9,9 @@
 at 0 B of memory, awake on the first connection: 191 ms for redis, about a second for
 postgres, and that first connection is *held* rather than refused.**
 
-<img src="docs/demo.svg" alt="A terminal running sbx selftest: a sandbox is created, sleeps to zero, is woken by a socket in 251 ms, and its data survives." width="860">
+<img src="docs/demo.svg" width="900" alt="A terminal running sbx: a branch sandbox is created from the web-stack template, its addresses are exported as shell variables and as JSON, a cache is added mid-task, a seeded database is snapshotted and forked, the sandbox sleeps to zero, and a plain redis-cli ping wakes it and is served.">
+
+<sub>Recorded from a real run by [`scripts/demo.sh`](scripts/demo.sh) - the wake shown is whatever that machine did at that moment, not the benchmark median.</sub>
 
 ```sh
 sbx serve --idle 5m &                          # once per machine, not per sandbox
