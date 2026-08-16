@@ -442,8 +442,13 @@ func detailBlock(m model, space, cols int) []string {
 	// end of the legend - which is the one number that says how far back the graph reaches.
 	graph := cols - fieldIndent - readingCols - pctCols
 
-	field("cpu", trend(m, r, true, graph))
-	field("memory", trend(m, r, false, graph))
+	// Both rows are sized together. Sized apart, each subtracted its own legend from the
+	// graph's width - and "peak 0.49c of 0.5c" is a column wider than "peak 475m of 512m", so
+	// the two traces began one apart and the eye reads that as a rendering fault.
+	cpuLine, memLine := trendPair(m, r, graph)
+
+	field("cpu", cpuLine)
+	field("memory", memLine)
 
 	for len(out) < space {
 		out = append(out, "")
@@ -458,59 +463,94 @@ func detailBlock(m model, space, cols int) []string {
 // first. "477 MB of 512 MB" is alarming or fine depending entirely on whether it has been
 // there all afternoon or arrived in the last thirty seconds, and that is the half a table
 // cannot show.
-func trend(m model, r row, isCPU bool, width int) string {
+// trendPair renders the cpu and memory lines to one shared geometry, so their traces start and
+// end in the same columns and their legends line up under each other.
+func trendPair(m model, r row, width int) (string, string) {
+	cpu := trendParts(m, r, true)
+	mem := trendParts(m, r, false)
+
+	// Sized against the whole series first, which gives the longest span the legend could
+	// ever print, so deciding the width cannot depend on the width it decides.
+	legendCols := max(
+		visibleLen(legend(cpu.values, cpu.ceiling, true, len(cpu.values))),
+		visibleLen(legend(mem.values, mem.ceiling, false, len(mem.values))),
+	)
+
+	cells := max(0, width-legendCols)
+
+	// Then written for what is actually drawn: two samples to a cell.
+	cpuLegend := legend(cpu.values, cpu.ceiling, true, min(len(cpu.values), cells*2))
+	memLegend := legend(mem.values, mem.ceiling, false, min(len(mem.values), cells*2))
+
+	line := func(t trendLine, leg string) string {
+		if t.message != "" {
+			return t.message
+		}
+
+		return padVisible(t.now, readingCols) + padVisible(t.pct, pctCols) +
+			padLeft(spark(t.values, t.ceiling, cells), cells) + padRight(leg, legendCols)
+	}
+
+	return line(cpu, cpuLegend), line(mem, memLegend)
+}
+
+// trendLine is one metric's parts, before they are laid out.
+type trendLine struct {
+	message string // set when there is nothing to draw, and then it is the whole line
+	now     string
+	pct     string
+	values  []float64
+	ceiling float64
+}
+
+// trendParts works out one metric's reading, percentage, series and legend. Laying them out
+// is trendPair's job, because the two rows have to agree on a geometry neither can see alone.
+func trendParts(m model, r row, isCPU bool) trendLine {
 	if !m.metered {
-		return dim + "this backend does not report usage" + reset
+		return trendLine{message: dim + "this backend does not report usage" + reset}
 	}
 
 	l := m.limitOf(r.Ref)
-	series := m.series[r.Ref]
 
-	var (
-		now     string
-		values  []float64
-		ceiling float64
-	)
+	var t trendLine
 
-	for _, s := range series {
+	for _, s := range m.series[r.Ref] {
 		if isCPU {
-			values = append(values, s.cores)
+			t.values = append(t.values, s.cores)
 		} else {
-			values = append(values, float64(s.mem))
+			t.values = append(t.values, float64(s.mem))
 		}
 	}
 
 	switch {
 	case isCPU && l.NanoCPUs > 0:
-		ceiling = float64(l.NanoCPUs) / 1e9
+		t.ceiling = float64(l.NanoCPUs) / 1e9
 	case !isCPU && l.MemBytes > 0:
-		ceiling = float64(l.MemBytes)
+		t.ceiling = float64(l.MemBytes)
 	}
 
 	switch {
 	case !r.Awake && !isCPU:
 		// The one place the old block's reassurance survives. "is my data still there" is the
 		// question a sleeping database raises, and the table's STATE column does not answer it.
-		now = dim + "asleep · volume intact" + reset
+		t.now = dim + "asleep · volume intact" + reset
 	case !r.Awake:
-		now = dim + "asleep" + reset
-	case isCPU && r.CPUKnown && ceiling > 0:
-		now = fmt.Sprintf("%.2f/%s", r.CPU/100, trimZeros(ceiling)+"c")
+		t.now = dim + "asleep" + reset
+	case isCPU && r.CPUKnown && t.ceiling > 0:
+		t.now = fmt.Sprintf("%.2f/%s", r.CPU/100, trimZeros(t.ceiling)+"c")
 	case isCPU && r.CPUKnown:
-		now = fmt.Sprintf("%.2fc", r.CPU/100)
-	case !isCPU && r.MemKnown && ceiling > 0:
-		now = shortBytes(r.MemBytes) + "/" + shortBytes(l.MemBytes)
+		t.now = fmt.Sprintf("%.2fc", r.CPU/100)
+	case !isCPU && r.MemKnown && t.ceiling > 0:
+		t.now = shortBytes(r.MemBytes) + "/" + shortBytes(l.MemBytes)
 	case !isCPU && r.MemKnown:
-		now = shortBytes(r.MemBytes)
+		t.now = shortBytes(r.MemBytes)
 	default:
-		now = dim + "…" + reset
+		t.now = dim + "…" + reset
 	}
 
 	// The percentage is the one figure a reader can compare across services without doing
 	// arithmetic, and it only exists where there is a ceiling to be a percentage of.
-	pct := ""
-
-	if ceiling > 0 && r.Awake {
+	if t.ceiling > 0 && r.Awake {
 		var used float64
 
 		switch {
@@ -521,30 +561,18 @@ func trend(m model, r row, isCPU bool, width int) string {
 		}
 
 		if used > 0 {
-			pct = fmt.Sprintf("%.0f%%", used/ceiling*100)
+			t.pct = fmt.Sprintf("%.0f%%", used/t.ceiling*100)
 
-			switch frac := used / ceiling; {
+			switch frac := used / t.ceiling; {
 			case frac >= 0.9:
-				pct = red + pct + reset
+				t.pct = red + t.pct + reset
 			case frac >= 0.75:
-				pct = yellow + pct + reset
+				t.pct = yellow + t.pct + reset
 			}
 		}
 	}
 
-	// The graph needs a scale and a span, or it is a shape with no units: a reader cannot tell
-	// whether the top of the line is the ceiling or merely the highest thing that happened, nor
-	// whether it covers a minute or an hour.
-	right := legend(values, ceiling, isCPU, width)
-
-	// The trace sits in a frame of fixed width with the newest reading against its right edge,
-	// so the legend never moves and the line grows backwards into the space rather than
-	// pushing everything along in front of it. A graph whose width tracks how long you have
-	// been watching is one where nothing on the row can be read at a glance twice.
-	cells := max(0, width-visibleLen(right))
-
-	return padVisible(now, readingCols) + padVisible(pct, pctCols) +
-		padLeft(spark(values, ceiling, cells), cells) + right
+	return t
 }
 
 // legend says what the graph's height and length mean.
@@ -553,8 +581,8 @@ func trend(m model, r row, isCPU bool, width int) string {
 // limit, and "of 0.5c" when there is a ceiling so full height is known to mean full. The span
 // answers the other question a growing line raises, which is how far back it goes - it grows
 // until it fills the width and then slides, and without a number nobody can tell which.
-func legend(values []float64, ceiling float64, isCPU bool, width int) string {
-	if len(values) == 0 || width < 30 {
+func legend(values []float64, ceiling float64, isCPU bool, shown int) string {
+	if len(values) == 0 {
 		return ""
 	}
 
@@ -563,8 +591,6 @@ func legend(values []float64, ceiling float64, isCPU bool, width int) string {
 		peak = max(peak, v)
 	}
 
-	// Two samples to a cell, so the window a graph covers is twice its width.
-	shown := min(len(values), width*2)
 	span := shortDuration(time.Duration(shown) * Refresh)
 
 	unit := func(v float64) string {
@@ -600,6 +626,16 @@ func shortDuration(d time.Duration) string {
 func padLeft(s string, n int) string {
 	if gap := n - visibleLen(s); gap > 0 {
 		return strings.Repeat(" ", gap) + s
+	}
+
+	return s
+}
+
+// padRight pads on the right to an exact width, which is what keeps two legends starting in
+// the same column when one of them is shorter than the other.
+func padRight(s string, n int) string {
+	if gap := n - visibleLen(s); gap > 0 {
+		return s + strings.Repeat(" ", gap)
 	}
 
 	return s

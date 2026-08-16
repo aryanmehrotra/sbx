@@ -22,7 +22,7 @@ func TestTheCPULineNamesItsDenominator(t *testing.T) {
 	// Capped at half a core: 0.35 of a core is 70% of what it is allowed.
 	m.limits = map[string]provider.Limits{"r1": {NanoCPUs: 500_000_000}}
 
-	capped := plainText(trend(m, m.rows[0], true, 20))
+	capped := plainText(cpuOf(m, m.rows[0]))
 
 	if !strings.Contains(capped, "0.35/0.5c") {
 		t.Errorf("capped cpu line = %q, want it to say 0.35 of 0.5 cores", capped)
@@ -32,7 +32,7 @@ func TestTheCPULineNamesItsDenominator(t *testing.T) {
 	// not there.
 	m.limits = nil
 
-	free := plainText(trend(m, m.rows[0], true, 20))
+	free := plainText(cpuOf(m, m.rows[0]))
 
 	if strings.Contains(free, "/") {
 		t.Errorf("uncapped cpu line = %q, want no denominator at all", free)
@@ -47,7 +47,7 @@ func TestTheHostsMemoryIsNotALimit(t *testing.T) {
 		{Sandbox: "a", Service: "b", Ref: "r1", Awake: true, MemBytes: 3 << 20, MemKnown: true},
 	}}
 
-	got := plainText(trend(m, m.rows[0], false, 20))
+	got := plainText(memOf(m, m.rows[0]))
 
 	if strings.Contains(got, "/") {
 		t.Errorf("uncapped memory line = %q, want no proportion of a limit that is not there", got)
@@ -55,7 +55,7 @@ func TestTheHostsMemoryIsNotALimit(t *testing.T) {
 
 	m.limits = map[string]provider.Limits{"r1": {MemBytes: 256 << 20}}
 
-	capped := plainText(trend(m, m.rows[0], false, 20))
+	capped := plainText(memOf(m, m.rows[0]))
 
 	if !strings.Contains(capped, "3m/256m") {
 		t.Errorf("capped memory line = %q, want 3m of 256m", capped)
@@ -69,7 +69,7 @@ func TestAnUnsampledServiceClaimsNothing(t *testing.T) {
 	m.limits = map[string]provider.Limits{"r1": {NanoCPUs: 1e9, MemBytes: 1 << 20}}
 
 	for _, isCPU := range []bool{true, false} {
-		got := plainText(trend(m, m.rows[0], isCPU, 20))
+		got := plainText(halfOf(m, m.rows[0], isCPU))
 
 		if strings.Contains(got, "0.00") || strings.Contains(got, "0m") {
 			t.Errorf("an unsampled service was reported as measured zero: %q", got)
@@ -81,7 +81,7 @@ func TestAnUnsampledServiceClaimsNothing(t *testing.T) {
 func TestATrendOnAnUnmeteredBackendSaysSo(t *testing.T) {
 	m := model{rows: []row{{Sandbox: "a", Service: "b", Ref: "r1", Awake: true}}}
 
-	if got := plainText(trend(m, m.rows[0], true, 20)); !strings.Contains(got, "does not report") {
+	if got := plainText(cpuOf(m, m.rows[0])); !strings.Contains(got, "does not report") {
 		t.Errorf("trend on an unmetered backend = %q, want it to say so", got)
 	}
 }
@@ -458,5 +458,67 @@ func TestAnUncappedTraceIsNotColouredAsAWarning(t *testing.T) {
 
 	if strings.Contains(got, red) || strings.Contains(got, yellow) {
 		t.Errorf("an uncapped trace was coloured as though it were near a limit: %q", got)
+	}
+}
+
+// cpuOf and memOf pick one half of the pair, for tests that care about one metric. The pair is
+// rendered together because the two rows share a geometry; the assertions here do not.
+func cpuOf(m model, r row) string { c, _ := trendPair(m, r, 60); return c }
+func memOf(m model, r row) string { _, mm := trendPair(m, r, 60); return mm }
+
+func halfOf(m model, r row, isCPU bool) string {
+	if isCPU {
+		return cpuOf(m, r)
+	}
+
+	return memOf(m, r)
+}
+
+// The two trend rows sit directly under each other, so their traces have to begin and end in
+// the same columns and their legends have to line up.
+//
+// Sized apart, each row subtracted its own legend from the graph's width - and "peak 0.49c of
+// 0.5c" is a column wider than "peak 475m of 512m", so the two traces began one apart. One
+// column is enough for the eye to read it as a rendering fault rather than as two rows.
+func TestTheTwoTrendRowsLineUp(t *testing.T) {
+	m := model{metered: true, rows: []row{{
+		Sandbox: "zn-dev", Service: "clickhouse", Ref: "r1", Awake: true,
+		Address: "127.0.0.1:20000 127.0.0.1:20001",
+		CPU:     49, CPUKnown: true, MemBytes: 473 << 20, MemKnown: true,
+	}}}
+
+	m.limits = map[string]provider.Limits{"r1": {NanoCPUs: 500_000_000, MemBytes: 512 << 20}}
+
+	var ser []metricSample
+	for i := range 40 {
+		ser = append(ser, metricSample{cores: 0.49, mem: uint64(473+i%3) << 20, known: true})
+	}
+
+	m.series = map[string][]metricSample{"r1": ser}
+
+	for _, cols := range []int{100, 120, 150, 190, 240} {
+		var cpu, mem string
+
+		for _, l := range detailBlock(m, detailFull, cols) {
+			switch p := plainText(l); {
+			case strings.Contains(p, "cpu "):
+				cpu = p
+			case strings.Contains(p, "memory "):
+				mem = p
+			}
+		}
+
+		if cpu == "" || mem == "" {
+			t.Fatalf("at %d columns one of the two trend rows is missing", cols)
+		}
+
+		if a, b := strings.Index(cpu, "peak"), strings.Index(mem, "peak"); a != b {
+			t.Errorf("at %d columns the legends start at %d and %d, so the rows do not line up:"+
+				"\n%s\n%s", cols, a, b, cpu, mem)
+		}
+
+		if a, b := len([]rune(cpu)), len([]rune(mem)); a != b {
+			t.Errorf("at %d columns the rows are %d and %d columns long", cols, a, b)
+		}
 	}
 }
