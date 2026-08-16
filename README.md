@@ -59,6 +59,8 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 | **Isolation tiers** | `--isolation gvisor\|kata`, refused with a reason where the runtime is absent |
 | **Two backends** | the same spec on docker or kubernetes; `sbx doctor` tells you what this host can do |
 | **Housekeeping** | `sbx gc` reclaims what dead sandboxes left, listing by default and deleting only with `--force` |
+| **A live dashboard** | `sbx ui` - every sandbox, awake or not, with cpu and memory per service. Wake, sleep, read logs and remove from the keyboard |
+| **History and audit** | `sbx history` records what changed and every wake, with secrets redacted. It reads a file, so it works when docker does not |
 | **Observability** | structured logs on one stdout; [`console/`](console/) adds metrics and health - a *separate* module, so it has dependencies and the daemon still has none |
 
 ---
@@ -86,7 +88,7 @@ sbx selftest     # create, sleep to zero, wake on a socket, data intact
 
 ```sh
 git switch feature-x
-sbx create feature-x                  # reads ./sandbox.json - `sbx init > sandbox.json` makes one
+sbx create feature-x                  # reads ./sandbox.json - `sbx init` writes one for you
 eval "$(sbx env feature-x)"           # DATABASE_PORT=20002, REDIS_PORT=20003...
 npm test                              # your tooling, unchanged
 ```
@@ -156,11 +158,12 @@ daemon's part. `build:` and `egress: "deny"` are **refused** there rather than a
 | `sbx add` | drop in a service nobody declared - the agent affordance |
 | `sbx url` | a public link that wakes it when opened |
 | `sbx snapshot` / `fork` | save every service's data, then make as many sandboxes from it as you want |
-| `sbx init` / `validate` | print a starter spec · check one without creating anything |
+| `sbx init` / `validate` | ask what this branch needs and write the spec · check one without creating anything |
 | `sbx prewarm` | pull the images now, so the first create isn't a download |
 | `sbx gc` | reclaim volumes whose sandbox is gone; `--snapshots` includes saved states, `--force` actually deletes |
 | `sbx doctor` | what this machine can and cannot do, before you rely on it |
-| `sbx list` · `sbx templates` | what exists and what's awake · the built-in specs |
+| `sbx list` · `sbx ui` | what exists and what's awake · the same, live, with cpu and memory |
+| `sbx history` · `sbx templates` | what happened and who did it · the built-in specs |
 | `sbx serve` | **the daemon** - owns the ports, does all waking and sleeping; one per machine |
 | `sbx selftest` | the whole cycle, on your machine |
 
