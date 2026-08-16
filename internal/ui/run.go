@@ -97,6 +97,14 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 			continue // the read timed out, which is how a redraw happens with nobody typing
 		}
 
+		// ^Z belongs to the shell, not to the dashboard. It is handled here rather than in
+		// handle() because suspending is the screen's business and handle() has no screen.
+		if key.Code == tui.KeyCtrlZ {
+			screen.Suspend()
+
+			continue
+		}
+
 		if quit := d.handle(ctx, key); quit {
 			return nil
 		}

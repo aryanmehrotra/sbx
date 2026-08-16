@@ -124,3 +124,31 @@ func TestTabIsAKeyOfItsOwn(t *testing.T) {
 			"character and moves nothing", got)
 	}
 }
+
+// Raw mode turns off the terminal's signal generation, so ^Z is a byte and not SIGTSTP. If
+// nothing names byte 26 it decodes as an ordinary rune, the dashboard ignores it, and the one
+// key everybody expects to put a program in the background does nothing whatsoever.
+func TestCtrlZIsAKeyOfItsOwn(t *testing.T) {
+	if got := decode([]byte{26}); got.Code != KeyCtrlZ {
+		t.Errorf("decode(^Z) = %+v, want KeyCtrlZ - suspending would silently do nothing", got)
+	}
+}
+
+// ^Z inside a longer read still has to come out as ^Z, and still has to consume exactly one
+// byte: a suspend key that swallowed the rest of the buffer would lose whatever followed it.
+func TestCtrlZAmongOtherKeys(t *testing.T) {
+	r := NewReader(strings.NewReader("j\x1ak"))
+
+	want := []Code{KeyRune, KeyCtrlZ, KeyRune}
+
+	for i, w := range want {
+		got, ok := r.Read()
+		if !ok {
+			t.Fatalf("key %d: read stopped early", i)
+		}
+
+		if got.Code != w {
+			t.Errorf("key %d = %+v, want code %v", i, got, w)
+		}
+	}
+}

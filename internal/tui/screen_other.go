@@ -18,4 +18,10 @@ func (s *Screen) Size() (int, int) { return 24, 80 }
 
 func (s *Screen) Draw(string) {}
 
+func (s *Screen) Redraw() {}
+
+// Suspend does nothing here for the same reason Open refuses: there is no terminal to give
+// back. It exists so that the caller compiles and reads the same on every platform.
+func (s *Screen) Suspend() {}
+
 func (s *Screen) Close() {}

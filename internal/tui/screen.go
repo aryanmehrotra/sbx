@@ -43,6 +43,10 @@ type Screen struct {
 	last  string
 	dirty bool
 
+	// suspended is true between giving the terminal back for a ^Z and taking it again, so
+	// that taking it twice does not save a raw terminal as the state to restore at exit.
+	suspended bool
+
 	Rows, Cols int
 
 	// Resized is signalled when the window changes, so the caller can redraw immediately
@@ -50,6 +54,7 @@ type Screen struct {
 	Resized chan struct{}
 
 	stopSignals chan os.Signal
+	contSignals chan os.Signal
 	restoreOnce sync.Once
 }
 
@@ -83,6 +88,7 @@ func Open(f *os.File) (*Screen, error) {
 
 	s.watchResize()
 	s.watchSignals(f)
+	s.watchResume()
 
 	return s, nil
 }
@@ -125,6 +131,92 @@ func (s *Screen) watchSignals(f *os.File) {
 		s.putBack()
 		os.Exit(1)
 	}()
+}
+
+// watchResume takes the terminal back when the process is continued.
+//
+// Suspend already does this on the way out of its own ^Z, so in the ordinary path this is a
+// second, harmless re-assertion. It is here for the stop this program did not ask for - a
+// `kill -STOP` from another terminal, or a ^Z delivered while the terminal was briefly not
+// raw - after which the alternate screen and raw mode have to be put back by somebody, and
+// there is nobody else.
+func (s *Screen) watchResume() {
+	s.contSignals = make(chan os.Signal, 1)
+	signal.Notify(s.contSignals, syscall.SIGCONT)
+
+	go func() {
+		for range s.contSignals {
+			s.acquire()
+		}
+	}()
+}
+
+// Suspend gives the terminal back, stops this process the way ^Z is meant to, and takes the
+// terminal again when the shell brings it back to the foreground.
+//
+// Raw mode turns the terminal's own signal generation off, so ^Z never becomes SIGTSTP: it
+// arrives as byte 26 and the caller routes it here. Before this the key did nothing at all,
+// and a stop that arrived from anywhere else left the process suspended with the alternate
+// screen still up and the terminal still raw - which hands the shell back a screen it cannot
+// draw a prompt on, and a user who has to blindly type `reset`.
+func (s *Screen) Suspend() {
+	s.release()
+
+	// Raised with its default disposition - nothing here notifies SIGTSTP - so this stops the
+	// process rather than being delivered to a handler. It returns when somebody runs fg.
+	_ = syscall.Kill(syscall.Getpid(), syscall.SIGTSTP)
+
+	s.acquire()
+}
+
+// release hands the terminal back exactly as putBack does, but repeatably: Close is once and
+// final, this is one half of a pair that runs every time somebody suspends.
+func (s *Screen) release() {
+	s.mu.Lock()
+
+	if s.suspended {
+		s.mu.Unlock()
+
+		return
+	}
+
+	s.suspended, s.last = true, ""
+	saved := s.saved
+
+	s.mu.Unlock()
+
+	fmt.Fprint(s.out, altScreenOff+cursorShow)
+
+	_ = restore(s.fd, saved)
+}
+
+// acquire takes the terminal back: raw mode, the alternate screen, and a forced redraw of
+// whatever the model says now rather than whatever was on screen a suspension ago.
+func (s *Screen) acquire() {
+	s.mu.Lock()
+	wasSuspended := s.suspended
+	s.suspended = false
+	s.mu.Unlock()
+
+	st, err := makeRaw(s.fd)
+
+	// Only when the terminal was known to be cooked. makeRaw reports what it found, and if
+	// this is the second acquire of one resume, what it found was raw - keeping that as the
+	// state to restore at exit would give the user's shell back in raw mode.
+	if err == nil && wasSuspended {
+		s.mu.Lock()
+		s.saved = st
+		s.mu.Unlock()
+	}
+
+	fmt.Fprint(s.out, altScreenOn+cursorHide+clear+home)
+
+	s.mu.Lock()
+	s.Rows, s.Cols = size(s.fd)
+	s.mu.Unlock()
+
+	// The window may well have been resized while this program was not running to notice.
+	s.Redraw()
 }
 
 // Size reports the current terminal size, safely against the resize watcher.
@@ -196,6 +288,7 @@ func (s *Screen) Close() {
 func (s *Screen) putBack() {
 	s.restoreOnce.Do(func() {
 		signal.Stop(s.stopSignals)
+		signal.Stop(s.contSignals)
 
 		fmt.Fprint(s.out, altScreenOff+cursorShow)
 

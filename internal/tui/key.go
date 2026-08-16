@@ -33,6 +33,7 @@ const (
 	KeyHome
 	KeyEnd
 	KeyTab
+	KeyCtrlZ
 )
 
 // Reader decodes keys from a terminal.
@@ -115,6 +116,10 @@ func decode(b []byte) Key {
 		return Key{Code: KeyCtrlC}
 	case 9:
 		return Key{Code: KeyTab}
+	case 26:
+		// ^Z. Raw mode turns the terminal's own signal generation off, so this is a byte and
+		// not SIGTSTP: if nobody names it, suspending the dashboard silently does nothing.
+		return Key{Code: KeyCtrlZ}
 	case 13, 10:
 		return Key{Code: KeyEnter}
 	case 27:

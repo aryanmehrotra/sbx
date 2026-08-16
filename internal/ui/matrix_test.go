@@ -31,7 +31,7 @@ func everyKey() []tui.Key {
 
 	for _, c := range []tui.Code{
 		tui.KeyUp, tui.KeyDown, tui.KeyLeft, tui.KeyRight, tui.KeyEnter, tui.KeyEscape,
-		tui.KeyTab, tui.KeyPageUp, tui.KeyPageDown, tui.KeyHome, tui.KeyEnd,
+		tui.KeyTab, tui.KeyPageUp, tui.KeyPageDown, tui.KeyHome, tui.KeyEnd, tui.KeyCtrlZ,
 	} {
 		keys = append(keys, tui.Key{Code: c})
 	}
@@ -282,6 +282,7 @@ func keyName(k tui.Key) string {
 		tui.KeyUp: "up", tui.KeyDown: "down", tui.KeyLeft: "left", tui.KeyRight: "right",
 		tui.KeyEnter: "enter", tui.KeyEscape: "esc", tui.KeyTab: "tab",
 		tui.KeyPageUp: "pgup", tui.KeyPageDown: "pgdn", tui.KeyHome: "home", tui.KeyEnd: "end",
+		tui.KeyCtrlZ: "ctrl-z",
 	}
 
 	if n, ok := names[k.Code]; ok {
