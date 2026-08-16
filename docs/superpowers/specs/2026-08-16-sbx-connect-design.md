@@ -448,6 +448,42 @@ process is healthy. That is the same failure shape as two other bugs found this 
 cloudflared URL that answered 405, and a docker limit-clear that changed nothing - all three
 being "reported success, reached nothing".
 
+## Working on top of zopcloud, rather than under it
+
+The deployment above proved sbx cannot *manage* anything on a platform that gives one HTTP port
+and no container runtime. The inverse turns out to work, and it is the more useful half.
+
+**`sbx serve --front`** carries a port beside a workload instead of discovering one. Put sbx in
+the same container as a database, front its loopback port, and the platform's single HTTP port
+becomes a TCP path to it:
+
+```
+psql :5432 → sbx connect → wss://pg.zopcloud.zop.dev → sbx → 127.0.0.1:5432 → postgres
+```
+
+Proven on zopcloud, in this order, so that each step failing would have been obvious:
+
+1. **Does a WebSocket upgrade survive their ingress?** Deployed sbx fronting its own HTTP port -
+   no extra software - and fetched `/v1/fleet` *through* the tunnel. The response was
+   byte-identical to the direct HTTPS call, same instance `front-5bb7427615645578`, so the bytes
+   genuinely reached the remote container. Twenty pipelined requests on one tunnelled connection
+   returned twenty responses.
+2. **Does a database protocol survive it?** `deploy/sandbox-pg` is postgres and sbx in one image,
+   postgres on loopback, sbx on `$PORT`. An unmodified `psql` against `127.0.0.1:25432` returned
+   `PostgreSQL 16.15`, created a table, inserted a row and read it back.
+
+What the platform contributes for free: HTTPS, a hostname, and scale-to-zero - the database
+costs nothing while nobody is connected, which is the bargain sbx makes locally.
+
+**What it does not contribute, and this decides what the shape is for:** a service has no
+persistent volume, so the database starts empty whenever the container is replaced. That is the
+right shape for a branch's test data and the wrong shape for anything you would miss. It is
+written in the Dockerfile rather than here, because that is where somebody will read it.
+
+A platform that builds a repository looks in its root and takes no path argument, so a second
+image out of one repository needs a second root - hence the `sandbox-pg` branch, whose root
+Dockerfile is the sandbox rather than sbx.
+
 ## Open questions
 
 1. **Does the fleet endpoint need to stream?** Today the client fetches once at startup, so a
