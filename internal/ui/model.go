@@ -138,6 +138,11 @@ type model struct {
 	messageAt time.Time
 
 	provider string
+
+	// metered is whether this backend can report usage at all. Without it an awake service on
+	// a backend that has no metrics sits at "…" forever, which tells a reader to wait for a
+	// sample that is never coming.
+	metered bool
 }
 
 // currentRow is the selected row, if there is one.
@@ -173,7 +178,6 @@ func summarise(events []history.Record) map[string]serviceStat {
 	return out
 }
 
-// counts summarises the fleet for the header.
 // counts summarises the fleet: how many sandboxes, how many services in them, and how many of
 // those services are awake.
 //

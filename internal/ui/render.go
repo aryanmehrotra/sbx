@@ -201,7 +201,7 @@ func tableRows(m model, w cols, space, cols int) []string {
 	}
 
 	for i := start; i < len(m.rows) && len(out) < space; i++ {
-		line := truncate(renderRow(m.rows[i], m.limitOf(m.rows[i].Ref), i == m.selected, w), cols)
+		line := truncate(renderRow(m.rows[i], m.limitOf(m.rows[i].Ref), m.metered, i == m.selected, w), cols)
 
 		if i == m.selected {
 			line = highlight(line, cols)
@@ -219,7 +219,7 @@ func tableRows(m model, w cols, space, cols int) []string {
 	return out[:space]
 }
 
-func renderRow(r row, l provider.Limits, selected bool, w cols) string {
+func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string {
 	marker := " "
 	if selected {
 		marker = "›"
@@ -236,7 +236,12 @@ func renderRow(r row, l provider.Limits, selected bool, w cols) string {
 	cpu, mem := "-", "-"
 
 	if r.Awake {
+		// "…" promises a sample is coming. On a backend with no metrics none ever is, and a
+		// row that says "wait" forever is worse than one that says it cannot know.
 		cpu, mem = "…", "…"
+		if !metered {
+			cpu, mem = "n/a", "n/a"
+		}
 
 		if r.CPUKnown {
 			cpu = fmt.Sprintf("%.1f%%", r.CPU)
@@ -431,10 +436,10 @@ func detailBlock(m model, space, cols int) []string {
 	// the container and exceeding a CPU one only makes it slower.
 	if meters {
 		if space >= detailFull {
-			field("cpu", cpuMeter(r, m.limitOf(r.Ref)))
+			field("cpu", cpuMeter(r, m.limitOf(r.Ref), m.metered))
 		}
 
-		field("memory", memMeter(r, m.limitOf(r.Ref)))
+		field("memory", memMeter(r, m.limitOf(r.Ref), m.metered))
 	}
 
 	field("ref", dim+r.Ref+reset)
@@ -547,7 +552,11 @@ func bar(frac float64) string {
 // Without a ceiling this can only report a share of one core, and it says so in those words.
 // "86.8%" on its own is the number that reads as nearly-full and is usually nothing of the
 // kind: on an eight-core machine it is about a ninth of the host.
-func cpuMeter(r row, l provider.Limits) string {
+func cpuMeter(r row, l provider.Limits, metered bool) string {
+	if !metered {
+		return dim + "this backend does not report usage" + reset
+	}
+
 	if !r.CPUKnown {
 		return dim + "not sampled yet" + reset
 	}
@@ -568,7 +577,11 @@ func cpuMeter(r row, l provider.Limits) string {
 // memMeter is the same for memory, where docker does report a ceiling - but reports the
 // host's entire memory when nothing was capped, which is why an uncapped service is told
 // apart by Limits rather than by that number.
-func memMeter(r row, l provider.Limits) string {
+func memMeter(r row, l provider.Limits, metered bool) string {
+	if !metered {
+		return dim + "this backend does not report usage" + reset
+	}
+
 	if !r.MemKnown {
 		return dim + "not sampled yet" + reset
 	}

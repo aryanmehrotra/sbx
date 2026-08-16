@@ -9,6 +9,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,10 @@ type limiterProvider struct {
 	ref  string
 	sets int
 	have provider.Limits
+
+	// refuse, when set, is the error this backend answers SetLimits with - standing in for a
+	// docker daemon that will not remove a ceiling.
+	refuse string
 }
 
 func (l *limiterProvider) Limits(context.Context, string) (provider.Limits, error) {
@@ -41,6 +46,11 @@ func (l *limiterProvider) SetLimits(_ context.Context, ref string, want provider
 	defer l.lmu.Unlock()
 
 	l.got, l.ref, l.sets = want, ref, l.sets+1
+
+	if l.refuse != "" {
+		return errors.New(l.refuse)
+	}
+
 	l.have = want
 
 	return nil
@@ -230,30 +240,64 @@ func TestAnUnmentionedHalfIsLeftAlone(t *testing.T) {
 	}
 }
 
-// Docker's update endpoint reads a zero as "leave this alone", not "remove this", so a
-// container that has a ceiling cannot be returned to unlimited without being recreated. The
-// dashboard has to refuse rather than send a zero and report a change that did not happen -
-// which is what it did until a live daemon was asked.
-func TestClearingIsRefusedRatherThanFaked(t *testing.T) {
+// Whether a ceiling can be removed at all is the backend's rule, not the dashboard's: docker
+// cannot, a cluster can. So "none" is passed down rather than refused here, and whatever the
+// backend says comes back to the footer unedited.
+func TestClearingIsTheProvidersDecision(t *testing.T) {
+	d, p := dashWithLimiter()
+
+	p.have = provider.Limits{NanoCPUs: 2e9, MemBytes: 1 << 30}
+	d.model.limits = map[string]provider.Limits{"sbx-one-db": p.have}
+	p.refuse = "docker cannot remove a cpu limit from a container that exists - " +
+		"recreate the sandbox to clear it"
+
+	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c'))
+	typeInto(t, d, "none\r")
+
+	waitFor(t, func() bool { return d.model.message != "" })
+
+	if _, _, n := p.taken(); n != 1 {
+		t.Errorf("the backend was asked %d times; it is the one that decides whether a "+
+			"ceiling can be removed", n)
+	}
+
+	if !strings.Contains(d.model.message, "recreate") {
+		t.Errorf("message = %q, want the backend's own refusal", d.model.message)
+	}
+}
+
+// And where the backend allows it, clearing goes through.
+func TestClearingGoesThroughWhereTheBackendAllowsIt(t *testing.T) {
 	d, p := dashWithLimiter()
 
 	p.have = provider.Limits{NanoCPUs: 2e9, MemBytes: 1 << 30}
 	d.model.limits = map[string]provider.Limits{"sbx-one-db": p.have}
 
 	d.handle(context.Background(), rkey('L'))
-	d.handle(context.Background(), rkey('c')) // write our own rather than pick a size
+	d.handle(context.Background(), rkey('c'))
 	typeInto(t, d, "none\r")
+
+	waitFor(t, func() bool { _, _, n := p.taken(); return n == 1 })
+
+	if got, _, _ := p.taken(); got.Capped() {
+		t.Errorf("clearing sent %+v, want both ceilings zeroed", got)
+	}
+}
+
+// An empty line is a mistake rather than a decision, and is the one case the dashboard does
+// turn away itself.
+func TestAnEmptyLineIsNotAClear(t *testing.T) {
+	d, p := dashWithLimiter()
+
+	d.handle(context.Background(), rkey('L'))
+	d.handle(context.Background(), rkey('c'))
+	typeInto(t, d, "\r")
 
 	waitFor(t, func() bool { return d.model.message != "" })
 
 	if _, _, n := p.taken(); n != 0 {
-		t.Errorf("the provider was asked to clear a limit %d times; docker would have "+
-			"accepted it and done nothing", n)
-	}
-
-	if !strings.Contains(d.model.message, "recreate") {
-		t.Errorf("message = %q, want it to say the sandbox has to be recreated",
-			d.model.message)
+		t.Errorf("an empty line reached the backend %d times", n)
 	}
 }
 

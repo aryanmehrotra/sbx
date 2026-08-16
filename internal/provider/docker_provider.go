@@ -728,12 +728,33 @@ func (d *dockerProvider) Limits(ctx context.Context, ref string) (Limits, error)
 }
 
 // SetLimits changes what one container is allowed, without recreating it.
+//
+// It refuses to remove one, and the refusal belongs here rather than in a caller because it
+// is docker's rule and not everybody's: a cluster deletes a field and is done. Docker's update
+// endpoint reads a zero as "leave this alone", so asking it to clear a ceiling succeeds,
+// changes nothing, and reports success - verified against a live daemon. Refusing out loud is
+// the only one of the three behaviours that is not a lie.
 func (d *dockerProvider) SetLimits(ctx context.Context, ref string, l Limits) error {
+	cur, err := d.Limits(ctx, ref)
+	if err == nil {
+		switch {
+		case l.NanoCPUs == 0 && cur.NanoCPUs > 0:
+			return errCannotClear("cpu")
+		case l.MemBytes == 0 && cur.MemBytes > 0:
+			return errCannotClear("memory")
+		}
+	}
+
 	if err := d.api.update(ctx, ref, l.NanoCPUs, l.MemBytes); err != nil {
 		return fmt.Errorf("could not set limits on %s: %w", ref, err)
 	}
 
 	return nil
+}
+
+func errCannotClear(which string) error {
+	return fmt.Errorf("docker cannot remove a %s limit from a container that exists - "+
+		"recreate the sandbox to clear it", which)
 }
 
 func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]Usage, error) {

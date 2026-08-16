@@ -18,7 +18,7 @@ func TestTheCPUMeterNamesItsDenominator(t *testing.T) {
 	awake := row{Awake: true, CPU: 35, CPUKnown: true, OnlineCPUs: 8}
 
 	// Capped at half a core: 0.35 of a core is 70% of what it is allowed.
-	capped := plainText(cpuMeter(awake, provider.Limits{NanoCPUs: 500_000_000}))
+	capped := plainText(cpuMeter(awake, provider.Limits{NanoCPUs: 500_000_000}, true))
 
 	if !strings.Contains(capped, "0.35") || !strings.Contains(capped, "0.5 cores") {
 		t.Errorf("capped cpu meter = %q, want it to say 0.35 of 0.5 cores", capped)
@@ -26,7 +26,7 @@ func TestTheCPUMeterNamesItsDenominator(t *testing.T) {
 
 	// Uncapped: the only honest denominator is the host, and it must say there is no limit
 	// rather than quietly measuring against one core.
-	free := plainText(cpuMeter(awake, provider.Limits{}))
+	free := plainText(cpuMeter(awake, provider.Limits{}, true))
 
 	if !strings.Contains(free, "8 cores") || !strings.Contains(free, "no limit set") {
 		t.Errorf("uncapped cpu meter = %q, want it to name the host's 8 cores and say no "+
@@ -40,7 +40,7 @@ func TestTheCPUMeterNamesItsDenominator(t *testing.T) {
 func TestTheHostsMemoryIsNotALimit(t *testing.T) {
 	r := row{Awake: true, MemBytes: 3 << 20, MemKnown: true}
 
-	got := plainText(memMeter(r, provider.Limits{}))
+	got := plainText(memMeter(r, provider.Limits{}, true))
 
 	if !strings.Contains(got, "no limit set") {
 		t.Errorf("uncapped memory meter = %q, want it to say no limit is set", got)
@@ -51,7 +51,7 @@ func TestTheHostsMemoryIsNotALimit(t *testing.T) {
 			"there", got)
 	}
 
-	capped := plainText(memMeter(r, provider.Limits{MemBytes: 256 << 20}))
+	capped := plainText(memMeter(r, provider.Limits{MemBytes: 256 << 20}, true))
 
 	if !strings.Contains(capped, "3 MB") || !strings.Contains(capped, "256 MB") {
 		t.Errorf("capped memory meter = %q, want 3 MB of 256 MB", capped)
@@ -62,8 +62,8 @@ func TestTheHostsMemoryIsNotALimit(t *testing.T) {
 // be wrong.
 func TestAnUnsampledServiceClaimsNothing(t *testing.T) {
 	for name, got := range map[string]string{
-		"cpu":    plainText(cpuMeter(row{Awake: true}, provider.Limits{NanoCPUs: 1e9})),
-		"memory": plainText(memMeter(row{Awake: true}, provider.Limits{MemBytes: 1 << 20})),
+		"cpu":    plainText(cpuMeter(row{Awake: true}, provider.Limits{NanoCPUs: 1e9}, true)),
+		"memory": plainText(memMeter(row{Awake: true}, provider.Limits{MemBytes: 1 << 20}, true)),
 	} {
 		if !strings.Contains(got, "not sampled") {
 			t.Errorf("%s meter with no sample = %q, want it to say so rather than show 0",

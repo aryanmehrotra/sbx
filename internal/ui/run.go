@@ -186,8 +186,10 @@ func (d *dash) refresh(ctx context.Context) {
 
 	var now map[string]provider.Usage
 
-	if m, ok := d.opt.Provider.(provider.Meter); ok && len(running) > 0 {
-		now, _ = m.Stats(ctx, running)
+	meter, metered := d.opt.Provider.(provider.Meter)
+
+	if metered && len(running) > 0 {
+		now, _ = meter.Stats(ctx, running)
 	}
 
 	// Read enough to fill any terminal and let the renderer decide how many fit. The
@@ -231,6 +233,7 @@ func (d *dash) refresh(ctx context.Context) {
 	}
 
 	d.model.provider = d.opt.Provider.Name()
+	d.model.metered = metered
 }
 
 // handle applies a keypress. It returns true when the user is finished.
@@ -683,13 +686,6 @@ func (d *dash) applyLimits(ctx context.Context, in prompt) {
 	current := d.model.limitOf(in.ref)
 	d.mu.Unlock()
 
-	if asked, half := clearingSomething(cpu, mem, current); asked {
-		d.say("docker cannot remove a %s limit from a container that exists - "+
-			"recreate the sandbox to clear it", half)
-
-		return
-	}
-
 	want, err := provider.ParseLimits(cpu, mem)
 	if err != nil {
 		d.say("%s", err)
@@ -708,7 +704,10 @@ func (d *dash) applyLimits(ctx context.Context, in prompt) {
 		want.MemBytes = current.MemBytes
 	}
 
-	if !want.Capped() {
+	// An empty line is a mistake; "none" is a decision. Only the first is refused here, because
+	// whether a ceiling can be removed at all is the backend's rule - docker cannot, a cluster
+	// can - and encoding docker's answer in the dashboard would deny it to kubernetes.
+	if strings.TrimSpace(in.buffer) == "" {
 		d.say("nothing to set - type a value like 0.5,512m")
 
 		return
@@ -743,20 +742,6 @@ func (d *dash) setLimits(ctx context.Context, in prompt, want provider.Limits) {
 	d.mu.Unlock()
 
 	d.say("%s limited to %s", in.name, describeLimits(want))
-}
-
-// clearingSomething reports whether the request would remove a ceiling that is currently set,
-// and names which one. Asking to clear something that is already uncapped is not a request to
-// clear anything, so it passes.
-func clearingSomething(cpu, mem string, current provider.Limits) (bool, string) {
-	switch {
-	case strings.TrimSpace(cpu) == "none" && current.NanoCPUs > 0:
-		return true, "cpu"
-	case strings.TrimSpace(mem) == "none" && current.MemBytes > 0:
-		return true, "memory"
-	}
-
-	return false, ""
 }
 
 // describeLimits says a ceiling the way somebody would read it back.
