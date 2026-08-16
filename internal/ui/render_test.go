@@ -332,3 +332,24 @@ func TestAnAwakeServiceWithNoSampleDoesNotClaimZero(t *testing.T) {
 
 	t.Fatal("no awake row found")
 }
+
+// A failed listing is not evidence that there are no sandboxes. Showing the empty-state hint
+// next to a docker error tells somebody whose daemon is down that their fleet is empty.
+func TestAFailedListingIsNotAnEmptyFleet(t *testing.T) {
+	m := model{version: "v0.1.0", err: errFake{"dial unix /var/run/docker.sock: no such file"}}
+
+	frame := plain(render(m, 24, 100))
+
+	if strings.Contains(frame, "no sandboxes yet") {
+		t.Errorf("it reports an empty fleet while also reporting it could not look:\n%s", frame)
+	}
+
+	if !strings.Contains(frame, "could not read the fleet") {
+		t.Errorf("it does not say the listing failed:\n%s", frame)
+	}
+
+	// And with no error, the hint is exactly what should appear.
+	if !strings.Contains(plain(render(model{version: "v0.1.0"}, 24, 100)), "no sandboxes yet") {
+		t.Error("a genuinely empty fleet lost its hint")
+	}
+}

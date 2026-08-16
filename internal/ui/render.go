@@ -89,7 +89,15 @@ func render(m model, rows, cols int) string {
 
 	if len(m.rows) == 0 {
 		write("")
-		write(dim + "  no sandboxes yet.  sbx init  makes one." + reset)
+
+		// "no sandboxes yet" is a claim about the fleet, and a failed listing is not evidence
+		// for it: nothing was found because nothing could be looked at. Saying both at once -
+		// which it did - tells somebody whose docker is down that they have no sandboxes.
+		if m.err != nil {
+			write(red + "  could not read the fleet - the error is below" + reset)
+		} else {
+			write(dim + "  no sandboxes yet.  sbx init  makes one." + reset)
+		}
 	}
 
 	// ── events ───────────────────────────────────────────────────────────────
