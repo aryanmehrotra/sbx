@@ -203,6 +203,8 @@ here is the other end of the range — the browser template, woken by a plain CD
   warm   run 4   703 ms    run 5   829 ms
 ```
 
+Cold ≈ 4356/3744/3030, median **3744 ms**; warm 703/829, median **766 ms**.
+
 **Two regimes, not one number.** Reporting `median 3030 ms` over that series was wrong in a
 quieter way than the 624 ms it replaced: the samples fall monotonically until they plateau,
 which is layer and page-cache warming, and a median over a warming series is a statistic of
