@@ -127,7 +127,7 @@ func Serve(args []string) error {
 	// listener on a laptop by accident - or, with no token set, refused to start a daemon that
 	// had worked yesterday. A deployment passes `--connect-addr :$PORT` itself, which is one
 	// word in a manifest and cannot surprise anybody.
-	connectAddr := fs.String("connect-addr", "", "serve the tunnel endpoint here (needs SBX_CONNECT_TOKEN); off unless set")
+	connectAddr := fs.String("connect-addr", envOr("SBX_CONNECT_ADDR", ""), "serve the tunnel endpoint here (needs SBX_CONNECT_TOKEN); off unless set")
 
 	// Carrying a port beside a workload, rather than managing anything.
 	//
@@ -135,7 +135,7 @@ func Serve(args []string) error {
 	// and no container runtime. There is nothing to discover and nothing to wake - the
 	// platform woke the container - so these ports skip the provider entirely and are the
 	// only thing the tunnel will carry.
-	front := fs.String("front", "", "carry these local ports over the connect endpoint, e.g. 5432 or db=5432,cache=6379")
+	front := fs.String("front", envOr("SBX_FRONT", ""), "carry these local ports over the connect endpoint, e.g. 5432 or db=5432,cache=6379")
 	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
 	_ = fs.Parse(args)
 
