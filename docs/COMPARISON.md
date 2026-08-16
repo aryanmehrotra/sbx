@@ -324,28 +324,50 @@ only one of them works for a client that does not retry.
 | GPU | ○ | ◐ | ◐ | ● | ○ | ● | n/a | ● |
 | Production-proven | ○ | ● | ● | ● | ● | ● | ● | ● |
 
-### Same spec, two backends - and not the same capabilities
+### Same spec, two runtimes - and not the same capabilities
 
-"Same spec local + cluster" is a row sbx scores ● on, and it is doing a lot of work. The
-spec really is the same file and the everyday commands really are the same. Six capabilities
-are docker only, and one works in a cluster and cannot work on docker at all.
+"Same spec local + cluster" is a row sbx scores ● on, and it is doing a lot of work. The spec
+really is the same file and the everyday commands really are the same.
 
-Where a backend cannot do something it is refused with a reason rather than approximated,
-which is the rule the optional-interface design exists to keep.
+**They are not two equal backends.** Locally sbx speaks the Docker Engine API and nothing else,
+so a Docker-compatible runtime is a prerequisite - Docker Desktop, Colima, Rancher Desktop or
+rootless podman, whose sockets it discovers in that order. The cluster path replaces that
+runtime with Kubernetes, and the daemon with [`deploy/activator.yaml`](../deploy/activator.yaml).
 
-| | docker | kubernetes | |
+**On macOS or Windows that runtime is a Linux VM, and nothing here can change it.** A Linux
+container is a set of Linux kernel features - namespaces, cgroups, overlayfs - so running one on
+a kernel that is not Linux means running a Linux kernel somewhere, which is what every one of
+those products provides. It is a property of containers, not a gap in sbx: the choice is which
+VM, not whether. On Linux the kernel is already the right one and there is no VM at all, which
+is why the wake figures in [BENCHMARKS.md](BENCHMARKS.md) say which host they were taken on.
+
+Every row below was checked against the code rather than remembered. Where a capability is
+missing it is refused with a reason naming the backend, never approximated.
+
+| | local · docker | cluster · kubernetes | |
 |---|:---:|:---:|---|
-| Create, wake on connect, sleep when idle | ● | ● | the whole point, identical on both |
-| `list` · `env` · `logs` · `exec` · `cp` · `rm` · `ready` | ● | ● | the everyday commands |
+| **Wakes on any TCP connection** | ● | ● | the whole point. The daemon holds the port locally; the activator does it in-cluster |
+| **Sleeps to 0 B when idle** | ● | ● | a stopped container, or a Deployment scaled to zero |
+| **Holds the first connection** | ● | ● | it waits rather than refusing, on both |
+| `list` · `env` · `logs` · `exec` · `cp` · `rm` | ● | ● | the everyday commands |
+| `ready` for CI | ● | ● | blocks until genuinely serving |
+| **One committed `sandbox.json`** | ● | ● | the same file, unchanged, for both |
+| **Templates built in** | ● | ● | digest-pinned, and a property of the spec rather than the runtime |
+| **`depends_on` and `${VAR}` secrets** | ● | ● | resolved before either backend sees the spec |
 | **cpu / memory limits** | ● | ● | docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** |
-| **removing a limit once set** | ○ | ● | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until recreated. The one row where the cluster wins outright |
-| **cpu / memory usage** | ● | ○ | needs metrics-server in a cluster, which is the operator's call. Rows read `n/a` rather than implying a sample is coming |
-| `snapshot` · `fork` | ● | ○ | a cluster's answer is a volume snapshot through its own CSI, not `docker commit` in a hat |
-| `gc` · `prewarm` | ● | ○ | |
-| `build:` instead of `image:` | ● | ○ | refused in a cluster rather than shelling out to a builder that is not there |
-| `egress: "deny"` | ● | ○ | refused rather than approximated with a NetworkPolicy that means something else |
-| `--isolation gvisor\|kata` | ● | ● | a RuntimeClass in a cluster; refused wherever the runtime is absent |
-| `sbx url` | ● | ○ | in a cluster the public link is an Ingress in front of the Service, not a tunnel from a laptop |
+| **removing a limit once set** | ○ | ● | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until it is recreated. The one row the cluster wins outright |
+| **`gpus:`** | ● | ○ | `--gpus` to docker; the cluster answer is a device-plugin resource and is not implemented |
+| **cpu / memory usage** | ● | ○ | needs metrics-server in a cluster, which is the operator's decision. Rows read `n/a` there rather than implying a sample is coming |
+| **Live dashboard** (`sbx ui`) | ● | ◐ | everything but the usage columns and the traces, for the row above |
+| **Snapshot & fork** | ● | ○ | a cluster's answer is a volume snapshot through its own CSI, not `docker commit` in a hat |
+| **`build:` instead of `image:`** | ● | ○ | refused rather than shelling out to a builder that is not there |
+| **`prewarm`** | ● | ○ | there is no local image store to warm |
+| **`gc`** | ● | ○ | |
+| **`egress: "deny"`** | ● | ○ | the cluster answer is a NetworkPolicy and needs a CNI that enforces it; refused rather than approximated |
+| **`--isolation gvisor\|kata`** | ● | ● | a RuntimeClass in a cluster, refused wherever the runtime is absent |
+| **`sbx url`** | ● | ○ | in a cluster the public link is an Ingress in front of the Service, not a tunnel from a laptop |
+| **History and audit** | ● | ● | reads a file, so it works when the backend does not |
+| **Metrics & health** ([`console/`](../console/)) | ● | ○ | it watches a local `sbx serve`; in a cluster the activator is the component that would export |
 
 ### Rows chosen by them, not by us
 

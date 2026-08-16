@@ -57,7 +57,7 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 | **Limits** | `cpu`, `memory`, `gpus` per service - a laptop running twenty sandboxes needs a ceiling |
 | **Egress deny** | a bridge with no NAT: nothing routed leaves, and it is still reachable and wakeable |
 | **Isolation tiers** | `--isolation gvisor\|kata`, refused with a reason where the runtime is absent |
-| **Two backends** | the same spec on docker or kubernetes; `sbx doctor` tells you what this host can do |
+| **Two runtimes** | the same spec locally on docker or in a cluster on kubernetes - not the same capabilities either way, and `sbx doctor` tells you what this host can do |
 | **Housekeeping** | `sbx gc` reclaims what dead sandboxes left, listing by default and deleting only with `--force` |
 | **A live dashboard** | `sbx ui` - every sandbox, awake or not, with cpu and memory per service against what it is allowed, and a trace of where each has been. Wake, sleep, read logs, set a limit and remove from the keyboard |
 | **History and audit** | `sbx history` records what changed and every wake, with secrets redacted. It reads a file, so it works when docker does not |
@@ -67,25 +67,25 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 
 ## What each backend can do
 
-The same spec runs on both, and not every capability exists on both. Where one is missing it
-is refused with a reason rather than approximated, and `sbx doctor` says what this host can
-actually do.
+The spec is the same file on both and the everyday commands are the same. The capabilities are
+not, and neither is the footing: **locally a Docker-compatible runtime is a prerequisite** -
+Docker Desktop, Colima, Rancher Desktop or rootless podman - and on macOS or Windows that
+runtime is a Linux VM, because a Linux container is a set of Linux kernel features. That is a
+property of containers rather than a gap here; on Linux there is no VM at all.
 
-| | docker | kubernetes | |
+Where a capability is missing it is refused with a reason naming the backend rather than
+approximated, and `sbx doctor` says what this host can actually do.
+[COMPARISON.md](docs/COMPARISON.md#same-spec-two-runtimes---and-not-the-same-capabilities) has
+the exhaustive table; the short version:
+
+| | local · docker | cluster · kubernetes | |
 |---|:---:|:---:|---|
-| Create, wake on connect, sleep when idle | ✅ | ✅ | the whole point, and it works the same on both |
-| `list`, `env`, `logs`, `exec`, `cp`, `rm` | ✅ | ✅ | the everyday commands |
-| `ready` for CI | ✅ | ✅ | |
+| Wake on connect, sleep to 0 B, `list` · `env` · `logs` · `exec` · `cp` · `rm` · `ready` | ✅ | ✅ | the everyday commands, identical on both |
 | **cpu / memory limits** | ✅ | ✅ | `cpu` and `memory` per service, and `L` in `sbx ui`. Docker adjusts the container in place; a cluster patches the Deployment, **which rolls the pod** |
 | **removing a limit once set** | ❌ | ✅ | docker's update API reads a zero as "leave unchanged", so a container keeps its ceiling until it is recreated |
 | **cpu / memory usage** | ✅ | ❌ | reading it from a cluster needs metrics-server, which is the operator's decision. Rows read `n/a` there rather than pretending a sample is coming |
-| `snapshot` and `fork` | ✅ | ❌ | a cluster's answer is a volume snapshot through its own CSI, which is not `docker commit` in a hat |
-| `gc` | ✅ | ❌ | |
-| `build:` instead of `image:` | ✅ | ❌ | refused in a cluster - see [USE-CASES.md](docs/USE-CASES.md) |
-| `prewarm` | ✅ | ❌ | |
-| `egress: "deny"` | ✅ | ❌ | refused in a cluster rather than approximated with a NetworkPolicy that means something else |
-| `--isolation gvisor\|kata` | ✅ | ✅ | a RuntimeClass in a cluster; refused with a reason wherever the runtime is absent |
-| `sbx url` | ✅ | ❌ | in a cluster the public link is an Ingress in front of the Service, not a tunnel from your laptop - so it is refused and says so |
+| `gpus:` · `snapshot` · `fork` · `gc` · `build:` · `prewarm` · `egress: "deny"` · `sbx url` | ✅ | ❌ | each refused in a cluster with a reason - the cluster answers are a device plugin, a CSI snapshot, a NetworkPolicy and an Ingress, none of which is the docker one in a hat |
+| `--isolation gvisor\|kata` · history · one committed `sandbox.json` | ✅ | ✅ | a RuntimeClass in a cluster; refused wherever the runtime is absent |
 
 ---
 
