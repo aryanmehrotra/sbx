@@ -51,6 +51,10 @@ const (
 	// surface. SBX_UI_PLAIN=1 turns all of this off for anyone whose terminal or palette
 	// disagrees.
 	background = "\x1b[48;5;234m"
+
+	// The ground the selected row stands on: the same surface, a few shades up. Light enough
+	// to find at a glance, dark enough that the row's own colours still read against it.
+	selection  = "\x1b[48;5;238m"
 	clearRight = "\x1b[K"
 )
 
@@ -66,6 +70,12 @@ func plainTheme() bool { return os.Getenv("SBX_UI_PLAIN") != "" }
 // table, which looks like a rendering fault because it is one.
 func paint(line string, cols int) string {
 	if plainTheme() {
+		return line
+	}
+
+	// A row that is already standing on the selection's ground is finished: painting it again
+	// would swap that ground back to the panel's and lose the mark on the selected row.
+	if strings.HasPrefix(line, selection) {
 		return line
 	}
 
@@ -328,14 +338,35 @@ func shortBytes(b uint64) string {
 //
 // The colours are stripped first because an inverted line that still carries its own
 // foreground colours is unreadable on a good half of terminals.
+// highlight marks the selected row by standing it on a lighter ground.
+//
+// It used to strip every colour off the line and invert it, which was fine when a row was
+// text and became a bug the moment a row contained a bar: inverted, a solid block takes the
+// background's colour, so a full meter on the selected row rendered as an empty one. The row
+// somebody is looking at was the one row that lied about how full a service was.
+//
+// So the colours stay and the ground changes instead. Like paint, the selection has to be
+// re-asserted after every inner reset, because a reset clears the background too.
 func highlight(line string, cols int) string {
-	flat := stripColour(line)
+	if plainTheme() {
+		// No palette to work with, so inversion is the only marker available - and with no
+		// colour there are no bars to ruin.
+		flat := stripColour(line)
 
-	if gap := cols - visibleLen(flat); gap > 0 {
-		flat += strings.Repeat(" ", gap)
+		if gap := cols - visibleLen(flat); gap > 0 {
+			flat += strings.Repeat(" ", gap)
+		}
+
+		return invert + flat + reset
 	}
 
-	return invert + flat + reset
+	line = strings.ReplaceAll(line, reset, reset+selection)
+
+	if gap := cols - visibleLen(line); gap > 0 {
+		line += strings.Repeat(" ", gap)
+	}
+
+	return selection + line + reset
 }
 
 // shortAddress drops the loopback prefix when the column is tight. Every docker address is

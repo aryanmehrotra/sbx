@@ -132,34 +132,66 @@ func TestTheSelectedRowIsHighlightedAcrossTheWholeWidth(t *testing.T) {
 	const cols = 100
 
 	for _, line := range strings.Split(render(m, 24, cols), "\n") {
-		if !strings.Contains(line, invert) {
+		if !strings.HasPrefix(line, selection) {
 			continue
 		}
 
-		body := line[strings.Index(line, invert)+len(invert):]
-
-		// Trailing escapes are the frame closing itself off; what matters is that none appear
-		// inside the row, where they would break the highlight into pieces.
-		for {
-			trimmed := strings.TrimSuffix(strings.TrimSuffix(body, reset), background)
-			if trimmed == body {
-				break
-			}
-			body = trimmed
-		}
-
-		if strings.Contains(body, "\x1b[") {
-			t.Errorf("the inverted row still carries its own colours: %q", body)
-		}
-
-		if n := visibleLen(body); n != cols {
+		if n := visibleLen(line); n != cols {
 			t.Errorf("the highlight covers %d of %d columns, so it stops mid-row", n, cols)
+		}
+
+		// Every inner reset has to put the selection's ground back, not the panel's, or the
+		// mark stops partway across the row.
+		if strings.Contains(line, reset+background) {
+			t.Error("the selected row was painted with the panel's ground, which erases the " +
+				"mark from that point on")
 		}
 
 		return
 	}
 
 	t.Fatal("no row was drawn as selected")
+}
+
+// The selected row keeps its colours.
+//
+// It used to have them stripped and the whole line inverted, which was fine while a row was
+// text and became a bug the moment one contained a bar: inverted, a solid block takes the
+// background's colour, so a *full* meter on the selected row drew as an empty one. The row
+// somebody is looking at was the only row that lied about how full a service was.
+func TestTheSelectedRowKeepsItsBars(t *testing.T) {
+	m := model{rows: []row{{
+		Sandbox: "zn-dev", Service: "clickhouse", Awake: true, Ref: "r1",
+		Address: "127.0.0.1:20000 127.0.0.1:20001",
+		CPU:     49, CPUKnown: true, MemBytes: 500 << 20, MemKnown: true,
+	}}}
+
+	m.limits = map[string]provider.Limits{
+		"r1": {NanoCPUs: 500_000_000, MemBytes: 512 << 20},
+	}
+
+	var selected string
+
+	for _, line := range strings.Split(render(m, 24, 200), "\n") {
+		if strings.HasPrefix(line, selection) && strings.Contains(line, "clickhouse") {
+			selected = line
+		}
+	}
+
+	if selected == "" {
+		t.Fatal("no selected row was drawn")
+	}
+
+	if !strings.Contains(selected, "█") {
+		t.Fatal("the selected row has no bar at all")
+	}
+
+	// The bar is nearly full and its blocks must still carry a colour of their own; without
+	// one they take the highlight's and the meter reads as empty.
+	if !strings.Contains(selected, red) && !strings.Contains(selected, yellow) &&
+		!strings.Contains(selected, green) {
+		t.Error("the selected row's bar lost its colour, so a full meter reads as an empty one")
+	}
 }
 
 // Truncation has to count what the reader sees, not bytes. Cutting inside an escape sequence
