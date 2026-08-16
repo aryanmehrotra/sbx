@@ -69,7 +69,7 @@ Written before the design so the design can be checked against them.
 | **4. Laptop already runs a local sbx** | local daemon already owns 20000–21199 on loopback, so the client cannot bind | **partly — see Port collision below.** This is the most likely first bug |
 | **5. Two clients at once** | a laptop and a CI job both connect | yes — each TCP connection is its own WebSocket; the server holds no per-client state |
 | **6. CI job needs the sandbox** | job runs `sbx connect` in the background, then its tests | yes, and `--sandbox` keeps it to the ports it needs |
-| **7. Deployment restarts** | slots are reassigned on recreate, so ports can move | client must be restarted; `/v1/fleet` is fetched once. Called out in Open questions |
+| **7. Deployment restarts mid-session** | slots are reassigned on recreate, so a port can come to mean a different service | yes, now — the `ref` on each dial makes a moved port a `409` rather than a silent misroute. The client still needs a restart to pick up the new map |
 | **8. Someone wants the dashboard against a remote** | `sbx ui` on the laptop showing the deployed fleet | **no — out of scope.** `sbx ui` talks to a provider, not to this endpoint. Noted below |
 | **9. A service the sandbox does not publish** | agent asks for a port sbx is not fronting | yes — `403`, never dialled |
 
@@ -167,20 +167,39 @@ Authenticated. Returns the same data `sbx list` shows, as JSON:
 The client needs this to know which local listeners to open. It is read-only and deliberately
 carries nothing that is not already on a `sbx list` screen.
 
-### `GET /v1/connect?port=<n>` with `Upgrade: websocket`
+### `GET /v1/connect?port=<n>&ref=<ref>` with `Upgrade: websocket`
 
 Authenticated. The server:
 
 1. Rejects the request unless `port` is one it is actually fronting. **An arbitrary port would
    make this an open proxy into the deployment's network** — the check is the difference between
    a tunnel and an SSRF hole.
-2. Upgrades to WebSocket (`101`).
-3. Dials `127.0.0.1:<port>` — which is the daemon's own wake proxy, so connecting through the
+2. Rejects with `409` unless `ref` still matches the service currently on that port.
+
+**Why `ref` and not just the port.** `sbx connect` is designed to run for the length of a CI job
+or an agent session, and each new local TCP connection re-dials `/v1/connect` independently. If
+the remote is redeployed mid-session, slots are reassigned — and a port-only protocol would
+splice an agent that believes it is talking to sandbox A's Postgres into sandbox B's Redis,
+with no error anywhere. Carrying the ref from the `/v1/fleet` snapshot the client already holds
+turns a silent misroute into a `409` the client can report and act on. The failure mode this
+closes is the one that looks like it worked.
+3. Upgrades to WebSocket (`101`).
+4. Dials `127.0.0.1:<port>` — which is the daemon's own wake proxy, so connecting through the
    tunnel wakes a sleeping sandbox exactly as a local connection does.
-4. Splices bytes both ways until either side closes.
+5. Splices bytes both ways until either side closes.
+
+A `403` may also mean the daemon has not noticed a brand-new sandbox yet: the unit set refreshes
+on `--refresh` (default 15s), and "create then immediately connect" is use case 1. The server
+re-reads the fleet once before answering `403` rather than making the client wait out the tick.
 
 Binary frames, no framing of our own. A WebSocket ping every 30s keeps L7 proxies from reaping
 an idle connection — the same keepalive reasoning Teleport documents.
+
+**One writer per connection.** The keepalive ping and the upstream→client relay both want to
+write frames, and `net.Conn.Write` is not safe for concurrent use: an unsynchronised ping
+interleaved with a data frame corrupts the stream. All frames go out through a single writing
+goroutine fed by a channel. This is the bug a hand-rolled splice produces under load, and it has
+a named test.
 
 ### Why not raw HTTP CONNECT
 
@@ -205,6 +224,35 @@ Authorization: Bearer <token>
 - No sessions, no users, no rotation endpoint. The token proves you own this deployment, which
   is all it has to prove given one sbx is one workspace.
 
+**Plaintext fails closed, like a missing token.** `--connect-addr` on a non-loopback address
+refuses to start unless either TLS is configured or `--insecure-http` is passed explicitly. The
+security model is "whoever holds the token has TCP access to every service", so a plaintext
+deployment leaks the token *and* every byte of database traffic to anyone on path. A VM with a
+systemd unit has no L7 terminator in front of it by default, so this cannot be left to the
+deployment to get right. `--insecure-http` exists for a loopback test and says so in its name.
+
+**The token is never accepted in a query string**, only in the `Authorization` header. That is
+what makes browser CSRF a non-issue: a page can be made to open a `WebSocket` to any URL, but
+the WebSocket handshake sends only cookies and the URL — a browser cannot set a custom header on
+it. Putting the token in `?token=` would reopen exactly that hole, which is how this class of
+design usually regresses, so it is a stated rule rather than an accident of the first
+implementation.
+
+**A missing header is rejected before any comparison.** `subtle.ConstantTimeCompare("", "")`
+reports equal, so an empty configured token and an absent header would authenticate each other.
+Startup refuses an empty `SBX_CONNECT_TOKEN`, and the handler rejects a request with no
+`Authorization` header without reaching the comparison. Both are named tests.
+
+**Nothing logs the token.** The daemon's structured log stream is ingested by `console/`, which
+may forward it onwards, so neither `SBX_CONNECT_TOKEN` nor a raw `Authorization` value is ever
+written to it.
+
+**Limits, and what is deliberately not solved.** Concurrent WebSockets are capped, and failed
+auth is throttled per source address. Neither makes this safe against a determined attacker with
+the token; they exist so that a scan or a loop cannot exhaust the deployment. Token rotation,
+expiry and per-sandbox scoping are out of scope for v1 and named here so their absence is a
+decision rather than an oversight.
+
 **What this is not.** It is not org-level authorization. ZopDay's gateway already validates JWTs
 and checks org access, and its MCP server owns no authz for exactly this reason. A gateway in
 front adds that without sbx knowing about it.
@@ -223,17 +271,29 @@ plane (`create`, `exec`) is explicitly out of scope.
 | `internal/connect/ws.go` (new) | a minimal RFC 6455 server: the handshake, binary frames, close and ping. Stdlib only — `crypto/sha1` and `encoding/base64` for the accept key, and `net/http`'s `Hijacker` for the connection. |
 
 **On writing a WebSocket implementation.** The root module has zero non-stdlib dependencies and
-that is a CI-gated product claim, so `gorilla/websocket` is not available to us. What we need is
-a small subset — server-side handshake, binary frames, close, ping — and it is well specified.
-The alternative is breaking the claim the project is partly sold on. If the subset turns out to
-be larger than it looks, that is the moment to stop and reconsider, not to quietly add a
-dependency.
+that is CI-gated (`.github/workflows/ci.yaml` fails if `go.mod` grows a `require` block), so
+`gorilla/websocket` is not available as a dependency.
+
+The subset is not as small as it first looks. A server reachable from the internet must handle
+**mandatory client→server masking** (and reject an unmasked client frame), the 7/16/64-bit
+payload length forms, fragmentation with `ping`/`close` legally interleaved *between* fragments,
+and a declared length from an attacker without allocating it. That is realistically **400–700
+lines plus adversarial tests**, not 200. Writing it is still the right call — it is well
+specified and it is the only part of this design that is novel to the project — but the estimate
+should not be the reason it gets rushed.
+
+**The fallback, named now rather than discovered later:** vendor the source of a small
+permissively-licensed implementation directly into `internal/connect/`. That satisfies the CI
+gate, which checks `go.mod`, and it is a better outcome than a hand-rolled parser that is the
+untested half of the security story. The trigger for taking it: adversarial tests that keep
+finding parser bugs, or the implementation passing ~700 lines.
 
 ## Client-side: `sbx connect`
 
 ```sh
 sbx connect https://sbx.my-org.zop.dev            # everything the fleet has
 sbx connect https://…  --sandbox my-branch        # only that sandbox's ports
+sbx connect https://…  --sandbox a --sandbox b    # repeatable, so a subset needs no offset
 sbx connect https://…  --token-env MY_VAR
 ```
 
@@ -242,8 +302,14 @@ sbx connect https://…  --token-env MY_VAR
   It prints a warning that the remote's `sbx env` values no longer apply, because that is the
   one thing the offset costs and it should not be discovered later.
 - Runs in the foreground and closes its listeners on exit. It is a tunnel, not a daemon.
-- **Refuses to bind a port already in use** and says which sandbox wanted it, rather than
-  silently forwarding one service to another's listener.
+- **Binds `127.0.0.1` only, never `0.0.0.0`.** The bearer token is checked once per WebSocket
+  dial, server-side; the local listener re-authenticates nobody. A listener on all interfaces
+  would hand anyone on the laptop's network a fully authenticated tunnel into the deployment.
+- **Refuses to start if any port it wants is already in use**, naming the port and the sandbox
+  that wanted it, and suggesting `--port-offset` or `--sandbox`. It aborts rather than skipping
+  the clash: a skipped port leaves the agent connecting to `127.0.0.1:20040` and reaching the
+  *local* daemon's sandbox while believing it reached the remote one — the same silent-misroute
+  failure the `ref` check exists to prevent, arriving through the other door.
 - `--sandbox` exists because a laptop that already runs a local sbx will collide on the whole
   20000–21199 range; naming one sandbox is the escape hatch.
 
@@ -254,6 +320,8 @@ sbx connect https://…  --token-env MY_VAR
 | no token, `--connect-addr` set | startup error naming `SBX_CONNECT_TOKEN` |
 | wrong token | `401`, and the client says the token was rejected rather than "connection failed" |
 | `port=` not fronted by this daemon | `403`, logged server-side; never dialled |
+| `ref=` no longer matches that port | `409`; the client says the remote was redeployed and to restart it |
+| `--connect-addr` on a public address without TLS | startup error, unless `--insecure-http` was passed on purpose |
 | local port already bound | client refuses to start, names the port and the sandbox that wanted it, and suggests `--port-offset` |
 | two clients connected at once | both work; the server keeps no per-client state, so this needs no code |
 | server unreachable | client fails at `/v1/fleet` with the URL it tried, before opening any listener |
@@ -267,7 +335,19 @@ The point of the design is that it is testable without a cloud account.
 - **Unit:** the RFC 6455 handshake against the vectors in the RFC; frame encode/decode including
   a fragmented message and a close; `subtle` comparison of tokens.
 - **Port allow-list:** a table of ports the daemon fronts and does not, asserting `403` and that
-  nothing was dialled. This is the security-relevant test and it gets the most cases.
+  nothing was dialled.
+- **Ref mismatch:** a port whose occupant changed answers `409` and does not splice. Without this
+  the redeploy misroute is untested and invisible.
+- **Adversarial frames.** The parser is reachable by anyone holding the token, so it is attack
+  surface and not just a happy path: an unmasked client frame (which RFC 6455 requires the server
+  to reject), a declared length far larger than anything sent, reserved bits set, an unknown
+  opcode, and a close arriving mid-fragment. Calling the allow-list "the security test" while
+  leaving the parser untested would put the untested half in front of the tested one.
+- **Concurrent writers:** a keepalive ping firing during a large relayed write, run under `-race`,
+  asserting the stream is not interleaved. This is the specific bug a hand-rolled splice produces.
+- **Auth edges:** missing `Authorization` header, empty configured token, and a token supplied in
+  a query string — all rejected. `ConstantTimeCompare("", "")` reports equal, so the empty cases
+  are where this check silently defeats itself.
 - **End-to-end, in-process:** an `httptest.Server` running the connect handler in front of a
   throwaway TCP echo server; `sbx connect`'s client half against it; assert bytes survive both
   ways, that a large payload is not truncated, and that closing either end closes the other.
@@ -287,7 +367,33 @@ so it manages sibling containers, and `--connect-addr :$PORT`.
 
 **On Kubernetes** — the activator path and the reduced capability set from the matrix in
 `docs/COMPARISON.md`: no snapshot/fork, gc, `build:`, prewarm, egress deny, `sbx url`, `gpus:`
-or usage metrics. Limits and wake/sleep work.
+or usage metrics.
+
+Three things here are **assumed and not yet verified**, and are called out so they are checked
+before they are relied on:
+
+1. **The activator is the same binary** (`deploy/activator.yaml` runs `sbx serve`), so
+   `--connect-addr` should wire up identically — but the activator multiplexes many sandboxes'
+   wake ports onto one pod, and the connect handler dialling `127.0.0.1:<port>` has only been
+   reasoned about against the single-daemon VM case.
+2. **`deploy/activator.yaml` needs a container port and a Service** for the connect endpoint.
+   Neither exists today.
+3. **Limits do not work in-cluster, whatever the matrix says.** The activator's Role grants
+   `deployments/scale` and nothing else — deliberately, so it can wake and sleep a sandbox and
+   never reshape one — while `SetLimits` patches the Deployment itself. Measured, not inferred:
+   with that Role applied to a throwaway namespace, `kubectl auth can-i patch deployments`
+   answers **no** and `--subresource=scale` answers **yes**. So a deployed sbx cannot set a
+   limit unless it is given a wider Role than the activator ships, and widening the activator's
+   own Role would break the property its comment claims. A deployed sbx that manages sandboxes
+   wants a **separate** Role; that is a decision this design does not need to make, because
+   limits are not on the connect surface.
+
+There is also an older refusal worth reconciling rather than tripping over: `WakePort`
+(`internal/cli/cli.go:923`) explicitly refuses to tunnel in-cluster, on the grounds that "in a
+cluster the link is an Ingress in front of the Service, not a tunnel from here". That is about
+`sbx url` and a different mechanism, and it is not obviously wrong about this one either. If the
+cluster answer is an Ingress, `sbx connect` may be a VM-substrate feature with a cluster
+equivalent rather than one design spanning both.
 
 Either way the deployment exposes exactly one HTTP port, which is the shape every platform
 supports.
@@ -296,8 +402,11 @@ supports.
 
 1. **Does the fleet endpoint need to stream?** Today the client fetches once at startup, so a
    sandbox created afterwards needs a restart to appear. Polling or an SSE stream would fix it;
-   neither is needed for the first version.
+   neither is needed for the first version, and the `ref` check means a stale map now fails
+   loudly rather than quietly.
 2. **Should `sbx connect` re-open listeners when the server's fleet changes?** Same question,
    same answer for now.
+3. **Is the cluster answer an Ingress rather than this?** `WakePort` already takes that position
+   for `sbx url`. Worth settling before building the Kubernetes half, not after.
 3. **Compression.** Not in v1. Database protocols are mostly small messages and a `permessage-deflate`
    negotiation is more RFC surface for little gain.
