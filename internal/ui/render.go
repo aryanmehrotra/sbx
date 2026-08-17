@@ -328,6 +328,15 @@ func memberUsage(m model, s row, sandbox row, cols int) string {
 		return ""
 	}
 
+	// Both figures, in the table's own order. The table's headers promise CPU and MEMORY and
+	// the sandbox's own block gives both, so a member line that carried memory alone was the
+	// one place the screen stopped answering half the question it had just asked - and cpu is
+	// the half that says which service is *working* rather than merely resident.
+	cpu := dim + "   …  " + reset
+	if s.CPUKnown {
+		cpu = fmt.Sprintf("%6.1f%%", s.CPU)
+	}
+
 	share := ""
 
 	// Of the sandbox's own total rather than of a ceiling: this is about which service the
@@ -336,11 +345,11 @@ func memberUsage(m model, s row, sandbox row, cols int) string {
 		share = fmt.Sprintf(" %s%3.0f%%%s", dim, 100*float64(s.MemBytes)/float64(sandbox.MemBytes), reset)
 	}
 
-	line := fmt.Sprintf("  %s%7s%s%s", reset, shortBytes(s.MemBytes), reset, share)
+	line := fmt.Sprintf("  %s%s  %7s%s%s", reset, cpu, shortBytes(s.MemBytes), reset, share)
 
 	// Whatever is left after the fixed part of the line, and only if it is enough to draw a
 	// shape rather than a smudge.
-	room := cols - fieldIndent - addrCell - 22
+	room := cols - fieldIndent - addrCell - 30
 	if room >= 12 {
 		var values []float64
 		for _, sample := range m.series[s.Ref] {

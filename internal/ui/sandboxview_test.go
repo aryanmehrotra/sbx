@@ -326,6 +326,12 @@ func TestEachServiceShowsItsOwnShareAndShape(t *testing.T) {
 	if !strings.Contains(frame, "⠒") && !strings.Contains(frame, "⠉") {
 		t.Errorf("no per-service trace was drawn:\n%s", frame)
 	}
+
+	// Both figures, because the table's headers promise CPU and MEMORY and the sandbox's own
+	// block gives both. Memory alone says which service is resident; cpu says which is working.
+	if !strings.Contains(frame, "5.0%") {
+		t.Errorf("no per-service cpu was shown, only memory:\n%s", frame)
+	}
 }
 
 // A sleeping service has nothing to measure, and a zero would be a measurement.
