@@ -50,6 +50,7 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 | **Holds the first connection** | it waits rather than refusing - **5/5 measured**, where a rival that refuses scores 0/5 |
 | **One static binary** | zero non-stdlib dependencies, CI-gated. darwin · linux · freebsd on amd64 · arm64; **Windows via WSL2** (sbx cannot dial a Windows named pipe) |
 | **One committed file** | `sandbox.json` describes what a branch needs. → [SPEC.md](docs/SPEC.md) |
+| **A box for your own commands** | `mounts` puts the repository in a service with your toolchain, so `sbx exec -t my-branch dev sh` is a shell in your code - it sleeps like everything else and `exec` wakes it - [how](docs/USE-CASES.md#9--a-box-to-run-your-own-commands-in) |
 | **Templates built in** | `--template postgres` works with nothing on disk. Pinned by digest, dated |
 | **Snapshot & fork** | save every service's data, then make as many sandboxes from it as you want |
 | **Builds your image** | `build: {context}` instead of `image:`, cached by a hash of the context - not a clock |

@@ -107,6 +107,27 @@ sbx create repro --spec sandbox.json   # pinned images, committed with the repo
 sbx ready repro
 ```
 
+**Somewhere to run your own commands, with the repository in it**
+
+`sbx exec` drops you into the container of the service you name, and a postgres image has psql
+and no git. For running a build, a script or a test suite inside the sandbox, declare a service
+whose job is to hold the toolchain and mount the source into it:
+
+```json
+{ "dev": { "image": "golang:1.26-alpine", "ports": [7777],
+           "args": ["sleep", "infinity"], "mounts": { ".": "/work" } } }
+```
+
+```sh
+sbx exec -t my-task dev sh            # a shell in /work with the code in it
+sbx exec my-task dev go test ./...
+```
+
+`args` keeps it alive - a container whose command exits is gone. `ports` is required by the
+spec and unused here: everything else in sbx is reached by opening a socket, and this is the one
+service that is not. A relative mount is resolved against the directory the spec is in, so `"."`
+is the repository. → [USE-CASES.md](USE-CASES.md#9--a-box-to-run-your-own-commands-in)
+
 **Find out what is going on**
 
 ```sh

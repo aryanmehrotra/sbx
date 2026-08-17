@@ -261,6 +261,61 @@ Four things are worth knowing before you rely on it:
 
 ---
 
+## 9 · A box to run your own commands in
+
+Everything above puts a *service* in a sandbox - a database, a cache, a browser - and
+`sbx exec` drops you into that service's container, which holds the service and nothing else.
+A postgres image has psql and no git; an alpine service image has neither. So "run the build
+inside the sandbox" needs a different service: one whose job is to hold your tools and your
+source.
+
+That is a spec, not a feature. Declare a service with the toolchain you want and mount the
+repository into it:
+
+```json
+{
+  "version": 1,
+  "services": {
+    "dev": {
+      "image": "golang:1.26-alpine",
+      "ports": [7777],
+      "args": ["sleep", "infinity"],
+      "mounts": { ".": "/work" }
+    }
+  }
+}
+```
+
+```sh
+sbx create my-branch
+sbx exec -t my-branch dev sh          # a shell, in /work, with your code in it
+sbx exec my-branch dev go test ./...  # or just run the thing
+```
+
+Four things about that file are load-bearing:
+
+- **`mounts` is your source**, and a relative path is resolved against the directory the spec
+  is in - so `"."` is the repository and the file stays portable. Writes go both ways: a file
+  the container creates is a file in your editor.
+- **`args` keeps it alive.** A container whose command finishes is a container that exits, and
+  `sleep infinity` is the usual way to say "stay up and wait to be asked".
+- **`ports` is required even here**, and nothing listens on 7777. Every other service in sbx is
+  reached by opening a socket, so the spec asks for one; a box you only ever `exec` into has no
+  use for it. Declare one and ignore it.
+- **The image is the toolchain.** `golang:1.26-alpine`, `node:22`, your own CI image - whatever
+  the commands you mean to run need. This is the one service where a fat image is the point.
+
+It sleeps like everything else, and `sbx exec` wakes it: exec against a stopped container
+would fail with a message about the container rather than about the sandbox being asleep, so
+sbx starts it first and waits for it. The cost of leaving one around is the same 0 B.
+
+**On macOS and Windows the mount has to be somewhere the VM shares** - under your home
+directory, typically. sbx checks by writing a marker on one side and looking for it on the
+other, so a path Docker Desktop or colima is not sharing is refused at create time with the
+reason, rather than presenting an empty directory that looks like a missing repository.
+
+---
+
 ## Where to use something else
 
 | If you need | Use |
