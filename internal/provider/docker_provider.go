@@ -13,6 +13,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -118,6 +119,21 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 	}
 
 	return 0, fmt.Errorf("all %d sandbox slots are in use; destroy one first", maxSlots)
+}
+
+// listError says what went wrong with a listing in the reader's terms.
+//
+// Distinguished because the two have different fixes: a socket that is not there needs the
+// runtime started, and one that is not answering needs it looked at.
+func listError(ep dockerEndpoint, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("docker did not answer in time via %s - it is running but too busy "+
+			"to reply, or wedged\n"+
+			"     check with `docker ps` (it will be just as slow) or your VM's own status, "+
+			"such as `colima status`", ep)
+	}
+
+	return fmt.Errorf("listing sandboxes via %s: %w", ep, err)
 }
 
 func (d *dockerProvider) slotOf(sandbox string) (int, bool) {
@@ -629,10 +645,19 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 
 	cs, err := d.api.list(ctx, filter)
 	if err != nil {
+		// A daemon that is slow rather than absent is the case this used to report worst.
+		// "context deadline exceeded", wrapped around an escaped URL, describes what the Go
+		// runtime did and not what happened - and what happened is that docker was asked to
+		// list containers and had not answered by the time the deadline passed. On a VM-backed
+		// runtime under load that is minutes, not seconds: measured at 1m36s for seven
+		// containers on a busy colima, where the same call is milliseconds on an idle one.
+		//
+		// Distinguished from unreachable because the two have different fixes: a socket that is
+		// not there needs the runtime started, and one that is not answering needs it looked at.
 		// Returning (nil, nil) here reported "no sandboxes" whenever docker was unreachable,
 		// which is the same lie as a collector that cannot run and exits 0. An unreachable
 		// daemon is an error, not an empty list.
-		return nil, fmt.Errorf("listing sandboxes via %s: %w", d.endpoint, err)
+		return nil, listError(d.endpoint, err)
 	}
 
 	var units []Unit

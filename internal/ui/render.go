@@ -279,10 +279,23 @@ func sandboxDetail(m model, r row, space, cols int) []string {
 	field("cpu", cpuLine)
 	field("memory", memLine)
 
-	// Then what it is made of, while there is room. A total cannot say which service is the
-	// expensive one, and this is the list that can.
-	for _, s := range m.membersOf(r.Sandbox) {
-		if len(out) >= space {
+	// Then what it is made of. A total cannot say which service is the expensive one, and this
+	// is the list that can.
+	members := m.membersOf(r.Sandbox)
+
+	for i, s := range members {
+		room := space - len(out)
+		if room <= 0 {
+			break
+		}
+
+		// On the last line it can print, say what it could not. Stopping mid-list leaves a
+		// sandbox that says "5 services" above a list of four, which reads as a service that
+		// has gone missing rather than a screen that ran out of room.
+		if room == 1 && len(members)-i > 1 {
+			out = append(out, truncate(fmt.Sprintf("   %s… and %d more - press v for the "+
+				"service view%s", dim, len(members)-i, reset), cols))
+
 			break
 		}
 

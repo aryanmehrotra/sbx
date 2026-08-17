@@ -44,12 +44,28 @@ const (
 	detailFull = 5
 )
 
+// detailSandboxFixed is what a sandbox's block spends before its services: the name and the
+// connect command, then cpu and memory with their history.
+const detailSandboxFixed = 3
+
 // wantDetail is the tallest the detail block could usefully be for this model.
 //
 // Every line is worth drawing now, awake or asleep: a sleeping service's usage line is the
 // most interesting shape it has - it shows the drop to zero and when it happened - so there
 // is no longer a case where the block would be padded with blanks.
-func wantDetail(model) int { return detailFull }
+//
+// A sandbox needs a line per service on top of that, so this cannot be one number. Fixed at
+// five, a sandbox of five services asked for five lines, spent three on its own totals and
+// listed two of them - a block that says "5 services" above four is a screen contradicting
+// itself. plan() still decides what it can afford; this only stops it capping the ask below
+// what there is to show.
+func wantDetail(m model) int {
+	if r, ok := m.currentRow(); ok && r.Members > 0 {
+		return detailSandboxFixed + r.Members
+	}
+
+	return detailFull
+}
 
 // plan divides rows between the table and the panes below it.
 //
@@ -97,6 +113,23 @@ func plan(rows, items, want int) layout {
 
 	// Detail grows to its full block before the pane takes anything above its own minimum.
 	detail := clamp(rest-3, 1, want)
+
+	// The table's floor buys stillness: with three sandboxes on screen, adding a fourth should
+	// not shift every pane below it. Those reserved rows are blank until the fleet grows, and
+	// blank is worth less than an answer - so where the detail block is short of what it has to
+	// show, it takes back the rows the table is holding empty. Two sandboxes above a
+	// five-service sandbox showing one line of itself was three blank rows bought at that price.
+	if detail < want && items < table {
+		give := min(table-max(1, items), want-detail)
+
+		table -= give
+		detail += give
+		rest = free - table
+	}
+
+	// ... but not past what is there. The pane keeps its own minimum, and a block that asked
+	// for more than the screen has would otherwise push the footer off the bottom.
+	detail = clamp(detail, 1, max(1, rest-3))
 
 	l.detailRows = detail
 	l.paneRows = max(3, rest-detail)
