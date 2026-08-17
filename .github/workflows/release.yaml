@@ -105,6 +105,59 @@ jobs:
           body_path: docs/release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
 
+  # Benchmarks, recorded per release rather than written into the document.
+  #
+  # BENCHMARKS.md's premise is that every number was measured on the machine described beside it
+  # and that nothing is quoted from a single run. A GitHub runner is a shared, virtualised
+  # machine whose neighbours are invisible, so its figures are not comparable to the laptop ones
+  # - overwriting them here would replace measurements somebody took with numbers nobody can
+  # attribute, while the page still claimed they were taken on a MacBook.
+  #
+  # So they are attached to the release instead: the same four benchmarks, ten runs each, with
+  # the machine that produced them written at the top. That gives a per-tag record of what this
+  # code does on a known-shape runner, which is the thing you can compare release to release -
+  # which is what a benchmark in a pipeline is actually for.
+  #
+  # Only the pure-Go ones. Wake latency needs containers and is dominated by whatever else the
+  # runner is doing; a number that noisy, published every tag, would teach people to ignore it.
+  benchmarks:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+
+      - name: measure
+        run: |
+          {
+            echo "# sbx ${GITHUB_REF_NAME} - benchmarks on a GitHub runner"
+            echo
+            echo "Not the figures in docs/BENCHMARKS.md, which were measured on a laptop and say"
+            echo "so. A runner is shared and virtualised; these are here to be compared with the"
+            echo "same file from the previous tag, not with a machine you own."
+            echo
+            echo '```'
+            echo "date        $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "go          $(go version | cut -d' ' -f3)"
+            echo "cpu         $(nproc) x $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            echo "memory      $(awk '/MemTotal/ {printf "%.1f GB", $2/1048576}' /proc/meminfo)"
+            echo "kernel      $(uname -sr)"
+            echo '```'
+            echo
+            echo '```'
+          } > bench.md
+
+          go test -run '^$' -bench 'RoundTrip|Stream' -count 10 ./internal/daemon/ >> bench.md 2>&1
+
+          echo '```' >> bench.md
+
+      - name: attach it to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bench.md
+
   # The activator only exists as an image, so a cluster user has nothing to install without
   # this. Multi-arch because clusters are not all amd64 any more.
   image:

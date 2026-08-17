@@ -19,6 +19,22 @@ go test -run '^$' -bench Stream -count 10 ./internal/daemon   # bulk throughput
 scripts/compare.sh 20                                # sbx against the field
 ```
 
+## What the pipeline measures, and what it does not
+
+Every tag attaches a `bench.md` to its GitHub release: `RoundTrip` and `Stream`, ten runs each,
+with the runner's cpu, memory, kernel and Go version written at the top.
+
+**It does not touch the numbers on this page.** A GitHub runner is a shared, virtualised machine
+whose neighbours are invisible; its figures are not comparable to a laptop's, and writing them
+in here would replace measurements somebody took and can describe with numbers nobody can
+attribute - while the text above still said they came from a MacBook. The attached file is for
+comparing one release against the release before it, on the same shape of machine, which is the
+question a benchmark in a pipeline can actually answer.
+
+Wake latency is deliberately not in it. It needs containers and is dominated by whatever else
+the runner is doing, and a number that noisy published on every tag teaches people to ignore the
+file it is in. `scripts/bench.sh` is how that one is measured, on a machine you can describe.
+
 ---
 
 ## Wake

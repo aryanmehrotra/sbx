@@ -83,7 +83,11 @@ before the tag, and the workflow refuses to build without them.
    the file has to be in the tag. `scripts/ui-shot.sh` re-records the dashboard.
 3. **Tag and push.** `git tag -a vX.Y.Z && git push origin vX.Y.Z`. That builds every target,
    publishes the binaries with `SHA256SUMS`, and pushes the activator image.
-4. **Update the tap**, which is a different repository and so is not automated:
+4. **The benchmarks run themselves.** A `bench.md` is attached to the release with the runner's
+   own figures, for comparing against the previous tag. It does not edit
+   [BENCHMARKS.md](docs/BENCHMARKS.md), whose numbers were measured on a machine somebody can
+   describe - if you want those refreshed, run the scripts named there and say what you ran it on.
+5. **Update the tap**, which is a different repository and so is not automated:
    `scripts/brew-formula.sh vX.Y.Z > ../homebrew-tap/Formula/sbx.rb`. It reads the checksums
    out of the published release, so there is nothing to read until step 3 finishes.
 
