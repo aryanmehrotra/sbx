@@ -76,10 +76,13 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 
 	var wanted []placed
 
+	anyFound := false
+
 	for i, src := range sources {
 		// Kept before the filter runs, because "it has nothing" and "the filter took what it
 		// had" are different things to tell somebody, and only one of them is --sandbox's fault.
 		src.found = len(fleets[i])
+		anyFound = anyFound || src.found > 0
 
 		for _, svc := range chooseServices(fleets[i], opt.Sandbox) {
 			wanted = append(wanted, placed{svc: svc, src: src})
@@ -89,7 +92,10 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 	if len(wanted) == 0 {
 		joined := strings.Join(labels(sources), ", ")
 
-		if len(opt.Sandbox) > 0 {
+		// The same question the per-deployment line asks, asked of all of them at once: a
+		// filter can only be the reason when there was something for it to exclude. Passing
+		// --sandbox does not make an empty deployment the flag's fault.
+		if len(opt.Sandbox) > 0 && anyFound {
 			return fmt.Errorf("%s is fronting nothing that matches --sandbox %s",
 				joined, strings.Join(opt.Sandbox, ", "))
 		}

@@ -466,16 +466,39 @@ func TestAnEmptyDeploymentSaysWhyItIsEmpty(t *testing.T) {
 }
 
 // under returns the first line beneath the group header naming this deployment.
+//
+// Anchored at the start of the line rather than searched for anywhere in it: "cache-db · ..."
+// contains "db · ", so a substring match reads the wrong deployment's line and the assertion
+// silently checks something else. Nothing here collides today, which is exactly when a trap
+// like that gets laid.
 func under(report, label string) string {
 	lines := strings.Split(report, "\n")
 
 	for i, line := range lines {
-		if strings.Contains(line, label+" · ") && i+1 < len(lines) {
+		if strings.HasPrefix(strings.TrimSpace(line), label+" · ") && i+1 < len(lines) {
 			return strings.TrimSpace(lines[i+1])
 		}
 	}
 
 	return ""
+}
+
+// The helper above is load-bearing for the assertions that tell the two kinds of empty apart,
+// so it gets its own test rather than being trusted.
+func TestUnderReadsTheRightDeploymentsLine(t *testing.T) {
+	report := strings.Join([]string{
+		"sbx connect · 2 deployments",
+		"",
+		"  cache-db · http://a",
+		"    nothing here matches --sandbox",
+		"",
+		"  db · http://b",
+		"    127.0.0.1:5432  db/postgres",
+	}, "\n")
+
+	if got := under(report, "db"); got != "127.0.0.1:5432  db/postgres" {
+		t.Errorf("under(report, \"db\") = %q, want db's own line and not cache-db's", got)
+	}
 }
 
 // A deployment that is fronting a service the filter excluded IS the filter's doing, and
@@ -523,13 +546,39 @@ func TestEverythingEmptyDoesNotBlameAFilterThatWasNotUsed(t *testing.T) {
 		t.Errorf("error = %q, want it not to imply a filter was applied", err)
 	}
 
-	// ... and with one, it should say which.
+	// Passing --sandbox does not make an empty deployment the filter's fault. There was nothing
+	// for it to exclude, so the honest answer is the same one as above.
 	err = Connect(context.Background(), ClientOptions{
 		Endpoints: eps, Sandbox: []string{"nope"}, Out: &syncBuffer{},
 	})
 
-	if err == nil || !strings.Contains(err.Error(), "--sandbox nope") {
-		t.Errorf("error = %v, want it to name the filter that excluded everything", err)
+	if err == nil {
+		t.Fatal("a deployment fronting nothing connected anyway")
+	}
+
+	if strings.Contains(err.Error(), "--sandbox") {
+		t.Errorf("error = %q, blames --sandbox for a deployment that had nothing to filter", err)
+	}
+}
+
+// ... but where the filter really is what emptied it, the error has to say so, or the fix
+// above would just be silence in a different shape.
+func TestAFilterThatExcludesEverythingSaysSo(t *testing.T) {
+	port := echoPort(t)
+	db := frontedAt(t, port, "db")
+
+	err := Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: db.URL, Token: testToken}},
+		Sandbox:   []string{"nope"},
+		Out:       &syncBuffer{},
+	})
+
+	if err == nil {
+		t.Fatal("a filter matching nothing connected anyway")
+	}
+
+	if !strings.Contains(err.Error(), "--sandbox nope") {
+		t.Errorf("error = %q, want it to name the filter that excluded everything", err)
 	}
 }
 
