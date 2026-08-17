@@ -76,13 +76,10 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 
 	var wanted []placed
 
-	anyFound := false
-
 	for i, src := range sources {
 		// Kept before the filter runs, because "it has nothing" and "the filter took what it
 		// had" are different things to tell somebody, and only one of them is --sandbox's fault.
 		src.found = len(fleets[i])
-		anyFound = anyFound || src.found > 0
 
 		for _, svc := range chooseServices(fleets[i], opt.Sandbox) {
 			wanted = append(wanted, placed{svc: svc, src: src})
@@ -90,17 +87,25 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 	}
 
 	if len(wanted) == 0 {
-		joined := strings.Join(labels(sources), ", ")
+		// One reason per deployment rather than one sentence for all of them. Joining the names
+		// and picking a single reason means that whenever any of them was filtered, every other
+		// one is told the filter was why - including the ones that were empty to begin with and
+		// would say the same thing with no --sandbox at all. Which deployment is empty for which
+		// reason is the useful part, and it is only per deployment that it can be true.
+		var b strings.Builder
 
-		// The same question the per-deployment line asks, asked of all of them at once: a
-		// filter can only be the reason when there was something for it to exclude. Passing
-		// --sandbox does not make an empty deployment the flag's fault.
-		if len(opt.Sandbox) > 0 && anyFound {
-			return fmt.Errorf("%s is fronting nothing that matches --sandbox %s",
-				joined, strings.Join(opt.Sandbox, ", "))
+		b.WriteString("nothing to connect to:")
+
+		for _, src := range sources {
+			why := "is fronting nothing"
+			if len(opt.Sandbox) > 0 && src.found > 0 {
+				why = "has nothing matching --sandbox " + strings.Join(opt.Sandbox, ", ")
+			}
+
+			fmt.Fprintf(&b, "\n     %s %s", src.label, why)
 		}
 
-		return fmt.Errorf("%s is fronting nothing", joined)
+		return errors.New(b.String())
 	}
 
 	// Every listener is opened before any is served, so a clash is reported before the client

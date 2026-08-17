@@ -561,6 +561,49 @@ func TestEverythingEmptyDoesNotBlameAFilterThatWasNotUsed(t *testing.T) {
 	}
 }
 
+// Two deployments can be empty for two different reasons at once, and one sentence covering
+// both can only be right about one of them. This is the case that survived four rounds of
+// fixing the same mistake somewhere else.
+func TestEachEmptyDeploymentGetsItsOwnReason(t *testing.T) {
+	port := echoPort(t)
+	db := frontedAt(t, port, "db") // has a service, which --sandbox will exclude
+
+	bare := New(nil, time.Minute, time.Minute, time.Minute)
+	bare.fronted = map[int]fronted{}
+	quiet := serverFor(t, bare) // has nothing, filter or no filter
+
+	err := Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{
+			{Label: "quiet", URL: quiet.URL, Token: testToken},
+			{Label: "db", URL: db.URL, Token: testToken},
+		},
+		Sandbox: []string{"nope"},
+		Out:     &syncBuffer{},
+	})
+
+	if err == nil {
+		t.Fatal("two empty deployments connected anyway")
+	}
+
+	line := func(label string) string {
+		for _, l := range strings.Split(err.Error(), "\n") {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, label+" ") {
+				return l
+			}
+		}
+
+		return ""
+	}
+
+	if got := line("quiet"); got != "quiet is fronting nothing" {
+		t.Errorf("quiet: %q - it was empty with or without the filter", got)
+	}
+
+	if got := line("db"); !strings.Contains(got, "--sandbox nope") {
+		t.Errorf("db: %q - the filter really is why this one is empty", got)
+	}
+}
+
 // ... but where the filter really is what emptied it, the error has to say so, or the fix
 // above would just be silence in a different shape.
 func TestAFilterThatExcludesEverythingSaysSo(t *testing.T) {
