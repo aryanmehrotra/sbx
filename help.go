@@ -123,7 +123,9 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"together as one local port map. Each keeps the image its spec named, which is what\n" +
 			"packing them into a single container would cost.\n\n" +
 			"SBX_CONNECT_TOKEN holds the token. A named deployment reads SBX_CONNECT_TOKEN_<NAME>\n" +
-			"first, because two deployments usually have two tokens. Use --port-offset if this\n" +
+			"first, because two deployments usually have two tokens. The URL must be https\n" +
+			"unless it is on this machine, since the token is what the whole tunnel rests on -\n" +
+			"SBX_CONNECT_INSECURE=1 waives that. Use --port-offset if this\n" +
 			"machine already runs its own `sbx serve` and owns those ports, or if two deployments\n" +
 			"front the same port: --port-offset replica=1000 moves only that one, and\n" +
 			"--port-offset 1000,replica=2000 moves everything with an exception.",

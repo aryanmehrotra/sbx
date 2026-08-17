@@ -192,6 +192,18 @@ people is a hand-written Dockerfile installing sbx with `@latest`: releases befo
 feature have no `--connect-addr`, so the process exits on an unknown flag. `sbx pack` pins the
 version for exactly this reason - if you wrote the image yourself, pin it too.
 
+**"... is http, so SBX_CONNECT_TOKEN would cross the network in the clear".** The token is the
+whole of the security, and `http://` sends it as text to anything between here and there. Use
+the `https://` URL the platform gave you. `SBX_CONNECT_INSECURE=1` waives it for a network you
+have decided to trust, and a loopback address never needed it - a `kubectl port-forward` or a
+local daemon is exempt already.
+
+**"... came after a flag, where it would have been ignored".** Flags go last. `sbx connect
+db=… --port-offset 1000 cache=…` would otherwise have connected `db` alone and never mentioned
+`cache`, which is a port map with a hole in it: whatever else answers on the missing port -
+often this machine's own `sbx serve` - gets the connection instead. The message prints the line
+that would have worked.
+
 **"db and replica both want 127.0.0.1:5432".** Two deployments are fronting the same port,
 which is what happens when a sandbox has two of the same service. They cannot share one local
 port, so move one: `--port-offset replica=1000`. The listing then says which one was shifted,

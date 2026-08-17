@@ -625,6 +625,43 @@ func TestAFilterThatExcludesEverythingSaysSo(t *testing.T) {
 	}
 }
 
+// The token is the whole of the security, and http sends it in the clear. The server half
+// already refuses to serve a connect endpoint off loopback without --behind-proxy; this is the
+// missing half of that rule.
+func TestPlainHTTPOffThisMachineIsRefused(t *testing.T) {
+	err := Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: "http://sbx.example.dev", Token: "t"}},
+		Out:       &syncBuffer{},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "in the clear") {
+		t.Errorf("http to a remote host gave %v, want a refusal naming the risk", err)
+	}
+
+	// Loopback is what a port-forward, a local daemon and every test here look like, so it is
+	// allowed: the token never leaves the machine. This one fails later, at the fetch.
+	err = Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: "http://127.0.0.1:1", Token: "t"}},
+		Out:       &syncBuffer{},
+	})
+
+	if err == nil || strings.Contains(err.Error(), "in the clear") {
+		t.Errorf("loopback over http was refused: %v", err)
+	}
+
+	// And a network somebody has decided to trust can say so.
+	t.Setenv("SBX_CONNECT_INSECURE", "1")
+
+	err = Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: "http://sbx.example.dev", Token: "t"}},
+		Out:       &syncBuffer{},
+	})
+
+	if err != nil && strings.Contains(err.Error(), "in the clear") {
+		t.Errorf("SBX_CONNECT_INSECURE did not let it through: %v", err)
+	}
+}
+
 func TestSplitEndpoint(t *testing.T) {
 	for arg, want := range map[string][2]string{
 		"https://sbx.example.dev":     {"", "https://sbx.example.dev"},

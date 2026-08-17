@@ -174,6 +174,10 @@ func resolve(opt ClientOptions) ([]*source, error) {
 				"https://sbx.example.dev", e.URL)
 		}
 
+		if err := insecureURL(base); err != nil {
+			return nil, err
+		}
+
 		label := e.Label
 		if label == "" {
 			label = base.Host
@@ -239,6 +243,31 @@ func resolve(opt ClientOptions) ([]*source, error) {
 	}
 
 	return out, nil
+}
+
+// insecureURL refuses to send the token in the clear to somewhere off this machine.
+//
+// The server half already refuses to serve a connect endpoint on a non-loopback address without
+// --behind-proxy, for the reason that the token and every byte through the tunnel would cross
+// the network unencrypted. The client had no matching rule, so a mistyped or http:// URL sent
+// the bearer token - the whole of the security - to whatever was on the other end. Loopback is
+// exempt because that is what a port-forward, a test and a local daemon all look like.
+//
+// SBX_CONNECT_INSECURE=1 is the way out, for a network somebody has decided to trust. An
+// environment variable rather than a flag: it is a property of where you are, not of the
+// command, and it should be awkward enough to be deliberate.
+func insecureURL(base *url.URL) error {
+	if base.Scheme == "https" || os.Getenv("SBX_CONNECT_INSECURE") != "" {
+		return nil
+	}
+
+	if host := base.Hostname(); host == "localhost" || net.ParseIP(host).IsLoopback() {
+		return nil
+	}
+
+	return fmt.Errorf("%s is http, so SBX_CONNECT_TOKEN would cross the network in the clear\n"+
+		"     use https, or set SBX_CONNECT_INSECURE=1 if you have decided this network is safe",
+		base)
 }
 
 // TokenVar is the environment variable holding a named deployment's token.
@@ -391,6 +420,20 @@ type boundPort struct {
 	src      *source
 }
 
+// The bounds on the one request that faces the open internet.
+//
+// http.DefaultClient has no timeout at all, so a deployment that accepts and then says nothing
+// wedges the whole command with no output - and because every fleet is awaited before anything
+// is printed, one black hole takes the rest down with it. Sixty seconds matches the docker
+// client's own limit and leaves room for a platform that is cold-starting the container to
+// answer the first request.
+//
+// The reply is a list of services and their ports, which is small. Decoding it unbounded means
+// a wrong or hostile URL can spend this process's memory instead.
+const maxFleetBody = 1 << 20
+
+var fleetClient = &http.Client{Timeout: 60 * time.Second}
+
 func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetService, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String()+"/v1/fleet", nil)
 	if err != nil {
@@ -399,7 +442,7 @@ func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetServic
 
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fleetClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not reach %s: %w", base, err)
 	}
@@ -418,7 +461,7 @@ func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetServic
 		Services []fleetService `json:"services"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxFleetBody)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("could not read what %s is fronting: %w", base, err)
 	}
 

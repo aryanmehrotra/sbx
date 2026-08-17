@@ -491,6 +491,24 @@ func dispatch(cmd string, args []string) error {
 		positional, rest := splitPositional(args, len(args))
 		_ = fs.Parse(rest)
 
+		// Go's flag package stops at the first non-flag argument, so a URL written after a flag
+		// is left behind in fs.Args() rather than parsed. Every other command here takes a fixed
+		// number of names and splits them off the front, which makes that impossible; this one
+		// takes as many as you give it, so `sbx connect db=… --port-offset 1000 cache=…` quietly
+		// connected db alone and said nothing about cache.
+		//
+		// Refused rather than ignored, because a port map with a hole in it is the failure this
+		// whole command is built to avoid: the missing port is left to whatever else answers on
+		// it - often this machine's own `sbx serve` - and the caller reaches a local sandbox
+		// believing it reached the remote one.
+		if fs.NArg() > 0 {
+			return fmt.Errorf("%s came after a flag, where it would have been ignored\n"+
+				"     flags go last, so that every deployment is seen:\n"+
+				"       sbx connect %s ...",
+				strings.Join(fs.Args(), ", "),
+				strings.Join(append(append([]string{}, positional...), fs.Args()...), " "))
+		}
+
 		if len(positional) < 1 {
 			return fmt.Errorf("usage: sbx connect <url> [<url> ...] [--sandbox NAME] [--port-offset N]\n" +
 				"     each url is a deployment running `sbx serve --connect-addr`, and\n" +
