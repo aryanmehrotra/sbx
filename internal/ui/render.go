@@ -997,20 +997,6 @@ func eventLine(e history.Record) string {
 		dim, shortAgo(e.Time), reset, cyan, e.Sandbox+"/"+e.Service, reset, eventText(e))
 }
 
-// tail returns the last n of a slice. Generic because it is wanted for two element types, and
-// copying it twice is how the two drift apart.
-func tail[T any](s []T, n int) []T {
-	if n <= 0 || len(s) == 0 {
-		return nil
-	}
-
-	if len(s) <= n {
-		return s
-	}
-
-	return s[len(s)-n:]
-}
-
 // footer says what the keys do, and gives way to anything more urgent.
 //
 // It only names keys that would do something. The scroll keys were advertised whenever the
