@@ -295,3 +295,49 @@ func TestTheSandboxGraphAddsItsServicesAtEachMoment(t *testing.T) {
 		t.Errorf("oldest sample = %+v, want only the service that existed then", got[0])
 	}
 }
+
+// The sandbox total says whether it is costing anything and cannot say which service it went
+// to, which is the next question and the reason somebody opened the sandbox at all.
+func TestEachServiceShowsItsOwnShareAndShape(t *testing.T) {
+	rows := twoSandboxes() // work: mysql 300 MB, redis 4 MB
+
+	series := map[string][]metricSample{}
+	for _, r := range rows {
+		for range 60 {
+			series[r.Ref] = append(series[r.Ref], metricSample{mem: r.MemBytes, known: true})
+		}
+	}
+
+	frame := plain(render(model{
+		version: "v0", rows: rows, grouped: true, metered: true, series: series,
+	}, 26, 130))
+
+	// 300 of 304 MB is arithmetic a reader should not have to do to find the expensive one.
+	if !strings.Contains(frame, "99%") {
+		t.Errorf("mysql's share of the sandbox is not shown:\n%s", frame)
+	}
+
+	if !strings.Contains(frame, "1%") {
+		t.Errorf("redis's share of the sandbox is not shown:\n%s", frame)
+	}
+
+	// And a shape per service, because a flat line beside a climbing one is the thing a column
+	// of numbers cannot show.
+	if !strings.Contains(frame, "⠒") && !strings.Contains(frame, "⠉") {
+		t.Errorf("no per-service trace was drawn:\n%s", frame)
+	}
+}
+
+// A sleeping service has nothing to measure, and a zero would be a measurement.
+func TestASleepingServiceShowsNoShare(t *testing.T) {
+	rows := twoSandboxes()
+	rows[1].Awake, rows[1].MemKnown = false, false
+
+	frame := plain(render(model{version: "v0", rows: rows, grouped: true, metered: true}, 26, 130))
+
+	for _, line := range strings.Split(frame, "\n") {
+		if strings.Contains(line, "redis") && strings.Contains(line, "%") {
+			t.Errorf("a sleeping service was given a share of the memory: %q", line)
+		}
+	}
+}

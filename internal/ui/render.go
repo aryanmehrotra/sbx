@@ -304,16 +304,55 @@ func sandboxDetail(m model, r row, space, cols int) []string {
 			state, colour = "AWAKE", green
 		}
 
-		usage := ""
-		if s.Awake && s.MemKnown {
-			usage = fmt.Sprintf("  %s%s%s", dim, humanBytes(s.MemBytes), reset)
-		}
-
-		out = append(out, truncate(fmt.Sprintf("   %-14s %s%-6s%s  %s%s%s%s",
-			s.Service, colour, state, reset, dim, s.Address, reset, usage), cols))
+		out = append(out, truncate(fmt.Sprintf("   %-14s %s%-6s%s  %s%-*s%s%s",
+			s.Service, colour, state, reset, dim, addrCell, s.Address, reset,
+			memberUsage(m, s, r, cols)), cols))
 	}
 
 	return padTo(out, space, cols)
+}
+
+// addrCell is what a member line spends on an address, so the readings after it line up into a
+// column that can be read down rather than a ragged edge that has to be read across.
+const addrCell = 17
+
+// memberUsage is one service's share of the sandbox it is in, and its own recent shape.
+//
+// The sandbox's total answers "is this costing me anything" and cannot answer "which of them",
+// which is the next question and the reason somebody opened the sandbox rather than the service
+// list. A share and a trace per line answer it without leaving the view: 354 MB against 3 MB is
+// arithmetic a reader should not have to do, and a flat line beside a climbing one is the thing
+// a column of numbers cannot show at all.
+func memberUsage(m model, s row, sandbox row, cols int) string {
+	if !s.Awake || !s.MemKnown {
+		return ""
+	}
+
+	share := ""
+
+	// Of the sandbox's own total rather than of a ceiling: this is about which service the
+	// memory went to, and most services have no ceiling to be a percentage of.
+	if sandbox.MemKnown && sandbox.MemBytes > 0 {
+		share = fmt.Sprintf(" %s%3.0f%%%s", dim, 100*float64(s.MemBytes)/float64(sandbox.MemBytes), reset)
+	}
+
+	line := fmt.Sprintf("  %s%7s%s%s", reset, shortBytes(s.MemBytes), reset, share)
+
+	// Whatever is left after the fixed part of the line, and only if it is enough to draw a
+	// shape rather than a smudge.
+	room := cols - fieldIndent - addrCell - 22
+	if room >= 12 {
+		var values []float64
+		for _, sample := range m.series[s.Ref] {
+			values = append(values, float64(sample.mem))
+		}
+
+		if trace := spark(values, 0, min(room, 40)); trace != "" {
+			line += "  " + dim + trace + reset
+		}
+	}
+
+	return line
 }
 
 // padTo keeps the panes below from walking up and down the screen as sandboxes come and go,
