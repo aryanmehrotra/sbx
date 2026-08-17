@@ -99,7 +99,7 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 		out = os.Stdout
 	}
 
-	report(out, wanted, sources)
+	report(out, wanted, sources, len(opt.Sandbox) > 0)
 
 	var wg sync.WaitGroup
 
@@ -490,7 +490,7 @@ func bindAll(services []placed) ([]boundPort, error) {
 	return out, nil
 }
 
-func report(w io.Writer, services []placed, sources []*source) {
+func report(w io.Writer, services []placed, sources []*source, filtered bool) {
 	sort.Slice(services, func(i, j int) bool {
 		if services[i].svc.Sandbox != services[j].svc.Sandbox {
 			return services[i].svc.Sandbox < services[j].svc.Sandbox
@@ -534,10 +534,17 @@ func report(w io.Writer, services []placed, sources []*source) {
 			}
 		}
 
-		// A deployment with nothing under it otherwise reads as one that failed to come up,
-		// when what happened is that --sandbox asked for something it is not fronting.
+		// A deployment with nothing under it otherwise reads as one that failed to come up. Why
+		// it is empty is the useful half, and there are two different answers: a filter that
+		// excluded everything it has, or a deployment that is fronting nothing at all. Naming
+		// --sandbox in the second case would blame a flag the user never passed.
 		if listed == 0 {
-			fmt.Fprintf(w, "    nothing here matches --sandbox\n")
+			why := "fronting nothing"
+			if filtered {
+				why = "nothing here matches --sandbox"
+			}
+
+			fmt.Fprintf(w, "    %s\n", why)
 		}
 	}
 

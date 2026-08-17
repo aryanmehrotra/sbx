@@ -409,6 +409,59 @@ func TestDeploymentsAreAskedAtTheSameTime(t *testing.T) {
 	}
 }
 
+// An empty deployment has two possible reasons and they are not interchangeable. Saying
+// "nothing matches --sandbox" to somebody who never passed --sandbox sends them looking for a
+// filter they did not use, while the real answer is that the deployment is fronting nothing.
+func TestAnEmptyDeploymentSaysWhyItIsEmpty(t *testing.T) {
+	full := echoPort(t)
+	db := frontedAt(t, full, "db")
+
+	// A deployment that came up fine and simply has nothing in it yet. Not the no-runtime case:
+	// that one answers 503 on purpose, because "no sandboxes" and "I cannot see any sandboxes"
+	// are different answers and it refuses to give the first when it means the second.
+	empty := New(nil, time.Minute, time.Minute, time.Minute)
+	empty.fronted = map[int]fronted{}
+	quiet := serverFor(t, empty)
+
+	eps := []Endpoint{
+		{Label: "db", URL: db.URL, Token: testToken},
+		{Label: "quiet", URL: quiet.URL, Token: testToken},
+	}
+
+	// No --sandbox: the honest answer is that it fronts nothing.
+	local := freePort(t)
+	out, stop := runConnect(t, ClientOptions{
+		Endpoints: eps,
+		Offsets:   map[string]int{"db": local - full},
+	}, local)
+
+	got := out.String()
+	stop()
+
+	if strings.Contains(got, "--sandbox") {
+		t.Errorf("blamed --sandbox when it was never passed:\n%s", got)
+	}
+
+	if !strings.Contains(got, "fronting nothing") {
+		t.Errorf("an empty deployment did not say it was empty:\n%s", got)
+	}
+
+	// With --sandbox, the filter really is the reason.
+	local2 := freePort(t)
+	out2, stop2 := runConnect(t, ClientOptions{
+		Endpoints: eps,
+		Sandbox:   []string{"db"},
+		Offsets:   map[string]int{"db": local2 - full},
+	}, local2)
+
+	got2 := out2.String()
+	stop2()
+
+	if !strings.Contains(got2, "nothing here matches --sandbox") {
+		t.Errorf("a filtered-out deployment did not name the filter:\n%s", got2)
+	}
+}
+
 func TestSplitEndpoint(t *testing.T) {
 	for arg, want := range map[string][2]string{
 		"https://sbx.example.dev":     {"", "https://sbx.example.dev"},
