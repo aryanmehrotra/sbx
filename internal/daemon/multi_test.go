@@ -446,7 +446,9 @@ func TestAnEmptyDeploymentSaysWhyItIsEmpty(t *testing.T) {
 		t.Errorf("an empty deployment did not say it was empty:\n%s", got)
 	}
 
-	// With --sandbox, the filter really is the reason.
+	// Even with --sandbox in the command, this deployment's emptiness is not the filter's
+	// doing: it had nothing to filter. Asserting on the line under `quiet` rather than on the
+	// whole report, because the filter message is legitimately somewhere else in it.
 	local2 := freePort(t)
 	out2, stop2 := runConnect(t, ClientOptions{
 		Endpoints: eps,
@@ -457,8 +459,77 @@ func TestAnEmptyDeploymentSaysWhyItIsEmpty(t *testing.T) {
 	got2 := out2.String()
 	stop2()
 
-	if !strings.Contains(got2, "nothing here matches --sandbox") {
-		t.Errorf("a filtered-out deployment did not name the filter:\n%s", got2)
+	if under(got2, "quiet") != "fronting nothing" {
+		t.Errorf("--sandbox was blamed for a deployment that was empty anyway: %q\n%s",
+			under(got2, "quiet"), got2)
+	}
+}
+
+// under returns the first line beneath the group header naming this deployment.
+func under(report, label string) string {
+	lines := strings.Split(report, "\n")
+
+	for i, line := range lines {
+		if strings.Contains(line, label+" · ") && i+1 < len(lines) {
+			return strings.TrimSpace(lines[i+1])
+		}
+	}
+
+	return ""
+}
+
+// A deployment that is fronting a service the filter excluded IS the filter's doing, and
+// saying so is the whole point of telling them apart.
+func TestAFilteredOutDeploymentNamesTheFilter(t *testing.T) {
+	dbPort, cachePort := echoPort(t), echoPort(t)
+	db := frontedAt(t, dbPort, "db")
+	cache := frontedAt(t, cachePort, "cache")
+
+	local := freePort(t)
+
+	out, stop := runConnect(t, ClientOptions{
+		Endpoints: []Endpoint{
+			{Label: "db", URL: db.URL, Token: testToken},
+			{Label: "cache", URL: cache.URL, Token: testToken},
+		},
+		Sandbox: []string{"db"},
+		Offsets: map[string]int{"db": local - dbPort, "cache": freePort(t) - cachePort},
+	}, local)
+
+	got := out.String()
+	stop()
+
+	if under(got, "cache") != "nothing here matches --sandbox" {
+		t.Errorf("a deployment emptied by --sandbox did not say so: %q\n%s",
+			under(got, "cache"), got)
+	}
+}
+
+// Nothing anywhere, and no filter: the error must not send somebody looking for a --sandbox
+// they never passed.
+func TestEverythingEmptyDoesNotBlameAFilterThatWasNotUsed(t *testing.T) {
+	empty := New(nil, time.Minute, time.Minute, time.Minute)
+	empty.fronted = map[int]fronted{}
+	quiet := serverFor(t, empty)
+
+	eps := []Endpoint{{Label: "quiet", URL: quiet.URL, Token: testToken}}
+
+	err := Connect(context.Background(), ClientOptions{Endpoints: eps, Out: &syncBuffer{}})
+	if err == nil {
+		t.Fatal("a deployment fronting nothing connected anyway")
+	}
+
+	if strings.Contains(err.Error(), "matches") {
+		t.Errorf("error = %q, want it not to imply a filter was applied", err)
+	}
+
+	// ... and with one, it should say which.
+	err = Connect(context.Background(), ClientOptions{
+		Endpoints: eps, Sandbox: []string{"nope"}, Out: &syncBuffer{},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "--sandbox nope") {
+		t.Errorf("error = %v, want it to name the filter that excluded everything", err)
 	}
 }
 

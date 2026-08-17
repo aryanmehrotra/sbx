@@ -53,6 +53,7 @@ type source struct {
 	base  *url.URL
 	token string
 	shift int
+	found int // services it was fronting, before --sandbox took any of them away
 }
 
 // placed is one remote service and the deployment it came from.
@@ -76,13 +77,24 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 	var wanted []placed
 
 	for i, src := range sources {
+		// Kept before the filter runs, because "it has nothing" and "the filter took what it
+		// had" are different things to tell somebody, and only one of them is --sandbox's fault.
+		src.found = len(fleets[i])
+
 		for _, svc := range chooseServices(fleets[i], opt.Sandbox) {
 			wanted = append(wanted, placed{svc: svc, src: src})
 		}
 	}
 
 	if len(wanted) == 0 {
-		return fmt.Errorf("%s is fronting nothing that matches", strings.Join(labels(sources), ", "))
+		joined := strings.Join(labels(sources), ", ")
+
+		if len(opt.Sandbox) > 0 {
+			return fmt.Errorf("%s is fronting nothing that matches --sandbox %s",
+				joined, strings.Join(opt.Sandbox, ", "))
+		}
+
+		return fmt.Errorf("%s is fronting nothing", joined)
 	}
 
 	// Every listener is opened before any is served, so a clash is reported before the client
@@ -539,8 +551,11 @@ func report(w io.Writer, services []placed, sources []*source, filtered bool) {
 		// excluded everything it has, or a deployment that is fronting nothing at all. Naming
 		// --sandbox in the second case would blame a flag the user never passed.
 		if listed == 0 {
+			// src.found, not the filter alone: a deployment that was fronting nothing in the
+			// first place is empty whether or not --sandbox was passed, and blaming the flag
+			// there sends somebody to check a filter that changed nothing for it.
 			why := "fronting nothing"
-			if filtered {
+			if filtered && src.found > 0 {
 				why = "nothing here matches --sandbox"
 			}
 
