@@ -261,13 +261,22 @@ func insecureURL(base *url.URL) error {
 		return nil
 	}
 
-	if host := base.Hostname(); host == "localhost" || net.ParseIP(host).IsLoopback() {
+	// EqualFold because a hostname is case-insensitive, and refusing http://LOCALHOST while
+	// allowing http://localhost is a distinction nobody typing it believes in.
+	if host := base.Hostname(); strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback() {
 		return nil
 	}
 
-	return fmt.Errorf("%s is http, so SBX_CONNECT_TOKEN would cross the network in the clear\n"+
+	// A URL with no scheme at all is not http, and saying it is sends somebody looking for an
+	// s to add to a word that is not there.
+	what := "is http"
+	if base.Scheme == "" {
+		what = "has no scheme"
+	}
+
+	return fmt.Errorf("%s %s, so SBX_CONNECT_TOKEN would cross the network in the clear\n"+
 		"     use https, or set SBX_CONNECT_INSECURE=1 if you have decided this network is safe",
-		base)
+		base.Redacted(), what)
 }
 
 // TokenVar is the environment variable holding a named deployment's token.
@@ -444,17 +453,17 @@ func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetServic
 
 	resp, err := fleetClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("could not reach %s: %w", base, err)
+		return nil, fmt.Errorf("could not reach %s: %w", base.Redacted(), err)
 	}
 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("%s rejected the token", base)
+		return nil, fmt.Errorf("%s rejected the token", base.Redacted())
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %s asking what it is fronting", base, resp.Status)
+		return nil, fmt.Errorf("%s answered %s asking what it is fronting", base.Redacted(), resp.Status)
 	}
 
 	var body struct {
@@ -462,7 +471,7 @@ func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetServic
 	}
 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxFleetBody)).Decode(&body); err != nil {
-		return nil, fmt.Errorf("could not read what %s is fronting: %w", base, err)
+		return nil, fmt.Errorf("could not read what %s is fronting: %w", base.Redacted(), err)
 	}
 
 	return body.Services, nil
@@ -568,7 +577,7 @@ func report(w io.Writer, services []placed, sources []*source, filtered bool) {
 	one := len(sources) == 1
 
 	if one {
-		fmt.Fprintf(w, "sbx connect · %s\n\n", sources[0].base)
+		fmt.Fprintf(w, "sbx connect · %s\n\n", sources[0].base.Redacted())
 	} else {
 		fmt.Fprintf(w, "sbx connect · %d deployments\n", len(sources))
 	}
@@ -577,7 +586,7 @@ func report(w io.Writer, services []placed, sources []*source, filtered bool) {
 	// "did the cache one come up", and an alphabetical merge buries the answer.
 	for _, src := range sources {
 		if !one {
-			fmt.Fprintf(w, "\n  %s · %s\n", src.label, src.base)
+			fmt.Fprintf(w, "\n  %s · %s\n", src.label, src.base.Redacted())
 		}
 
 		listed := 0

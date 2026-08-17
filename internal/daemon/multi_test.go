@@ -662,6 +662,45 @@ func TestPlainHTTPOffThisMachineIsRefused(t *testing.T) {
 	}
 }
 
+// A hostname is case-insensitive, and a URL somebody typed may carry a password that should not
+// come back out in a message they paste into a bug report.
+func TestTheURLInAMessageIsRightAndNotRevealing(t *testing.T) {
+	// LOCALHOST is localhost. Refusing one and allowing the other is a distinction nobody
+	// typing it believes in.
+	err := Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: "http://LOCALHOST:1", Token: "t"}},
+		Out:       &syncBuffer{},
+	})
+
+	if err == nil || strings.Contains(err.Error(), "in the clear") {
+		t.Errorf("http://LOCALHOST was treated as remote: %v", err)
+	}
+
+	// A scheme-less URL is not http, and calling it that sends somebody looking for an s to add
+	// to a word that is not there.
+	err = Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: "//sbx.example.dev", Token: "t"}},
+		Out:       &syncBuffer{},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "has no scheme") {
+		t.Errorf("a scheme-less URL was described as http: %v", err)
+	}
+
+	err = Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{{Label: "db", URL: "https://user:hunter2@127.0.0.1:1", Token: "t"}},
+		Out:       &syncBuffer{},
+	})
+
+	if err == nil {
+		t.Fatal("a dial to port 1 succeeded")
+	}
+
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("the password came back out in the error: %v", err)
+	}
+}
+
 func TestSplitEndpoint(t *testing.T) {
 	for arg, want := range map[string][2]string{
 		"https://sbx.example.dev":     {"", "https://sbx.example.dev"},
