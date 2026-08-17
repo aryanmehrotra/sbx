@@ -30,6 +30,28 @@ default), so a sandbox created seconds ago may not be fronted yet. `sbx ready <n
 
 ---
 
+## "docker did not answer in time"
+
+The runtime is running and not replying. Measured on a loaded colima: **1 minute 36 seconds** to
+list seven containers, where the same call on an idle one is milliseconds. sbx gives it ten
+seconds per refresh and says so rather than reporting an empty fleet, because a listing that
+timed out and a machine with no sandboxes are different answers.
+
+It is the VM, not sbx - every command here waits on that same daemon, so they will all be slow
+together. Confirm with the same call by hand:
+
+```sh
+time docker ps -a          # if this is slow, everything is
+colima status              # or Docker Desktop's own dashboard
+```
+
+The usual causes are the machine being out of memory or cpu - `sbx ui` and press `a` for what
+is on it - or the VM having been up long enough to want restarting. `colima restart` stops your
+containers; sbx sandboxes survive it and wake again on the next connection, but anything you
+started by hand does not.
+
+---
+
 ## "never became ready within 2m0s"
 
 The service started and its health command never passed.
