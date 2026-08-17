@@ -192,6 +192,11 @@ people is a hand-written Dockerfile installing sbx with `@latest`: releases befo
 feature have no `--connect-addr`, so the process exits on an unknown flag. `sbx pack` pins the
 version for exactly this reason - if you wrote the image yourself, pin it too.
 
+**"db and replica both want 127.0.0.1:5432".** Two deployments are fronting the same port,
+which is what happens when a sandbox has two of the same service. They cannot share one local
+port, so move one: `--port-offset replica=1000`. The listing then says which one was shifted,
+because its own `sbx env` values no longer apply on this machine.
+
 **"cannot open 127.0.0.1:<port>".** This machine's own `sbx serve` already owns that port,
 because the deployment hands out the same numbers it would locally. `--port-offset 1000`
 moves the whole block; the addresses printed at startup are then the correct ones, and the

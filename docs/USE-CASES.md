@@ -214,14 +214,29 @@ to, and keep talking to it as though it were local:
 ```sh
 sbx pack --spec sandbox.json          # one build context per service, under sbx-pack/
 
-# deploy sbx-pack/db/ to your platform, with SBX_CONNECT_TOKEN set in its environment
+# deploy sbx-pack/db/ and sbx-pack/cache/, each with SBX_CONNECT_TOKEN in its environment
 
-SBX_CONNECT_TOKEN=... sbx connect https://db.example.dev
-#   db  ->  127.0.0.1:5432
+SBX_CONNECT_TOKEN_DB=... SBX_CONNECT_TOKEN_CACHE=... \
+  sbx connect db=https://db.example.dev cache=https://cache.example.dev
+#   db     ->  127.0.0.1:5432
+#   cache  ->  127.0.0.1:6379
 ```
 
 `psql -h 127.0.0.1 -p 5432` then connects to a database in someone else's datacentre without
 knowing any of that happened, which is the whole point: the tools stay ordinary.
+
+**A sandbox is a group of services, and this is where the group is put back together.** A
+platform that gives one container per service spreads it over several deployments; naming them
+merges their ports into one map on this laptop. The alternative - one container running
+everything - would mean giving up the image each service's spec named, because two images
+cannot generally be merged: grafting a musl binary into a glibc base builds cleanly and fails
+at runtime, which is a deploy that looks fine until somebody connects. Each deployment stays
+the image it was, and the joining happens here.
+
+A named deployment reads `SBX_CONNECT_TOKEN_<NAME>` before the shared `SBX_CONNECT_TOKEN`, so
+two deployments do not have to share one secret. If two of them front the same port - two
+postgres, which is a normal thing to want - `--port-offset replica=1000` moves one of them and
+says so in the listing.
 
 What makes it work is that a platform-as-a-service gives you one container and one HTTP port,
 so that is the shape `pack` writes. The generated image runs the base image's **own** start
@@ -232,9 +247,9 @@ from over there is already correct here.
 
 Four things are worth knowing before you rely on it:
 
-- **One deployment per service, today.** `--front` carries several ports at once, so one
-  container can serve a whole sandbox - but `pack` writes one image per service, which means
-  two services are two deployments and two `sbx connect`.
+- **One deployment per service.** That is a property of the platform, not a limitation here:
+  `sbx connect` takes as many as you give it. What it costs is a deploy per service, and
+  whatever your platform charges for that.
 - **No volume means no data.** Most platforms replace the container rather than keep its disk.
   That is right for a branch's test fixtures and wrong for anything you would miss.
 - **The token is the whole of the security.** Anyone with the URL and `SBX_CONNECT_TOKEN` has

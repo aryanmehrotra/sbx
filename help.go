@@ -112,15 +112,21 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx pack db --spec sandbox.json",
 	},
 	"connect": {
-		"sbx connect <url> [--sandbox NAME] [--port-offset N]",
+		"sbx connect <url> [<url> ...] [--sandbox NAME] [--port-offset N|LABEL=N]",
 		"Local ports for a sandbox that is running somewhere else.\n\n" +
 			"Point it at a deployment running `sbx serve --connect-addr` and it opens a listener\n" +
 			"for every service that deployment fronts, on the SAME port numbers - so the `sbx env`\n" +
 			"block from over there is correct here, and psql connects without knowing any of this\n" +
 			"happened. Everything travels over the one HTTP endpoint the platform gives you.\n\n" +
-			"SBX_CONNECT_TOKEN must hold the token the deployment was given. Use --port-offset if\n" +
-			"this machine already runs its own `sbx serve` and owns those ports.",
-		"SBX_CONNECT_TOKEN=... sbx connect https://sbx.example.dev",
+			"Give it several. A platform that runs one container per service spreads a sandbox\n" +
+			"across several deployments, and naming them - db=https://... - puts them back\n" +
+			"together as one local port map. Each keeps the image its spec named, which is what\n" +
+			"packing them into a single container would cost.\n\n" +
+			"SBX_CONNECT_TOKEN holds the token. A named deployment reads SBX_CONNECT_TOKEN_<NAME>\n" +
+			"first, because two deployments usually have two tokens. Use --port-offset if this\n" +
+			"machine already runs its own `sbx serve` and owns those ports, or if two deployments\n" +
+			"front the same port: --port-offset replica=1000 moves only that one.",
+		"SBX_CONNECT_TOKEN=... sbx connect db=https://db.example.dev cache=https://cache.example.dev",
 	},
 	"url": {
 		"sbx url <sandbox> <service> [--via cloudflared|ngrok|ssh]",

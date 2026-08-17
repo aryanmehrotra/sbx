@@ -484,26 +484,51 @@ func dispatch(cmd string, args []string) error {
 
 	case "connect":
 		fs := newFlagSet("connect")
-		offset := fs.Int("port-offset", 0, "add this to every local port, for a machine already running its own sbx serve")
+		offset := fs.String("port-offset", "",
+			"add this to every local port, or label=N for one deployment; for a machine already running its own sbx serve")
 		only := multiFlag{}
 		fs.Var(&only, "sandbox", "only this sandbox; repeatable")
-		positional, rest := splitPositional(args, 1)
+		positional, rest := splitPositional(args, len(args))
 		_ = fs.Parse(rest)
 
 		if len(positional) < 1 {
-			return fmt.Errorf("usage: sbx connect <url> [--sandbox NAME] [--port-offset N]\n" +
-				"     the url is a deployment running `sbx serve --connect-addr`, and\n" +
-				"     SBX_CONNECT_TOKEN must hold the token it was given")
+			return fmt.Errorf("usage: sbx connect <url> [<url> ...] [--sandbox NAME] [--port-offset N]\n" +
+				"     each url is a deployment running `sbx serve --connect-addr`, and\n" +
+				"     SBX_CONNECT_TOKEN must hold the token it was given. Several deployments\n" +
+				"     become one local port map: sbx connect db=https://... cache=https://...")
+		}
+
+		every, byLabel, err := daemon.ParseOffsets(*offset)
+		if err != nil {
+			return err
+		}
+
+		endpoints := make([]daemon.Endpoint, 0, len(positional))
+
+		for _, arg := range positional {
+			label, raw := daemon.SplitEndpoint(arg)
+
+			// A named deployment gets its own variable, falling back to the shared one. Two
+			// deployments usually have two tokens, and the alternative to naming them is
+			// reusing one secret across both.
+			token := os.Getenv("SBX_CONNECT_TOKEN")
+			if label != "" {
+				if t := os.Getenv(daemon.TokenVar(label)); t != "" {
+					token = t
+				}
+			}
+
+			endpoints = append(endpoints, daemon.Endpoint{Label: label, URL: raw, Token: token})
 		}
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
 		return daemon.Connect(ctx, daemon.ClientOptions{
-			Base:      positional[0],
-			Token:     os.Getenv("SBX_CONNECT_TOKEN"),
+			Endpoints: endpoints,
 			Sandbox:   only,
-			PortShift: *offset,
+			Offset:    every,
+			Offsets:   byLabel,
 			Out:       os.Stdout,
 		})
 
@@ -839,7 +864,7 @@ While you work
   sbx cp     <sandbox> <service> <src> <dst>    a path inside is prefixed with :
   sbx add    <sandbox> <service> --image IMG --port N   a service the spec never declared
   sbx url    <sandbox> <service>                a public link that wakes it on open
-  sbx connect <url> [--sandbox NAME]            local ports for a DEPLOYED sbx, over one endpoint
+  sbx connect <url>...                          local ports for DEPLOYED sbx, several as one map
   sbx pack   [service] [--spec F]               build contexts for a platform that takes one container
   sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
 

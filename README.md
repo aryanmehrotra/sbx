@@ -59,7 +59,7 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 | **Isolation tiers** | `--isolation gvisor\|kata`, refused with a reason where the runtime is absent |
 | **Two runtimes** | the same spec locally on docker or in a cluster on kubernetes - not the same capabilities either way, and `sbx doctor` tells you what this host can do |
 | **Housekeeping** | `sbx gc` reclaims what dead sandboxes left, listing by default and deleting only with `--force` |
-| **Deploy it anywhere** | `sbx pack` writes the image for a platform that gives one container and one HTTP port; `sbx connect` turns that back into ordinary local ports, so `psql` connects to a database running somewhere else - [walkthrough](docs/USE-CASES.md#8--a-sandbox-that-is-not-on-your-laptop) |
+| **Deploy it anywhere** | `sbx pack` writes the image for a platform that gives one container and one HTTP port; `sbx connect` turns that back into ordinary local ports - several deployments merge into one local port map, so a sandbox spread over a platform still looks like one - [walkthrough](docs/USE-CASES.md#8--a-sandbox-that-is-not-on-your-laptop) |
 | **A live dashboard** | `sbx ui` - every sandbox, awake or not, with cpu and memory per service against what it is allowed, and a trace of where each has been. Wake, sleep, read logs, set a limit and remove from the keyboard |
 | **History and audit** | `sbx history` records what changed and every wake, with secrets redacted. It reads a file, so it works when docker does not |
 | **Observability** | structured logs on one stdout; [`console/`](console/) adds metrics and health - a *separate* module, so it has dependencies and the daemon still has none |

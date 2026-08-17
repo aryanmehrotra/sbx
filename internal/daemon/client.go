@@ -28,41 +28,68 @@ import (
 	"time"
 )
 
+// Endpoint is one deployment to reach. Several of them is the ordinary case: a sandbox is a
+// group of services, and a platform that gives one container per service spreads that group
+// over several deployments. Merging them here rather than cramming the services into one
+// container is what keeps each service the image the spec actually named.
+type Endpoint struct {
+	Label string // as the user named it; empty means take its host
+	URL   string
+	Token string
+}
+
 // ClientOptions is what `sbx connect` was asked for.
 type ClientOptions struct {
-	Base      string // https://host
-	Token     string
-	Sandbox   []string // only these, if any
-	PortShift int      // added to every local port, for a laptop already running its own daemon
+	Endpoints []Endpoint
+	Sandbox   []string       // only these, if any
+	Offset    int            // added to every local port
+	Offsets   map[string]int // ... except these deployments, which get their own
 	Out       io.Writer
+}
+
+// source is a resolved Endpoint: parsed, checked, and shared by every port it carries.
+type source struct {
+	label string
+	base  *url.URL
+	token string
+	shift int
+}
+
+// placed is one remote service and the deployment it came from.
+type placed struct {
+	svc fleetService
+	src *source
 }
 
 // Connect opens the local listeners and serves them until ctx is done.
 func Connect(ctx context.Context, opt ClientOptions) error {
-	if opt.Token == "" {
-		return errors.New("no token: set SBX_CONNECT_TOKEN to the value the deployment was given")
-	}
-
-	base, err := url.Parse(strings.TrimSuffix(opt.Base, "/"))
-	if err != nil || base.Host == "" {
-		return fmt.Errorf("%q is not a URL of the deployment: expected something like https://sbx.example.dev", opt.Base)
-	}
-
-	fleet, err := fetchFleet(ctx, base, opt.Token)
+	sources, err := resolve(opt)
 	if err != nil {
 		return err
 	}
 
-	wanted := chooseServices(fleet, opt.Sandbox)
+	fleets, err := fetchAll(ctx, sources)
+	if err != nil {
+		return err
+	}
+
+	var wanted []placed
+
+	for i, src := range sources {
+		for _, svc := range chooseServices(fleets[i], opt.Sandbox) {
+			wanted = append(wanted, placed{svc: svc, src: src})
+		}
+	}
+
 	if len(wanted) == 0 {
-		return errors.New("the deployment is fronting nothing that matches")
+		return fmt.Errorf("%s is fronting nothing that matches", strings.Join(labels(sources), ", "))
 	}
 
 	// Every listener is opened before any is served, so a clash is reported before the client
 	// has half a tunnel. Aborting rather than skipping is deliberate: a skipped port leaves
 	// this laptop's own daemon answering on it, and an agent would reach a local sandbox while
 	// believing it reached the remote one.
-	listeners, err := bindAll(wanted, opt.PortShift)
+	listeners, err := bindAll(wanted)
 	if err != nil {
 		return err
 	}
@@ -72,7 +99,7 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 		out = os.Stdout
 	}
 
-	report(out, wanted, opt.PortShift, base)
+	report(out, wanted, sources)
 
 	var wg sync.WaitGroup
 
@@ -82,7 +109,7 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 		go func(l boundPort) {
 			defer wg.Done()
 
-			serveLocal(ctx, l, base, opt.Token)
+			serveLocal(ctx, l)
 		}(l)
 	}
 
@@ -97,12 +124,203 @@ func Connect(ctx context.Context, opt ClientOptions) error {
 	return nil
 }
 
+// resolve turns what the command line said into something that can be dialled.
+//
+// The offset is applied here because this is where a deployment's label is finally known: the
+// user may have named it, and if they did not it is the host. --port-offset db=1000 has to
+// mean the same thing either way.
+func resolve(opt ClientOptions) ([]*source, error) {
+	eps := opt.Endpoints
+	if len(eps) == 0 {
+		return nil, errors.New("no deployment given: sbx connect <url> [<url> ...]")
+	}
+
+	out := make([]*source, 0, len(eps))
+	seen := map[string]bool{}
+	unused := map[string]bool{}
+
+	for l := range opt.Offsets {
+		unused[l] = true
+	}
+
+	for _, e := range eps {
+		base, err := url.Parse(strings.TrimSuffix(e.URL, "/"))
+		if err != nil || base.Host == "" {
+			return nil, fmt.Errorf("%q is not a URL of a deployment: expected something like "+
+				"https://sbx.example.dev", e.URL)
+		}
+
+		label := e.Label
+		if label == "" {
+			label = base.Host
+		}
+
+		if seen[label] {
+			return nil, fmt.Errorf("two deployments are both called %q - name them apart, "+
+				"as in db=%s", label, e.URL)
+		}
+
+		seen[label] = true
+
+		if e.Token == "" {
+			// Named endpoints get their own variable, because two deployments usually have two
+			// tokens and sharing one would mean either reusing a secret or not connecting.
+			hint := "set SBX_CONNECT_TOKEN to the value that deployment was given"
+			if e.Label != "" {
+				hint = fmt.Sprintf("set %s, or SBX_CONNECT_TOKEN for every deployment at once",
+					TokenVar(e.Label))
+			}
+
+			return nil, fmt.Errorf("no token for %s: %s", label, hint)
+		}
+
+		shift := opt.Offset
+		if n, ok := opt.Offsets[label]; ok {
+			shift = n
+			delete(unused, label)
+		}
+
+		out = append(out, &source{label: label, base: base, token: e.Token, shift: shift})
+	}
+
+	// A --port-offset naming a deployment that is not here is a typo, and silently ignoring it
+	// means connecting on the ports the user was trying to move away from.
+	if len(unused) > 0 {
+		names := make([]string, 0, len(unused))
+		for l := range unused {
+			names = append(names, l)
+		}
+
+		sort.Strings(names)
+
+		return nil, fmt.Errorf("--port-offset names %s, which is not one of the deployments given (%s)",
+			strings.Join(names, ", "), strings.Join(labels(out), ", "))
+	}
+
+	return out, nil
+}
+
+// TokenVar is the environment variable holding a named deployment's token.
+func TokenVar(label string) string {
+	var b strings.Builder
+
+	b.WriteString("SBX_CONNECT_TOKEN_")
+
+	for _, r := range strings.ToUpper(label) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+
+			continue
+		}
+
+		b.WriteByte('_')
+	}
+
+	return b.String()
+}
+
+// SplitEndpoint reads a `label=url` argument, returning an empty label for a bare URL.
+//
+// A URL's scheme is followed by `://`, so anything with an `=` before any `:` or `/` was meant
+// as a name. Guessing the other way round - treating `https://x` as a label - would turn a
+// plain URL into a deployment nobody can address.
+func SplitEndpoint(arg string) (label, rawURL string) {
+	i := strings.Index(arg, "=")
+	if i <= 0 {
+		return "", arg
+	}
+
+	if strings.ContainsAny(arg[:i], ":/") {
+		return "", arg
+	}
+
+	return arg[:i], arg[i+1:]
+}
+
+// ParseOffsets reads --port-offset: one number for every deployment, or label=N pairs.
+func ParseOffsets(spec string) (int, map[string]int, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return 0, nil, nil
+	}
+
+	if n, err := strconv.Atoi(spec); err == nil {
+		return n, nil, nil
+	}
+
+	byLabel := map[string]int{}
+
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		name, num, ok := strings.Cut(part, "=")
+		if !ok {
+			return 0, nil, fmt.Errorf("--port-offset %q: %q is neither a number nor label=number",
+				spec, part)
+		}
+
+		n, err := strconv.Atoi(strings.TrimSpace(num))
+		if err != nil {
+			return 0, nil, fmt.Errorf("--port-offset %q: %q is not a number", spec, num)
+		}
+
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return 0, nil, fmt.Errorf("--port-offset %q: a number needs a deployment to apply to", spec)
+		}
+
+		byLabel[name] = n
+	}
+
+	return 0, byLabel, nil
+}
+
+func labels(sources []*source) []string {
+	out := make([]string, 0, len(sources))
+	for _, s := range sources {
+		out = append(out, s.label)
+	}
+
+	return out
+}
+
+// fetchAll asks every deployment what it is fronting, at the same time.
+//
+// At the same time because these wake on the first request: a platform that scales to zero
+// takes seconds to answer the first one, and asking three in turn would cost that three times
+// over for no reason. One failure fails the whole command - a half-built port map is the case
+// where somebody reaches their own laptop's sandbox believing they reached the remote one.
+func fetchAll(ctx context.Context, sources []*source) ([][]fleetService, error) {
+	out := make([][]fleetService, len(sources))
+	errs := make([]error, len(sources))
+
+	var wg sync.WaitGroup
+
+	for i, s := range sources {
+		wg.Add(1)
+
+		go func(i int, s *source) {
+			defer wg.Done()
+
+			out[i], errs[i] = fetchFleet(ctx, s.base, s.token)
+		}(i, s)
+	}
+
+	wg.Wait()
+
+	return out, errors.Join(errs...)
+}
+
 type boundPort struct {
 	ln       net.Listener
 	remote   int
 	local    int
 	instance string
 	name     string
+	src      *source
 }
 
 func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetService, error) {
@@ -165,7 +383,7 @@ func chooseServices(all []fleetService, only []string) []fleetService {
 // Loopback only, never 0.0.0.0: the bearer token is checked once when this process dials the
 // deployment, and the local listener re-authenticates nobody. On all interfaces it would hand
 // anyone on the café wifi a fully authenticated tunnel into the deployment.
-func bindAll(services []fleetService, shift int) ([]boundPort, error) {
+func bindAll(services []placed) ([]boundPort, error) {
 	var out []boundPort
 
 	fail := func(err error) ([]boundPort, error) {
@@ -176,21 +394,37 @@ func bindAll(services []fleetService, shift int) ([]boundPort, error) {
 		return nil, err
 	}
 
-	for _, s := range services {
-		for _, remote := range s.Ports {
-			local := remote + shift
+	// Which deployment already claimed a local port. Two of them fronting 5432 - two postgres,
+	// which is a normal thing to want - would otherwise be a bind error naming the second one
+	// only, reading as "something else has this port" when the something else is us.
+	taken := map[int]placed{}
+
+	for _, p := range services {
+		for _, remote := range p.svc.Ports {
+			local := remote + p.src.shift
+
+			if first, clash := taken[local]; clash {
+				return fail(fmt.Errorf("%s and %s both want 127.0.0.1:%d\n"+
+					"     two deployments fronting the same port cannot share one local port.\n"+
+					"     Move one of them: --port-offset %s=1000",
+					first.src.label, p.src.label, local, p.src.label))
+			}
 
 			ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(local)))
 			if err != nil {
 				return fail(fmt.Errorf("cannot open 127.0.0.1:%d for %s/%s: %w\n"+
 					"     something already has it - often this machine's own `sbx serve`.\n"+
-					"     Use --port-offset N to move every local port, or --sandbox to take fewer",
-					local, s.Sandbox, s.Service, err))
+					"     Use --port-offset N to move every local port, --port-offset %s=N to move\n"+
+					"     just this deployment's, or --sandbox to take fewer",
+					local, p.svc.Sandbox, p.svc.Service, err, p.src.label))
 			}
+
+			taken[local] = p
 
 			out = append(out, boundPort{
 				ln: ln, remote: remote, local: local,
-				instance: s.Instance, name: s.Sandbox + "/" + s.Service,
+				instance: p.svc.Instance, name: p.svc.Sandbox + "/" + p.svc.Service,
+				src: p.src,
 			})
 		}
 	}
@@ -198,32 +432,59 @@ func bindAll(services []fleetService, shift int) ([]boundPort, error) {
 	return out, nil
 }
 
-func report(w io.Writer, services []fleetService, shift int, base *url.URL) {
+func report(w io.Writer, services []placed, sources []*source) {
 	sort.Slice(services, func(i, j int) bool {
-		if services[i].Sandbox != services[j].Sandbox {
-			return services[i].Sandbox < services[j].Sandbox
+		if services[i].svc.Sandbox != services[j].svc.Sandbox {
+			return services[i].svc.Sandbox < services[j].svc.Sandbox
 		}
 
-		return services[i].Service < services[j].Service
+		return services[i].svc.Service < services[j].svc.Service
 	})
 
-	fmt.Fprintf(w, "sbx connect · %s\n\n", base)
+	one := len(sources) == 1
 
-	for _, s := range services {
-		for _, p := range s.Ports {
-			fmt.Fprintf(w, "  127.0.0.1:%-6d %s/%s\n", p+shift, s.Sandbox, s.Service)
+	if one {
+		fmt.Fprintf(w, "sbx connect · %s\n\n", sources[0].base)
+	} else {
+		fmt.Fprintf(w, "sbx connect · %d deployments\n", len(sources))
+	}
+
+	// Grouped by deployment rather than interleaved: the question somebody asks of this list is
+	// "did the cache one come up", and an alphabetical merge buries the answer.
+	for _, src := range sources {
+		if !one {
+			fmt.Fprintf(w, "\n  %s · %s\n", src.label, src.base)
+		}
+
+		for _, p := range services {
+			if p.src != src {
+				continue
+			}
+
+			for _, port := range p.svc.Ports {
+				indent := "  "
+				if !one {
+					indent = "    "
+				}
+
+				fmt.Fprintf(w, "%s127.0.0.1:%-6d %s/%s\n", indent, port+src.shift,
+					p.svc.Sandbox, p.svc.Service)
+			}
 		}
 	}
 
-	if shift != 0 {
-		fmt.Fprintf(w, "\n  ports are shifted by %d, so the deployment's own `sbx env` values do NOT apply here\n", shift)
+	for _, src := range sources {
+		if src.shift != 0 {
+			fmt.Fprintf(w, "\n  %s is shifted by %d, so its own `sbx env` values do NOT apply here\n",
+				src.label, src.shift)
+		}
 	}
 
 	fmt.Fprintf(w, "\nOpening one of these wakes the sandbox behind it. Ctrl-C closes the tunnel.\n")
 }
 
 // serveLocal accepts on one local port and gives each connection its own tunnel.
-func serveLocal(ctx context.Context, b boundPort, base *url.URL, token string) {
+func serveLocal(ctx context.Context, b boundPort) {
 	for {
 		c, err := b.ln.Accept()
 		if err != nil {
@@ -233,7 +494,7 @@ func serveLocal(ctx context.Context, b boundPort, base *url.URL, token string) {
 		go func() {
 			defer c.Close()
 
-			if err := tunnelOne(ctx, c, b, base, token); err != nil {
+			if err := tunnelOne(ctx, c, b, b.src.base, b.src.token); err != nil {
 				fmt.Fprintf(os.Stderr, "sbx connect: %s: %v\n", b.name, err)
 			}
 		}()
