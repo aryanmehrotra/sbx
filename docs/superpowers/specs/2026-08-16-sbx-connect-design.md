@@ -496,3 +496,30 @@ Dockerfile is the sandbox rather than sbx.
    for `sbx url`. Worth settling before building the Kubernetes half, not after.
 3. **Compression.** Not in v1. Database protocols are mostly small messages and a `permessage-deflate`
    negotiation is more RFC surface for little gain.
+
+## Left open by the multi-deployment review
+
+Several deployments now merge into one local port map. A design review of that change raised
+three things that were deliberately not fixed with it, recorded here so they are decisions
+rather than omissions.
+
+1. **A restarted deployment stays dead until `sbx connect` is restarted.** `frontInstance` is a
+   fresh id per process, so any replacement - a redeploy, a crash, or the platform's own
+   scale-to-zero - makes every port of that deployment refuse with a 409 for the life of the
+   session. The refusal is right for a stream already in flight, which is what
+   TROUBLESHOOTING.md argues; it is not obviously right for a *new* connection, where
+   re-fetching the fleet and re-dialling is exactly what the manual restart does anyway. The
+   fleet already carries `sandbox`/`service` per port, so a re-resolve could refuse only when
+   the name behind the port changed, which keeps the promise that a port never quietly serves a
+   different sandbox. This got worse with several deployments: one stale deployment out of four
+   now costs a restart of all four, and their cold starts.
+2. **The fallback from `SBX_CONNECT_TOKEN_<NAME>` to the shared token is silent.** Somebody
+   moving to per-deployment secrets who misspells one variable gets the shared token sent to
+   that deployment instead - a confusing "rejected the token", or silent success if it happens
+   to accept both. Reporting which variable each deployment's token came from would close it.
+3. **`sbx connect` prints a table, not an environment.** The pitch is that the deployment's own
+   `sbx env` values are correct here, and `--port-offset` - which several deployments make
+   likely rather than rare - is exactly when that stops being true. There is no `--shell
+   posix|json` output, so the corrected variables have to be read off a human-formatted table by
+   hand. Additive, so it costs nothing to leave, but it is the half of the ergonomics that is
+   missing.
