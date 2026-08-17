@@ -8,9 +8,11 @@ package ui
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/tui"
@@ -347,3 +349,97 @@ func TestASleepingServiceShowsNoShare(t *testing.T) {
 		}
 	}
 }
+
+// The table says CPU and MEMORY over two columns, and the services inside a sandbox report the
+// same two figures. Printed a few characters to the right of them they were close enough to look
+// like a mistake and far enough that the eye cannot read down the column.
+//
+// Measured rather than eyeballed, because eyeballing is what missed it.
+func TestAMemberLineEndsItsReadingsWhereTheTableDoes(t *testing.T) {
+	// A sandbox name long enough that the table's columns sit right of the address, which is
+	// the ordinary case and the one worth aligning.
+	rows := []row{
+		{Sandbox: "zopnight-today-work", Service: "mysql", Awake: true, Ref: "r1",
+			Address: "127.0.0.1:20000", CPU: 5, CPUKnown: true, MemBytes: 300 << 20, MemKnown: true},
+		{Sandbox: "zopnight-today-work", Service: "redis", Awake: true, Ref: "r2",
+			Address: "127.0.0.1:20001", CPU: 2, CPUKnown: true, MemBytes: 4 << 20, MemKnown: true},
+	}
+
+	frame := plain(render(model{
+		version: "v0", rows: rows, grouped: true, metered: true,
+	}, 26, 132))
+
+	// Counted in runes, not bytes. The selected row is marked with "›", which is three bytes
+	// and one column - a byte offset made the table look two columns out when it was not.
+	endOf := func(line, token string) int {
+		i := strings.Index(line, token)
+		if i < 0 {
+			return -1
+		}
+
+		return utf8.RuneCountInString(line[:i]) + utf8.RuneCountInString(token)
+	}
+
+	var header, row, member string
+
+	for _, l := range strings.Split(frame, "\n") {
+		switch {
+		case strings.Contains(l, "SANDBOX") && strings.Contains(l, "MEMORY"):
+			header = l
+		case strings.Contains(l, "zopnight-today-work") && strings.Contains(l, "2 services"):
+			if row == "" {
+				row = l
+			}
+		case strings.HasPrefix(strings.TrimSpace(l), "mysql"):
+			member = l
+		}
+	}
+
+	if header == "" || row == "" || member == "" {
+		t.Fatalf("could not find the three lines to compare:\n%s", frame)
+	}
+
+	for _, c := range []struct {
+		what              string
+		head, table, memb string
+	}{
+		{"cpu", "CPU", "7.0%", "5.0%"},
+		{"memory", "MEMORY", "304 MB", "300m"},
+	} {
+		h, r, mm := endOf(header, c.head), endOf(row, c.table), endOf(member, c.memb)
+
+		if h < 0 || r < 0 || mm < 0 {
+			t.Errorf("%s: missing a column (header %d, row %d, member %d)\n%s",
+				c.what, h, r, mm, frame)
+
+			continue
+		}
+
+		if h != r || r != mm {
+			t.Errorf("%s ends at column %d in the header, %d in the table and %d under it - "+
+				"three geometries for one column\n%s", c.what, h, r, mm, frame)
+		}
+	}
+}
+
+// Where the sandbox has a short name the table's columns sit left of where the address ends,
+// and there is nothing to align to. What must not happen is the reading landing against the
+// address: "127.0.0.1:1" and "5.0%" were once printed as "127.0.0.1:15.0%".
+func TestAReadingNeverRunsIntoTheAddress(t *testing.T) {
+	frame := plain(render(model{
+		version: "v0", rows: twoSandboxes(), grouped: true, metered: true,
+	}, 26, 132))
+
+	for _, l := range strings.Split(frame, "\n") {
+		if !strings.Contains(l, "127.0.0.1:") {
+			continue
+		}
+
+		if regexpDigitPct.MatchString(l) {
+			t.Errorf("a reading ran into the address: %q", strings.TrimRight(l, " "))
+		}
+	}
+}
+
+// An address followed immediately by a percentage, with no space between them.
+var regexpDigitPct = regexp.MustCompile(`127\.0\.0\.1:\d+\.?\d*%`)

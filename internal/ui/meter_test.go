@@ -219,7 +219,7 @@ func TestASleepingServiceFillsItsBlock(t *testing.T) {
 		metered: true,
 	}
 
-	block := detailBlock(asleep, plan(30, 1, wantDetail(asleep)).detailRows, 120)
+	block := detailBlock(asleep, widths(asleep.rows, 120), plan(30, 1, wantDetail(asleep)).detailRows, 120)
 
 	for i, l := range block {
 		if strings.TrimSpace(plainText(l)) == "" {
@@ -237,7 +237,7 @@ func TestASleepingServiceStillSaysTheVolumeIsIntact(t *testing.T) {
 		metered: true,
 	}
 
-	got := plainText(strings.Join(detailBlock(m, detailFull, 140), "\n"))
+	got := plainText(strings.Join(detailBlock(m, widths(m.rows, 120), detailFull, 140), "\n"))
 
 	if !strings.Contains(got, "volume intact") {
 		t.Errorf("a sleeping service's block never says the volume survives:\n%s", got)
@@ -398,7 +398,7 @@ func TestATrendLineFitsAndKeepsItsLegend(t *testing.T) {
 	}
 
 	for _, cols := range []int{100, 120, 150, 190, 240} {
-		lines := detailBlock(m, detailFull, cols)
+		lines := detailBlock(m, widths(m.rows, 120), detailFull, cols)
 
 		for _, l := range lines {
 			if n := visibleLen(l); n > cols {
@@ -499,7 +499,7 @@ func TestTheTwoTrendRowsLineUp(t *testing.T) {
 	for _, cols := range []int{100, 120, 150, 190, 240} {
 		var cpu, mem string
 
-		for _, l := range detailBlock(m, detailFull, cols) {
+		for _, l := range detailBlock(m, widths(m.rows, 120), detailFull, cols) {
 			switch p := plainText(l); {
 			case strings.Contains(p, "cpu "):
 				cpu = p

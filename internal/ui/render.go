@@ -121,7 +121,7 @@ func render(m model, rows, cols int) string {
 
 	if l.detailRows > 0 {
 		rule()
-		out = append(out, painted(detailBlock(m, l.detailRows, cols), cols)...)
+		out = append(out, painted(detailBlock(m, w, l.detailRows, cols), cols)...)
 	}
 
 	if l.paneRows > 0 {
@@ -254,7 +254,7 @@ func tableRows(m model, w cols, space, cols int) []string {
 // that cannot tell you which of them is the expensive one. So the block underneath is the list
 // the grouped row folded up, with the addresses, because those are what somebody is looking for
 // when they have picked a sandbox out of a list.
-func sandboxDetail(m model, r row, space, cols int) []string {
+func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 	head := fmt.Sprintf(" %s%s%s  %s%s%s", cyan, r.Sandbox, reset, dim, r.Service, reset)
 	connect := fmt.Sprintf("%seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset)
 
@@ -299,58 +299,63 @@ func sandboxDetail(m model, r row, space, cols int) []string {
 			break
 		}
 
-		state, colour := "asleep", dim
-		if s.Awake {
-			state, colour = "AWAKE", green
-		}
-
-		out = append(out, truncate(fmt.Sprintf("   %-14s %s%-6s%s  %s%-*s%s%s",
-			s.Service, colour, state, reset, dim, addrCell, s.Address, reset,
-			memberUsage(m, s, r, cols)), cols))
+		out = append(out, truncate(memberLine(m, s, r, w, cols), cols))
 	}
 
 	return padTo(out, space, cols)
 }
 
-// addrCell is what a member line spends on an address, so the readings after it line up into a
-// column that can be read down rather than a ragged edge that has to be read across.
-const addrCell = 17
-
-// memberUsage is one service's share of the sandbox it is in, and its own recent shape.
+// memberLine is one service inside its sandbox, with its numbers under the table's own.
 //
-// The sandbox's total answers "is this costing me anything" and cannot answer "which of them",
-// which is the next question and the reason somebody opened the sandbox rather than the service
-// list. A share and a trace per line answer it without leaving the view: 354 MB against 3 MB is
-// arithmetic a reader should not have to do, and a flat line beside a climbing one is the thing
-// a column of numbers cannot show at all.
-func memberUsage(m model, s row, sandbox row, cols int) string {
-	if !s.Awake || !s.MemKnown {
-		return ""
+// Under them literally. The table above says CPU and MEMORY over two columns, and the same two
+// figures for the services inside a sandbox were printed a few characters to the right of them -
+// close enough to look like a mistake and far enough that the eye cannot read down the column.
+// So the line is padded to end its readings exactly where the row above ends its own, which is
+// arithmetic the table already did in widths().
+//
+// Where the name, state and address have already run past that point - a long service name on a
+// narrow terminal - the readings follow on after a space instead. Alignment is worth having and
+// not worth overlapping the address to get.
+func memberLine(m model, s row, sandbox row, w cols, width int) string {
+	state, colour := "asleep", dim
+	if s.Awake {
+		state, colour = "AWAKE", green
 	}
 
-	// Both figures, in the table's own order. The table's headers promise CPU and MEMORY and
-	// the sandbox's own block gives both, so a member line that carried memory alone was the
-	// one place the screen stopped answering half the question it had just asked - and cpu is
-	// the half that says which service is *working* rather than merely resident.
-	cpu := dim + "   …  " + reset
+	line := fmt.Sprintf("   %-14s %s%-6s%s  %s%s%s",
+		s.Service, colour, state, reset, dim, s.Address, reset)
+
+	if !s.Awake {
+		return line
+	}
+
+	// Where the table ends each of its two readings: the marker and its space, the two names,
+	// the state, and the separators between them.
+	cpuEnd := 2 + w.sandbox + 2 + w.service + 2 + 6 + 2 + w.cpu
+	memEnd := cpuEnd + 2 + w.mem
+
+	cpuText := "…"
 	if s.CPUKnown {
-		cpu = fmt.Sprintf("%6.1f%%", s.CPU)
+		cpuText = fmt.Sprintf("%.1f%%", s.CPU)
 	}
 
-	share := ""
+	memText := "…"
+	if s.MemKnown {
+		memText = shortBytes(s.MemBytes)
+	}
+
+	line = endAt(line, cpuText, cpuEnd)
+	line = endAt(line, memText, memEnd)
 
 	// Of the sandbox's own total rather than of a ceiling: this is about which service the
 	// memory went to, and most services have no ceiling to be a percentage of.
-	if sandbox.MemKnown && sandbox.MemBytes > 0 {
-		share = fmt.Sprintf(" %s%3.0f%%%s", dim, 100*float64(s.MemBytes)/float64(sandbox.MemBytes), reset)
+	if s.MemKnown && sandbox.MemKnown && sandbox.MemBytes > 0 {
+		line += fmt.Sprintf(" %s%3.0f%%%s", dim,
+			100*float64(s.MemBytes)/float64(sandbox.MemBytes), reset)
 	}
 
-	line := fmt.Sprintf("  %s%s  %7s%s%s", reset, cpu, shortBytes(s.MemBytes), reset, share)
-
-	// Whatever is left after the fixed part of the line, and only if it is enough to draw a
-	// shape rather than a smudge.
-	room := cols - fieldIndent - addrCell - 30
-	if room >= 12 {
+	// Whatever is left, and only if it is enough to draw a shape rather than a smudge.
+	if room := width - visibleLen(line) - 2; room >= 12 {
 		var values []float64
 		for _, sample := range m.series[s.Ref] {
 			values = append(values, float64(sample.mem))
@@ -362,6 +367,21 @@ func memberUsage(m model, s row, sandbox row, cols int) string {
 	}
 
 	return line
+}
+
+// endAt pads a line so the token ends exactly at col, or - where the line has already run past
+// that point - puts it after a gap instead.
+//
+// The gap is the part that matters. Padding to a column already behind you pads by nothing, and
+// the token then lands hard against whatever was there: with a short sandbox name the cpu column
+// sits left of where the address ends, and "127.0.0.1:1" and "5.0%" were printed as
+// "127.0.0.1:15.0%". Alignment is worth having and never worth running two fields together.
+func endAt(line, token string, col int) string {
+	if want := col - visibleLen(token); visibleLen(line) < want {
+		return padRight(line, want) + token
+	}
+
+	return line + "  " + token
 }
 
 // padTo keeps the panes below from walking up and down the screen as sandboxes come and go,
@@ -611,14 +631,14 @@ func shortAddress(addr string, width int) string {
 // It is the answer to "and now what": the address to connect to, the command that exports it,
 // and what the thing is actually doing. On a short terminal it collapses to the one line that
 // matters; given room it expands, which is a better use of a tall screen than blank lines.
-func detailBlock(m model, space, cols int) []string {
+func detailBlock(m model, w cols, space, cols int) []string {
 	r, ok := m.currentRow()
 	if !ok {
 		return blanks(space)
 	}
 
 	if r.Members > 0 {
-		return sandboxDetail(m, r, space, cols)
+		return sandboxDetail(m, r, w, space, cols)
 	}
 
 	head := fmt.Sprintf(" %s%s/%s%s  %s%s%s", cyan, r.Sandbox, r.Service, reset, dim, r.Ref, reset)
