@@ -217,10 +217,10 @@ sbx pack --spec sandbox.json          # one build context per service, under sbx
 # deploy sbx-pack/db/ to your platform, with SBX_CONNECT_TOKEN set in its environment
 
 SBX_CONNECT_TOKEN=... sbx connect https://db.example.dev
-#   db  ->  127.0.0.1:20002
+#   db  ->  127.0.0.1:5432
 ```
 
-`psql -h 127.0.0.1 -p 20002` then connects to a database in someone else's datacentre without
+`psql -h 127.0.0.1 -p 5432` then connects to a database in someone else's datacentre without
 knowing any of that happened, which is the whole point: the tools stay ordinary.
 
 What makes it work is that a platform-as-a-service gives you one container and one HTTP port,

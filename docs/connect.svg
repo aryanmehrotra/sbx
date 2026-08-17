@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="330" viewBox="0 0 1040 330" role="img" aria-label="How sbx connect works: on your laptop, psql dials 127.0.0.1 port 20002, which sbx connect is listening on; sbx connect carries that TCP stream over one HTTPS WebSocket, authenticated with SBX_CONNECT_TOKEN, to the single HTTP port the platform routes; there sbx serve --front hands it to postgres listening on port 5432 inside the container, which is never published.">
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="330" viewBox="0 0 1040 330" role="img" aria-label="How sbx connect works: on your laptop, psql dials 127.0.0.1 port 5432, which sbx connect is listening on; sbx connect carries that TCP stream over one HTTPS WebSocket, authenticated with SBX_CONNECT_TOKEN, to the single HTTP port the platform routes; there sbx serve --front hands it to postgres listening on port 5432 inside the container, which is never published.">
   <style>
     text { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; white-space: pre }
     .t { fill: #c9d1d9; font-weight: 600 }
@@ -33,7 +33,7 @@
   <!-- laptop: sbx connect -->
   <rect x="256" y="112" width="184" height="60" rx="6" fill="#161b22" stroke="#30363d"/>
   <text x="272" y="138" class="t">sbx connect</text>
-  <text x="272" y="157" class="k">127.0.0.1:20002</text>
+  <text x="272" y="157" class="k">127.0.0.1:5432</text>
 
   <line x1="216" y1="142" x2="248" y2="142" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ar)"/>
 
