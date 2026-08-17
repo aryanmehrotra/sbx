@@ -30,6 +30,26 @@ default), so a sandbox created seconds ago may not be fronted yet. `sbx ready <n
 
 ---
 
+## "colima is not running" / "the container runtime is not running"
+
+Its socket is not there, so there is nothing to ask. sbx names the runtime from where that
+socket was and gives you the command:
+
+```sh
+colima start                 # or: open -a Docker, podman machine start
+```
+
+**Your sandboxes survive it.** They are containers with volumes; stopping the runtime stops
+them, and the first connection after it comes back wakes them again. Nothing needs recreating
+and nothing was lost.
+
+sbx never starts or stops the runtime itself - it has no `colima` or `podman` in it anywhere.
+If yours stopped without you asking, its own log says why: `~/.colima/_lima/colima/ha.stderr.log`
+records a clean shutdown sequence when something ran `colima stop`, which is different from a
+crash and worth knowing before you go looking for a bug here.
+
+---
+
 ## "docker did not answer in time"
 
 The runtime is running and not replying. Measured on a loaded colima: **1 minute 36 seconds** to

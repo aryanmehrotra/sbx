@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 	"slices"
 	"strings"
 
@@ -134,13 +135,21 @@ func Doctor(ctx context.Context) Report {
 		ver, up := dockerInfo(ctx, "{{.ServerVersion}}")
 		detail := ver
 
+		meaning := "nothing can be created until the daemon is running"
+
 		if !up {
+			// Which runtime, and the command that starts it. "the daemon did not answer" is
+			// true of a machine where colima was stopped, where Docker Desktop was never
+			// opened and where the VM is wedged, and those want different things done.
+			name, start := provider.RuntimeHint()
+
 			detail = "the CLI is here but the daemon did not answer"
+			meaning = fmt.Sprintf("nothing can be created until it is running - %s looks like "+
+				"the runtime here, so try `%s`", name, start)
 		}
 
 		rep.Capabilities = append(rep.Capabilities, Capability{
-			Name: "docker daemon", Have: up, Detail: detail,
-			Meaning: "nothing can be created until the daemon is running",
+			Name: "docker daemon", Have: up, Detail: detail, Meaning: meaning,
 		})
 	}
 

@@ -132,6 +132,39 @@ func (d *dockerProvider) Host(ctx context.Context) (Host, error) {
 	return Host{Cores: i.NCPU, MemBytes: i.MemTotal, Name: i.Name}, nil
 }
 
+// runtimeHint names the container runtime behind an endpoint, and how it is started.
+//
+// From the socket path, which is the only evidence there is once the thing is down: a stopped
+// runtime cannot be asked what it is. Each of these puts its socket somewhere characteristic,
+// and being wrong here costs a wrong command in a message rather than a wrong action.
+func runtimeHint(ep dockerEndpoint) (name, start string) {
+	switch {
+	case strings.Contains(ep.Address, "/.colima/"):
+		return "colima", "colima start"
+	case strings.Contains(ep.Address, "/.rd/"):
+		return "Rancher Desktop", "open -a 'Rancher Desktop'"
+	case strings.Contains(ep.Address, "podman"):
+		return "the podman machine", "podman machine start"
+	case strings.Contains(ep.Address, "/.docker/"), strings.Contains(ep.Address, "/.lima/"):
+		return "Docker Desktop", "open -a Docker"
+	}
+
+	return "the container runtime", "whatever starts it on this machine"
+}
+
+// RuntimeHint names the container runtime this machine looks like it uses, and how to start it.
+//
+// Exported for `sbx doctor`, which is asked exactly when nothing is answering and so cannot ask
+// the runtime what it is.
+func RuntimeHint() (name, start string) {
+	ep, err := resolveDockerHost("")
+	if err != nil {
+		return "the container runtime", "whatever starts it on this machine"
+	}
+
+	return runtimeHint(ep)
+}
+
 // Neighbours is every container on this machine with what it is holding.
 func (d *dockerProvider) Neighbours(ctx context.Context) ([]Neighbour, error) {
 	cs, err := d.api.list(ctx, "")
@@ -177,6 +210,21 @@ func (d *dockerProvider) Neighbours(ctx context.Context) ([]Neighbour, error) {
 // Distinguished because the two have different fixes: a socket that is not there needs the
 // runtime started, and one that is not answering needs it looked at.
 func listError(ep dockerEndpoint, err error) error {
+	// A socket that is not there is a runtime that is not running, and that is worth saying in
+	// those words. The dial error underneath - "connect: no such file or directory" against a
+	// path nobody typed - describes the symptom and names neither the thing that is down nor
+	// the command that brings it back.
+	if ep.Network == "unix" {
+		if _, statErr := os.Stat(ep.Address); os.IsNotExist(statErr) {
+			name, start := runtimeHint(ep)
+
+			return fmt.Errorf("%s is not running - %s is not there\n"+
+				"     start it with `%s`. Your sandboxes survive it: they are containers, and "+
+				"the first connection wakes them again",
+				name, ep.Address, start)
+		}
+	}
+
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("docker did not answer in time via %s - it is running but too busy "+
 			"to reply, or wedged\n"+
