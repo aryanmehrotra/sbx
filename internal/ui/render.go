@@ -12,6 +12,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -161,6 +162,14 @@ func title(m model, cols int) string {
 		right = fmt.Sprintf("%d sbx · %d/%d awake", sandboxes, awake, services)
 	}
 
+	// What the fleet is costing, against what the machine has. A memory figure on its own is a
+	// number; the same figure beside the ceiling it is heading for is a decision about whether
+	// to sleep something. Dropped first when the line will not fit, because it is context and
+	// the counts are the subject.
+	if host := hostShare(m); host != "" && visibleLen(left)+len(right)+len(host)+len(m.provider)+7 <= cols {
+		right += " · " + host
+	}
+
 	if m.provider != "" {
 		right += " · " + m.provider
 	}
@@ -170,6 +179,33 @@ func title(m model, cols int) string {
 	}
 
 	return pad(left, right+" ", cols)
+}
+
+// hostShare is the fleet's memory against the machine's, and the machine's cores.
+//
+// The machine as the containers see it: on macOS and Windows that is the VM, which is what they
+// are actually sharing. A Mac with 32 GB whose colima was given 8 is a machine where 6 GB of
+// sandboxes is nearly full, and measuring against 32 would be a comforting number about nothing.
+func hostShare(m model) string {
+	if m.host.MemBytes == 0 {
+		return ""
+	}
+
+	var used uint64
+
+	for _, r := range m.rows {
+		if r.MemKnown {
+			used += r.MemBytes
+		}
+	}
+
+	out := fmt.Sprintf("%s of %s", shortBytes(used), shortBytes(m.host.MemBytes))
+
+	if m.host.Cores > 0 {
+		out += fmt.Sprintf(" · %s", plural(m.host.Cores, "core"))
+	}
+
+	return out
 }
 
 func tableHeader(m model, w cols) string {
@@ -283,6 +319,23 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 	// is the list that can.
 	members := m.membersOf(r.Sandbox)
 
+	// One geometry for every member line. The widest address decides where the readings begin,
+	// so a service publishing two ports - "127.0.0.1:20002 127.0.0.1:20003", twice as wide as
+	// its neighbours' - does not push its own numbers out of the column the others share.
+	//
+	// Where the table's columns are further right they win, and then the readings sit under the
+	// table's own headings as well as under each other. Where they are not, these lines line up
+	// with themselves, which is the alignment a reader is actually comparing.
+	addrWidth := 0
+	for _, s := range members {
+		addrWidth = max(addrWidth, visibleLen(s.Address))
+	}
+
+	addrWidth = min(addrWidth, maxMemberAddr)
+
+	cpuEnd := max(2+w.sandbox+2+w.service+2+6+2+w.cpu, memberPrefix+addrWidth+2+w.cpu)
+	memEnd := cpuEnd + 2 + w.mem
+
 	for i, s := range members {
 		room := space - len(out)
 		if room <= 0 {
@@ -299,7 +352,7 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 			break
 		}
 
-		out = append(out, truncate(memberLine(m, s, r, w, cols), cols))
+		out = append(out, truncate(memberLine(m, s, r, addrWidth, cpuEnd, memEnd, cols), cols))
 	}
 
 	return padTo(out, space, cols)
@@ -316,23 +369,25 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 // Where the name, state and address have already run past that point - a long service name on a
 // narrow terminal - the readings follow on after a space instead. Alignment is worth having and
 // not worth overlapping the address to get.
-func memberLine(m model, s row, sandbox row, w cols, width int) string {
+func memberLine(m model, s row, sandbox row, addrWidth, cpuEnd, memEnd, width int) string {
 	state, colour := "asleep", dim
 	if s.Awake {
 		state, colour = "AWAKE", green
 	}
 
+	// Cut to the shared width, as the table's own ADDRESS column is, so that one long address
+	// costs its own line and not everybody's.
+	addr := s.Address
+	if visibleLen(addr) > addrWidth {
+		addr = truncate(addr, addrWidth)
+	}
+
 	line := fmt.Sprintf("   %-14s %s%-6s%s  %s%s%s",
-		s.Service, colour, state, reset, dim, s.Address, reset)
+		s.Service, colour, state, reset, dim, addr, reset)
 
 	if !s.Awake {
 		return line
 	}
-
-	// Where the table ends each of its two readings: the marker and its space, the two names,
-	// the state, and the separators between them.
-	cpuEnd := 2 + w.sandbox + 2 + w.service + 2 + 6 + 2 + w.cpu
-	memEnd := cpuEnd + 2 + w.mem
 
 	cpuText := "…"
 	if s.CPUKnown {
@@ -368,6 +423,96 @@ func memberLine(m model, s row, sandbox row, w cols, width int) string {
 
 	return line
 }
+
+// systemBody is the machine: what is on it, what each is holding, and what is left.
+//
+// Everything, not only ours. "What is using the memory" is rarely answered by the sandboxes
+// alone - a laptop's runtime holds whatever else the day has left there - and a pane that
+// listed only sbx's services would report a nearly empty machine while the VM was full.
+func systemBody(m model, space, cols int) []string {
+	if len(m.neighbours) == 0 {
+		return []string{truncate(dim+"  reading the machine…"+reset, cols)}
+	}
+
+	sorted := append([]provider.Neighbour(nil), m.neighbours...)
+
+	// By what they are holding, because the question is which of them to stop.
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].MemBytes != sorted[j].MemBytes {
+			return sorted[i].MemBytes > sorted[j].MemBytes
+		}
+
+		return sorted[i].Name < sorted[j].Name
+	})
+
+	var (
+		out          []string
+		ours, others uint64
+		asleep       int
+	)
+
+	for _, n := range sorted {
+		if !n.Running {
+			asleep++
+		}
+
+		if n.Ours {
+			ours += n.MemBytes
+		} else {
+			others += n.MemBytes
+		}
+	}
+
+	// The summary first: it is the line somebody came for, and the list under it is the detail
+	// that explains it.
+	if m.host.MemBytes > 0 {
+		used := ours + others
+		free := m.host.MemBytes - min(used, m.host.MemBytes)
+
+		out = append(out, truncate(fmt.Sprintf("  %s%-22s%s %s used of %s   %ssbx %s · other %s · free %s%s",
+			reset, m.host.Name, reset, shortBytes(used), shortBytes(m.host.MemBytes),
+			dim, shortBytes(ours), shortBytes(others), shortBytes(free), reset), cols))
+	}
+
+	for _, n := range sorted {
+		if len(out) >= space {
+			break
+		}
+
+		// A stopped container holds nothing, which is the point of the project - so they are
+		// counted in a line at the end rather than given one each.
+		if !n.Running {
+			continue
+		}
+
+		who := dim + "  " + reset
+		if n.Ours {
+			who = green + "  sbx" + reset
+		}
+
+		bar := ""
+		if m.host.MemBytes > 0 {
+			bar = "  " + dim + smallBar(float64(n.MemBytes)/float64(m.host.MemBytes)) + reset
+		}
+
+		out = append(out, truncate(fmt.Sprintf("  %-34s %s%7s%s%s%s",
+			n.Name, reset, shortBytes(n.MemBytes), reset, bar, who), cols))
+	}
+
+	if asleep > 0 && len(out) < space {
+		out = append(out, truncate(fmt.Sprintf("  %s%d asleep, holding nothing%s", dim, asleep, reset), cols))
+	}
+
+	return out
+}
+
+// maxMemberAddr caps what one address may take from the line. Two loopback addresses fit; a
+// service publishing five does not get to spend the whole width on saying so.
+const maxMemberAddr = 32
+
+// memberPrefix is what a member line spends before its address: three spaces, the service name,
+// a space, the state and the gap after it.
+const memberPrefix = 3 + 14 + 1 + 6 + 2
 
 // endAt pads a line so the token ends exactly at col, or - where the line has already run past
 // that point - puts it after a gap instead.
@@ -1069,11 +1214,21 @@ func paneTitle(m model, space, cols int) string {
 	name := "EVENTS"
 	total := len(m.events)
 
-	if m.pane == paneLogs {
+	switch {
+	case m.pane == paneLogs:
 		name, total = "LOGS", len(m.logs)
 
 		if r, ok := m.currentRow(); ok {
 			name = "LOGS " + r.Sandbox + "/" + r.Service
+		}
+
+	case m.pane == paneSystem:
+		name, total = "SYSTEM", len(m.neighbours)
+
+		// What machine, named. On a laptop this is the VM rather than the laptop, and saying
+		// which one keeps "7.7g" from reading as a claim about the Mac it is running on.
+		if m.host.Name != "" {
+			name = "SYSTEM · " + m.host.Name
 		}
 	}
 
@@ -1081,7 +1236,7 @@ func paneTitle(m model, space, cols int) string {
 		name = "▸ " + name
 	}
 
-	right := "l switches · tab focuses"
+	right := "l logs · a system · tab focuses"
 
 	// Only worth saying when there is more than fits, and only then is "following" meaningful.
 	if total > space {
@@ -1104,6 +1259,10 @@ func paneTitle(m model, space, cols int) string {
 // changing its size - so the screen does not reflow while somebody is reading it.
 func paneBody(m model, space, cols int) []string {
 	var raw []string
+
+	if m.pane == paneSystem {
+		return pad_lines(systemBody(m, space, cols), space)
+	}
 
 	if m.pane == paneLogs {
 		if len(m.logs) == 0 {
@@ -1204,8 +1363,8 @@ func footer(m model, paneRows, cols int) string {
 		short = "  l switches  ⇥ table  q quit"
 
 	default:
-		full = "  ↑↓ move   ⏎ wake   s sleep   v sandboxes   l logs   L limit   d remove   r refresh   q quit"
-		short = "  ↑↓ ⏎ wake  s sleep  v sbx  l logs  d rm  q quit"
+		full = "  ↑↓ move   ⏎ wake   s sleep   v sandboxes   a system   l logs   L limit   d remove   q quit"
+		short = "  ↑↓ ⏎ wake  s sleep  v sbx  a sys  l logs  q quit"
 	}
 
 	// Trimmed rather than wrapped: a footer that wraps steals a line from the table and moves

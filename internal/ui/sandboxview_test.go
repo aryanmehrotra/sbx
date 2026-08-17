@@ -443,3 +443,63 @@ func TestAReadingNeverRunsIntoTheAddress(t *testing.T) {
 
 // An address followed immediately by a percentage, with no space between them.
 var regexpDigitPct = regexp.MustCompile(`127\.0\.0\.1:\d+\.?\d*%`)
+
+// A service publishing two ports carries an address twice as wide as its neighbours'. Left to
+// run, it pushed its own readings out of the column the other lines shared - so the one line
+// somebody was comparing against the others was the one that did not line up.
+func TestOneWideAddressDoesNotBreakTheColumn(t *testing.T) {
+	rows := []row{
+		{Sandbox: "work", Service: "clickhouse", Awake: true, Ref: "r1",
+			Address: "127.0.0.1:20002 127.0.0.1:20003",
+			CPU:     20.7, CPUKnown: true, MemBytes: 364 << 20, MemKnown: true},
+		{Sandbox: "work", Service: "mysql", Awake: true, Ref: "r2", Address: "127.0.0.1:20000",
+			CPU: 5.3, CPUKnown: true, MemBytes: 362 << 20, MemKnown: true},
+		{Sandbox: "work", Service: "redis", Awake: true, Ref: "r3", Address: "127.0.0.1:20001",
+			CPU: 2.5, CPUKnown: true, MemBytes: 4 << 20, MemKnown: true},
+	}
+
+	frame := plain(render(model{
+		version: "v0", rows: rows, grouped: true, metered: true,
+	}, 26, 132))
+
+	end := func(name, token string) int {
+		for _, l := range strings.Split(frame, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(l), name) {
+				continue
+			}
+
+			i := strings.Index(l, token)
+			if i < 0 {
+				return -1
+			}
+
+			return utf8.RuneCountInString(l[:i]) + utf8.RuneCountInString(token)
+		}
+
+		return -1
+	}
+
+	for _, c := range []struct{ what, a, b, cc string }{
+		{"cpu", "20.7%", "5.3%", "2.5%"},
+		{"memory", "364m", "362m", "4m"},
+	} {
+		x, y, z := end("clickhouse", c.a), end("mysql", c.b), end("redis", c.cc)
+
+		if x < 0 || y < 0 || z < 0 {
+			t.Errorf("%s: a member line is missing its reading (%d, %d, %d)\n%s",
+				c.what, x, y, z, frame)
+
+			continue
+		}
+
+		if x != y || y != z {
+			t.Errorf("%s ends at %d for the two-port service and %d/%d for the others - the "+
+				"wide address took the column with it\n%s", c.what, x, y, z, frame)
+		}
+	}
+
+	// And it still says both ports, rather than quietly dropping one to make the sums work.
+	if !strings.Contains(frame, "127.0.0.1:20002 127.0.0.1:20003") {
+		t.Errorf("the second address was dropped:\n%s", frame)
+	}
+}

@@ -149,6 +149,7 @@ func (d *dash) poll(ctx context.Context) {
 			d.refresh(ctx)
 			d.followLogs(ctx)
 			d.followLimits(ctx)
+			d.followSystem(ctx)
 		}
 	}
 }
@@ -197,6 +198,18 @@ func (d *dash) refresh(ctx context.Context) {
 	// layout question moot: there was never a fourth line to show.
 	events, _ := history.Read(history.Filter{Kind: "event", Limit: eventBacklog})
 
+	// Once. The machine's cores and memory do not change while this is open, and on a runtime
+	// slow enough to matter an extra round trip every second buys the same answer again.
+	var host provider.Host
+
+	d.mu.Lock()
+	known := d.model.host.MemBytes > 0
+	d.mu.Unlock()
+
+	if h, ok := d.opt.Provider.(provider.Hoster); ok && !known {
+		host, _ = h.Host(ctx)
+	}
+
 	// Everything below is arithmetic and assignment, so the lock is held for microseconds.
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -234,6 +247,10 @@ func (d *dash) refresh(ctx context.Context) {
 
 	d.model.provider = d.opt.Provider.Name()
 	d.model.metered = metered
+
+	if host.MemBytes > 0 {
+		d.model.host = host
+	}
 
 	d.record(rows)
 }
@@ -274,6 +291,38 @@ func (d *dash) record(rows []row) {
 			delete(d.model.series, ref)
 		}
 	}
+}
+
+// followSystem samples the machine while the system pane is open, and not otherwise.
+//
+// One round trip per running container is affordable for a pane somebody is reading and not for
+// one they are not: fourteen containers on a runtime that is already slow would make every
+// other thing on the screen wait behind them.
+func (d *dash) followSystem(ctx context.Context) {
+	d.mu.Lock()
+	open := d.model.pane == paneSystem
+	d.mu.Unlock()
+
+	if !open {
+		return
+	}
+
+	n, ok := d.opt.Provider.(provider.Neighbours)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	got, err := n.Neighbours(ctx)
+	if err != nil {
+		return
+	}
+
+	d.mu.Lock()
+	d.model.neighbours = got
+	d.mu.Unlock()
 }
 
 // handle applies a keypress. It returns true when the user is finished.
@@ -368,6 +417,18 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 	// The table is a list of services, and a sandbox is what every command in this program
 	// actually names. Four services is four lines repeating one name, with no line for the
 	// thing itself and no total for what it is costing.
+	// The machine, not the fleet. What is using the memory is rarely answered by the sandboxes
+	// alone - a laptop's runtime holds whatever else the day has left there - and a dashboard
+	// that lists only its own services reports a nearly empty machine while the VM is full.
+	case k.Rune == 'a':
+		if d.model.pane == paneSystem {
+			d.model.pane = paneEvents
+		} else {
+			d.model.pane = paneSystem
+		}
+
+		d.model.offset = 0
+
 	case k.Rune == 'v':
 		d.model.grouped = !d.model.grouped
 

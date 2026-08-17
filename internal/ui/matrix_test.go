@@ -36,7 +36,7 @@ func everyKey() []tui.Key {
 		keys = append(keys, tui.Key{Code: c})
 	}
 
-	for _, r := range "jklsdrgGvylnxq?/ " {
+	for _, r := range "ajklsdrgGvylnxq?/ " {
 		keys = append(keys, tui.Key{Rune: r, Code: tui.KeyRune})
 	}
 

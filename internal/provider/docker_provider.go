@@ -121,6 +121,57 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 	return 0, fmt.Errorf("all %d sandbox slots are in use; destroy one first", maxSlots)
 }
 
+// Host is what docker says the machine has. See provider.Host: on macOS and Windows this is the
+// VM, which is the thing the sandboxes are actually sharing.
+func (d *dockerProvider) Host(ctx context.Context) (Host, error) {
+	i, err := d.api.info(ctx)
+	if err != nil {
+		return Host{}, err
+	}
+
+	return Host{Cores: i.NCPU, MemBytes: i.MemTotal, Name: i.Name}, nil
+}
+
+// Neighbours is every container on this machine with what it is holding.
+func (d *dockerProvider) Neighbours(ctx context.Context) ([]Neighbour, error) {
+	cs, err := d.api.list(ctx, "")
+	if err != nil {
+		return nil, listError(d.endpoint, err)
+	}
+
+	out := make([]Neighbour, 0, len(cs))
+	at := make(map[string]int, len(cs))
+
+	var running []string
+
+	for _, c := range cs {
+		n := Neighbour{
+			Name:    c.name(),
+			Ours:    c.Labels[labelSandbox] != "",
+			Running: c.State == "running",
+		}
+
+		if n.Running {
+			running = append(running, c.ID)
+			at[c.ID] = len(out)
+		}
+
+		out = append(out, n)
+	}
+
+	// A stopped container holds nothing, which is the whole point of this project, so only what
+	// is running is sampled.
+	usage, _ := d.Stats(ctx, running)
+
+	for id, u := range usage {
+		if i, ok := at[id]; ok {
+			out[i].MemBytes = u.MemBytes
+		}
+	}
+
+	return out, nil
+}
+
 // listError says what went wrong with a listing in the reader's terms.
 //
 // Distinguished because the two have different fixes: a socket that is not there needs the

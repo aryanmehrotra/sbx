@@ -181,7 +181,9 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"the keyboard. Where there is no terminal it prints the table once instead.\n\n" +
 			"`v` folds the table into one line per sandbox - what it holds, how many of its\n" +
 			"services are up, and what the whole thing is costing - since a sandbox is what\n" +
-			"every other command here names. Enter and s then act on all of it.",
+			"every other command here names. Enter and s then act on all of it.\n\n" +
+			"`a` shows the machine instead: every container on it, ours or not, and what each\n" +
+			"is holding. What is using the memory is rarely answered by the sandboxes alone.",
 		"sbx ui",
 	},
 	"history": {

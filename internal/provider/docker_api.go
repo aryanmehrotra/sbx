@@ -99,10 +99,17 @@ func (c container) name() string {
 // list returns every container carrying the sandbox label, running or not. `all=1` is the
 // load-bearing part: a stopped sandbox is precisely the one this proxy exists to wake.
 func (d *dockerClient) list(ctx context.Context, label string) ([]container, error) {
-	filters := url.QueryEscape(fmt.Sprintf(`{"label":["%s"]}`, label))
+	path := "/containers/json?all=1"
+
+	// An empty label is every container rather than every container with a label whose name is
+	// the empty string - which is what the filter would have asked for, and which matches
+	// nothing. The neighbours view needs the machine, not our share of it.
+	if label != "" {
+		path += "&filters=" + url.QueryEscape(fmt.Sprintf(`{"label":["%s"]}`, label))
+	}
 
 	var cs []container
-	if err := d.do(ctx, http.MethodGet, "/containers/json?all=1&filters="+filters, &cs); err != nil {
+	if err := d.do(ctx, http.MethodGet, path, &cs); err != nil {
 		return nil, err
 	}
 
@@ -269,6 +276,22 @@ type hostLimits struct {
 
 // limits reads one container's ceilings. Same endpoint the health check uses, different
 // corner of the same document.
+// dockerInfo is the machine the containers are on, as docker sees it.
+type dockerInfo struct {
+	NCPU     int    `json:"NCPU"`
+	MemTotal uint64 `json:"MemTotal"`
+	Name     string `json:"Name"`
+}
+
+// info asks what the host has. Static in practice, so it is read once rather than polled.
+func (d *dockerClient) info(ctx context.Context) (dockerInfo, error) {
+	var i dockerInfo
+
+	err := d.do(ctx, http.MethodGet, "/info", &i)
+
+	return i, err
+}
+
 func (d *dockerClient) limits(ctx context.Context, id string) (hostLimits, error) {
 	var h hostLimits
 

@@ -208,6 +208,7 @@ type pane int
 const (
 	paneEvents pane = iota
 	paneLogs
+	paneSystem
 )
 
 // focus is which half of the screen the arrow keys are driving. Two, and Tab moves between
@@ -324,6 +325,15 @@ type model struct {
 	messageAt time.Time
 
 	provider string
+
+	// neighbours is everything on the machine, ours or not, newest reading first. Filled only
+	// while the system pane is open: it costs a round trip per running container, and on a busy
+	// runtime that is not a price to pay for a pane nobody is looking at.
+	neighbours []provider.Neighbour
+
+	// host is what the machine has, read once - it does not change while the dashboard is open,
+	// and on a slow runtime an extra call every second is a cost paid for nothing.
+	host provider.Host
 
 	// metered is whether this backend can report usage at all. Without it an awake service on
 	// a backend that has no metrics sits at "…" forever, which tells a reader to wait for a

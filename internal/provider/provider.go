@@ -354,6 +354,49 @@ type Limits struct {
 // from "allowed everything" without repeating the zero-means-unlimited rule at every use.
 func (l Limits) Capped() bool { return l.NanoCPUs > 0 || l.MemBytes > 0 }
 
+// Host is what the machine the sandboxes run on has, so that what they are using can be read as
+// a proportion of something rather than as a number on its own.
+//
+// The machine, not the laptop. On macOS and Windows a Linux container runs inside a VM, and it
+// is the VM's cores and memory that the sandboxes actually contend for - a Mac with 32 GB whose
+// colima was given 8 is a machine where 6 GB of sandboxes is nearly full, and "6 of 32" there
+// would be a comforting number that is not about anything.
+type Host struct {
+	Cores    int
+	MemBytes uint64
+	Name     string // what the runtime calls it - "colima", "docker-desktop", a hostname
+}
+
+// Hoster is an optional capability: a backend that can say what the machine has.
+//
+// Optional because a cluster cannot answer it in the same sense. "The host" of a sandbox
+// scheduled across a fleet is a question with no single answer, and inventing one - the node
+// this pod happens to be on - would be a figure that changes when nothing did.
+type Hoster interface {
+	Host(ctx context.Context) (Host, error)
+}
+
+// Neighbour is one container sharing this machine, ours or somebody else's.
+type Neighbour struct {
+	Name     string
+	Ours     bool // created by sbx
+	Running  bool
+	MemBytes uint64
+}
+
+// Neighbours is an optional capability: everything on the machine, not only what sbx made.
+//
+// It exists because "what is using the memory" is rarely answered by the sandboxes alone. A
+// laptop's container runtime holds whatever else the day has left there, and a dashboard that
+// lists only its own services will report a nearly empty machine while the VM is full.
+//
+// Memory only. It is instantaneous - one reading is an answer - where cpu is a rate that needs
+// two samples an interval apart, and paying for that across every container on the machine to
+// fill a pane somebody has open is a cost with a poor return.
+type Neighbours interface {
+	Neighbours(ctx context.Context) ([]Neighbour, error)
+}
+
 // Limiter reports what one service is allowed to use.
 //
 // Optional like the rest, and per-ref rather than in a batch: the only caller shows it for
