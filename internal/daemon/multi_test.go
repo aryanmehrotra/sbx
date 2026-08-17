@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -43,15 +44,27 @@ func frontedAt(t *testing.T, port int, name string) *httptest.Server {
 // unless the buffer holds a lock - the same bug the dashboard's tests had, and the detector
 // fails the build over it either way.
 type syncBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+	mu    sync.Mutex
+	b     bytes.Buffer
+	first time.Time // when the report appeared, which is when the fetching finished
 }
 
 func (s *syncBuffer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.first.IsZero() {
+		s.first = time.Now()
+	}
+
 	return s.b.Write(p)
+}
+
+func (s *syncBuffer) firstWrite() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.first
 }
 
 func (s *syncBuffer) String() string {
@@ -285,6 +298,117 @@ func TestOneDeploymentStillReadsAsOne(t *testing.T) {
 	}
 }
 
+// An offset that lands on port 0 is the dangerous one: net.Listen reads 0 as "any free port",
+// so it succeeds, binds something random, and the listing still says :0. The service is then
+// unreachable at the only address the user was given.
+func TestAnOffsetOntoPortZeroIsRefused(t *testing.T) {
+	port := freePort(t)
+	db := frontedAt(t, port, "db")
+
+	for name, shift := range map[string]int{
+		"onto zero":  -port,
+		"below zero": -port - 5,
+		"past 65535": 65536 - port,
+	} {
+		err := Connect(context.Background(), ClientOptions{
+			Endpoints: []Endpoint{{Label: "db", URL: db.URL, Token: testToken}},
+			Offsets:   map[string]int{"db": shift},
+			Out:       &syncBuffer{},
+		})
+
+		if err == nil {
+			t.Errorf("%s: an offset to %d was accepted", name, port+shift)
+
+			continue
+		}
+
+		if !strings.Contains(err.Error(), "not a port") {
+			t.Errorf("%s: error = %v, want it to say the offset left the port range", name, err)
+		}
+	}
+}
+
+// db-1 and db_1 look like two deployments and are one environment variable, so the second
+// would silently borrow the first one's token.
+func TestLabelsThatCollideAsOneVariableAreRefused(t *testing.T) {
+	err := Connect(context.Background(), ClientOptions{
+		Endpoints: []Endpoint{
+			{Label: "db-1", URL: "https://a.example.dev", Token: "t"},
+			{Label: "db_1", URL: "https://b.example.dev", Token: "t"},
+		},
+	})
+
+	if err == nil {
+		t.Fatal("two labels sharing one token variable were accepted")
+	}
+
+	if !strings.Contains(err.Error(), "SBX_CONNECT_TOKEN_DB_1") {
+		t.Errorf("error = %v, want it to name the variable they share", err)
+	}
+}
+
+// The deployments wake on the first request, so asking them in turn would pay a cold start
+// once per deployment. This pins that they are asked together.
+func TestDeploymentsAreAskedAtTheSameTime(t *testing.T) {
+	const delay = 300 * time.Millisecond
+
+	slow := func(label string) Endpoint {
+		port := freePort(t)
+		d := New(nil, time.Minute, time.Minute, time.Minute)
+		d.startupErr = errors.New("no docker daemon found")
+		d.fronted = map[int]fronted{port: {name: label, port: port}}
+
+		srv, err := d.Connect(ConnectOptions{Addr: "127.0.0.1:0", Token: testToken})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		handler := srv.Handler
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(delay)
+			handler.ServeHTTP(w, r)
+		}))
+
+		t.Cleanup(ts.Close)
+
+		return Endpoint{Label: label, URL: ts.URL, Token: testToken}
+	}
+
+	eps := []Endpoint{slow("a"), slow("b"), slow("c")}
+
+	out := &syncBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	start := time.Now()
+
+	go func() { done <- Connect(ctx, ClientOptions{Endpoints: eps, Out: out}) }()
+
+	// The report is written once every fleet is in, so its timestamp is when the asking
+	// finished. Connect itself runs until the context ends, which is not what is being timed.
+	deadline := time.Now().Add(10 * time.Second)
+	for out.firstWrite().IsZero() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	took := out.firstWrite().Sub(start)
+
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	if took <= 0 {
+		t.Fatal("the report never arrived")
+	}
+
+	if took > 2*delay {
+		t.Errorf("three deployments took %v to ask, which is one after another rather than "+
+			"together (each answers in %v)", took, delay)
+	}
+}
+
 func TestSplitEndpoint(t *testing.T) {
 	for arg, want := range map[string][2]string{
 		"https://sbx.example.dev":     {"", "https://sbx.example.dev"},
@@ -314,7 +438,19 @@ func TestParseOffsets(t *testing.T) {
 		t.Errorf(`ParseOffsets("db=1000, cache=2000") = %d, %v, %v`, every, by, err)
 	}
 
-	for _, bad := range []string{"db=nine", "db", "=5", "db=1000,cache"} {
+	// Everything moves by 1000 except the one that was named. Without this, naming a single
+	// deployment's offset silently resets every other deployment's to zero - back onto the
+	// ports they were being moved away from.
+	every, by, err = ParseOffsets("1000,replica=2000")
+	if err != nil || every != 1000 || by["replica"] != 2000 {
+		t.Errorf(`ParseOffsets("1000,replica=2000") = %d, %v, %v`, every, by, err)
+	}
+
+	for _, bad := range []string{
+		"db=nine", "db", "=5", "db=1000,cache",
+		"db=1,db=2", // one deployment, two answers
+		"10,20",     // two defaults
+	} {
 		if _, _, err := ParseOffsets(bad); err == nil {
 			t.Errorf("ParseOffsets(%q) was accepted", bad)
 		}

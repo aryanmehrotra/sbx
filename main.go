@@ -485,7 +485,7 @@ func dispatch(cmd string, args []string) error {
 	case "connect":
 		fs := newFlagSet("connect")
 		offset := fs.String("port-offset", "",
-			"add this to every local port, or label=N for one deployment; for a machine already running its own sbx serve")
+			"add this to every local port, label=N for one deployment, or both (1000,replica=2000)")
 		only := multiFlag{}
 		fs.Var(&only, "sandbox", "only this sandbox; repeatable")
 		positional, rest := splitPositional(args, len(args))

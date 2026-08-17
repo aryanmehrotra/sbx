@@ -125,7 +125,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"SBX_CONNECT_TOKEN holds the token. A named deployment reads SBX_CONNECT_TOKEN_<NAME>\n" +
 			"first, because two deployments usually have two tokens. Use --port-offset if this\n" +
 			"machine already runs its own `sbx serve` and owns those ports, or if two deployments\n" +
-			"front the same port: --port-offset replica=1000 moves only that one.",
+			"front the same port: --port-offset replica=1000 moves only that one, and\n" +
+			"--port-offset 1000,replica=2000 moves everything with an exception.",
 		"SBX_CONNECT_TOKEN=... sbx connect db=https://db.example.dev cache=https://cache.example.dev",
 	},
 	"url": {

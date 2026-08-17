@@ -137,6 +137,7 @@ func resolve(opt ClientOptions) ([]*source, error) {
 
 	out := make([]*source, 0, len(eps))
 	seen := map[string]bool{}
+	vars := map[string]string{}
 	unused := map[string]bool{}
 
 	for l := range opt.Offsets {
@@ -161,6 +162,23 @@ func resolve(opt ClientOptions) ([]*source, error) {
 		}
 
 		seen[label] = true
+
+		// Two labels that are different to a person can be one environment variable: a name is
+		// upper-cased and everything outside A-Z0-9 becomes an underscore, so db-1 and db_1 both
+		// read SBX_CONNECT_TOKEN_DB_1. Left alone, the second deployment silently borrows the
+		// first one's token - which is the exact thing naming them was supposed to avoid, failing
+		// later as a rejected token on whichever one did not own it.
+		if e.Label != "" {
+			v := TokenVar(e.Label)
+
+			if first, clash := vars[v]; clash {
+				return nil, fmt.Errorf("%q and %q are different names for one variable (%s), "+
+					"so both would read the same token - name them further apart",
+					first, e.Label, v)
+			}
+
+			vars[v] = e.Label
+		}
 
 		if e.Token == "" {
 			// Named endpoints get their own variable, because two deployments usually have two
@@ -237,18 +255,23 @@ func SplitEndpoint(arg string) (label, rawURL string) {
 	return arg[:i], arg[i+1:]
 }
 
-// ParseOffsets reads --port-offset: one number for every deployment, or label=N pairs.
+// ParseOffsets reads --port-offset: a number for every deployment, label=N for named ones, or
+// both - `1000,replica=2000` is "move everything by 1000, except replica".
+//
+// Both, because the alternative is that naming one deployment's offset silently resets every
+// other deployment's to zero. Somebody moving one service out of a clash would find the rest
+// had quietly moved back onto the ports they were avoiding.
 func ParseOffsets(spec string) (int, map[string]int, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return 0, nil, nil
 	}
 
-	if n, err := strconv.Atoi(spec); err == nil {
-		return n, nil, nil
-	}
-
-	byLabel := map[string]int{}
+	var (
+		every    int
+		haveHalf bool
+		byLabel  map[string]int
+	)
 
 	for _, part := range strings.Split(spec, ",") {
 		part = strings.TrimSpace(part)
@@ -256,10 +279,23 @@ func ParseOffsets(spec string) (int, map[string]int, error) {
 			continue
 		}
 
-		name, num, ok := strings.Cut(part, "=")
-		if !ok {
-			return 0, nil, fmt.Errorf("--port-offset %q: %q is neither a number nor label=number",
-				spec, part)
+		name, num, named := strings.Cut(part, "=")
+
+		if !named {
+			n, err := strconv.Atoi(part)
+			if err != nil {
+				return 0, nil, fmt.Errorf("--port-offset %q: %q is neither a number nor label=number",
+					spec, part)
+			}
+
+			if haveHalf {
+				return 0, nil, fmt.Errorf("--port-offset %q: two offsets for everything - only "+
+					"one can apply to the deployments you did not name", spec)
+			}
+
+			every, haveHalf = n, true
+
+			continue
 		}
 
 		n, err := strconv.Atoi(strings.TrimSpace(num))
@@ -272,10 +308,19 @@ func ParseOffsets(spec string) (int, map[string]int, error) {
 			return 0, nil, fmt.Errorf("--port-offset %q: a number needs a deployment to apply to", spec)
 		}
 
+		if byLabel == nil {
+			byLabel = map[string]int{}
+		}
+
+		if was, twice := byLabel[name]; twice {
+			return 0, nil, fmt.Errorf("--port-offset %q: %s is given twice, as %d and %d",
+				spec, name, was, n)
+		}
+
 		byLabel[name] = n
 	}
 
-	return 0, byLabel, nil
+	return every, byLabel, nil
 }
 
 func labels(sources []*source) []string {
@@ -403,6 +448,19 @@ func bindAll(services []placed) ([]boundPort, error) {
 		for _, remote := range p.svc.Ports {
 			local := remote + p.src.shift
 
+			// Checked rather than left to net.Listen, which does not treat these as errors in
+			// the way anybody expects: port 0 means "give me any free port", so an offset that
+			// lands on it binds successfully to something random while the listing still says
+			// :0 - a service that is quietly unreachable at the address it just printed. Out of
+			// range does fail, but as "invalid port", which the bind-failure message below would
+			// then blame on this machine's own daemon.
+			if local < 1 || local > 65535 {
+				return fail(fmt.Errorf("%s/%s is on %d, and %s's offset of %d puts it at %d, "+
+					"which is not a port\n     an offset moves ports by a fixed amount; this one "+
+					"has to keep them inside 1-65535",
+					p.svc.Sandbox, p.svc.Service, remote, p.src.label, p.src.shift, local))
+			}
+
 			if first, clash := taken[local]; clash {
 				return fail(fmt.Errorf("%s and %s both want 127.0.0.1:%d\n"+
 					"     two deployments fronting the same port cannot share one local port.\n"+
@@ -456,6 +514,8 @@ func report(w io.Writer, services []placed, sources []*source) {
 			fmt.Fprintf(w, "\n  %s · %s\n", src.label, src.base)
 		}
 
+		listed := 0
+
 		for _, p := range services {
 			if p.src != src {
 				continue
@@ -467,9 +527,17 @@ func report(w io.Writer, services []placed, sources []*source) {
 					indent = "    "
 				}
 
+				listed++
+
 				fmt.Fprintf(w, "%s127.0.0.1:%-6d %s/%s\n", indent, port+src.shift,
 					p.svc.Sandbox, p.svc.Service)
 			}
+		}
+
+		// A deployment with nothing under it otherwise reads as one that failed to come up,
+		// when what happened is that --sandbox asked for something it is not fronting.
+		if listed == 0 {
+			fmt.Fprintf(w, "    nothing here matches --sandbox\n")
 		}
 	}
 
