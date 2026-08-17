@@ -36,6 +36,84 @@ type row struct {
 
 	MemBytes uint64
 	MemKnown bool
+
+	// Members and Woken are set only when this row stands for a whole sandbox rather than one
+	// service: how many services it has, and how many of them are awake. A service row leaves
+	// them zero, because a service is one thing and is either awake or it is not.
+	Members int
+	Woken   int
+}
+
+// view is what the table is showing: one line per service, or one per sandbox.
+//
+// A sandbox is the unit everything else in this program is about - `sbx env`, `sbx rm` and
+// every command name one - but the table is a list of services, so a sandbox with four of them
+// is four lines repeating its name and no line for the thing itself. Grouping is a view over
+// the same data rather than a different fetch, so both stay true at once and `v` costs nothing.
+func (m model) view() []row {
+	if !m.grouped {
+		return m.rows
+	}
+
+	return m.sandboxes()
+}
+
+// sandboxes folds the service rows into one row per sandbox.
+func (m model) sandboxes() []row {
+	var out []row
+
+	at := map[string]int{}
+
+	for _, r := range m.rows {
+		i, seen := at[r.Sandbox]
+		if !seen {
+			i = len(out)
+			at[r.Sandbox] = i
+
+			out = append(out, row{Sandbox: r.Sandbox, OnlineCPUs: r.OnlineCPUs})
+		}
+
+		g := &out[i]
+		g.Members++
+
+		if r.Awake {
+			g.Woken++
+		}
+
+		// A total is only worth printing when it is a total. One service still warming up would
+		// otherwise drag the sandbox's figure down to something that reads as idle.
+		if r.CPUKnown {
+			g.CPU += r.CPU
+			g.CPUKnown = true
+		}
+
+		if r.MemKnown {
+			g.MemBytes += r.MemBytes
+			g.MemKnown = true
+		}
+	}
+
+	// Awake if anything in it is: the question the colour answers is "is this sandbox costing
+	// me memory", and one awake service means yes.
+	for i := range out {
+		out[i].Awake = out[i].Woken > 0
+		out[i].Service = plural(out[i].Members, "service")
+	}
+
+	return out
+}
+
+// membersOf is the services a sandbox row stands for, which is what a key pressed on it acts on.
+func (m model) membersOf(sandbox string) []row {
+	var out []row
+
+	for _, r := range m.rows {
+		if r.Sandbox == sandbox {
+			out = append(out, r)
+		}
+	}
+
+	return out
 }
 
 // pane names what the bottom of the screen is showing. There are two, and switching between
@@ -111,6 +189,9 @@ type model struct {
 	selected int
 	events   []history.Record
 
+	// grouped is whether the table is showing sandboxes instead of services. See view().
+	grouped bool
+
 	// stats is keyed by "sandbox/service" and derived from the journal, so the detail line can
 	// say how often this thing has actually woken rather than only what it is doing now.
 	stats map[string]serviceStat
@@ -166,11 +247,13 @@ type model struct {
 
 // currentRow is the selected row, if there is one.
 func (m model) currentRow() (row, bool) {
-	if m.selected < 0 || m.selected >= len(m.rows) {
+	rows := m.view()
+
+	if m.selected < 0 || m.selected >= len(rows) {
 		return row{}, false
 	}
 
-	return m.rows[m.selected], true
+	return rows[m.selected], true
 }
 
 // summarise counts what the journal says about each service, for the detail line.

@@ -177,7 +177,10 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx ui",
 		"A live dashboard: every sandbox, whether it is awake, what it is costing in cpu and\n" +
 			"memory, and what the daemon has been doing. Wake, sleep, read logs and remove from\n" +
-			"the keyboard. Where there is no terminal it prints the table once instead.",
+			"the keyboard. Where there is no terminal it prints the table once instead.\n\n" +
+			"`v` folds the table into one line per sandbox - what it holds, how many of its\n" +
+			"services are up, and what the whole thing is costing - since a sandbox is what\n" +
+			"every other command here names. Enter and s then act on all of it.",
 		"sbx ui",
 	},
 	"history": {

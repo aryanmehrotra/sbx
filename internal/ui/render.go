@@ -100,8 +100,10 @@ func render(m model, rows, cols int) string {
 		return "terminal too small"
 	}
 
-	l := plan(rows, len(m.rows), wantDetail(m))
-	w := widths(m.rows, cols)
+	shown := m.view()
+
+	l := plan(rows, len(shown), wantDetail(m))
+	w := widths(shown, cols)
 
 	var out []string
 
@@ -112,7 +114,7 @@ func render(m model, rows, cols int) string {
 	rule()
 
 	if l.header {
-		add(tableHeader(w))
+		add(tableHeader(m, w))
 	}
 
 	out = append(out, painted(tableRows(m, w, l.tableRows, cols), cols)...)
@@ -170,9 +172,16 @@ func title(m model, cols int) string {
 	return pad(left, right+" ", cols)
 }
 
-func tableHeader(w cols) string {
+func tableHeader(m model, w cols) string {
+	// The second column is a service's name, or - grouped - what the sandbox holds. Leaving it
+	// as SERVICE over a cell reading "2 services" is a header describing the wrong noun.
+	what := "SERVICE"
+	if m.grouped {
+		what = "CONTAINS"
+	}
+
 	head := fmt.Sprintf("%s  %-*s  %-*s  %-6s  %*s  %*s",
-		dim, w.sandbox, "SANDBOX", w.service, "SERVICE", "STATE", w.cpu, "CPU", w.mem, "MEMORY")
+		dim, w.sandbox, "SANDBOX", w.service, what, "STATE", w.cpu, "CPU", w.mem, "MEMORY")
 
 	if w.address > 0 {
 		head += "  " + fmt.Sprintf("%-*s", w.address, "ADDRESS")
@@ -189,7 +198,9 @@ func tableHeader(w cols) string {
 func tableRows(m model, w cols, space, cols int) []string {
 	var out []string
 
-	if len(m.rows) == 0 {
+	shown := m.view()
+
+	if len(shown) == 0 {
 		// A failed listing is not evidence of an empty fleet: nothing was found because
 		// nothing could be looked at, and saying both at once tells somebody whose docker is
 		// down that they have no sandboxes.
@@ -218,8 +229,8 @@ func tableRows(m model, w cols, space, cols int) []string {
 		start = m.selected - space + 1
 	}
 
-	for i := start; i < len(m.rows) && len(out) < space; i++ {
-		line := truncate(renderRow(m.rows[i], m.limitOf(m.rows[i].Ref), m.metered, i == m.selected, w), cols)
+	for i := start; i < len(shown) && len(out) < space; i++ {
+		line := truncate(renderRow(shown[i], m.limitOf(shown[i].Ref), m.metered, i == m.selected, w), cols)
 
 		if i == m.selected {
 			line = highlight(line, cols)
@@ -235,6 +246,46 @@ func tableRows(m model, w cols, space, cols int) []string {
 	}
 
 	return out[:space]
+}
+
+// sandboxDetail is what a sandbox row shows below the table: the services it holds.
+//
+// The table row is a total - two services, 7% of a core, 365 MB - and a total is the one thing
+// that cannot tell you which of them is the expensive one. So the block underneath is the list
+// the grouped row folded up, with the addresses, because those are what somebody is looking for
+// when they have picked a sandbox out of a list.
+func sandboxDetail(m model, r row, space, cols int) []string {
+	head := fmt.Sprintf(" %s%s%s  %s%s%s", cyan, r.Sandbox, reset, dim, r.Service, reset)
+	connect := fmt.Sprintf("%seval \"$(sbx env %s)\"%s", dim, r.Sandbox, reset)
+
+	if space == 1 {
+		return []string{truncate(pad(head, connect+" ", cols), cols)}
+	}
+
+	out := []string{
+		truncate(pad(head, connect+" ", cols), cols),
+	}
+
+	for _, s := range m.membersOf(r.Sandbox) {
+		if len(out) >= space {
+			break
+		}
+
+		state, colour := "asleep", dim
+		if s.Awake {
+			state, colour = "AWAKE", green
+		}
+
+		usage := ""
+		if s.Awake && s.MemKnown {
+			usage = fmt.Sprintf("  %s%s%s", dim, humanBytes(s.MemBytes), reset)
+		}
+
+		out = append(out, truncate(fmt.Sprintf("   %-14s %s%-6s%s  %s%s%s%s",
+			s.Service, colour, state, reset, dim, s.Address, reset, usage), cols))
+	}
+
+	return padTo(out, space, cols)
 }
 
 // padTo keeps the panes below from walking up and down the screen as sandboxes come and go,
@@ -302,6 +353,22 @@ func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string 
 	state, colour := "asleep", dim
 	if r.Awake {
 		state, colour = "AWAKE", green
+	}
+
+	// A sandbox is not simply awake or asleep - two of its four services can be. "AWAKE" on a
+	// row standing for four things, one of which is running, is a fair summary of the cost and
+	// a bad summary of the state, so the row says which it means.
+	if r.Members > 0 {
+		state = fmt.Sprintf("%d/%d up", r.Woken, r.Members)
+
+		switch {
+		case r.Woken == 0:
+			colour = dim
+		case r.Woken < r.Members:
+			colour = yellow
+		default:
+			colour = green
+		}
 	}
 
 	// An asleep service shows a dash rather than 0. Zero is a measurement and this is not one:
@@ -472,6 +539,10 @@ func detailBlock(m model, space, cols int) []string {
 	r, ok := m.currentRow()
 	if !ok {
 		return blanks(space)
+	}
+
+	if r.Members > 0 {
+		return sandboxDetail(m, r, space, cols)
 	}
 
 	head := fmt.Sprintf(" %s%s/%s%s  %s%s%s", cyan, r.Sandbox, r.Service, reset, dim, r.Ref, reset)
@@ -1037,8 +1108,8 @@ func footer(m model, paneRows, cols int) string {
 		short = "  l switches  ⇥ table  q quit"
 
 	default:
-		full = "  ↑↓ move   ⏎ wake   s sleep   l logs   L limit   d remove   r refresh   ⇥ pane   q quit"
-		short = "  ↑↓ ⏎ wake  s sleep  l logs  L limit  d rm  q quit"
+		full = "  ↑↓ move   ⏎ wake   s sleep   v sandboxes   l logs   L limit   d remove   r refresh   q quit"
+		short = "  ↑↓ ⏎ wake  s sleep  v sbx  l logs  d rm  q quit"
 	}
 
 	// Trimmed rather than wrapped: a footer that wraps steals a line from the table and moves
@@ -1095,12 +1166,19 @@ const rowOverhead = 1 + 1 + (2 * 4) + 6
 func widths(rows []row, total int) cols {
 	w := cols{sandbox: 7, service: 7, cpu: 6, mem: 7}
 
-	want := len("127.0.0.1:20000")
+	want := 0
 
 	for _, r := range rows {
 		w.sandbox = max(w.sandbox, len(r.Sandbox))
 		w.service = max(w.service, len(r.Service))
 		want = max(want, len(r.Address))
+	}
+
+	// A steady width while addresses come and go - but only where there are any. A sandbox row
+	// has no address of its own, so the grouped view was reserving fifteen columns for a column
+	// it never filled, taking them from the names beside it.
+	if want > 0 {
+		want = max(want, len("127.0.0.1:20000"))
 	}
 
 	// The address is what somebody came for, so it is paid before the names.
@@ -1116,7 +1194,7 @@ func widths(rows []row, total int) cols {
 
 	// Whatever is left is the address. Below a usable width it is dropped rather than shown as
 	// three characters and an ellipsis.
-	if w.address = spare - w.sandbox - w.service - 2; w.address < 8 {
+	if w.address = spare - w.sandbox - w.service - 2; w.address < 8 || want == 0 {
 		w.address = 0
 	}
 

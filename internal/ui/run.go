@@ -355,17 +355,44 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		// max(0, ...) because an empty fleet makes len-1 negative, and a selection of -1 is a
 		// row that does not exist waiting for the first piece of code that indexes without
 		// checking. Nothing does today; that is luck, not design.
-		d.model.selected = max(0, min(len(d.model.rows)-1, d.model.selected+1))
+		d.model.selected = max(0, min(len(d.model.view())-1, d.model.selected+1))
 
 		d.followSelection(ctx)
 
 	case k.Code == tui.KeyEnter:
-		go d.wake(context.WithoutCancel(ctx), d.current())
+		go d.each(context.WithoutCancel(ctx), d.targets(), d.wake)
 
 	case k.Rune == 's':
-		go d.sleep(context.WithoutCancel(ctx), d.current())
+		go d.each(context.WithoutCancel(ctx), d.targets(), d.sleep)
+
+	// The table is a list of services, and a sandbox is what every command in this program
+	// actually names. Four services is four lines repeating one name, with no line for the
+	// thing itself and no total for what it is costing.
+	case k.Rune == 'v':
+		d.model.grouped = !d.model.grouped
+
+		// The selection counts rows, and there are now a different number of them. Left alone
+		// it would point past the end, or - worse - at whichever row happens to be there.
+		d.model.selected = max(0, min(len(d.model.view())-1, d.model.selected))
+		d.model.offset = 0
+
+		if d.model.pane == paneLogs && d.model.grouped {
+			d.model.pane = paneEvents
+		}
+
+		d.followSelection(ctx)
 
 	case k.Rune == 'l':
+		// Logs belong to a service, and a sandbox row stands for several. Opening the pane on
+		// one would be picking a service on the user's behalf and not saying which; opening it
+		// on nothing shows an empty pane that reads as a service with no output.
+		if d.model.grouped {
+			// Set directly rather than through say(), which takes the lock this already holds.
+			d.model.message, d.model.messageAt = "logs are per service - press v for them", time.Now()
+
+			break
+		}
+
 		// A toggle, not a screen. The pane's contents change and the layout does not move.
 		if d.model.pane == paneLogs {
 			d.model.pane = paneEvents
@@ -378,6 +405,15 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		d.model.offset = 0
 
 	case k.Rune == 'L':
+		// A ceiling is a property of one container. Applying one to a sandbox would mean either
+		// choosing a service silently or giving every service the same limit, and neither is
+		// what somebody typing "512m" at a sandbox means.
+		if d.model.grouped {
+			d.model.message, d.model.messageAt = "a limit is per service - press v for them", time.Now()
+
+			break
+		}
+
 		if r, ok := d.model.currentRow(); ok {
 			d.model.input = prompt{
 				active: true,
@@ -434,6 +470,47 @@ func (d *dash) current() row {
 	r, _ := d.model.currentRow()
 
 	return r
+}
+
+// targets is what a key acts on: the selected service, or every service in the selected sandbox
+// when the table is grouped.
+//
+// A key pressed on a line standing for four things has to act on four things. Anything else
+// makes the grouped view a display that lies about what it does - and the one that would hurt
+// is Enter appearing to wake a sandbox while waking nothing, because the row it was pressed on
+// has no address of its own.
+func (d *dash) targets() []row {
+	r, ok := d.model.currentRow()
+	if !ok {
+		return nil
+	}
+
+	if r.Members == 0 {
+		return []row{r}
+	}
+
+	return d.model.membersOf(r.Sandbox)
+}
+
+// each runs an action against every target at once.
+//
+// At once rather than in turn: waking four services one after another costs the sum of four
+// cold starts, and the whole point of pressing the key on the sandbox was to treat it as one
+// thing. Each action reports for itself, so the last one to finish is what the footer says.
+func (d *dash) each(ctx context.Context, rows []row, do func(context.Context, row)) {
+	var wg sync.WaitGroup
+
+	for _, r := range rows {
+		wg.Add(1)
+
+		go func(r row) {
+			defer wg.Done()
+
+			do(ctx, r)
+		}(r)
+	}
+
+	wg.Wait()
 }
 
 func (d *dash) say(format string, a ...any) {

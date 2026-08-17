@@ -36,7 +36,7 @@ func everyKey() []tui.Key {
 		keys = append(keys, tui.Key{Code: c})
 	}
 
-	for _, r := range "jklsdrgGylnxq?/ " {
+	for _, r := range "jklsdrgGvylnxq?/ " {
 		keys = append(keys, tui.Key{Rune: r, Code: tui.KeyRune})
 	}
 
@@ -93,6 +93,24 @@ func everyState() map[string]func() *dash {
 			d := newDash(&fakeProvider{})
 			d.model.rows = rowsOf(12)
 			d.model.selected = 11
+
+			return d
+		},
+		// Grouped is a second table with a different number of rows, so every key has to be
+		// pressed in it too - the selection it acts on is not the one the service view has.
+		"sandboxes, first selected": func() *dash {
+			d := newDash(&fakeProvider{})
+			d.model.rows = rowsOf(12)
+			d.model.grouped = true
+			d.model.selected = 0
+
+			return d
+		},
+		"sandboxes, last selected": func() *dash {
+			d := newDash(&fakeProvider{})
+			d.model.rows = rowsOf(12)
+			d.model.grouped = true
+			d.model.selected = len(d.model.view()) - 1
 
 			return d
 		},
@@ -189,13 +207,18 @@ func check(t *testing.T, d *dash, where string) {
 
 	m, paneHeight := d.snapshot()
 
-	if len(m.rows) == 0 {
+	// Against the view rather than the services: `v` folds twelve services into six sandboxes,
+	// and a selection checked against the longer list would pass while pointing past the end of
+	// the shorter one - which is the row every key then acts on.
+	shown := m.view()
+
+	if len(shown) == 0 {
 		if m.selected != 0 {
 			t.Errorf("%s: selection is %d with no rows", where, m.selected)
 		}
-	} else if m.selected < 0 || m.selected >= len(m.rows) {
+	} else if m.selected < 0 || m.selected >= len(shown) {
 		t.Errorf("%s: selection %d is outside 0..%d - the next action would work on a row "+
-			"that does not exist", where, m.selected, len(m.rows)-1)
+			"that does not exist", where, m.selected, len(shown)-1)
 	}
 
 	if m.offset < 0 {
