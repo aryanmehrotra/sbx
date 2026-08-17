@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
+	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
@@ -330,6 +331,11 @@ type model struct {
 	// while the system pane is open: it costs a round trip per running container, and on a busy
 	// runtime that is not a price to pay for a pane nobody is looking at.
 	neighbours []provider.Neighbour
+
+	// machine is the computer the person is sitting at, which on macOS and Windows is not the
+	// machine the containers are on. Both are worth knowing and neither substitutes: the VM is
+	// what the sandboxes contend for, the laptop is what the person is deciding about.
+	machine hostinfo.Machine
 
 	// host is what the machine has, read once - it does not change while the dashboard is open,
 	// and on a slow runtime an extra call every second is a cost paid for nothing.

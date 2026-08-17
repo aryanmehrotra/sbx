@@ -166,8 +166,19 @@ func title(m model, cols int) string {
 	// number; the same figure beside the ceiling it is heading for is a decision about whether
 	// to sleep something. Dropped first when the line will not fit, because it is context and
 	// the counts are the subject.
-	if host := hostShare(m); host != "" && visibleLen(left)+len(right)+len(host)+len(m.provider)+7 <= cols {
-		right += " · " + host
+	// Two different machines, in the order somebody reads them: what the fleet is costing, then
+	// what the computer it is on has left. Each is added only if it fits, and the laptop's goes
+	// first when it does not - the fleet's share is the subject, the machine is the context.
+	for _, seg := range []string{hostShare(m), machineFree(m)} {
+		if seg == "" {
+			continue
+		}
+
+		if visibleLen(left)+len(right)+len(seg)+len(m.provider)+7 > cols {
+			continue
+		}
+
+		right += " · " + seg
 	}
 
 	if m.provider != "" {
@@ -199,13 +210,24 @@ func hostShare(m model) string {
 		}
 	}
 
-	out := fmt.Sprintf("%s of %s", shortBytes(used), shortBytes(m.host.MemBytes))
+	// Named, because the next segment is a different machine's memory and an unlabelled pair of
+	// figures beside each other reads as one machine described twice. The core counts stay in
+	// the system pane, where each is on the line of the machine it belongs to.
+	return fmt.Sprintf("sbx %s of %s", shortBytes(used), shortBytes(m.host.MemBytes))
+}
 
-	if m.host.Cores > 0 {
-		out += fmt.Sprintf(" · %s", plural(m.host.Cores, "core"))
+// machineFree is what the computer the person is sitting at has left.
+//
+// Free rather than used, because the decision it informs is whether there is room for another
+// sandbox - and on macOS the VM's ceiling and the laptop's are different numbers, so this one
+// says which machine it is about.
+func machineFree(m model) string {
+	if m.machine.MemBytes == 0 || m.machine.FreeBytes == 0 {
+		return ""
 	}
 
-	return out
+	return fmt.Sprintf("host %s free of %s",
+		shortBytes(m.machine.FreeBytes), shortBytes(m.machine.MemBytes))
 }
 
 func tableHeader(m model, w cols) string {
@@ -463,15 +485,29 @@ func systemBody(m model, space, cols int) []string {
 		}
 	}
 
-	// The summary first: it is the line somebody came for, and the list under it is the detail
-	// that explains it.
-	if m.host.MemBytes > 0 {
-		used := ours + others
-		free := m.host.MemBytes - min(used, m.host.MemBytes)
+	// Both machines first, in the order somebody reads them. On macOS and Windows these are
+	// genuinely two computers and the numbers are not comparable: the laptop reports what is
+	// free because its kernel knows, and the runtime reports only what the containers hold,
+	// because docker cannot say what else is inside the VM.
+	if m.machine.MemBytes > 0 {
+		out = append(out, truncate(fmt.Sprintf("  %s%-16s%s %s%s · %s free of %s%s",
+			reset, "this machine", reset, dim,
+			plural(m.machine.Cores, "core"),
+			shortBytes(m.machine.FreeBytes), shortBytes(m.machine.MemBytes), reset), cols))
+	}
 
-		out = append(out, truncate(fmt.Sprintf("  %s%-22s%s %s used of %s   %ssbx %s · other %s · free %s%s",
-			reset, m.host.Name, reset, shortBytes(used), shortBytes(m.host.MemBytes),
-			dim, shortBytes(ours), shortBytes(others), shortBytes(free), reset), cols))
+	if m.host.MemBytes > 0 {
+		name := m.host.Name
+		if name == "" {
+			name = "the runtime"
+		}
+
+		out = append(out, truncate(fmt.Sprintf("  %s%-16s%s %s%s · containers hold %s of %s   "+
+			"sbx %s · other %s%s",
+			reset, name, reset, dim,
+			plural(m.host.Cores, "core"),
+			shortBytes(ours+others), shortBytes(m.host.MemBytes),
+			shortBytes(ours), shortBytes(others), reset), cols))
 	}
 
 	for _, n := range sorted {

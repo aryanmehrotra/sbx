@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
+	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/tui"
 	"github.com/aryanmehrotra/sbx/internal/update"
@@ -244,6 +245,10 @@ func (d *dash) refresh(ctx context.Context) {
 		d.model.events = events
 		d.model.stats = summarise(events)
 	}
+
+	// Cheap: a file read on linux, two small forks on macOS - beside a round trip to the
+	// container runtime on the same tick, it does not register.
+	d.model.machine = hostinfo.Read()
 
 	d.model.provider = d.opt.Provider.Name()
 	d.model.metered = metered

@@ -7,6 +7,8 @@ import (
 	"io"
 	"os/exec"
 	"runtime"
+
+	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"slices"
 	"strings"
 
@@ -91,6 +93,36 @@ func hasRuntime(runtimes []string, want string) bool {
 // created, including on a machine where nothing works at all.
 func Doctor(ctx context.Context) Report {
 	rep := Report{Host: runtime.GOOS + "/" + runtime.GOARCH}
+
+	// What this machine has, before what it can do with it. A sandbox per branch is a question
+	// about room, and the answer is different on a laptop with 8 GB than on one with 64 - so
+	// the first thing the report says is how much there is.
+	//
+	// Where the figures cannot be read - anything but macOS and Linux - the entry says so
+	// rather than being left out. Absent and unsupported are different, and only one of them
+	// is worth going and looking into.
+	mach := hostinfo.Read()
+
+	detail := fmt.Sprintf("%d cores", mach.Cores)
+	if mach.Cores == 1 {
+		detail = "1 core"
+	}
+
+	if mach.MemBytes > 0 {
+		detail += fmt.Sprintf(", %.0f GB of memory", float64(mach.MemBytes)/(1<<30))
+
+		if mach.FreeBytes > 0 {
+			detail += fmt.Sprintf(", %.1f GB free now", float64(mach.FreeBytes)/(1<<30))
+		}
+	} else {
+		detail += ", memory unknown"
+	}
+
+	rep.Capabilities = append(rep.Capabilities, Capability{
+		Name: "this machine", Have: mach.MemBytes > 0, Detail: detail,
+		Meaning: "how much room there is for sandboxes. sbx cannot read memory on " +
+			runtime.GOOS + ", so `sbx ui` shows the container runtime's figures alone",
+	})
 
 	dockerOK, dockerWhere := have("docker")
 	rep.Capabilities = append(rep.Capabilities, Capability{

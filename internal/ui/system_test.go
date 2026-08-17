@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/tui"
 )
@@ -38,7 +39,7 @@ func TestTheSystemPaneCountsWhatIsNotOurs(t *testing.T) {
 
 	// The summary has to separate ours from everything else, or "2.3g used" tells somebody
 	// their sandboxes are the problem when they are not.
-	for _, want := range []string{"colima", "sbx", "other", "free"} {
+	for _, want := range []string{"colima", "sbx", "other", "containers hold"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the summary never mentions %q:\n%s", want, frame)
 		}
@@ -77,5 +78,49 @@ func TestTheSystemPaneSaysItIsStillReading(t *testing.T) {
 
 	if frame := plain(render(m, 26, 132)); !strings.Contains(frame, "reading the machine") {
 		t.Errorf("an unsampled machine looks like an empty one:\n%s", frame)
+	}
+}
+
+// Two machines, and on macOS they are genuinely two computers. Their figures are not
+// comparable and neither substitutes for the other: the VM is what the sandboxes contend for,
+// the laptop is what the person is deciding about.
+func TestBothMachinesAreReported(t *testing.T) {
+	m := machine()
+	m.machine = hostinfo.Machine{Cores: 10, MemBytes: 16 << 30, FreeBytes: 4500 << 20}
+
+	frame := plain(render(m, 26, 132))
+
+	if !strings.Contains(frame, "this machine") || !strings.Contains(frame, "10 cores") {
+		t.Errorf("the computer the person is at is missing:\n%s", frame)
+	}
+
+	if !strings.Contains(frame, "colima") || !strings.Contains(frame, "4 cores") {
+		t.Errorf("the runtime's own machine is missing:\n%s", frame)
+	}
+
+	// The laptop's kernel knows what is free; docker cannot say what else is inside the VM, so
+	// the runtime line claims only what the containers hold.
+	if !strings.Contains(frame, "free of") {
+		t.Errorf("the laptop does not report free memory:\n%s", frame)
+	}
+
+	if !strings.Contains(frame, "containers hold") {
+		t.Errorf("the runtime line overclaims - it can only speak for the containers:\n%s", frame)
+	}
+}
+
+// The title carries both too, and unlabelled they read as one machine described twice.
+func TestTheTitleSaysWhichMachineEachFigureIsAbout(t *testing.T) {
+	m := machine()
+	m.machine = hostinfo.Machine{Cores: 10, MemBytes: 16 << 30, FreeBytes: 4500 << 20}
+	m.rows = []row{{Sandbox: "work", Service: "mysql", Awake: true, Ref: "r",
+		MemBytes: 356 << 20, MemKnown: true}}
+
+	title := strings.Split(plain(render(m, 26, 150)), "\n")[0]
+
+	for _, want := range []string{"sbx ", "host "} {
+		if !strings.Contains(title, want) {
+			t.Errorf("the title does not say which machine %q belongs to:\n%s", want, title)
+		}
 	}
 }
