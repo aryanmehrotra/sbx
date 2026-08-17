@@ -138,10 +138,11 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx url feature-x nginx",
 	},
 	"list": {
-		"sbx list",
+		"sbx list [--json]",
 		"Every sandbox on this machine, its services, whether each is awake, and the address\n" +
-			"to connect to.",
-		"sbx list",
+			"to connect to. --json is the same thing for something that parses rather than\n" +
+			"reads - an agent asking what exists should not be reading column widths.",
+		"sbx list --json",
 	},
 	"rm": {
 		"sbx rm <sandbox>",

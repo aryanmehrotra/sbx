@@ -689,6 +689,7 @@ func dispatch(cmd string, args []string) error {
 
 	case "list":
 		fs := newFlagSet("list")
+		asJSON := fs.Bool("json", false, "print it for something that parses rather than reads")
 		kind, socket, ns, isolation := backendFlags(fs)
 		_ = fs.Parse(args)
 
@@ -697,7 +698,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cli.List(context.Background(), p)
+		return cli.List(context.Background(), p, *asJSON)
 
 	case "rm":
 		fs := newFlagSet("rm")
@@ -872,7 +873,7 @@ Start here
 Every day
   sbx create <sandbox> [--template NAME]        make one. --optional includes optional services
   sbx env    <sandbox> [--shell posix|json]     its addresses, as exports or JSON
-  sbx list                                      every sandbox, its services and their state
+  sbx list   [--json]                           every sandbox, its services and their state
   sbx ui                                        the same, live, with cpu and memory
   sbx rm     <sandbox>                          delete it and its data
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -981,10 +982,14 @@ func WakePort(ctx context.Context, p provider.Provider, sandbox, service string)
 
 // ── list ─────────────────────────────────────────────────────────────────────
 
-func List(ctx context.Context, p provider.Provider) error {
+func List(ctx context.Context, p provider.Provider, asJSON bool) error {
 	units, err := p.List(ctx, "")
 	if err != nil {
 		return err
+	}
+
+	if asJSON {
+		return listJSON(os.Stdout, units, p.Name())
 	}
 
 	if len(units) == 0 {
@@ -1012,6 +1017,54 @@ func List(ctx context.Context, p provider.Provider) error {
 	}
 
 	return nil
+}
+
+// listJSON is the same table for something that parses rather than reads.
+//
+// An agent driving sbx asks what exists before it does anything, and the human table is the one
+// surface that had no machine-readable form - so the answer was a regex over column widths,
+// which is a thing that works until a sandbox is named something long. Flat rather than nested
+// by sandbox: it mirrors the table exactly, and `jq 'map(select(.awake))'` is the question
+// people actually ask of it.
+//
+// An empty fleet is an empty array, not an error and not silence: "there are none" and "I could
+// not look" have to stay different answers, and the second one is a non-zero exit.
+func listJSON(w io.Writer, units []provider.Unit, backend string) error {
+	type entry struct {
+		Sandbox   string   `json:"sandbox"`
+		Service   string   `json:"service"`
+		Awake     bool     `json:"awake"`
+		Addresses []string `json:"addresses"`
+		Ref       string   `json:"ref"`
+		Provider  string   `json:"provider"`
+	}
+
+	sort.Slice(units, func(i, j int) bool {
+		if units[i].Sandbox != units[j].Sandbox {
+			return units[i].Sandbox < units[j].Sandbox
+		}
+
+		return units[i].Service < units[j].Service
+	})
+
+	out := make([]entry, 0, len(units))
+
+	for _, u := range units {
+		addrs := make([]string, 0, len(u.Client))
+		for _, e := range u.Client {
+			addrs = append(addrs, e.String())
+		}
+
+		out = append(out, entry{
+			Sandbox: u.Sandbox, Service: u.Service, Awake: u.Running,
+			Addresses: addrs, Ref: u.Ref, Provider: backend,
+		})
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+
+	return enc.Encode(out)
 }
 
 // ── rm ───────────────────────────────────────────────────────────────────────

@@ -338,6 +338,7 @@ sandbox on the machine is 9.1 MB - *corrected from a published 4.5 MB, which was
 
 | | |
 |---|---|
+| [AGENTS.md](docs/AGENTS.md) | **pointing Claude, Codex or any agent at sbx** - a block to paste, and the four things that are not obvious |
 | [SPEC.md](docs/SPEC.md) | every field of `sandbox.json`, and a docker-compose mapping |
 | [USE-CASES.md](docs/USE-CASES.md) | seven shapes this fits, and the ones it doesn't |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | the pieces, both data paths, addressing |
