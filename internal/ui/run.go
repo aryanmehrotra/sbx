@@ -884,7 +884,13 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 	rows := rowsFrom(units)
 
 	if len(rows) == 0 {
-		fmt.Fprintln(out, "no sandboxes yet. `sbx init` makes one.")
+		// The same answer the dashboard gives, for the same reason: "there are none" on its own
+		// leaves somebody with nothing to do next. History is offered unconditionally here
+		// because this path does not read it and so cannot know whether there is any.
+		fmt.Fprintln(out, "no sandboxes on this machine.")
+		fmt.Fprintln(out, "  sbx init                            a template, a sandbox.json, and go")
+		fmt.Fprintln(out, "  sbx create dev --template postgres  one right now, nothing needed on disk")
+		fmt.Fprintln(out, "  sbx history                         everything that has run here, still")
 
 		return nil
 	}

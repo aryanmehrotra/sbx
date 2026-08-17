@@ -190,16 +190,27 @@ func tableRows(m model, w cols, space, cols int) []string {
 	var out []string
 
 	if len(m.rows) == 0 {
-		empty := dim + "  no sandboxes yet.  sbx init  makes one." + reset
-
 		// A failed listing is not evidence of an empty fleet: nothing was found because
 		// nothing could be looked at, and saying both at once tells somebody whose docker is
 		// down that they have no sandboxes.
 		if m.err != nil {
-			empty = red + "  could not read the fleet - see below" + reset
+			out = append(out, truncate(red+"  could not read the fleet - see below"+reset, cols))
+
+			return padTo(out, space, cols)
 		}
 
-		out = append(out, truncate(empty, cols))
+		// Every key along the bottom acts on a row, and there are none - so an empty fleet is
+		// the one screen where the dashboard has nothing to offer and has to say what does.
+		// One line saying "none" left a screen that answered a question nobody asked.
+		for _, line := range emptyHelp(m, cols) {
+			if len(out) >= space {
+				break
+			}
+
+			out = append(out, line)
+		}
+
+		return padTo(out, space, cols)
 	}
 
 	start := 0
@@ -224,6 +235,62 @@ func tableRows(m model, w cols, space, cols int) []string {
 	}
 
 	return out[:space]
+}
+
+// padTo keeps the panes below from walking up and down the screen as sandboxes come and go,
+// which is what makes a table feel unsteady to read.
+func padTo(out []string, space, _ int) []string {
+	for len(out) < space {
+		out = append(out, "")
+	}
+
+	return out[:space]
+}
+
+// emptyHelp is what the table says when there is nothing in it.
+//
+// An empty fleet is the one screen where every key along the bottom - wake, sleep, logs, limit,
+// remove - acts on a row that does not exist. Answering "no sandboxes yet" and stopping leaves
+// somebody looking at a full screen of nothing with no idea what to do next, which is the
+// moment a dashboard is least useful and most easily made useful.
+//
+// The history line is there because sandboxes outlive nothing and their history outlives them:
+// a machine whose containers were cleared still knows what ran, and "there are none" reads like
+// amnesia when the record is right there.
+func emptyHelp(m model, cols int) []string {
+	line := func(colour, s string) string { return truncate(colour+s+reset, cols) }
+
+	// The table pane is a handful of rows on an ordinary terminal, so this has to say the most
+	// useful thing first: anything past the fifth line is cut off and never seen.
+	head := "  nothing here yet - no sandboxes on this machine."
+	if n := len(m.events); n > 0 {
+		head = fmt.Sprintf("  no sandboxes on this machine - %s below outlived them.", plural(n, "event"))
+	}
+
+	// Assembled first and truncated once. Truncating the command and its description
+	// separately lets each one have the full width, so on a narrow terminal the pair came to
+	// twice it - which the every-key-in-every-state test caught at 30 columns.
+	//
+	// The gap is spelled out rather than left to the padding: the longest command here is
+	// exactly the column width, so %-34s alone runs its description straight into it.
+	do := func(cmd, why string) string {
+		return truncate(reset+fmt.Sprintf("    %-34s", cmd)+dim+"  "+why+reset, cols)
+	}
+
+	out := []string{
+		line(dim, head),
+		"",
+		do("sbx init", "a template, a sandbox.json, and go"),
+		do("sbx create dev --template postgres", "one right now, nothing needed on disk"),
+	}
+
+	// Only where there is a record to point at. Offering it on a machine that has never run
+	// anything would be sending somebody to an empty file.
+	if len(m.events) > 0 {
+		out = append(out, do("sbx history", "everything that has run here, still"))
+	}
+
+	return out
 }
 
 func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string {

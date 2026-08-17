@@ -397,6 +397,42 @@ func TestAnAwakeServiceWithNoSampleDoesNotClaimZero(t *testing.T) {
 	t.Fatal("no awake row found")
 }
 
+// An empty fleet is the one screen where every key along the bottom acts on a row that is not
+// there, so it is the screen that most needs to say what to do instead.
+func TestAnEmptyFleetSaysWhatToDoNext(t *testing.T) {
+	frame := plain(render(model{version: "v0.3.0"}, 24, 120))
+
+	for _, want := range []string{"sbx init", "sbx create"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("an empty dashboard does not mention %q:\n%s", want, frame)
+		}
+	}
+
+	// Nothing has ever run here, so there is no record to send anybody to.
+	if strings.Contains(frame, "sbx history") {
+		t.Errorf("it offers history on a machine with none:\n%s", frame)
+	}
+}
+
+// Sandboxes are removable and their history is not, so a machine can have no sandboxes and a
+// full record of what ran on it. Saying only "there are none" reads like amnesia.
+func TestAnEmptyFleetWithAPastPointsAtIt(t *testing.T) {
+	var ev []history.Record
+	for range 349 {
+		ev = append(ev, history.Record{Sandbox: "zn-dev", Service: "clickhouse", Event: "woke"})
+	}
+
+	frame := plain(render(model{version: "v0.3.0", events: ev}, 24, 120))
+
+	if !strings.Contains(frame, "sbx history") {
+		t.Errorf("349 events on a machine with no sandboxes, and it never mentions them:\n%s", frame)
+	}
+
+	if !strings.Contains(frame, "349 events") {
+		t.Errorf("it does not say how much history outlived the sandboxes:\n%s", frame)
+	}
+}
+
 // A failed listing is not evidence that there are no sandboxes. Showing the empty-state hint
 // next to a docker error tells somebody whose daemon is down that their fleet is empty.
 func TestAFailedListingIsNotAnEmptyFleet(t *testing.T) {
@@ -404,8 +440,14 @@ func TestAFailedListingIsNotAnEmptyFleet(t *testing.T) {
 
 	frame := plain(render(m, 24, 100))
 
-	if strings.Contains(frame, "no sandboxes yet") {
+	if strings.Contains(frame, "no sandboxes on this machine") {
 		t.Errorf("it reports an empty fleet while also reporting it could not look:\n%s", frame)
+	}
+
+	// And it does not offer the create-one advice either: the advice for a fleet that cannot
+	// be read is to fix docker, not to make another sandbox it also will not see.
+	if strings.Contains(frame, "sbx create") {
+		t.Errorf("it tells somebody whose daemon is down to make a sandbox:\n%s", frame)
 	}
 
 	if !strings.Contains(frame, "could not read the fleet") {
@@ -413,7 +455,7 @@ func TestAFailedListingIsNotAnEmptyFleet(t *testing.T) {
 	}
 
 	// And with no error, the hint is exactly what should appear.
-	if !strings.Contains(plain(render(model{version: "v0.1.0"}, 24, 100)), "no sandboxes yet") {
+	if !strings.Contains(plain(render(model{version: "v0.1.0"}, 24, 100)), "no sandboxes on this machine") {
 		t.Error("a genuinely empty fleet lost its hint")
 	}
 }
