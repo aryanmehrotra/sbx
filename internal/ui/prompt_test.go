@@ -118,9 +118,8 @@ func TestLOpensAPromptForTheSelectedService(t *testing.T) {
 		t.Fatal("L did not open a prompt")
 	}
 
-	if d.model.input.ref != "sbx-two-cache" {
-		t.Errorf("the prompt is for %q, want the selected service sbx-two-cache",
-			d.model.input.ref)
+	if got := d.model.input.refs; len(got) != 1 || got[0] != "sbx-two-cache" {
+		t.Errorf("the prompt is for %q, want the selected service sbx-two-cache alone", got)
 	}
 }
 

@@ -230,7 +230,7 @@ func tableRows(m model, w cols, space, cols int) []string {
 	}
 
 	for i := start; i < len(shown) && len(out) < space; i++ {
-		line := truncate(renderRow(shown[i], m.limitOf(shown[i].Ref), m.metered, i == m.selected, w), cols)
+		line := truncate(renderRow(shown[i], m.limitsFor(shown[i]), m.metered, i == m.selected, w), cols)
 
 		if i == m.selected {
 			line = highlight(line, cols)
@@ -266,6 +266,21 @@ func sandboxDetail(m model, r row, space, cols int) []string {
 		truncate(pad(head, connect+" ", cols), cols),
 	}
 
+	field := func(k, v string) {
+		out = append(out, truncate(fmt.Sprintf("   %s%-9s%s %s", dim, k, reset, v), cols))
+	}
+
+	// The sandbox's own trace: its services added together at each moment, against the sum of
+	// their ceilings. Sized exactly as the per-service one, so switching views with `v` moves
+	// the numbers and not the columns they sit in.
+	graph := cols - fieldIndent - readingCols - pctCols
+	cpuLine, memLine := trendPair(m, r, graph)
+
+	field("cpu", cpuLine)
+	field("memory", memLine)
+
+	// Then what it is made of, while there is room. A total cannot say which service is the
+	// expensive one, and this is the list that can.
 	for _, s := range m.membersOf(r.Sandbox) {
 		if len(out) >= space {
 			break
@@ -648,11 +663,11 @@ func trendParts(m model, r row, isCPU bool) trendLine {
 		return trendLine{message: dim + "this backend does not report usage" + reset}
 	}
 
-	l := m.limitOf(r.Ref)
+	l := m.limitsFor(r)
 
 	var t trendLine
 
-	for _, s := range m.series[r.Ref] {
+	for _, s := range m.seriesFor(r) {
 		if isCPU {
 			t.values = append(t.values, s.cores)
 		} else {
@@ -1192,9 +1207,24 @@ func widths(rows []row, total int) cols {
 		w.service = max(6, budget)
 	}
 
+	left := spare - w.sandbox - w.service - 2
+
+	// A sandbox row has no address of its own, so the grouped view spends none of the room on
+	// that column - and the meters, which it does have, get first claim on it instead. Tying
+	// them to the address is what made a grouped table show no ceilings at all.
+	if want == 0 {
+		w.address = 0
+
+		if left >= metersWidth {
+			w.meters = metersWidth
+		}
+
+		return w
+	}
+
 	// Whatever is left is the address. Below a usable width it is dropped rather than shown as
 	// three characters and an ellipsis.
-	if w.address = spare - w.sandbox - w.service - 2; w.address < 8 || want == 0 {
+	if w.address = left; w.address < 8 {
 		w.address = 0
 	}
 

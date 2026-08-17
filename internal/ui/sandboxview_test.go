@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/tui"
 )
 
@@ -69,13 +70,26 @@ func TestASandboxRowSaysHowManyAreUp(t *testing.T) {
 }
 
 // The row is a total, and a total is the one thing that cannot say which service is the
-// expensive one - so the block underneath is the list it folded up.
+// expensive one - so the block underneath is the trace and the list it folded up.
 func TestTheDetailBlockListsWhatTheSandboxHolds(t *testing.T) {
-	frame := plain(render(model{version: "v0", rows: twoSandboxes(), grouped: true, metered: true}, 20, 120))
+	m := model{version: "v0", rows: twoSandboxes(), grouped: true, metered: true}
+
+	frame := plain(render(m, 30, 120))
 
 	for _, want := range []string{"mysql", "redis", "127.0.0.1:1", "127.0.0.1:2", "sbx env work"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("the sandbox detail never mentions %q:\n%s", want, frame)
+		}
+	}
+
+	// The trace comes before the member list, and where only some of the block fits it is the
+	// half that survives: the services are one `v` away, and the sandbox's own history is not
+	// anywhere else on the screen.
+	short := plain(render(m, 20, 120))
+
+	for _, want := range []string{"cpu", "memory"} {
+		if !strings.Contains(short, want) {
+			t.Errorf("a short terminal dropped the sandbox's %s trace:\n%s", want, short)
 		}
 	}
 }
@@ -114,39 +128,75 @@ func TestAKeyOnASandboxActsOnEveryServiceInIt(t *testing.T) {
 // It is also where a deadlock lived: handle() holds the model's lock, and say() takes it, so
 // the first version of this hung the dashboard on a keypress. The matrix test finds that as a
 // five-minute timeout rather than a failure, which is a bad way to hear about it.
-func TestLogsAndLimitSayTheyArePerService(t *testing.T) {
-	for _, k := range []rune{'l', 'L'} {
-		d := newDash(&fakeProvider{})
-		d.model.rows = twoSandboxes()
-		d.model.grouped = true
+func TestLogsSayTheyArePerService(t *testing.T) {
+	d := newDash(&fakeProvider{})
+	d.model.rows = twoSandboxes()
+	d.model.grouped = true
 
-		done := make(chan struct{})
+	done := make(chan struct{})
 
-		go func() {
-			d.handle(context.Background(), tui.Key{Rune: k, Code: tui.KeyRune})
-			close(done)
-		}()
+	go func() {
+		d.handle(context.Background(), tui.Key{Rune: 'l', Code: tui.KeyRune})
+		close(done)
+	}()
 
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%c on a sandbox row never returned - the handler is holding a lock it "+
-				"is also waiting for", k)
-		}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("l on a sandbox row never returned - the handler is holding a lock it is " +
+			"also waiting for")
+	}
 
-		m, _ := d.snapshot()
+	m, _ := d.snapshot()
 
-		if !strings.Contains(m.message, "per service") {
-			t.Errorf("%c said %q, want it to explain that this acts on one service", k, m.message)
-		}
+	if !strings.Contains(m.message, "per service") {
+		t.Errorf("l said %q, want it to explain that this acts on one service", m.message)
+	}
 
-		if m.pane == paneLogs {
-			t.Errorf("%c opened the log pane on a row that has no single service", k)
-		}
+	if m.pane == paneLogs {
+		t.Error("l opened the log pane on a row that has no single service")
+	}
+}
 
-		if m.input.active {
-			t.Errorf("%c opened a limit prompt for a sandbox", k)
-		}
+// A ceiling is a property of one container, so a sandbox's is every one of its services capped
+// at the value - not the value shared out between them, and not a refusal.
+func TestLimitingASandboxCapsEveryServiceInIt(t *testing.T) {
+	p := &limiterProvider{}
+	d := newDash(p)
+	d.model.rows = twoSandboxes()
+	d.model.grouped = true
+	d.model.selected = 0 // work: mysql and redis
+
+	d.handle(context.Background(), tui.Key{Rune: 'L', Code: tui.KeyRune})
+
+	if !d.model.input.active {
+		t.Fatal("L on a sandbox did not open a prompt")
+	}
+
+	if got := d.model.input.refs; len(got) != 2 || got[0] != "r1" || got[1] != "r2" {
+		t.Errorf("the prompt is for %v, want both of work's services", got)
+	}
+
+	// "each", because the number typed caps every service at that value rather than being
+	// divided between them, and those are different instructions.
+	if !strings.Contains(d.model.input.label, "each service in work") {
+		t.Errorf("label = %q, want it to say the value applies to each service",
+			d.model.input.label)
+	}
+
+	d.handle(context.Background(), tui.Key{Rune: 'c', Code: tui.KeyRune})
+	typeInto(t, d, "0.5,256m\r")
+
+	waitFor(t, func() bool { _, _, n := p.taken(); return n == 2 })
+
+	got, _, n := p.taken()
+
+	if n != 2 {
+		t.Errorf("the backend was asked %d times, want once per service", n)
+	}
+
+	if got.NanoCPUs != 500_000_000 || got.MemBytes != 256<<20 {
+		t.Errorf("the ceiling sent was %+v, want half a core and 256 MB", got)
 	}
 }
 
@@ -180,5 +230,68 @@ func TestTogglingKeepsTheSelectionInside(t *testing.T) {
 
 	if m.selected >= len(m.view()) {
 		t.Errorf("selection %d is past the end of %d services", m.selected, len(m.view()))
+	}
+}
+
+// A sandbox's ceiling is the sum of its services'.
+func TestASandboxsCeilingIsTheSumOfItsServices(t *testing.T) {
+	m := model{
+		rows:    twoSandboxes(),
+		grouped: true,
+		limits: map[string]provider.Limits{
+			"r1": {NanoCPUs: 1e9, MemBytes: 512 << 20},
+			"r2": {NanoCPUs: 500_000_000, MemBytes: 128 << 20},
+		},
+	}
+
+	got := m.limitsFor(m.view()[0])
+
+	if got.NanoCPUs != 1_500_000_000 || got.MemBytes != 640<<20 {
+		t.Errorf("work is allowed %+v, want 1.5 cores and 640 MB", got)
+	}
+}
+
+// ... but only where every service has one. Three capped and a fourth without is a sandbox
+// nothing bounds - the fourth can take the machine - so the total of the three would be a
+// figure that looks like a ceiling and holds nothing back.
+func TestOneUncappedServiceMeansTheSandboxIsUncapped(t *testing.T) {
+	m := model{
+		rows:    twoSandboxes(),
+		grouped: true,
+		limits:  map[string]provider.Limits{"r1": {NanoCPUs: 1e9, MemBytes: 512 << 20}},
+	}
+
+	if got := m.limitsFor(m.view()[0]); got.Capped() {
+		t.Errorf("work reports a ceiling of %+v while redis has none", got)
+	}
+}
+
+// The sandbox's graph is its services added together at each moment, lined up from the newest
+// end: one created later has a shorter history, and lining them up from the start would add
+// this second's reading to one from three minutes ago.
+func TestTheSandboxGraphAddsItsServicesAtEachMoment(t *testing.T) {
+	m := model{
+		rows:    twoSandboxes(),
+		grouped: true,
+		series: map[string][]metricSample{
+			"r1": {{cores: 1, mem: 100, known: true}, {cores: 2, mem: 200, known: true},
+				{cores: 3, mem: 300, known: true}},
+			"r2": {{cores: 10, mem: 1000, known: true}}, // younger: one sample only
+		},
+	}
+
+	got := m.seriesFor(m.view()[0])
+
+	if len(got) != 3 {
+		t.Fatalf("the sandbox series is %d samples, want the longest history's 3", len(got))
+	}
+
+	// The newest sample has both; the older two have only the service that existed then.
+	if got[2].cores != 13 || got[2].mem != 1300 {
+		t.Errorf("newest sample = %+v, want both services added", got[2])
+	}
+
+	if got[0].cores != 1 || got[0].mem != 100 {
+		t.Errorf("oldest sample = %+v, want only the service that existed then", got[0])
 	}
 }

@@ -405,22 +405,25 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 		d.model.offset = 0
 
 	case k.Rune == 'L':
-		// A ceiling is a property of one container. Applying one to a sandbox would mean either
-		// choosing a service silently or giving every service the same limit, and neither is
-		// what somebody typing "512m" at a sandbox means.
-		if d.model.grouped {
-			d.model.message, d.model.messageAt = "a limit is per service - press v for them", time.Now()
-
-			break
-		}
-
 		if r, ok := d.model.currentRow(); ok {
-			d.model.input = prompt{
-				active: true,
-				label:  fmt.Sprintf("limit %s/%s", r.Sandbox, r.Service),
-				ref:    r.Ref,
-				name:   r.Sandbox + "/" + r.Service,
+			// A ceiling is a property of one container, so a sandbox's is every one of its
+			// services capped at the value - not the value shared out between them. The label
+			// says "each" because those are different instructions and the number typed is the
+			// same either way.
+			label := fmt.Sprintf("limit %s/%s", r.Sandbox, r.Service)
+			name := r.Sandbox + "/" + r.Service
+
+			if r.Members > 0 {
+				label = fmt.Sprintf("limit each service in %s", r.Sandbox)
+				name = r.Sandbox
 			}
+
+			var refs []string
+			for _, t := range d.targets() {
+				refs = append(refs, t.Ref)
+			}
+
+			d.model.input = prompt{active: true, label: label, refs: refs, name: name}
 		}
 
 	case k.Rune == 'd':
@@ -776,7 +779,7 @@ func (d *dash) choosing(ctx context.Context, k tui.Key) {
 		in := d.model.input
 		d.model.input = prompt{}
 
-		go d.setLimits(context.WithoutCancel(ctx), in, p.limits)
+		go d.setLimits(context.WithoutCancel(ctx), in, p.limits, false, false)
 
 		return
 	}
@@ -799,26 +802,11 @@ func (d *dash) applyLimits(ctx context.Context, in prompt) {
 		cpu, mem = "none", "none"
 	}
 
-	d.mu.Lock()
-	current := d.model.limitOf(in.ref)
-	d.mu.Unlock()
-
 	want, err := provider.ParseLimits(cpu, mem)
 	if err != nil {
 		d.say("%s", err)
 
 		return
-	}
-
-	// An unmentioned half is left alone rather than cleared. Typing "2" to cap the cpu should
-	// not silently remove a memory ceiling somebody set earlier - and a zero would not remove
-	// it anyway, so sending the current value is both honest and what docker will do.
-	if strings.TrimSpace(cpu) == "" {
-		want.NanoCPUs = current.NanoCPUs
-	}
-
-	if strings.TrimSpace(mem) == "" {
-		want.MemBytes = current.MemBytes
 	}
 
 	// An empty line is a mistake; "none" is a decision. Only the first is refused here, because
@@ -830,12 +818,19 @@ func (d *dash) applyLimits(ctx context.Context, in prompt) {
 		return
 	}
 
-	d.setLimits(ctx, in, want)
+	// An unmentioned half is left alone rather than cleared. Typing "2" to cap the cpu should
+	// not silently remove a memory ceiling somebody set earlier - and a zero would not remove
+	// it anyway, so sending the current value is both honest and what docker will do.
+	//
+	// Resolved per container, because a sandbox's services do not have to be capped alike:
+	// taking the first one's memory and writing it across the rest would be the prompt
+	// changing something nobody typed.
+	d.setLimits(ctx, in, want, strings.TrimSpace(cpu) == "", strings.TrimSpace(mem) == "")
 }
 
 // setLimits sends a ceiling and says what happened. Shared by the offered sizes and by a
 // value somebody typed, so that the two cannot drift into behaving differently.
-func (d *dash) setLimits(ctx context.Context, in prompt, want provider.Limits) {
+func (d *dash) setLimits(ctx context.Context, in prompt, want provider.Limits, keepCPU, keepMem bool) {
 	lim, ok := d.opt.Provider.(provider.Limiter)
 	if !ok {
 		d.say("this provider cannot set limits - it is docker only for now")
@@ -846,17 +841,35 @@ func (d *dash) setLimits(ctx context.Context, in prompt, want provider.Limits) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	if err := lim.SetLimits(ctx, in.ref, want); err != nil {
-		d.say("%s", firstLine(err.Error()))
+	for _, ref := range in.refs {
+		one := want
 
-		return
+		d.mu.Lock()
+		current := d.model.limitOf(ref)
+		d.mu.Unlock()
+
+		if keepCPU {
+			one.NanoCPUs = current.NanoCPUs
+		}
+
+		if keepMem {
+			one.MemBytes = current.MemBytes
+		}
+
+		if err := lim.SetLimits(ctx, ref, one); err != nil {
+			// The first refusal stops the rest. Half a sandbox capped and half not is a state
+			// nobody asked for and the screen has no way to show.
+			d.say("%s", firstLine(err.Error()))
+
+			return
+		}
+
+		// Force the meters to re-read rather than believing what was asked for: what docker
+		// accepted is the only thing worth drawing.
+		d.mu.Lock()
+		delete(d.limitsSeen, ref)
+		d.mu.Unlock()
 	}
-
-	// Force the meters to re-read rather than believing what was asked for: what docker
-	// accepted is the only thing worth drawing.
-	d.mu.Lock()
-	delete(d.limitsSeen, in.ref)
-	d.mu.Unlock()
 
 	d.say("%s limited to %s", in.name, describeLimits(want))
 }

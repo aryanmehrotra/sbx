@@ -103,6 +103,90 @@ func (m model) sandboxes() []row {
 	return out
 }
 
+// limitsFor is what a row is allowed: a service's own ceilings, or a sandbox's, which is the
+// sum of its services'.
+//
+// A sum, and only where every service has one. A sandbox with three capped services and a
+// fourth without is not bounded by anything - the fourth can take the machine - so printing the
+// total of the three would be a figure that looks like a ceiling and holds nothing back.
+func (m model) limitsFor(r row) provider.Limits {
+	if r.Members == 0 {
+		return m.limitOf(r.Ref)
+	}
+
+	var total provider.Limits
+
+	everyCPU, everyMem := true, true
+
+	for _, s := range m.membersOf(r.Sandbox) {
+		l := m.limitOf(s.Ref)
+
+		if l.NanoCPUs > 0 {
+			total.NanoCPUs += l.NanoCPUs
+		} else {
+			everyCPU = false
+		}
+
+		if l.MemBytes > 0 {
+			total.MemBytes += l.MemBytes
+		} else {
+			everyMem = false
+		}
+	}
+
+	if !everyCPU {
+		total.NanoCPUs = 0
+	}
+
+	if !everyMem {
+		total.MemBytes = 0
+	}
+
+	return total
+}
+
+// seriesFor is the history a row's graph is drawn from: a service's own, or a sandbox's, which
+// is its services' added together at each moment.
+//
+// Lined up from the newest end. Every live service is sampled on the same tick, but one created
+// later has a shorter history, and lining them up from the start would add this second's reading
+// to one from three minutes ago and draw the result as a spike that never happened.
+func (m model) seriesFor(r row) []metricSample {
+	if r.Members == 0 {
+		return m.series[r.Ref]
+	}
+
+	var (
+		histories [][]metricSample
+		longest   int
+	)
+
+	for _, s := range m.membersOf(r.Sandbox) {
+		h := m.series[s.Ref]
+		longest = max(longest, len(h))
+
+		histories = append(histories, h)
+	}
+
+	if longest == 0 {
+		return nil
+	}
+
+	out := make([]metricSample, longest)
+
+	for _, h := range histories {
+		start := longest - len(h)
+
+		for i, s := range h {
+			out[start+i].cores += s.cores
+			out[start+i].mem += s.mem
+			out[start+i].known = out[start+i].known || s.known
+		}
+	}
+
+	return out
+}
+
 // membersOf is the services a sandbox row stands for, which is what a key pressed on it acts on.
 func (m model) membersOf(sandbox string) []row {
 	var out []row
@@ -154,10 +238,12 @@ type prompt struct {
 	label  string
 	buffer string
 
-	// ref is the service the answer is for, captured when the prompt opened. The selection can
-	// move underneath a prompt - the fleet refreshes every second - and a limit applied to
-	// whatever happens to be selected on submit is a limit applied to the wrong container.
-	ref  string
+	// refs is every container the answer applies to, captured when the prompt opened: one
+	// service, or all of a sandbox's when it was opened on a sandbox row. Captured rather than
+	// resolved on submit because the selection moves underneath a prompt - the fleet refreshes
+	// every second - and a limit applied to whatever happens to be selected then is a limit
+	// applied to the wrong container.
+	refs []string
 	name string
 }
 
