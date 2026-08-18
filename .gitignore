@@ -1,8 +1,0 @@
-# Built binary - rebuild with: go build -o sbx .
-sbx
-
-# Release artifacts - rebuild with: scripts/release.sh vX.Y.Z
-dist/
-
-# Built by `cd console && go build -o console .`
-console/console
