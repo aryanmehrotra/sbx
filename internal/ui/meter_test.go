@@ -327,15 +327,27 @@ func TestARowWithMetersStillFits(t *testing.T) {
 
 // An uncapped service gets a dash, not an empty bar: an empty bar is a proportion of nothing,
 // drawn as though it meant something.
+//
+// An ASCII dash. Every column in this table is placed by counting characters, and that is only
+// true if the terminal draws each one in a single cell - U+2014 is East Asian Ambiguous, which
+// several terminals render double-width, so a table that measured perfectly was still a
+// character out from the dash rightward.
 func TestAnUncappedRowDrawsNoBar(t *testing.T) {
-	got := plainText(cell(true, 0.3, 0, "—"))
+	got := plainText(cell(true, 0.3, 0, "-"))
 
 	if strings.Contains(got, "[") {
 		t.Errorf("an uncapped cell drew a bar: %q", got)
 	}
 
-	if !strings.Contains(got, "—") {
-		t.Errorf("an uncapped cell = %q, want a dash", got)
+	if !strings.Contains(got, "-") {
+		t.Errorf("an uncapped cell = %q, want an ASCII dash", got)
+	}
+
+	for _, r := range got {
+		if r > 127 {
+			t.Errorf("an uncapped cell contains %q, whose width the terminal may disagree "+
+				"about: %q", r, got)
+		}
 	}
 }
 
@@ -347,7 +359,7 @@ func TestShortBytesReadsLikeSomebodyWouldSayIt(t *testing.T) {
 		{512 << 20, "512m"},
 		{4 << 30, "4g"},
 		{1536 << 20, "1.5g"},
-		{0, "—"},
+		{0, "-"},
 	} {
 		if got := shortBytes(c.in); got != c.want {
 			t.Errorf("shortBytes(%d) = %q, want %q", c.in, got, c.want)

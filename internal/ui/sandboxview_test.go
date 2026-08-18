@@ -331,7 +331,7 @@ func TestEachServiceShowsItsOwnShareAndShape(t *testing.T) {
 
 	// Both figures, because the table's headers promise CPU and MEMORY and the sandbox's own
 	// block gives both. Memory alone says which service is resident; cpu says which is working.
-	if !strings.Contains(frame, "5.0%") {
+	if !strings.Contains(frame, "50mc") {
 		t.Errorf("no per-service cpu was shown, only memory:\n%s", frame)
 	}
 }
@@ -395,7 +395,7 @@ func TestEveryMemberLineAgreesWithItsHeading(t *testing.T) {
 	}
 
 	for _, c := range []struct{ what, h, a, b string }{
-		{"cpu", "CPU", "20.7%", "5.3%"},
+		{"cpu", "CPU", "207mc", "53mc"},
 		{"memory", "MEMORY", "364m", "100m"},
 		{"share", "SHARE", "78%", "22%"},
 	} {
@@ -478,7 +478,7 @@ func TestOneWideAddressDoesNotBreakTheColumn(t *testing.T) {
 	}
 
 	for _, c := range []struct{ what, a, b, cc string }{
-		{"cpu", "20.7%", "5.3%", "2.5%"},
+		{"cpu", "207mc", "53mc", "25mc"},
 		{"memory", "364m", "362m", "4m"},
 	} {
 		x, y, z := end("clickhouse", c.a), end("mysql", c.b), end("redis", c.cc)
@@ -499,5 +499,62 @@ func TestOneWideAddressDoesNotBreakTheColumn(t *testing.T) {
 	// And it still says both ports, rather than quietly dropping one to make the sums work.
 	if !strings.Contains(frame, "127.0.0.1:20002 127.0.0.1:20003") {
 		t.Errorf("the second address was dropped:\n%s", frame)
+	}
+}
+
+// The table above and the block below both report STATE, CPU and MEMORY, and they mean the same
+// thing in each. A reader should be able to run their eye down one column rather than find it
+// again in every block, so the block takes the table's positions for those three.
+//
+// Measured in runes: the selection marker is one column and three bytes.
+func TestTheBlockUsesTheTablesColumns(t *testing.T) {
+	rows := []row{
+		{Sandbox: "zopnight-gursewak-agent", Service: "clickhouse", Awake: true, Ref: "r1",
+			Address: "127.0.0.1:20021 127.0.0.1:20022",
+			CPU:     14.7, CPUKnown: true, MemBytes: 563 << 20, MemKnown: true},
+		{Sandbox: "zopnight-gursewak-agent", Service: "gateway", Awake: true, Ref: "r2",
+			Address: "127.0.0.1:20027", CPU: 2.8, CPUKnown: true, MemBytes: 41 << 20, MemKnown: true},
+	}
+
+	frame := plain(render(model{version: "v0", rows: rows, grouped: true, metered: true}, 30, 160))
+
+	at := func(match, token string) int {
+		for _, l := range strings.Split(frame, "\n") {
+			if !strings.Contains(l, match) {
+				continue
+			}
+
+			i := strings.Index(l, token)
+			if i < 0 {
+				continue
+			}
+
+			return utf8.RuneCountInString(l[:i]) + utf8.RuneCountInString(token)
+		}
+
+		return -1
+	}
+
+	for _, c := range []struct{ what, tableHead, tableRow, blockHead, blockRow string }{
+		{"CPU", "CPU", "14.7%", "CPU", "147mc"},
+		{"MEMORY", "MEMORY", "563 MB", "MEMORY", "563m"},
+	} {
+		th := at("SANDBOX", c.tableHead)
+		tr := at("14/14 up", c.tableRow)
+		bh := at("SERVICE ", c.blockHead)
+		br := at("clickhouse", c.blockRow)
+
+		if th < 0 || bh < 0 || br < 0 {
+			t.Errorf("%s: could not find every occurrence (%d, %d, %d, %d)\n%s",
+				c.what, th, tr, bh, br, frame)
+
+			continue
+		}
+
+		if th != bh || bh != br {
+			t.Errorf("%s ends at %d in the table's heading, %d in the block's and %d on the "+
+				"block's row - the two blocks disagree where the column is\n%s",
+				c.what, th, bh, br, frame)
+		}
 	}
 }

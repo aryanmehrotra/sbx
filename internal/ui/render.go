@@ -347,7 +347,7 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 	// name nobody shortened stays whole - so the columns are measured from what is actually
 	// there rather than from a constant somebody guessed, which is the difference between a
 	// table and a list of lines that happen to have spaces in them.
-	g := memberGrid(members)
+	g := memberGrid(members, w)
 
 	if len(members) > 0 && len(out) < space {
 		out = append(out, memberHeader(g, cols))
@@ -392,12 +392,6 @@ func memberLine(m model, s row, sandbox row, g grid, width int) string {
 		state, colour = "AWAKE", green
 	}
 
-	// Every cell padded to the block's own width, so each column is where the header says it is
-	// on every row - including the row whose address is twice as wide as the rest, which keeps
-	// its address in full rather than being cut to make the arithmetic easier.
-	line := fmt.Sprintf("   %-*s  %s%-*s%s  %s%-*s%s",
-		g.service, s.Service, colour, g.state, state, reset, dim, g.addr, s.Address, reset)
-
 	cpu, mem, share := "", "", ""
 
 	if s.Awake {
@@ -405,7 +399,7 @@ func memberLine(m model, s row, sandbox row, g grid, width int) string {
 		cpu, mem = "…", "…"
 
 		if s.CPUKnown {
-			cpu = fmt.Sprintf("%.1f%%", s.CPU)
+			cpu = millicores(s.CPU)
 		}
 
 		if s.MemKnown {
@@ -419,7 +413,12 @@ func memberLine(m model, s row, sandbox row, g grid, width int) string {
 		}
 	}
 
-	line += fmt.Sprintf("  %*s  %*s  %s%*s%s", g.cpu, cpu, g.mem, mem, dim, g.share, share, reset)
+	// Every cell padded to the block's own width, so each column is where the heading says it is
+	// on every row - including the row whose address is twice as wide as the rest, which keeps
+	// its address in full rather than being cut to make the arithmetic easier.
+	line := fmt.Sprintf("   %-*s  %s%-*s%s  %*s  %*s  %s%*s%s  %s%-*s%s",
+		g.service, s.Service, colour, g.state, state, reset,
+		g.cpu, cpu, g.mem, mem, dim, g.share, share, reset, dim, g.addr, s.Address, reset)
 
 	// Whatever is left, and only where it is enough to draw a shape rather than a smudge.
 	if room := width - visibleLen(line) - 2; room >= 12 && s.Awake {
@@ -572,18 +571,26 @@ type grid struct {
 	readingsAt           int // the column the numbers begin at
 }
 
-func memberGrid(members []row) grid {
-	// "asleep" is a column wider than "STATE" and one wider than "AWAKE", which is exactly the
-	// kind of off-by-one that shifts half a table by a single character.
-	g := grid{service: len("SERVICE"), state: len("asleep"), addr: len("ADDRESS"),
-		cpu: len("CPU"), mem: len("MEMORY"), share: len("SHARE")}
+// memberGrid measures the block's columns, and puts the three it shares with the table above
+// exactly where the table puts them.
+//
+// STATE, CPU and MEMORY mean the same thing in both, so a reader should be able to run their eye
+// down one column rather than find it again in each block. It costs nothing: the service name
+// takes the width the table spends on a sandbox name and what it contains, which is more than a
+// service name needs anyway.
+//
+// The two columns the table has no equivalent for - the address, and the service's share of its
+// sandbox - go after them, in the room the table gives to its limit columns.
+func memberGrid(members []row, w cols) grid {
+	g := grid{service: len("SERVICE"), state: max(len("asleep"), 6), addr: len("ADDRESS"),
+		cpu: max(len("CPU"), w.cpu), mem: max(len("MEMORY"), w.mem), share: len("SHARE")}
 
 	for _, s := range members {
 		g.service = max(g.service, visibleLen(s.Service))
 		g.addr = max(g.addr, visibleLen(s.Address))
 
 		if s.CPUKnown {
-			g.cpu = max(g.cpu, len(fmt.Sprintf("%.1f%%", s.CPU)))
+			g.cpu = max(g.cpu, len(millicores(s.CPU)))
 		}
 
 		if s.MemKnown {
@@ -591,18 +598,33 @@ func memberGrid(members []row) grid {
 		}
 	}
 
-	// Three spaces of indent, then the columns with two between each.
-	g.readingsAt = 3 + g.service + 2 + g.state + 2 + g.addr + 2
+	// The table spends "marker, space, sandbox, gap, contains" before its STATE column and the
+	// block spends "three spaces, service"; widening the service column by the difference is what
+	// lines the two up. Where a service name is longer than that the name wins and this sandbox
+	// gives up the alignment, because a name cut to make two columns agree is a worse trade.
+	g.service = max(g.service, 2+w.sandbox+2+w.service-3)
+
+	g.readingsAt = 3 + g.service + 2 + g.state + 2
 
 	return g
+}
+
+// millicores is cpu the way a cluster states it: thousandths of one core.
+//
+// A percentage answers "is it busy" and cannot be added up or held against a limit somebody
+// wrote as "500m" in a spec. The suffix is "mc" rather than the bare "m" kubernetes uses because
+// the column beside this one prints "563m" for megabytes, and two columns of numbers ending in
+// the same letter meaning different things is worse than two extra characters.
+func millicores(percentOfOneCore float64) string {
+	return fmt.Sprintf("%.0fmc", percentOfOneCore*10)
 }
 
 // memberHeader names the columns under a sandbox, because a column of figures with nothing over
 // it is a number the reader has to identify from its shape.
 func memberHeader(g grid, cols int) string {
-	return truncate(fmt.Sprintf("   %s%-*s  %-*s  %-*s  %*s  %*s  %*s%s",
-		dim, g.service, "SERVICE", g.state, "STATE", g.addr, "ADDRESS",
-		g.cpu, "CPU", g.mem, "MEMORY", g.share, "SHARE", reset), cols)
+	return truncate(fmt.Sprintf("   %s%-*s  %-*s  %*s  %*s  %*s  %-*s%s",
+		dim, g.service, "SERVICE", g.state, "STATE",
+		g.cpu, "CPU", g.mem, "MEMORY", g.share, "SHARE", g.addr, "ADDRESS", reset), cols)
 }
 
 // maxSystemName caps the name column, so one container with a very long name cannot spend the
@@ -770,13 +792,18 @@ func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string 
 // would be a proportion of nothing, drawn as though it meant something.
 func cell(sampled bool, used, allowed float64, label string) string {
 	if allowed <= 0 {
-		return dim + fmt.Sprintf("%-*s", meterCell, "—") + reset
+		// An ASCII dash, not an em dash. Every column here is placed by counting characters,
+		// and that arithmetic is only true if the terminal draws each one in a single cell.
+		// U+2014 is East Asian Ambiguous, which iTerm2 and others render double-width by
+		// default - so a table that measured perfectly still looked a character out from the
+		// dash onward, and the fault was in the glyph rather than in the sums.
+		return dim + fmt.Sprintf("%-*s", meterCell, "-") + reset
 	}
 
 	// Not sampled yet is not the same as not capped: the ceiling is known and worth showing,
 	// it is only the fill that is missing.
 	if !sampled {
-		return dim + "[" + strings.Repeat("·", tableBarCells) + "]" + reset +
+		return dim + "[" + strings.Repeat(".", tableBarCells) + "]" + reset +
 			" " + dim + fmt.Sprintf("%*s", limitTextCols, label) + reset
 	}
 
@@ -806,14 +833,14 @@ func smallBar(frac float64) string {
 	}
 
 	return dim + "[" + reset + colour + strings.Repeat("█", filled) + reset +
-		dim + strings.Repeat("·", tableBarCells-filled) + "]" + reset
+		dim + strings.Repeat(".", tableBarCells-filled) + "]" + reset
 }
 
 // shortBytes writes a ceiling the compact way a column has room for: "512m", "4g".
 func shortBytes(b uint64) string {
 	switch {
 	case b == 0:
-		return "—"
+		return "-"
 	case b >= 1<<30:
 		return trimZeros(float64(b)/(1<<30)) + "g"
 	case b >= 1<<20:
