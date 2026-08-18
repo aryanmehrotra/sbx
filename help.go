@@ -175,7 +175,7 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx templates",
 	},
 	"ui": {
-		"sbx ui",
+		"sbx ui [--connect <url> ...] [--sandbox NAME]",
 		"A live dashboard: every sandbox, whether it is awake, what it is costing in cpu and\n" +
 			"memory, and what the daemon has been doing. Wake, sleep, read logs and remove from\n" +
 			"the keyboard. Where there is no terminal it prints the table once instead.\n\n" +
@@ -183,8 +183,12 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"services are up, and what the whole thing is costing - since a sandbox is what\n" +
 			"every other command here names. Enter and s then act on all of it.\n\n" +
 			"`a` shows the machine instead: every container on it, ours or not, and what each\n" +
-			"is holding. What is using the memory is rarely answered by the sandboxes alone.",
-		"sbx ui",
+			"is holding. What is using the memory is rarely answered by the sandboxes alone.\n\n" +
+			"--connect watches a deployed sbx rather than this machine, taking the same URLs\n" +
+			"and tokens as sbx connect - several of them merge into one screen. It is\n" +
+			"read-only: a connect endpoint carries bytes and reports what it is fronting, so\n" +
+			"waking, sleeping, capping and removing are refused there and say so.",
+		"sbx ui --connect https://sbx.example.dev",
 	},
 	"history": {
 		"sbx history [sandbox] [--limit N] [--commands|--events] [--json]",

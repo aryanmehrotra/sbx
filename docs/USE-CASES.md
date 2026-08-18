@@ -233,6 +233,21 @@ cannot generally be merged: grafting a musl binary into a glibc base builds clea
 at runtime, which is a deploy that looks fine until somebody connects. Each deployment stays
 the image it was, and the joining happens here.
 
+**And you can watch it.** The same URLs and tokens point the dashboard at a deployment rather
+than at this machine, so a sandbox that is somewhere else is still something you can look at:
+
+```sh
+SBX_CONNECT_TOKEN_DB=... SBX_CONNECT_TOKEN_CACHE=... \
+  sbx ui --connect db=https://db.example.dev --connect cache=https://cache.example.dev
+```
+
+Several deployments merge into one screen exactly as their ports do, each service showing its
+state, cpu, memory and whatever ceiling it has. It is **read-only**, and that is a decision: a
+connect token buys reading what is fronted and carrying bytes to a port, and a token that leaks
+is a very different incident if it can also destroy a volume. Wake, sleep, limit and remove all
+refuse there and say where they do work. Usage is sampled only when the dashboard asks, so an
+ordinary `sbx connect` costs the deployment no more than it ever did.
+
 A named deployment reads `SBX_CONNECT_TOKEN_<NAME>` before the shared `SBX_CONNECT_TOKEN`, so
 two deployments do not have to share one secret. If two of them front the same port - two
 postgres, which is a normal thing to want - `--port-offset replica=1000` moves one of them and

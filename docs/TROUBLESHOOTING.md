@@ -220,6 +220,33 @@ snapshot time and this does not arise.
 
 ---
 
+## `sbx ui --connect` shows rows but no cpu or memory
+
+**The deployment's backend cannot be metered.** Usage is optional, exactly as it is locally:
+a kubernetes-backed sbx has no `docker stats` to call, so the columns read `n/a` rather than
+showing a zero nobody measured. A docker-backed deployment fills them.
+
+**Or the deployment is older than v0.5.0.** The usage fields are new; an older `sbx serve`
+answers the same listing without them, and every row reads `n/a`. `sbx pack` pins the version,
+so redeploy to move it forward.
+
+Sampling is only done when asked (`?stats=1`), so a plain `sbx connect` costs the deployment
+exactly what it always did - one listing, no per-container round trips.
+
+---
+
+## `sbx ui --connect` will not let me wake or remove anything
+
+**That is deliberate, not a missing feature.** The token on a connect endpoint buys two things:
+read what is fronted, and carry bytes to a port. Waking, sleeping, capping and removing are
+none of those, and a token that leaks is a very different incident if it can also destroy a
+sandbox's volume.
+
+Run the command where the sandbox is - a shell on that host, or `kubectl exec` - and the
+dashboard there has every key.
+
+---
+
 ## `sbx connect` cannot reach a deployment the platform calls healthy
 
 The platform's health check and the tunnel are not the same fact. A container can be up, and

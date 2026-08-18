@@ -411,7 +411,7 @@ func fetchAll(ctx context.Context, sources []*source) ([][]fleetService, error) 
 		go func(i int, s *source) {
 			defer wg.Done()
 
-			out[i], errs[i] = fetchFleet(ctx, s.base, s.token)
+			out[i], errs[i] = fetchFleet(ctx, s.base, s.token, false)
 		}(i, s)
 	}
 
@@ -443,8 +443,16 @@ const maxFleetBody = 1 << 20
 
 var fleetClient = &http.Client{Timeout: 60 * time.Second}
 
-func fetchFleet(ctx context.Context, base *url.URL, token string) ([]fleetService, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String()+"/v1/fleet", nil)
+// stats asks the deployment to sample what each service is using, which costs it a round trip
+// per running container. `sbx connect` does not want that - it wants a port map, once - so it
+// passes false and the reply is exactly what it always was.
+func fetchFleet(ctx context.Context, base *url.URL, token string, stats bool) ([]fleetService, error) {
+	url := base.String() + "/v1/fleet"
+	if stats {
+		url += "?stats=1"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}

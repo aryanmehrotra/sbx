@@ -18,6 +18,7 @@ package daemon
 //     therefore refused by default and enabled deliberately.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 const (
@@ -167,11 +169,44 @@ type fleetService struct {
 	Instance string `json:"instance"`
 	Awake    bool   `json:"awake"`
 	Ports    []int  `json:"ports"`
+
+	// What it is using and what it is allowed, for `sbx ui --connect`. Both optional, both
+	// absent unless the caller asked with ?stats=1 - see fleetHandler.
+	//
+	// Absent and zero are different answers, which is why these are pointers: a service using
+	// no cpu and a service whose sample never arrived are indistinguishable once both are 0,
+	// and this project shows the second as "n/a" rather than as a measurement it did not take.
+	Usage  *fleetUsage  `json:"usage,omitempty"`
+	Limits *fleetLimits `json:"limits,omitempty"`
+}
+
+// fleetUsage is provider.Usage on the wire, field for field.
+//
+// The counters rather than a percentage, deliberately. CPU here is cumulative time, and a rate
+// is the difference between two samples divided by the time between them - so sending a
+// percentage would mean the server picking the window, and every client inheriting whatever it
+// chose. The dashboard already computes rates from consecutive samples for local sandboxes;
+// handing it the same counters means a remote sandbox goes through the identical arithmetic
+// rather than a second implementation that rounds differently.
+type fleetUsage struct {
+	CPUNanos    uint64 `json:"cpu_nanos"`
+	SystemNanos uint64 `json:"system_nanos"`
+	OnlineCPUs  int    `json:"online_cpus"`
+	MemBytes    uint64 `json:"mem_bytes"`
+	MemLimit    uint64 `json:"mem_limit"`
+}
+
+// fleetLimits is provider.Limits on the wire. Zero means uncapped, which is a real answer
+// rather than a missing one - so an absent object means "this backend cannot say", and a
+// present one full of zeroes means "nothing is capped".
+type fleetLimits struct {
+	NanoCPUs int64  `json:"nano_cpus"`
+	MemBytes uint64 `json:"mem_bytes"`
 }
 
 // fleetHandler answers what this daemon is fronting. Read-only, and it carries nothing that is
 // not already on a `sbx list` screen.
-func (d *daemon) fleetHandler(w http.ResponseWriter, _ *http.Request) {
+func (d *daemon) fleetHandler(w http.ResponseWriter, r *http.Request) {
 	// 503 rather than an empty list. "No sandboxes" and "I cannot see any sandboxes" are
 	// different answers, and a client that cannot tell them apart will report the first.
 	if d.startupErr != nil && len(d.fronted) == 0 {
@@ -220,8 +255,71 @@ func (d *daemon) fleetHandler(w http.ResponseWriter, _ *http.Request) {
 
 	d.mu.Unlock()
 
+	// Usage costs a round trip per container, so it is opt-in rather than part of every
+	// answer. `sbx connect` wants a port map and asks four times a session; `sbx ui --connect`
+	// wants a dashboard and asks every couple of seconds. Charging the first for the second is
+	// how a listing that used to be instant becomes the slowest thing in the command.
+	if r.URL.Query().Get("stats") != "" {
+		d.addUsage(r.Context(), out)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"services": out})
+}
+
+// addUsage fills in what each service is using and what it is allowed, where this provider can
+// say. Both are optional capabilities, so a backend without them leaves the fields absent and
+// the dashboard reads "n/a" rather than showing a zero it did not measure.
+func (d *daemon) addUsage(ctx context.Context, out []fleetService) {
+	if d.provider == nil {
+		return
+	}
+
+	refs := make([]string, 0, len(out))
+
+	for _, f := range out {
+		// A fronted port has no container behind it that this process knows of - the platform
+		// started the workload - so there is nothing here to sample.
+		if f.Instance != frontInstance {
+			refs = append(refs, f.Ref)
+		}
+	}
+
+	if meter, ok := d.provider.(provider.Meter); ok && len(refs) > 0 {
+		// One unreadable ref does not fail the others, and a ref that is asleep is simply
+		// absent - which is why this ignores the error rather than refusing to answer at all.
+		if stats, err := meter.Stats(ctx, refs); err == nil {
+			for i := range out {
+				u, ok := stats[out[i].Ref]
+				if !ok {
+					continue
+				}
+
+				out[i].Usage = &fleetUsage{
+					CPUNanos: u.CPUNanos, SystemNanos: u.SystemNanos, OnlineCPUs: u.OnlineCPUs,
+					MemBytes: u.MemBytes, MemLimit: u.MemLimit,
+				}
+			}
+		}
+	}
+
+	lim, ok := d.provider.(provider.Limiter)
+	if !ok {
+		return
+	}
+
+	for i := range out {
+		if out[i].Instance == frontInstance {
+			continue
+		}
+
+		l, err := lim.Limits(ctx, out[i].Ref)
+		if err != nil {
+			continue
+		}
+
+		out[i].Limits = &fleetLimits{NanoCPUs: l.NanoCPUs, MemBytes: l.MemBytes}
+	}
 }
 
 // fronted is a port this process was told to carry, rather than one it discovered.

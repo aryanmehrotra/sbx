@@ -521,23 +521,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		endpoints := make([]daemon.Endpoint, 0, len(positional))
-
-		for _, arg := range positional {
-			label, raw := daemon.SplitEndpoint(arg)
-
-			// A named deployment gets its own variable, falling back to the shared one. Two
-			// deployments usually have two tokens, and the alternative to naming them is
-			// reusing one secret across both.
-			token := os.Getenv("SBX_CONNECT_TOKEN")
-			if label != "" {
-				if t := os.Getenv(daemon.TokenVar(label)); t != "" {
-					token = t
-				}
-			}
-
-			endpoints = append(endpoints, daemon.Endpoint{Label: label, URL: raw, Token: token})
-		}
+		endpoints := connectEndpoints(positional)
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -668,10 +652,33 @@ func dispatch(cmd string, args []string) error {
 
 	case "ui", "dash", "dashboard":
 		fs := newFlagSet("ui")
+		watch := multiFlag{}
+		fs.Var(&watch, "connect", "watch a deployed sbx instead of this machine, as in "+
+			"https://sbx.example.dev or db=https://...; repeatable")
+		only := multiFlag{}
+		fs.Var(&only, "sandbox", "only this sandbox; repeatable, and only with --connect")
 		kind, socket, ns, isolation := backendFlags(fs)
 		_ = fs.Parse(args)
 
-		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		var (
+			p   provider.Provider
+			err error
+		)
+
+		// A deployed sandbox reads exactly like a local one here, because the dashboard is
+		// written against a Provider and this is one. What it cannot do is change anything -
+		// see internal/daemon/remote.go for why that is a decision.
+		if len(watch) > 0 {
+			p, err = daemon.NewRemote(connectEndpoints(watch), only)
+		} else {
+			if len(only) > 0 {
+				return fmt.Errorf("--sandbox filters a deployment, so it only means something " +
+					"with --connect. Locally the dashboard shows every sandbox on the machine")
+			}
+
+			p, _, err = resolve(*kind, *socket, *ns, *isolation)
+		}
+
 		if err != nil {
 			return err
 		}
@@ -925,4 +932,28 @@ func dockerCLI(args ...string) (string, error) {
 	}
 
 	return strings.TrimSpace(string(out)), nil
+}
+
+// connectEndpoints turns `label=url` arguments into endpoints carrying their tokens.
+//
+// A named deployment reads its own SBX_CONNECT_TOKEN_<NAME> and falls back to the shared
+// SBX_CONNECT_TOKEN. Two deployments usually have two tokens, and the alternative to naming
+// them is reusing one secret across both.
+func connectEndpoints(args []string) []daemon.Endpoint {
+	out := make([]daemon.Endpoint, 0, len(args))
+
+	for _, arg := range args {
+		label, raw := daemon.SplitEndpoint(arg)
+
+		token := os.Getenv("SBX_CONNECT_TOKEN")
+		if label != "" {
+			if t := os.Getenv(daemon.TokenVar(label)); t != "" {
+				token = t
+			}
+		}
+
+		out = append(out, daemon.Endpoint{Label: label, URL: raw, Token: token})
+	}
+
+	return out
 }
