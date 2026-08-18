@@ -88,6 +88,35 @@
   footer .g{color:var(--grn)}
 
   @media(max-width:760px){ .feat{grid-template-columns:1fr} }
+
+  /* differentiator */
+  .why{padding:96px 0 0;text-align:center}
+  .why h2{font-size:clamp(28px,4.4vw,44px);font-weight:700;letter-spacing:-.025em;margin:0 0 14px;line-height:1.08}
+  .why h2 .u{color:var(--grn)}
+  .why p.lead{max-width:600px;margin:0 auto 40px;color:var(--dim);font-size:17px;line-height:1.5}
+  .cmp{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:16px;overflow:hidden;font-size:14.5px}
+  .cmp th,.cmp td{padding:16px 18px;text-align:left;border-bottom:1px solid var(--line)}
+  .cmp thead th{background:#0b0f16;color:var(--faint);font-family:var(--mono);font-size:12.5px;font-weight:500;text-transform:uppercase;letter-spacing:.6px}
+  .cmp tbody tr:last-child td{border-bottom:none}
+  .cmp td:first-child{font-weight:600;color:var(--ink)}
+  .cmp td{color:var(--dim)}
+  .cmp .me{background:rgba(63,185,80,.06)}
+  .cmp .me td{color:var(--ink)}
+  .cmp .me td:first-child{color:var(--grn)}
+  .cmp .yes{color:var(--grn)} .cmp .no{color:var(--faint)}
+  .cmp-wrap{overflow-x:auto}
+
+  /* use cases */
+  .uc{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:38px}
+  .uc .c{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px;display:flex;gap:16px;align-items:flex-start}
+  .uc .c:hover{border-color:#2a3444}
+  .uc .ic{flex:0 0 auto;width:38px;height:38px;border-radius:10px;background:rgba(63,185,80,.1);
+    display:flex;align-items:center;justify-content:center}
+  .uc .ic svg{stroke:var(--grn)}
+  .uc h3{margin:2px 0 6px;font-size:16.5px;font-weight:600}
+  .uc p{margin:0;color:var(--dim);font-size:14px;line-height:1.5}
+  .uc .k{font-family:var(--mono);color:#c4cdd8}
+  @media(max-width:760px){ .uc{grid-template-columns:1fr} }
 </style>
 </head>
 <body>
@@ -124,6 +153,48 @@
       <div class="stat"><div class="n">0</div><div class="l">dependencies</div></div>
     </div>
   </header>
+
+  <div class="why">
+    <div class="eyebrow">why it's different</div>
+    <h2>Everyone scales to zero.<br>The question is what <span class="u">wakes it back</span>.</h2>
+    <p class="lead">On sbx the socket is the signal — so <span class="mono" style="color:#c4cdd8">psql</span>, a connection
+      pool, Playwright or a test runner someone else wrote all wake it, unmodified. On an SDK platform,
+      your own code has to know the sandbox is asleep and wake it first.</p>
+    <div class="cmp-wrap">
+    <table class="cmp">
+      <thead><tr><th></th><th>wakes on</th><th>so the client can be</th><th>runs off-cloud</th></tr></thead>
+      <tbody>
+        <tr class="me"><td>sbx</td><td>any TCP connection</td><td>anything with a socket</td><td class="yes">laptop + cluster</td></tr>
+        <tr><td>E2B · Modal · Vercel</td><td>an SDK call</td><td>only your own code</td><td class="no">hosted</td></tr>
+        <tr><td>Neon</td><td>a Postgres connection</td><td>Postgres clients only</td><td class="no">hosted</td></tr>
+        <tr><td>Knative</td><td>an HTTP request</td><td>HTTP / gRPC only</td><td class="yes">needs a cluster</td></tr>
+        <tr><td>Fly Machines</td><td>a request via Fly Proxy</td><td>TCP services</td><td class="no">their proxy</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <section>
+    <div class="eyebrow">built for</div>
+    <div class="uc">
+      <div class="c">
+        <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg></div>
+        <div><h3>Branches</h3><p>A database per branch. Only the one you're looking at costs memory — the rest sit at 0 B.</p></div>
+      </div>
+      <div class="c">
+        <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"></rect><path d="M12 8V4M9 2h6"></path><circle cx="9" cy="14" r="1"></circle><circle cx="15" cy="14" r="1"></circle></svg></div>
+        <div><h3>AI agents</h3><p>A throwaway backend that dies with the task. Shell commands are the whole integration — <span class="k">--json</span> to parse.</p></div>
+      </div>
+      <div class="c">
+        <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"></path><polyline points="21 3 21 9 15 9"></polyline></svg></div>
+        <div><h3>CI</h3><p><span class="k">sbx ready</span> blocks until it's genuinely serving. On a persistent runner the next job reuses warm, migrated state.</p></div>
+      </div>
+      <div class="c">
+        <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg></div>
+        <div><h3>Fan-out</h3><p>Seed one database, <span class="k">snapshot</span>, then <span class="k">fork</span> as many as you want. The migration runs a single time.</p></div>
+      </div>
+    </div>
+  </section>
 
   <section>
     <div class="eyebrow">one binary · docker or kubernetes</div>
