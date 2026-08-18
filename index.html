@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sbx — every branch gets its own backend, asleep at 0 B</title>
-<meta name="description" content="Postgres, Redis, a browser — real services, one set per branch, task or AI agent. Idle they cost 0 B of memory; the first connection wakes them itself.">
-<meta property="og:title" content="sbx — every branch gets its own backend">
+<title>sbx — scale-to-zero for your dev stack</title>
+<meta name="description" content="Scale-to-zero for your dev stack. Every branch, task or AI agent gets its own Postgres, Redis or browser — 0 B idle, awake on the first connection. Self-hosted, no SDK, one binary.">
+<meta property="og:title" content="sbx — scale-to-zero for your dev stack">
 <meta property="og:description" content="Postgres, Redis, a browser per branch. 0 B idle, awake on the first connection. One static binary, zero dependencies.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -102,13 +102,15 @@
   </nav>
 
   <header>
-    <div class="badge">one static binary · zero dependencies · docker or kubernetes</div>
-    <h1>Every branch gets<br>its own <span class="u">backend</span>.</h1>
-    <p class="sub">Postgres, Redis, a browser — real services, one set per branch, task or AI agent.
-      Idle they cost <b>0&nbsp;B of memory</b>; the first connection wakes them itself.</p>
-    <p class="pains">No shared dev database that one bad migration breaks for everybody.
-      No <span class="k">docker&nbsp;compose</span> stack per branch eating your RAM.
-      No <span class="k">sbx start</span> to remember.</p>
+    <div class="badge">self-hosted · no SDK · one static binary · docker or kubernetes</div>
+    <h1>Scale-to-zero for<br>your <span class="u">dev stack</span>.</h1>
+    <p class="sub">Every branch, task or AI agent gets its own Postgres, Redis or browser — real
+      services that cost <b>0&nbsp;B of memory</b> when idle and wake themselves on the first
+      connection. On your machine or your cluster.</p>
+    <p class="pains">The scale-to-zero magic you know from serverless Postgres — for
+      <b style="color:#c4cdd8;">every</b> service, driven by nothing but a socket. No always-on
+      <span class="k">docker&nbsp;compose</span> eating your RAM. No shared dev database one bad
+      migration breaks for everyone. No SDK.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/aryanmehrotra/sbx">Get started →</a>
       <a class="btn ghost" href="https://github.com/aryanmehrotra/sbx">★ Star on GitHub</a>
