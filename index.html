@@ -157,9 +157,21 @@
   .badges{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:26px}
   .badges span{font-family:var(--mono);font-size:11.5px;color:#8f8f8f;border:1px solid var(--soft);
     border-radius:999px;padding:5px 12px;letter-spacing:.01em}
-  .shot{margin-top:8px;border-radius:16px;overflow:hidden;border:1px solid var(--border);
-    background:#0a0a0a;box-shadow:0 60px 130px -50px #000,0 0 80px -40px rgba(255,255,255,.1)}
-  .shot img{display:block;width:100%;height:auto}
+  .dash{margin-top:8px;border-radius:16px;overflow:hidden;border:1px solid var(--border);font-family:var(--mono);
+    background:linear-gradient(180deg,rgba(16,16,19,.96),rgba(8,8,10,.96));
+    box-shadow:0 60px 130px -50px #000,0 0 80px -40px rgba(255,255,255,.09)}
+  .dbar{display:flex;align-items:center;gap:8px;padding:13px 18px;border-bottom:1px solid rgba(255,255,255,.07)}
+  .dbar .dtt{margin-left:10px;color:#7a7a7a;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dbody{padding:16px 20px;font-size:12.5px;line-height:1.95;overflow-x:auto}
+  .dgrid{min-width:640px}
+  .drow{display:grid;grid-template-columns:158px 112px 74px 58px 66px 1fr;gap:14px;white-space:nowrap;color:#cfcfcf}
+  .dhead{color:#6a6a6a;border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:7px;margin-bottom:5px}
+  .awake{color:#4ade80}.asleep{color:#6a6a6a}.addr{color:#8f8f8f}
+  .ddet{margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06);min-width:640px;
+    display:flex;align-items:center;gap:16px;color:#9a9a9a}
+  .ddet b{color:#e6e6e6;font-weight:500}
+  .spark{color:#4ade80;letter-spacing:1px}
+  .ddet .pk{color:#6a6a6a}
 
   .platforms{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;margin:-20px auto 44px}
   .platforms span{font-family:var(--mono);font-size:12.5px;color:#8f8f8f;border:1px solid var(--soft);
@@ -255,8 +267,24 @@
       <div class="eyebrow">one screen</div>
       <h2 class="sec-h">Watch every sandbox <em>on one screen.</em></h2>
       <p class="sec-p"><span style="font-family:var(--mono);color:#d8d8d8">sbx ui</span> — cpu and memory against each service's limit, a live trace of where it's been, and one keystroke to wake, sleep, cap or port-forward. Local, or over <span style="font-family:var(--mono);color:#d8d8d8">--connect</span> to a deployment.</p>
-      <div class="shot">
-        <img src="ui.svg" width="1111" height="440" loading="lazy" alt="The sbx dashboard: a table of every sandbox and service with cpu and memory against the limit it is allowed, a detail block for the selected service with a trace of cpu and memory over time, and a log of recent wake and sleep events.">
+      <div class="dash" role="img" aria-label="The sbx dashboard: a table of every sandbox and service with cpu, memory and address, and a live cpu trace for the selected service.">
+        <div class="dbar"><i class="tdot r"></i><i class="tdot y"></i><i class="tdot g"></i><span class="dtt">sbx ui — 2 sandboxes · 17 of 17 services awake · sbx 3.16g of 7.74g</span></div>
+        <div class="dbody">
+          <div class="dgrid">
+            <div class="drow dhead"><span>SANDBOX</span><span>SERVICE</span><span>STATE</span><span>CPU</span><span>MEMORY</span><span>ADDRESS</span></div>
+            <div class="drow"><span>analytics-agent</span><span>clickhouse</span><span class="awake">AWAKE</span><span>45mc</span><span>573m</span><span class="addr">127.0.0.1:20021</span></div>
+            <div class="drow"><span>analytics-agent</span><span>mysql</span><span class="awake">AWAKE</span><span>47mc</span><span>158m</span><span class="addr">127.0.0.1:20030</span></div>
+            <div class="drow"><span>analytics-agent</span><span>gateway</span><span class="awake">AWAKE</span><span>19mc</span><span>41m</span><span class="addr">127.0.0.1:20027</span></div>
+            <div class="drow"><span>analytics-agent</span><span>redis</span><span class="awake">AWAKE</span><span>28mc</span><span>4m</span><span class="addr">127.0.0.1:20033</span></div>
+            <div class="drow"><span>checkout-work</span><span>postgres</span><span class="asleep">asleep</span><span>-</span><span>-</span><span class="addr">127.0.0.1:20000</span></div>
+            <div class="drow"><span>checkout-work</span><span>cache</span><span class="asleep">asleep</span><span>-</span><span>-</span><span class="addr">127.0.0.1:20001</span></div>
+          </div>
+          <div class="ddet">
+            <b>analytics-agent/clickhouse</b>
+            <span>cpu&nbsp;&nbsp;<span class="spark">▁▂▃▅▇▆▄▅▇▆▄▂▃▅▇▆▄▃▂▁▂▃▅▇▆</span></span>
+            <span class="pk">peak 0.9c · 1m</span>
+          </div>
+        </div>
       </div>
     </div>
   </section>
