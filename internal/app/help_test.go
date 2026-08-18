@@ -1,4 +1,4 @@
-package main
+package app
 
 // Help drifts. It is the part of a program nobody recompiles to check, and the first thing a
 // new user reads - `sbx init` described itself as printing a spec to stdout for a while after
@@ -98,13 +98,13 @@ func TestTheExampleMatchesTheSynopsis(t *testing.T) {
 	}
 }
 
-// dispatchSource reads main.go so the test can check which cases exist. Reading the source is
+// dispatchSource reads app.go so the test can check which cases exist. Reading the source is
 // crude, and the alternative - a registry the switch is generated from - is a larger change
 // than the drift it prevents is worth.
 func dispatchSource(t *testing.T) string {
 	t.Helper()
 
-	body, err := os.ReadFile("main.go")
+	body, err := os.ReadFile("app.go")
 	if err != nil {
 		t.Fatal(err)
 	}

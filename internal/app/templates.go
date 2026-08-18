@@ -1,4 +1,4 @@
-package main
+package app
 
 // The built-in templates.
 //
@@ -8,9 +8,9 @@ package main
 // than keeping every Go file in one place.
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,17 +18,14 @@ import (
 )
 
 // templates are the built-in specs, embedded so that --template nginx works on a machine
-// that has this binary and nothing else.
-//
-// A person adopting this should not have to author a spec before they can see it work, and
-// an agent asked to spin up a Postgres should not have to write JSON to a file first.
-//
-//go:embed examples
-var templates embed.FS
+// that has this binary and nothing else. The embed itself lives in the root package (see
+// main.go): //go:embed cannot reach a parent directory, and examples/ belongs at the top of
+// the repo where somebody browsing it will find it - so the root embeds it and hands the FS
+// here through Main (the var lives in app.go, beside the import that names its type).
 
 // TemplateNames lists what --template accepts.
 func TemplateNames() []string {
-	entries, err := templates.ReadDir("examples")
+	entries, err := fs.ReadDir(templates, "examples")
 	if err != nil {
 		return nil
 	}
@@ -40,7 +37,7 @@ func TemplateNames() []string {
 			continue
 		}
 
-		if _, err := templates.ReadFile("examples/" + e.Name() + "/sandbox.json"); err == nil {
+		if _, err := fs.ReadFile(templates, "examples/"+e.Name()+"/sandbox.json"); err == nil {
 			out = append(out, e.Name())
 		}
 	}
@@ -54,7 +51,7 @@ func TemplateNames() []string {
 // README rather than kept in a second list here. A hand-kept list is one that goes stale the
 // first time somebody edits a template, which is the same reasoning TemplateImages uses.
 func TemplateDescription(name string) string {
-	body, err := templates.ReadFile("examples/" + name + "/README.md")
+	body, err := fs.ReadFile(templates, "examples/"+name+"/README.md")
 	if err != nil {
 		return ""
 	}
@@ -82,7 +79,7 @@ func TemplateImages() []string {
 	seen := map[string]bool{}
 
 	for _, name := range TemplateNames() {
-		body, err := templates.ReadFile("examples/" + name + "/sandbox.json")
+		body, err := fs.ReadFile(templates, "examples/"+name+"/sandbox.json")
 		if err != nil {
 			continue
 		}
@@ -120,7 +117,7 @@ func TemplateImages() []string {
 // updates. Printing the date is what keeps that a decision rather than an oversight: a pin
 // nobody can see the age of is a pin nobody ever refreshes.
 func TemplatesRefreshed() string {
-	body, err := templates.ReadFile("examples/pinned.json")
+	body, err := fs.ReadFile(templates, "examples/pinned.json")
 	if err != nil {
 		return ""
 	}
@@ -144,7 +141,7 @@ func TemplatesRefreshed() string {
 // directory for those to live in. Extracting the whole thing means templates and on-disk
 // specs then travel exactly one code path, which is the only reason this is not two.
 func MaterializeTemplate(name string) (string, error) {
-	entries, err := templates.ReadDir("examples/" + name)
+	entries, err := fs.ReadDir(templates, "examples/"+name)
 	if err != nil {
 		return "", fmt.Errorf("no template %q (have: %s)", name, strings.Join(TemplateNames(), ", "))
 	}
@@ -171,7 +168,7 @@ func MaterializeTemplate(name string) (string, error) {
 			continue
 		}
 
-		body, err := templates.ReadFile("examples/" + name + "/" + e.Name())
+		body, err := fs.ReadFile(templates, "examples/"+name+"/"+e.Name())
 		if err != nil {
 			return "", err
 		}

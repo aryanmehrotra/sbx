@@ -5,9 +5,15 @@
 [![dependencies](https://img.shields.io/badge/dependencies-0-3fb950)](go.mod)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**One Go binary. Every branch, task or agent gets its own Postgres, Redis or browser - asleep
-at 0 B of memory, awake on the first connection: 191 ms for redis, about a second for
-postgres, and that first connection is *held* rather than refused.**
+**Give every branch, task or AI agent its own real Postgres, Redis or browser — one that
+costs nothing while idle and wakes itself the moment anything connects.**
+
+No shared dev database that one bad migration breaks for everybody. No `docker compose` stack
+per branch eating your RAM. No `sbx start` to remember: opening a socket is the only signal, so
+`psql`, a connection pool, Playwright or a test runner wakes it without knowing sbx exists. An
+idle sandbox sleeps to **0 B of memory**, and the first connection is *held* rather than
+refused — 191 ms for redis, about a second for postgres. One static Go binary, zero
+dependencies.
 
 <img src="docs/demo.svg" width="900" alt="A terminal running sbx: a branch sandbox is created from the web-stack template, its addresses are exported as shell variables and as JSON, a cache is added mid-task, a seeded database is snapshotted and forked, the sandbox sleeps to zero, and a plain redis-cli ping wakes it and is served.">
 

@@ -1,4 +1,4 @@
-package main
+package app
 
 // How `sbx connect`'s arguments become deployments.
 //

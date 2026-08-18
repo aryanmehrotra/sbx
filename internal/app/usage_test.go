@@ -1,4 +1,4 @@
-package main
+package app
 
 // Which stream usage goes to is part of the interface.
 //

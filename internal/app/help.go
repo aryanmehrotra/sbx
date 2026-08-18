@@ -1,4 +1,4 @@
-package main
+package app
 
 // Per-command help.
 //
