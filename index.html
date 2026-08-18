@@ -117,6 +117,12 @@
   .uc p{margin:0;color:var(--dim);font-size:14px;line-height:1.5}
   .uc .k{font-family:var(--mono);color:#c4cdd8}
   @media(max-width:760px){ .uc{grid-template-columns:1fr} }
+
+  .tagline{font-family:var(--mono);font-size:clamp(19px,3vw,26px);font-weight:500;color:var(--grn);
+    margin:0 auto 20px;letter-spacing:-.01em}
+  .neg{max-width:600px;margin:0 auto 34px;color:var(--dim);font-size:16px;line-height:1.55}
+  .neg .k{font-family:var(--mono);color:#c4cdd8}
+  .neg b{color:var(--ink);font-weight:600}
 </style>
 </head>
 <body>
@@ -130,8 +136,10 @@
   <header>
     <div class="live"><span class="pulse"></span> 0&nbsp;B idle · awake on connect</div>
     <h1>Scale-to-zero<br>for your <span class="u">dev&nbsp;stack</span>.</h1>
-    <p class="sub">A real <b>Postgres, Redis or browser</b> per branch, task or agent —
-      that sleeps when you don't and wakes the instant you connect.</p>
+    <p class="tagline">Create it. Forget it. Connect.</p>
+    <p class="neg">A real <b>Postgres, Redis or browser</b> per branch — no <span class="k">start</span>,
+      no <span class="k">stop</span>, no <span class="k">docker&nbsp;compose</span> humming all weekend.
+      A socket wakes it; idle sleeps it back to <b>0&nbsp;B</b>.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/aryanmehrotra/sbx">Get started →</a>
       <a class="btn ghost" href="https://github.com/aryanmehrotra/sbx">Read the docs</a>
