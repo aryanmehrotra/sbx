@@ -687,6 +687,7 @@ func dispatch(cmd string, args []string) error {
 			Provider: p,
 			Version:  version,
 			Repo:     "aryanmehrotra/sbx",
+			Remote:   len(watch) > 0,
 		}, os.Stdout)
 
 	case "history":

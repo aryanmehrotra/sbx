@@ -3,9 +3,13 @@ package daemon
 // The dashboard, pointed at a deployment rather than at this machine.
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +23,14 @@ import (
 type metered struct {
 	provider.Provider
 
-	samples int
+	mu         sync.Mutex
+	samples    int
+	started    []string
+	stopped    []string
+	removed    []string
+	loggedRef  string
+	limitedRef string
+	limitedTo  provider.Limits
 }
 
 func (m *metered) Stats(_ context.Context, refs []string) (map[string]provider.Usage, error) {
@@ -40,10 +51,52 @@ func (m *metered) Limits(context.Context, string) (provider.Limits, error) {
 	return provider.Limits{NanoCPUs: 1_500_000_000, MemBytes: 640 << 20}, nil
 }
 
+// The control path records what it was asked to do, so a test can assert the dashboard's key
+// reached the provider on the far side rather than only that the HTTP call returned 200.
+func (m *metered) Start(_ context.Context, ref string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.started = append(m.started, ref)
+
+	return nil
+}
+
+func (m *metered) Stop(_ context.Context, ref string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopped = append(m.stopped, ref)
+
+	return nil
+}
+
+func (m *metered) Remove(_ context.Context, sandbox string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removed = append(m.removed, sandbox)
+
+	return nil
+}
+
+func (m *metered) Logs(_ context.Context, ref string, _ int, _ bool, w io.Writer) error {
+	m.mu.Lock()
+	m.loggedRef = ref
+	m.mu.Unlock()
+
+	_, _ = io.WriteString(w, "line one\nline two\n")
+
+	return nil
+}
+
 // Both halves, because provider.Limiter is the pair - a stub with only the getter is not a
 // Limiter, the type assertion misses, and the endpoint reports no ceilings while looking
 // entirely correct.
-func (m *metered) SetLimits(context.Context, string, provider.Limits) error { return nil }
+func (m *metered) SetLimits(_ context.Context, ref string, l provider.Limits) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.limitedRef, m.limitedTo = ref, l
+
+	return nil
+}
 
 func remoteFor(t *testing.T, urls ...string) *Remote {
 	t.Helper()
@@ -172,25 +225,23 @@ func TestConnectDoesNotPayForTheDashboardsSampling(t *testing.T) {
 	}
 }
 
-// The token on a connect endpoint buys reading what is fronted and carrying bytes to a port.
-// Waking, sleeping, capping and removing are none of those, and a leaked token is a very
-// different incident if it can destroy a volume. Every verb that changes something refuses, and
-// says where the command does work.
-func TestARemoteDashboardCannotChangeAnything(t *testing.T) {
+// Exec, a TTY into a service and file copy stay refused over connect - a shell over the tunnel
+// is a larger surface than the dashboard's keys and is not built here. The refusal names the
+// door rather than the machine, because the same command works where the sandbox runs.
+func TestAShellStaysRefusedOverConnect(t *testing.T) {
 	r := remoteFor(t, "https://sbx.example.dev")
 
 	ctx := context.Background()
 
+	_, execErr := r.Exec(ctx, "ref", []string{"ls"})
+
 	for name, err := range map[string]error{
-		"Start":     r.Start(ctx, "ref"),
-		"Stop":      r.Stop(ctx, "ref"),
-		"Remove":    r.Remove(ctx, "demo"),
-		"SetLimits": r.SetLimits(ctx, "ref", provider.Limits{}),
-		"Logs":      r.Logs(ctx, "ref", 10, false, nil),
-		"ExecTTY":   r.ExecTTY(ctx, "ref", []string{"sh"}),
+		"Exec":    execErr,
+		"ExecTTY": r.ExecTTY(ctx, "ref", []string{"sh"}),
+		"Copy":    r.Copy(ctx, "ref", ":/a", "/b"),
 	} {
 		if err == nil {
-			t.Errorf("%s changed something through a read-only endpoint", name)
+			t.Errorf("%s was accepted over a connect endpoint", name)
 
 			continue
 		}
@@ -258,4 +309,124 @@ func TestOneUnreachableDeploymentStillShowsTheOthers(t *testing.T) {
 	if len(units) != 1 {
 		t.Fatalf("expected the reachable deployment's one service, got %d units", len(units))
 	}
+}
+
+// The whole point of the feature: a dashboard key over --connect does on the far side what it
+// does locally. List first, because control routes by what the last listing returned.
+func TestTheDashboardControlsADeployedFleet(t *testing.T) {
+	d := daemonFronting(20000, "i1")
+	m := &metered{}
+	d.provider = m
+	ts := serverFor(t, d)
+
+	r := remoteFor(t, ts.URL)
+
+	units, err := r.List(context.Background(), "")
+	if err != nil || len(units) != 1 {
+		t.Fatalf("List gave %d units, err %v", len(units), err)
+	}
+
+	ref, sandbox := units[0].Ref, units[0].Sandbox
+	ctx := context.Background()
+
+	if err := r.Stop(ctx, ref); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if err := r.Start(ctx, ref); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := r.SetLimits(ctx, ref, provider.Limits{NanoCPUs: 1_000_000_000, MemBytes: 512 << 20}); err != nil {
+		t.Fatalf("SetLimits: %v", err)
+	}
+
+	var logs bytes.Buffer
+	if err := r.Logs(ctx, ref, 50, false, &logs); err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+
+	if err := r.Remove(ctx, sandbox); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.stopped) != 1 || m.stopped[0] != "sbx-demo-db" {
+		t.Errorf("sleep reached the provider as %v, want [sbx-demo-db]", m.stopped)
+	}
+
+	if len(m.started) != 1 || m.started[0] != "sbx-demo-db" {
+		t.Errorf("wake reached the provider as %v", m.started)
+	}
+
+	if m.limitedRef != "sbx-demo-db" || m.limitedTo.MemBytes != 512<<20 {
+		t.Errorf("limit reached the provider as ref=%q %+v", m.limitedRef, m.limitedTo)
+	}
+
+	if m.loggedRef != "sbx-demo-db" {
+		t.Errorf("logs asked for ref %q", m.loggedRef)
+	}
+
+	if !strings.Contains(logs.String(), "line one") {
+		t.Errorf("the log tail did not cross the wire: %q", logs.String())
+	}
+
+	if len(m.removed) != 1 || m.removed[0] != "demo" {
+		t.Errorf("remove reached the provider as %v, want [demo]", m.removed)
+	}
+}
+
+// Front mode has no runtime behind the endpoint, so control has nothing to act on. It must
+// refuse clearly rather than 500, and say where the command would work.
+func TestControlRefusesInFrontMode(t *testing.T) {
+	d := daemonFronting(20000, "i1") // no provider set: this is front mode
+	ts := serverFor(t, d)
+
+	r := remoteFor(t, ts.URL)
+	if _, err := r.List(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	err := r.Stop(context.Background(), "sbx-demo-db")
+	if err == nil {
+		t.Fatal("sleep was accepted against a front-mode endpoint with no runtime")
+	}
+
+	if !strings.Contains(err.Error(), "only fronts") {
+		t.Errorf("the refusal does not explain there is no runtime: %v", err)
+	}
+}
+
+// A control call with no token is refused by the same gate as everything else, so widening what
+// the token buys did not open an unauthenticated door.
+func TestControlNeedsTheToken(t *testing.T) {
+	d := daemonFronting(20000, "i1")
+	d.provider = &metered{}
+	ts := serverFor(t, d)
+
+	base := mustParse(t, ts.URL)
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		base.String()+"/v1/control/sleep", strings.NewReader(`{"ref":"sbx-demo-db"}`))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a control call with no token answered %s, want 401", resp.Status)
+	}
+}
+
+func mustParse(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

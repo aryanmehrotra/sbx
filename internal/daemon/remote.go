@@ -7,11 +7,12 @@ package daemon
 // to put a sandbox that is somewhere else onto this screen is not a second dashboard: it is a
 // Provider whose List is an HTTP request. The renderer never learns the difference.
 //
-// It is read-only, and that is a decision rather than an omission. The token on a connect
-// endpoint currently buys two things: read what is fronted, and carry bytes to a port. Waking,
-// sleeping, capping and removing are none of those, and a token that leaks is a very different
-// incident if it can also destroy a sandbox's volume. Every verb that changes something refuses
-// here and says why, so the dashboard's keys report a policy instead of failing obscurely.
+// Wake, sleep, re-limit, remove and logs go through too, each an authed call to a control
+// endpoint on the far daemon - so the dashboard's keys do over connect what they do locally.
+// This is a deliberate widening of what the token is worth: it once bought reading and a tunnel,
+// and now controls the deployment, so a leaked one is a larger incident than it was. Exec, a
+// TTY and file copy stay refused - a shell over the tunnel is its own surface - and none of it
+// does anything in front mode, where there is no runtime behind the endpoint to act on.
 
 import (
 	"context"
@@ -38,6 +39,19 @@ type Remote struct {
 	mu     sync.Mutex
 	usage  map[string]provider.Usage
 	limits map[string]provider.Limits
+
+	// Where a control call goes. A ref is namespaced by deployment on the way out (see List),
+	// so wake/sleep/limit/logs undo that here to reach the right endpoint with the ref it knows.
+	// Remove takes a sandbox name rather than a ref, so it needs its own routing.
+	route         map[string]refTarget
+	sandboxSource map[string]*source
+}
+
+// refTarget is the deployment a namespaced ref belongs to, and the bare ref that deployment
+// issued - which is what the far side stored it under.
+type refTarget struct {
+	src *source
+	raw string
 }
 
 // NewRemote resolves the endpoints and returns a Provider that reads them.
@@ -53,10 +67,12 @@ func NewRemote(endpoints []Endpoint, sandbox []string) (*Remote, error) {
 	}
 
 	return &Remote{
-		sources: sources,
-		only:    sandbox,
-		usage:   map[string]provider.Usage{},
-		limits:  map[string]provider.Limits{},
+		sources:       sources,
+		only:          sandbox,
+		usage:         map[string]provider.Usage{},
+		limits:        map[string]provider.Limits{},
+		route:         map[string]refTarget{},
+		sandboxSource: map[string]*source{},
 	}, nil
 }
 
@@ -107,6 +123,8 @@ func (r *Remote) List(ctx context.Context, sandbox string) ([]provider.Unit, err
 		units  []provider.Unit
 		usage  = map[string]provider.Usage{}
 		limits = map[string]provider.Limits{}
+		route  = map[string]refTarget{}
+		sbxSrc = map[string]*source{}
 		errs   []error
 	)
 
@@ -129,6 +147,17 @@ func (r *Remote) List(ctx context.Context, sandbox string) ([]provider.Unit, err
 			// by ref, so colliding refs would draw one service's trace under another's name.
 			if len(r.sources) > 1 {
 				ref = res.src.label + "/" + f.Ref
+			}
+
+			// So a control call for this ref reaches the deployment that issued it, with the
+			// bare ref that deployment stored - not the namespaced one this side shows.
+			route[ref] = refTarget{src: res.src, raw: f.Ref}
+
+			// Remove routes by sandbox. First writer wins: two deployments with a sandbox of the
+			// same name is the same collision that namespaces refs, and there is no ref here to
+			// disambiguate on, so removing reaches whichever was listed first rather than both.
+			if _, seen := sbxSrc[f.Sandbox]; !seen {
+				sbxSrc[f.Sandbox] = res.src
 			}
 
 			client := make([]provider.Endpoint, 0, len(f.Ports))
@@ -160,6 +189,7 @@ func (r *Remote) List(ctx context.Context, sandbox string) ([]provider.Unit, err
 
 	r.mu.Lock()
 	r.usage, r.limits = usage, limits
+	r.route, r.sandboxSource = route, sbxSrc
 	r.mu.Unlock()
 
 	// Only where nothing at all came back. Something on screen and a missing deployment is a
@@ -196,25 +226,86 @@ func (r *Remote) Limits(_ context.Context, ref string) (provider.Limits, error) 
 	return r.limits[ref], nil
 }
 
-// readOnly is what every verb that would change something says.
+// readOnly is what the verbs that stay refused say. Exec, a TTY and file copy are not dashboard
+// actions and are a larger surface than wake/sleep/limit/remove/logs - a shell over the tunnel
+// is its own feature with its own risks - so they remain off here rather than being half-built.
 //
 // It names the endpoint rather than the machine, because the thing being refused is not "sbx
 // cannot do this" - it is "not through this door". The same command works where the sandbox is.
 func (r *Remote) readOnly(verb string) error {
-	return fmt.Errorf("%s is not available over sbx connect: a connect endpoint carries bytes "+
-		"and reports what it is fronting, and nothing else. Run it where the sandbox is, or "+
-		"open a shell there", verb)
+	return fmt.Errorf("%s is not available over sbx connect: reach it where the sandbox runs, "+
+		"or open a shell there", verb)
 }
 
-func (r *Remote) Start(context.Context, string) error { return r.readOnly("waking a service") }
-func (r *Remote) Stop(context.Context, string) error  { return r.readOnly("sleeping a service") }
+// targetFor resolves a ref this side handed out to the deployment that owns it and the bare ref
+// that deployment stored. Unknown until List has run, and after that only for refs that were in
+// the last listing.
+func (r *Remote) targetFor(ref string) (refTarget, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-func (r *Remote) Remove(context.Context, string) error {
-	return r.readOnly("removing a sandbox")
+	t, ok := r.route[ref]
+	if !ok {
+		return refTarget{}, fmt.Errorf("no deployment is fronting %q - it was not in the last "+
+			"listing", ref)
+	}
+
+	return t, nil
 }
 
-func (r *Remote) SetLimits(context.Context, string, provider.Limits) error {
-	return r.readOnly("setting a limit")
+// Start wakes a service through the control endpoint. The local dashboard wakes by dialling the
+// address, which a remote dashboard cannot do without a live tunnel, so waking is asked for.
+func (r *Remote) Start(ctx context.Context, ref string) error {
+	t, err := r.targetFor(ref)
+	if err != nil {
+		return err
+	}
+
+	return control(ctx, t.src, "wake", map[string]any{"ref": t.raw})
+}
+
+func (r *Remote) Stop(ctx context.Context, ref string) error {
+	t, err := r.targetFor(ref)
+	if err != nil {
+		return err
+	}
+
+	return control(ctx, t.src, "sleep", map[string]any{"ref": t.raw})
+}
+
+func (r *Remote) SetLimits(ctx context.Context, ref string, l provider.Limits) error {
+	t, err := r.targetFor(ref)
+	if err != nil {
+		return err
+	}
+
+	return control(ctx, t.src, "limit", map[string]any{
+		"ref": t.raw, "nano_cpus": l.NanoCPUs, "mem_bytes": l.MemBytes,
+	})
+}
+
+// Remove routes by sandbox name rather than ref - see the note where sandboxSource is filled.
+func (r *Remote) Remove(ctx context.Context, sandbox string) error {
+	r.mu.Lock()
+	src, ok := r.sandboxSource[sandbox]
+	r.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("no deployment is fronting a sandbox called %q", sandbox)
+	}
+
+	return control(ctx, src, "remove", map[string]any{"sandbox": sandbox})
+}
+
+// Logs streams a tail from the control endpoint into w. Not following: the dashboard reads a
+// tail and shows it, matching what the server offers.
+func (r *Remote) Logs(ctx context.Context, ref string, lines int, _ bool, w io.Writer) error {
+	t, err := r.targetFor(ref)
+	if err != nil {
+		return err
+	}
+
+	return controlLogs(ctx, t.src, t.raw, lines, w)
 }
 
 func (r *Remote) Exec(context.Context, string, []string) (string, error) {
@@ -223,10 +314,6 @@ func (r *Remote) Exec(context.Context, string, []string) (string, error) {
 
 func (r *Remote) ExecTTY(context.Context, string, []string) error {
 	return r.readOnly("a terminal into a service")
-}
-
-func (r *Remote) Logs(context.Context, string, int, bool, io.Writer) error {
-	return r.readOnly("reading logs")
 }
 
 func (r *Remote) Copy(context.Context, string, string, string) error {

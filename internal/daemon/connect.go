@@ -106,6 +106,16 @@ func (d *daemon) Connect(opt ConnectOptions) (*http.Server, error) {
 	mux.HandleFunc("GET /v1/fleet", d.authed(opt.Token, d.fleetHandler))
 	mux.HandleFunc("GET /v1/connect", d.authed(opt.Token, d.connectHandler))
 
+	// Control, behind the same token. Off in front mode - each handler refuses where there is
+	// no provider - and a deliberate widening of what the token is worth where there is one:
+	// `sbx ui --connect` can now wake, sleep, re-limit, remove and read logs, not only read.
+	// See control.go.
+	mux.HandleFunc("POST /v1/control/wake", d.authed(opt.Token, d.controlWake))
+	mux.HandleFunc("POST /v1/control/sleep", d.authed(opt.Token, d.controlSleep))
+	mux.HandleFunc("POST /v1/control/limit", d.authed(opt.Token, d.controlLimit))
+	mux.HandleFunc("POST /v1/control/remove", d.authed(opt.Token, d.controlRemove))
+	mux.HandleFunc("GET /v1/control/logs", d.authed(opt.Token, d.controlLogs))
+
 	return &http.Server{
 		Addr:    opt.Addr,
 		Handler: mux,

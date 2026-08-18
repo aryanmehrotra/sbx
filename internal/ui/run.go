@@ -33,6 +33,11 @@ type Options struct {
 	Provider provider.Provider
 	Version  string
 	Repo     string
+
+	// Remote is set when the provider is a deployment reached over sbx connect rather than this
+	// machine. The dashboard reads the same Provider either way; this only changes the couple of
+	// places where "connect to wake" and "dial a local port" are genuinely different acts.
+	Remote bool
 }
 
 // Run draws the dashboard until the user quits.
@@ -59,9 +64,10 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 	update.Refresh(opt.Repo)
 
 	d := &dash{
-		opt:   opt,
-		model: model{version: opt.Version, update: update.Available(opt.Version)},
-		prev:  map[string]provider.Usage{},
+		opt:    opt,
+		remote: opt.Remote,
+		model:  model{version: opt.Version, update: update.Available(opt.Version)},
+		prev:   map[string]provider.Usage{},
 
 		limitsSeen: map[string]time.Time{},
 	}
@@ -116,7 +122,8 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 
 // dash is the running dashboard.
 type dash struct {
-	opt Options
+	opt    Options
+	remote bool
 
 	mu    sync.Mutex
 	model model
@@ -598,13 +605,34 @@ func (d *dash) say(format string, a ...any) {
 // a dashboard that is lying or stuck. What is timed instead is the round trip to a service
 // that is actually running again.
 func (d *dash) wake(ctx context.Context, r row) {
-	if r.Address == "" {
-		return
-	}
-
 	if r.Awake {
 		d.say("%s/%s is already awake", r.Sandbox, r.Service)
 
+		return
+	}
+
+	// A remote dashboard has no local port to dial - the address on screen is the deployment's,
+	// not one bound here - so it wakes by asking. A provider that offers Start (the remote one
+	// does) is used directly; the local dashboard has none and keeps dialling, which is the only
+	// way it wakes anything and the only way that reports an honest time.
+	if waker, ok := d.opt.Provider.(interface {
+		Start(context.Context, string) error
+	}); ok && d.remote {
+		d.say("waking %s/%s ...", r.Sandbox, r.Service)
+
+		if err := waker.Start(ctx, r.Ref); err != nil {
+			d.say("could not wake %s/%s: %v", r.Sandbox, r.Service, err)
+
+			return
+		}
+
+		d.say("%s/%s woken", r.Sandbox, r.Service)
+		d.refresh(ctx)
+
+		return
+	}
+
+	if r.Address == "" {
 		return
 	}
 
