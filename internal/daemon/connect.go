@@ -34,6 +34,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/selfstat"
 )
 
 const (
@@ -281,6 +282,28 @@ func (d *daemon) fleetHandler(w http.ResponseWriter, r *http.Request) {
 // say. Both are optional capabilities, so a backend without them leaves the fields absent and
 // the dashboard reads "n/a" rather than showing a zero it did not measure.
 func (d *daemon) addUsage(ctx context.Context, out []fleetService) {
+	// Fronted services have no provider behind them - the platform started the workload - so
+	// there is nothing to ask docker. But sbx is running *inside* that container, and a process
+	// can read its own cgroup, so it reports the container's own usage as the fronted service's.
+	// In a one-container-per-service deployment that cgroup is the service; where a container
+	// fronts several ports they each show the container total, which is honest - they share it.
+	if self, ok := selfstat.Read(); ok {
+		for i := range out {
+			if out[i].Instance != frontInstance {
+				continue
+			}
+
+			out[i].Usage = &fleetUsage{
+				CPUNanos: self.CPUNanos, SystemNanos: self.SystemNanos,
+				OnlineCPUs: self.OnlineCPUs, MemBytes: self.MemBytes, MemLimit: self.MemLimit,
+			}
+
+			if self.NanoCPULimit > 0 || self.MemLimit > 0 {
+				out[i].Limits = &fleetLimits{NanoCPUs: self.NanoCPULimit, MemBytes: self.MemLimit}
+			}
+		}
+	}
+
 	if d.provider == nil {
 		return
 	}
@@ -288,8 +311,6 @@ func (d *daemon) addUsage(ctx context.Context, out []fleetService) {
 	refs := make([]string, 0, len(out))
 
 	for _, f := range out {
-		// A fronted port has no container behind it that this process knows of - the platform
-		// started the workload - so there is nothing here to sample.
 		if f.Instance != frontInstance {
 			refs = append(refs, f.Ref)
 		}
