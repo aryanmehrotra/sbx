@@ -160,6 +160,12 @@
   .shot{margin-top:8px;border-radius:16px;overflow:hidden;border:1px solid var(--border);
     background:#0a0a0a;box-shadow:0 60px 130px -50px #000,0 0 80px -40px rgba(255,255,255,.1)}
   .shot img{display:block;width:100%;height:auto}
+
+  .platforms{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;margin:-20px auto 44px}
+  .platforms span{font-family:var(--mono);font-size:12.5px;color:#8f8f8f;border:1px solid var(--soft);
+    border-radius:8px;padding:7px 14px;letter-spacing:.01em;transition:color .18s,border-color .18s}
+  .platforms span:hover{color:#fff;border-color:var(--border)}
+  .platforms span b{color:#d8d8d8;font-weight:500}
 </style>
 </head>
 <body style="background:#000;color:#fff">
@@ -229,7 +235,10 @@
     <div class="wrap">
       <div class="eyebrow">built for branches · agents · CI</div>
       <h2 class="sec-h">Deploy anywhere. <em>Manage from one CLI.</em></h2>
-      <p class="sec-p">The same spec runs on your laptop, a VM, or a Kubernetes cluster — and <span style="font-family:var(--mono);color:#d8d8d8">sbx ui --connect</span> drives every sandbox, wherever it lives.</p>
+      <p class="sec-p">Local agents or remote, it runs anywhere docker or kubernetes does — and <span style="font-family:var(--mono);color:#d8d8d8">sbx ui --connect</span> drives every sandbox, wherever it lives.</p>
+      <div class="platforms appear appear--soft" style="--d:.2s">
+        <span><b>local</b></span><span><b>GCP</b></span><span><b>AWS</b></span><span><b>Azure</b></span><span><b>self-hosted</b></span><span><b>bare metal</b></span>
+      </div>
       <div class="feat">
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg><h3>Wakes on a socket</h3><p>Any TCP connection. No SDK, no client library, no wrapper.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg><h3>Sleeps to 0 B</h3><p>Idle sandboxes cost no memory. Volume intact, back in a second.</p></div>
