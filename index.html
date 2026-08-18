@@ -34,16 +34,12 @@
     padding:18px 40px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);background:rgba(0,0,0,.35)}
   .logo{display:inline-flex;align-items:center;gap:9px;justify-self:start;font-size:16px;font-weight:600;letter-spacing:-.03em}
   .logo svg{width:22px;height:22px} .logo-suffix{font-weight:400}
-  #site-nav{display:flex;align-items:center;gap:8px;justify-self:center}
-  .pill{height:38px;padding:0 16px;border-radius:8px;overflow:hidden;position:relative;display:inline-flex;align-items:center;
-    border:1px solid rgba(198,198,198,.45);background:linear-gradient(105deg,#080808,#242424 48%,#3c3c3c);color:#f0f0f0;
-    font-size:13.5px;font-weight:400;letter-spacing:-.01em;white-space:nowrap;cursor:pointer;
-    transition:background .35s,border-color .35s,box-shadow .35s}
-  .pill::before{content:"";position:absolute;inset:0;transform:translateX(-120%);transition:transform .6s ease;
-    background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.16) 50%,transparent 70%)}
-  .pill:hover{border-color:rgba(235,235,235,.85);box-shadow:0 0 16px rgba(200,210,230,.16);
-    background:linear-gradient(105deg,#151515,#3a3a3a 45%,#5c5c5c)}
-  .pill:hover::before{transform:translateX(120%)}
+  #site-nav{display:flex;align-items:center;gap:30px;justify-self:center}
+  .navlink{color:#8f8f8f;font-size:14px;font-weight:400;letter-spacing:-.01em;transition:color .18s;position:relative;padding:4px 0}
+  .navlink:hover{color:#fff}
+  .navlink .ext{opacity:.55;font-size:11px;vertical-align:1px}
+  .ver{margin-left:8px;padding:2px 7px;border:1px solid var(--soft);border-radius:5px;color:#8f8f8f;
+    font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:0}
   .header-cta{justify-self:end}
   .burger{display:none;width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:rgba(10,10,10,.6);
     place-items:center;cursor:pointer;justify-self:end}
@@ -151,7 +147,7 @@
     #site-nav{position:fixed;inset:0;z-index:45;flex-direction:column;justify-content:center;gap:12px;padding:96px 22px 32px;
       opacity:0;visibility:hidden;pointer-events:none;transition:opacity .28s;background:rgba(6,6,8,.6);backdrop-filter:blur(24px)}
     body.menu-open #site-nav{opacity:1;visibility:visible;pointer-events:auto}
-    #site-nav .pill{width:100%;justify-content:center;height:54px;font-size:18px;border-radius:10px}
+    #site-nav{gap:22px} #site-nav .navlink{font-size:22px;color:#cfcfcf}
     body.menu-open{overflow:hidden}
     .steps,.feat{grid-template-columns:1fr} .stats{gap:16px;flex-direction:column}
     section{padding:88px 0 0}
@@ -165,13 +161,13 @@
   <header class="header">
     <a class="logo appear appear--scale" href="#top" aria-label="sbx" style="--d:.08s">
       <svg viewBox="0 0 24 24" fill="currentColor"><g transform="rotate(-30 12 12)"><circle cx="7.3" cy="3.2" r="1.45"/><rect x="5.5" y="4.7" width="3.6" height="14.6" rx="1.8"/><rect x="14.9" y="4.7" width="3.6" height="14.6" rx="1.8"/><circle cx="16.7" cy="20.8" r="1.45"/></g></svg>
-      <span>sbx</span>
+      <span>sbx</span><span class="ver">v0.6.0</span>
     </a>
     <nav id="site-nav" aria-label="Primary">
-      <a class="pill appear appear--scale" href="#how" style="--d:.16s">How it works</a>
-      <a class="pill appear appear--soft" href="#features" style="--d:.28s">Features</a>
-      <a class="pill appear appear--scale" href="https://github.com/aryanmehrotra/sbx#readme" style="--d:.40s">Docs</a>
-      <a class="pill appear appear--soft" href="https://github.com/aryanmehrotra/sbx" style="--d:.52s">GitHub ↗</a>
+      <a class="navlink appear appear--soft" href="#how" style="--d:.16s">How it works</a>
+      <a class="navlink appear appear--soft" href="#features" style="--d:.24s">Features</a>
+      <a class="navlink appear appear--soft" href="https://github.com/aryanmehrotra/sbx#readme" style="--d:.32s">Docs</a>
+      <a class="navlink appear appear--soft" href="https://github.com/aryanmehrotra/sbx" style="--d:.40s">GitHub <span class="ext">↗</span></a>
     </nav>
     <a class="btn btn-solid header-cta appear appear--scale" href="#install" style="--d:.34s">Get started</a>
     <button class="burger appear appear--scale" type="button" aria-controls="site-nav" aria-expanded="false" aria-label="Open menu" style="--d:.34s"><span></span><span></span><span></span></button>
