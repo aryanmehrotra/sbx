@@ -4,250 +4,198 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>sbx — Scale-to-Zero Dev Infrastructure</title>
-<meta name="description" content="A real Postgres, Redis or browser per branch, task or agent — awake on the first connection, asleep at 0 B. Self-hosted, no SDK, one static binary.">
+<meta name="description" content="A real Postgres, Redis or browser per branch, task or agent — awake on connect, asleep at 0 B. Deploy to a laptop, VM or Kubernetes and manage it all from one CLI.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cg transform='rotate(-30 12 12)'%3E%3Ccircle cx='7.3' cy='3.2' r='1.45'/%3E%3Crect x='5.5' y='4.7' width='3.6' height='14.6' rx='1.8'/%3E%3Crect x='14.9' y='4.7' width='3.6' height='14.6' rx='1.8'/%3E%3Ccircle cx='16.7' cy='20.8' r='1.45'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900&family=Instrument+Serif:ital@1&display=swap">
 <style>
-  html, body { background: #000000 !important; color: #ffffff; }
-  html, body { background: #000000; background: var(--bg, #000000); color: #ffffff; color: var(--text, #ffffff); }
-  :root{
-    --bg:#000000; --text:#ffffff; --muted:#9a9a9a; --stat:#d8d8d8;
-    --border:rgba(255,255,255,.16); --border-soft:rgba(255,255,255,.12);
-    --logo:15.5px; --logo-mark:22px; --nav:14px; --nav-h:40px; --btn:13.5px;
-    --btn-h:40px; --hero-btn-h:42px; --h1:48px; --lede:15.5px; --badge:12.5px; --stat-size:13.5px;
-    --header-y:22px; --header-x:40px; --stats-x:72px; --stats-y:36px; --hero-gap:85px;
-    --copy-max:860px; --lede-max:470px;
-    --ui:"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --serif:"Instrument Serif", "Times New Roman", Times, serif;
-  }
-  *{ box-sizing:border-box; margin:0; padding:0 }
-  html{ scroll-behavior:smooth }
-  body{ font-family:var(--ui); -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
-    text-rendering:optimizeLegibility; overflow-x:hidden; position:relative }
-  a{ color:inherit; text-decoration:none } button{ font-family:inherit }
+  html,body{background:#000 !important;color:#fff}
+  html,body{background:#000;background:var(--bg,#000);color:#fff;color:var(--text,#fff)}
+  :root{--bg:#000;--text:#fff;--muted:#9a9a9a;--stat:#d8d8d8;
+    --border:rgba(255,255,255,.14);--soft:rgba(255,255,255,.09);--panel:rgba(255,255,255,.03);
+    --ui:"Inter",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --serif:"Instrument Serif","Times New Roman",Times,serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:var(--ui);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+    text-rendering:optimizeLegibility;overflow-x:hidden;position:relative}
+  a{color:inherit;text-decoration:none} button{font-family:inherit}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
 
   .grain{position:fixed;inset:0;z-index:100;pointer-events:none;opacity:.05;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
-  .hero-photo{position:fixed;inset:0;z-index:-1;background:#000}
-  .hero-photo::after{content:"";position:absolute;inset:0;
-    background:radial-gradient(120% 90% at 50% 120%, rgba(255,255,255,.04), transparent 60%)}
-
-  .page{position:relative;z-index:1;display:grid;grid-template-rows:auto 1fr auto;min-height:100vh;min-height:100dvh}
+  body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:radial-gradient(120% 80% at 50% -10%, rgba(255,255,255,.05), transparent 55%)}
 
   /* header */
-  .header{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
-    padding:var(--header-y) var(--header-x) 10px;z-index:50;position:relative}
-  .logo{display:inline-flex;align-items:center;gap:9px;justify-self:start;font-size:var(--logo);
-    font-weight:600;letter-spacing:-.03em;color:#fff}
-  .logo svg{width:var(--logo-mark);height:var(--logo-mark)}
-  .logo-suffix{font-weight:400}
+  .header{position:sticky;top:0;z-index:50;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+    padding:18px 40px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);background:rgba(0,0,0,.35)}
+  .logo{display:inline-flex;align-items:center;gap:9px;justify-self:start;font-size:16px;font-weight:600;letter-spacing:-.03em}
+  .logo svg{width:22px;height:22px} .logo-suffix{font-weight:400}
   #site-nav{display:flex;align-items:center;gap:8px;justify-self:center}
-  .pill{height:var(--nav-h);padding:0 18px;border-radius:7px;overflow:hidden;position:relative;
-    display:inline-flex;align-items:center;border:1px solid rgba(198,198,198,.55);
-    background:linear-gradient(105deg,#050505 0%,#2a2a2a 48%,#4a4a4a 100%);color:#f3f3f3;
-    font-size:var(--nav);font-weight:400;letter-spacing:-.01em;white-space:nowrap;
-    transition:background .35s ease,border-color .35s ease,box-shadow .35s ease}
+  .pill{height:38px;padding:0 16px;border-radius:8px;overflow:hidden;position:relative;display:inline-flex;align-items:center;
+    border:1px solid rgba(198,198,198,.45);background:linear-gradient(105deg,#080808,#242424 48%,#3c3c3c);color:#f0f0f0;
+    font-size:13.5px;font-weight:400;letter-spacing:-.01em;white-space:nowrap;cursor:pointer;
+    transition:background .35s,border-color .35s,box-shadow .35s}
   .pill::before{content:"";position:absolute;inset:0;transform:translateX(-120%);transition:transform .6s ease;
     background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.16) 50%,transparent 70%)}
-  .pill:hover{border-color:rgba(235,235,235,.9);box-shadow:0 0 18px rgba(200,210,230,.18);
-    background:linear-gradient(105deg,#111 0%,#3a3a3a 45%,#6a6a6a 100%)}
+  .pill:hover{border-color:rgba(235,235,235,.85);box-shadow:0 0 16px rgba(200,210,230,.16);
+    background:linear-gradient(105deg,#151515,#3a3a3a 45%,#5c5c5c)}
   .pill:hover::before{transform:translateX(120%)}
   .header-cta{justify-self:end}
-
-  .burger{display:none;width:42px;height:42px;border-radius:6px;border:1px solid var(--border);
-    background:rgba(8,8,8,.55);z-index:60;place-items:center;cursor:pointer;justify-self:end}
+  .burger{display:none;width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:rgba(10,10,10,.6);
+    place-items:center;cursor:pointer;justify-self:end}
   .burger span{display:block;width:16px;height:1.5px;background:#fff;border-radius:1px;transition:transform .25s,opacity .2s}
   .burger span+span{margin-top:5px}
-  .burger:hover{border-color:rgba(255,255,255,.32);background:rgba(255,255,255,.05)}
   body.menu-open .burger span:nth-child(1){transform:translateY(6.5px) rotate(45deg)}
   body.menu-open .burger span:nth-child(2){opacity:0}
   body.menu-open .burger span:nth-child(3){transform:translateY(-6.5px) rotate(-45deg)}
 
   /* buttons */
   .btn{position:relative;isolation:isolate;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;
-    height:var(--btn-h);padding:0 16px;border-radius:6px;font-size:var(--btn);font-weight:500;letter-spacing:-.02em;
-    line-height:1;white-space:nowrap;cursor:pointer;
-    transition:background .35s,border-color .35s,box-shadow .35s,color .35s,filter .35s}
+    height:44px;padding:0 20px;border-radius:8px;font-size:14.5px;font-weight:500;letter-spacing:-.02em;line-height:1;
+    white-space:nowrap;cursor:pointer;transition:background .35s,border-color .35s,box-shadow .35s,color .35s}
   .btn::after{content:"";position:absolute;inset:0;transform:translateX(-130%);transition:transform .65s ease;
     background:linear-gradient(115deg,transparent 20%,rgba(255,255,255,.45) 48%,transparent 76%)}
   .btn:hover::after{transform:translateX(130%)}
-  .btn-solid{background:linear-gradient(180deg,#ffffff 0%,#e7e7e7 48%,#cfcfcf 100%);color:#111;border:1px solid #fff;
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.95)}
-  .btn-solid:hover{background:linear-gradient(180deg,#fff 0%,#f3f6ff 42%,#d5def2 100%);border-color:#f2f6ff;
-    box-shadow:inset 0 1px 0 #fff,0 0 22px rgba(186,208,255,.35),0 8px 18px rgba(255,255,255,.12)}
-  .btn-ghost{color:#fff;border:1px solid rgba(198,198,198,.45);
-    background:linear-gradient(135deg,rgba(255,255,255,.1),rgba(0,0,0,.45) 50%,rgba(160,175,200,.08));
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
-  .btn-ghost:hover{border-color:rgba(220,230,255,.75);
-    background:linear-gradient(135deg,rgba(210,225,255,.18),rgba(0,0,0,.35) 48%,rgba(180,195,220,.16));
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 0 20px rgba(170,200,255,.22)}
-  .hero-actions .btn{height:var(--hero-btn-h);padding:0 18px}
-  .hero-actions .btn-solid:hover{box-shadow:inset 0 1px 0 #fff,0 0 26px rgba(186,208,255,.4),0 8px 18px rgba(255,255,255,.14)}
-  .hero-actions .btn-ghost{border:1px solid rgba(198,198,198,.55);
-    background:linear-gradient(135deg,rgba(255,255,255,.12),rgba(0,0,0,.5) 46%,rgba(150,170,200,.1));
-    backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
-  .hero-actions .btn-ghost:hover{box-shadow:0 0 24px rgba(170,200,255,.28);border-color:rgba(220,230,255,.8)}
+  .btn-solid{background:linear-gradient(180deg,#fff,#e7e7e7 48%,#cfcfcf);color:#111;border:1px solid #fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.95)}
+  .btn-solid:hover{background:linear-gradient(180deg,#fff,#f3f6ff 42%,#d5def2);box-shadow:inset 0 1px 0 #fff,0 0 24px rgba(186,208,255,.38),0 8px 18px rgba(255,255,255,.12)}
+  .btn-ghost{color:#fff;border:1px solid rgba(198,198,198,.5);background:linear-gradient(135deg,rgba(255,255,255,.12),rgba(0,0,0,.5) 46%,rgba(150,170,200,.1));
+    backdrop-filter:blur(12px)}
+  .btn-ghost:hover{border-color:rgba(220,230,255,.8);box-shadow:0 0 22px rgba(170,200,255,.26)}
+  .header-cta.btn{height:38px;font-size:13.5px}
 
   /* hero */
-  .hero{display:flex;align-items:center;justify-content:center;padding:36px 24px 12px;min-height:0}
-  .hero-copy{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;text-align:center;
-    max-width:var(--copy-max);width:100%}
-  .badge{display:inline-flex;align-items:center;gap:8px;margin-bottom:22px;padding:9px 15px;border:0;border-radius:5px;
-    background:linear-gradient(90deg,#7d7d7d 0%,#2a2a2a 52%,#0a0a0a 100%);color:#f2f2f2;
-    font-size:var(--badge);font-weight:400;letter-spacing:-.01em}
-  .badge svg{width:18px;height:20px;filter:drop-shadow(0 0 3px rgba(255,255,255,.45))}
-  h1{font-family:var(--ui);font-weight:500;font-size:var(--h1);letter-spacing:-.045em;line-height:1.12;color:#fff;
+  .hero{text-align:center;padding:64px 28px 20px}
+  .badge{display:inline-flex;align-items:center;gap:8px;margin-bottom:24px;padding:9px 15px;border-radius:6px;
+    background:linear-gradient(90deg,#7d7d7d,#2a2a2a 52%,#0a0a0a);color:#f2f2f2;font-size:12.5px;letter-spacing:-.01em}
+  .badge svg{width:17px;height:19px;filter:drop-shadow(0 0 3px rgba(255,255,255,.45))}
+  h1{font-weight:500;font-size:clamp(40px,7vw,72px);letter-spacing:-.045em;line-height:1.08;
     display:flex;flex-direction:column;align-items:center}
-  .headline-line{display:block;overflow:hidden;padding:.06em .15em .14em}
+  .headline-line{display:block;overflow:hidden;padding:.04em .12em .12em}
   h1 em{font-family:var(--serif);font-style:italic;font-weight:400;font-size:1.08em;letter-spacing:-.03em;color:#9a9a9a}
-  .lede{max-width:var(--lede-max);margin-top:18px;color:#9a9a9a;font-size:var(--lede);font-weight:400;
-    line-height:1.55;letter-spacing:-.015em}
-  .hero-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:26px}
+  .lede{max-width:560px;margin:20px auto 0;color:#9a9a9a;font-size:clamp(15.5px,2vw,18px);line-height:1.55;letter-spacing:-.015em}
+  .hero-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-top:28px}
 
-  /* stats */
-  .stats{display:flex;align-items:center;justify-content:space-between;gap:24px;
-    padding:0 var(--stats-x) var(--stats-y);padding-bottom:max(var(--stats-y),env(safe-area-inset-bottom));color:#d8d8d8}
-  .stat{display:inline-flex;align-items:center;gap:14px;font-size:var(--stat-size);letter-spacing:-.015em;white-space:nowrap}
-  .stat svg{width:20px;height:20px}
-
-  /* menu backdrop */
-  .menu-backdrop{display:none}
-
-  /* entrance */
-  .appear{opacity:1;animation-duration:1.05s;animation-fill-mode:both;
-    animation-timing-function:cubic-bezier(.16,1,.3,1);animation-delay:var(--d,.08s)}
-  .appear.is-in{animation:none;opacity:1;transform:none;clip-path:none;filter:none}
-  .appear--scale{animation-name:in-scale}
-  .appear--soft{animation-name:in-soft}
-  .appear--pop{animation-name:in-pop}
-  .appear--mask{animation-name:in-mask}
-  .appear--btn{animation-name:in-btn}
-  .appear--side{animation-name:in-side}
-  .appear--stat{animation-name:in-stat}
-  @keyframes in-scale{0%{opacity:0;transform:scale(.84)}100%{opacity:1;transform:scale(1)}}
-  @keyframes in-soft{0%{opacity:0;transform:translateY(14px)}100%{opacity:1;transform:translateY(0)}}
-  @keyframes in-mask{0%{opacity:0;transform:translateY(40%)}100%{opacity:1;transform:translateY(0)}}
-  @keyframes in-pop{0%{opacity:0;transform:scale(.9)}70%{opacity:1;transform:scale(1.03)}100%{transform:scale(1)}}
-  @keyframes in-btn{0%{opacity:0;transform:translateY(18px) scale(.94)}100%{opacity:1;transform:none}}
-  @keyframes in-side{0%{opacity:0;transform:translateX(22px)}100%{opacity:1;transform:none}}
-  @keyframes in-stat{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:none}}
-  .badge-star{animation:in-star .9s var(--tf,cubic-bezier(.16,1,.3,1)) .28s both}
-  @keyframes in-star{0%{opacity:0;transform:scale(.2) rotate(-50deg)}65%{opacity:1;transform:scale(1.2) rotate(8deg)}100%{transform:none}}
-  h1 em{animation:in-em 1.2s cubic-bezier(.16,1,.3,1) .72s both}
-  @keyframes in-em{0%{opacity:.35;filter:blur(4px)}100%{opacity:1;filter:blur(0)}}
-
-  @media (prefers-reduced-motion: reduce){
-    *,*::before,*::after{transition:none!important;animation:none!important}
-    .appear,.hero-photo,.hero h1 em,.badge-star{opacity:1;transform:none;clip-path:none;filter:none}
-  }
-
-  /* responsive */
-  @media (min-width:1600px){:root{--logo:17px;--logo-mark:24px;--nav:15px;--nav-h:44px;--btn:15px;--btn-h:44px;
-    --hero-btn-h:48px;--h1:64px;--lede:18px;--badge:13.5px;--stat-size:15px;--header-y:28px;--header-x:64px;
-    --stats-x:96px;--stats-y:44px;--copy-max:980px;--lede-max:540px}}
-  @media (min-width:1920px){:root{--logo:18px;--logo-mark:26px;--nav:16px;--nav-h:48px;--btn:16px;--btn-h:48px;
-    --hero-btn-h:52px;--h1:76px;--lede:20px;--badge:14.5px;--stat-size:16px;--header-y:32px;--header-x:80px;
-    --stats-x:120px;--stats-y:52px;--copy-max:1120px;--lede-max:620px}}
-  @media (min-width:2560px){:root{--h1:88px;--lede:22px;--header-x:120px;--stats-x:160px;--copy-max:1280px;--lede-max:680px}}
-  @media (min-width:1280px) and (max-width:1599px){:root{--h1:54px;--lede:16px;--header-x:48px;--stats-x:80px;--copy-max:900px}}
-  @media (min-width:901px) and (max-width:1279px){:root{--logo:15px;--nav:13px;--nav-h:36px;--btn:13px;--btn-h:38px;
-    --hero-btn-h:40px;--h1:42px;--lede:15px;--badge:12px;--stat-size:12.5px;--header-y:16px;--header-x:28px;
-    --stats-x:36px;--stats-y:28px;--hero-gap:64px;--copy-max:760px;--lede-max:440px}}
-  @media (min-width:901px) and (max-height:850px){:root{--header-y:14px;--stats-y:24px;--hero-gap:48px;--h1:40px}}
-  @media (min-width:901px) and (max-height:720px){:root{--h1:34px;--lede:14px;--hero-gap:32px;--stats-y:18px;
-    --nav-h:30px;--btn-h:34px;--hero-btn-h:36px}}
-
-  @media (max-width:900px){
-    html,body{height:auto;overflow-y:auto}
-    .header{grid-template-columns:1fr auto auto;gap:8px;padding-top:max(16px,env(safe-area-inset-top))}
-    .logo,.header-cta,.burger{z-index:80}
-    .burger{display:grid}
-    #site-nav{position:fixed;inset:0;z-index:45;flex-direction:column;justify-content:center;background:transparent;
-      gap:12px;padding:96px 22px 32px;padding-top:max(96px,calc(env(safe-area-inset-top) + 88px));
-      opacity:0;visibility:hidden;pointer-events:none;transition:opacity .28s}
-    body.menu-open #site-nav{opacity:1;visibility:visible;pointer-events:auto}
-    #site-nav .pill{width:100%;justify-content:center;height:56px;font-size:19px;border-radius:10px}
-    .header-cta{display:inline-flex}
-    .menu-backdrop{display:block;position:fixed;inset:0;z-index:40;background:rgba(8,8,8,.42);
-      opacity:0;visibility:hidden;transition:opacity .28s,backdrop-filter .28s}
-    body.menu-open .menu-backdrop{opacity:1;visibility:visible;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
-    body.menu-open{overflow:hidden}
-    :root{--logo:16px;--btn:15px;--btn-h:46px;--hero-btn-h:48px;--h1:36px;--lede:16.5px;--badge:13.5px;--stat-size:15px;
-      --header-y:16px;--header-x:18px;--stats-x:20px;--stats-y:28px;--hero-gap:36px}
-    .hero{padding:28px 20px 24px;align-items:center}
-    .hero-copy{max-width:100%} .lede{max-width:100%}
-    .stats{flex-direction:column;align-items:center;gap:16px;white-space:normal}
-  }
-  @media (max-width:560px){
-    :root{--h1:34px;--lede:16px;--header-x:16px}
-    .hero-actions{flex-direction:column;width:100%} .hero-actions .btn{width:100%}
-  }
-
-  /* product showcase */
-  .showcase{display:flex;justify-content:center;padding:8px 24px 0}
-  .term{width:100%;max-width:760px;border-radius:16px;overflow:hidden;position:relative;
-    background:linear-gradient(180deg,rgba(18,18,20,.9),rgba(8,8,9,.9));
-    border:1px solid rgba(255,255,255,.12);
-    box-shadow:0 60px 130px -50px #000,0 0 0 1px rgba(255,255,255,.03),0 0 70px -30px rgba(255,255,255,.14)}
+  /* showcase terminal */
+  .showcase{display:flex;justify-content:center;padding:46px 28px 0}
+  .term{width:100%;max-width:780px;border-radius:16px;overflow:hidden;position:relative;
+    background:linear-gradient(180deg,rgba(18,18,20,.92),rgba(8,8,9,.92));border:1px solid rgba(255,255,255,.12);
+    box-shadow:0 60px 130px -50px #000,0 0 70px -30px rgba(255,255,255,.12)}
   .tb{display:flex;align-items:center;gap:8px;padding:13px 18px;border-bottom:1px solid rgba(255,255,255,.07)}
   .tdot{width:11px;height:11px;border-radius:50%}
   .tdot.r{background:#ff5f57}.tdot.y{background:#febc2e}.tdot.g{background:#28c840}
-  .tb .tt{margin-left:10px;color:#6a6a6a;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
-  .term pre{margin:0;padding:22px 24px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-    font-size:13.5px;line-height:2;overflow-x:auto;text-align:left;color:#e6e6e6}
+  .tb .tt{margin-left:10px;color:#6a6a6a;font-family:var(--mono);font-size:12.5px}
+  .term pre{margin:0;padding:22px 24px;font-family:var(--mono);font-size:13.5px;line-height:2;overflow-x:auto;text-align:left;color:#e6e6e6}
   .term pre .p{color:#fff}.term pre .c{color:#5a5a5a}.term pre .o{color:#9a9a9a}.term pre .k{color:#cfe0ff}
   .curs{display:inline-block;width:8px;height:15px;background:#fff;vertical-align:-2px;animation:blink 1.1s step-end infinite}
   @keyframes blink{50%{opacity:0}}
-  .taglabels{display:flex;justify-content:center;flex-wrap:wrap;gap:10px 22px;margin:26px auto 0;
-    color:#6a6a6a;font-size:12.5px;letter-spacing:.02em;font-family:ui-monospace,Menlo,monospace}
-  .taglabels b{color:#d8d8d8;font-weight:500}
+
+  /* sections */
+  section{padding:120px 0 0}
+  .eyebrow{text-align:center;font-family:var(--mono);font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#6a6a6a;margin-bottom:14px}
+  .sec-h{text-align:center;font-size:clamp(28px,4vw,42px);font-weight:500;letter-spacing:-.03em;margin:0 auto 8px;max-width:760px}
+  .sec-h em{font-family:var(--serif);font-style:italic;font-weight:400;font-size:1.08em;color:#9a9a9a}
+  .sec-p{text-align:center;max-width:560px;margin:0 auto 44px;color:#9a9a9a;font-size:16px;line-height:1.55}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .step{background:var(--panel);border:1px solid var(--soft);border-radius:16px;padding:28px}
+  .step .n{font-family:var(--mono);font-size:12.5px;color:#6a6a6a;margin-bottom:14px}
+  .step h3{font-size:17px;font-weight:600;margin:0 0 7px}
+  .step p{color:#9a9a9a;font-size:14px;line-height:1.55;margin:0} .step .k{font-family:var(--mono);color:#d8d8d8}
+
+  .feat{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .cell{background:var(--panel);border:1px solid var(--soft);border-radius:16px;padding:26px;transition:border-color .2s,transform .2s}
+  .cell:hover{border-color:rgba(255,255,255,.2);transform:translateY(-2px)}
+  .cell svg{stroke:#fff;opacity:.85;margin-bottom:12px}
+  .cell h3{font-size:16px;font-weight:600;margin:0 0 6px}
+  .cell p{color:#9a9a9a;font-size:14px;line-height:1.5;margin:0} .cell .k{font-family:var(--mono);color:#d8d8d8}
+
+  .install{margin-top:22px;display:flex;justify-content:center}
+  .copybox{display:inline-flex;align-items:center;gap:14px;background:rgba(255,255,255,.03);border:1px solid var(--border);
+    border-radius:12px;padding:14px 16px 14px 20px;font-family:var(--mono);font-size:13.5px;max-width:100%;overflow:hidden}
+  .copybox code{color:#e6e6e6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .copybox button{background:#fff;color:#111;border:none;border-radius:8px;padding:9px 15px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:var(--mono)}
+
+  /* stats footer */
+  .stats{display:flex;align-items:center;justify-content:center;gap:44px;flex-wrap:wrap;
+    margin-top:120px;padding:40px 28px;border-top:1px solid var(--soft);color:#d8d8d8}
+  .stat{display:inline-flex;align-items:center;gap:12px;font-size:14px;letter-spacing:-.015em;white-space:nowrap}
+  .stat svg{width:20px;height:20px}
+  footer.foot{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;
+    padding:22px 28px 56px;color:#5a5a5a;font-family:var(--mono);font-size:13px;max-width:1080px;margin:0 auto}
+  footer.foot a:hover{color:#fff}
+
+  /* entrance */
+  .appear{opacity:1;animation-duration:1.05s;animation-fill-mode:both;animation-timing-function:cubic-bezier(.16,1,.3,1);animation-delay:var(--d,.08s)}
+  .appear.is-in{animation:none;opacity:1;transform:none;clip-path:none;filter:none}
+  .appear--scale{animation-name:in-scale}.appear--soft{animation-name:in-soft}.appear--pop{animation-name:in-pop}
+  .appear--mask{animation-name:in-mask}.appear--btn{animation-name:in-btn}.appear--side{animation-name:in-side}.appear--stat{animation-name:in-stat}
+  @keyframes in-scale{0%{opacity:0;transform:scale(.84)}100%{opacity:1;transform:scale(1)}}
+  @keyframes in-soft{0%{opacity:0;transform:translateY(14px)}100%{opacity:1;transform:none}}
+  @keyframes in-mask{0%{opacity:0;transform:translateY(40%)}100%{opacity:1;transform:none}}
+  @keyframes in-pop{0%{opacity:0;transform:scale(.9)}70%{opacity:1;transform:scale(1.03)}100%{transform:none}}
+  @keyframes in-btn{0%{opacity:0;transform:translateY(18px) scale(.94)}100%{opacity:1;transform:none}}
+  @keyframes in-side{0%{opacity:0;transform:translateX(22px)}100%{opacity:1;transform:none}}
+  @keyframes in-stat{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:none}}
+  h1 em{animation:in-em 1.2s cubic-bezier(.16,1,.3,1) .72s both}
+  @keyframes in-em{0%{opacity:.35;filter:blur(4px)}100%{opacity:1;filter:none}}
+  @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}
+    .appear,h1 em{opacity:1;transform:none;filter:none}}
+
+  @media (max-width:900px){
+    .header{grid-template-columns:1fr auto auto;gap:8px;padding:14px 18px}
+    .burger{display:grid} .header-cta.btn{display:none}
+    #site-nav{position:fixed;inset:0;z-index:45;flex-direction:column;justify-content:center;gap:12px;padding:96px 22px 32px;
+      opacity:0;visibility:hidden;pointer-events:none;transition:opacity .28s;background:rgba(6,6,8,.6);backdrop-filter:blur(24px)}
+    body.menu-open #site-nav{opacity:1;visibility:visible;pointer-events:auto}
+    #site-nav .pill{width:100%;justify-content:center;height:54px;font-size:18px;border-radius:10px}
+    body.menu-open{overflow:hidden}
+    .steps,.feat{grid-template-columns:1fr} .stats{gap:16px;flex-direction:column}
+    section{padding:88px 0 0}
+  }
+  @media (max-width:560px){ .hero-actions{flex-direction:column;width:100%} .hero-actions .btn{width:100%} }
 </style>
 </head>
 <body style="background:#000;color:#fff">
   <div class="grain"></div>
-  <div class="hero-photo"></div>
 
-  <div class="page">
-    <header class="header">
-      <a class="logo appear appear--scale" href="#top" aria-label="sbx" style="--d:.08s">
-        <svg viewBox="0 0 24 24" fill="currentColor"><g transform="rotate(-30 12 12)"><circle cx="7.3" cy="3.2" r="1.45"/><rect x="5.5" y="4.7" width="3.6" height="14.6" rx="1.8"/><rect x="14.9" y="4.7" width="3.6" height="14.6" rx="1.8"/><circle cx="16.7" cy="20.8" r="1.45"/></g></svg>
-        <span>sbx</span>
-      </a>
-      <nav id="site-nav" aria-label="Primary">
-        <a class="pill appear appear--scale" href="#top" style="--d:.16s">Features</a>
-        <a class="pill appear appear--soft" href="#top" style="--d:.28s">How it works</a>
-        <a class="pill appear appear--scale" href="https://github.com/aryanmehrotra/sbx#readme" style="--d:.40s">Docs</a>
-        <a class="pill appear appear--soft" href="https://github.com/aryanmehrotra/sbx" style="--d:.52s">GitHub</a>
-      </nav>
-      <a class="btn btn-solid header-cta appear appear--scale" href="https://github.com/aryanmehrotra/sbx" style="--d:.34s">Get started</a>
-      <button class="burger appear appear--scale" type="button" aria-controls="site-nav" aria-expanded="false" aria-label="Open menu" style="--d:.34s">
-        <span></span><span></span><span></span>
-      </button>
-    </header>
+  <header class="header">
+    <a class="logo appear appear--scale" href="#top" aria-label="sbx" style="--d:.08s">
+      <svg viewBox="0 0 24 24" fill="currentColor"><g transform="rotate(-30 12 12)"><circle cx="7.3" cy="3.2" r="1.45"/><rect x="5.5" y="4.7" width="3.6" height="14.6" rx="1.8"/><rect x="14.9" y="4.7" width="3.6" height="14.6" rx="1.8"/><circle cx="16.7" cy="20.8" r="1.45"/></g></svg>
+      <span>sbx</span>
+    </a>
+    <nav id="site-nav" aria-label="Primary">
+      <a class="pill appear appear--scale" href="#how" style="--d:.16s">How it works</a>
+      <a class="pill appear appear--soft" href="#features" style="--d:.28s">Features</a>
+      <a class="pill appear appear--scale" href="https://github.com/aryanmehrotra/sbx#readme" style="--d:.40s">Docs</a>
+      <a class="pill appear appear--soft" href="https://github.com/aryanmehrotra/sbx" style="--d:.52s">GitHub ↗</a>
+    </nav>
+    <a class="btn btn-solid header-cta appear appear--scale" href="#install" style="--d:.34s">Get started</a>
+    <button class="burger appear appear--scale" type="button" aria-controls="site-nav" aria-expanded="false" aria-label="Open menu" style="--d:.34s"><span></span><span></span><span></span></button>
+  </header>
 
-    <main class="hero" id="top">
-      <div class="hero-copy">
-        <span class="badge appear appear--pop" style="--d:.22s">
-          <svg class="badge-star" viewBox="0 0 24 24" fill="white"><path d="M12 2.6C12.55 2.6 12.88 3.15 13.08 4.7c.62 4.7 1.52 5.6 6.22 6.22 1.55.2 2.1.53 2.1 1.08s-.55.88-2.1 1.08c-4.7.62-5.6 1.52-6.22 6.22-.2 1.55-.53 2.1-1.08 2.1s-.88-.55-1.08-2.1c-.62-4.7-1.52-5.6-6.22-6.22C3.15 12.88 2.6 12.55 2.6 12s.55-.88 2.1-1.08c4.7-.62 5.6-1.52 6.22-6.22C11.12 3.15 11.45 2.6 12 2.6Z"/></svg>
-          Scale-to-Zero Dev Infrastructure
-        </span>
-        <h1>
-          <span class="headline-line appear appear--mask" style="--d:.42s"><em>Scale to zero</em> for your</span>
-          <span class="headline-line appear appear--mask" style="--d:.62s">whole dev stack.</span>
-        </h1>
-        <p class="lede appear appear--soft" style="--d:.82s;animation-duration:1.25s">Give every branch, task or agent a real Postgres, Redis or browser — on your laptop, a VM or a Kubernetes cluster, and drive them all from one CLI. Awake on connect, asleep at 0&nbsp;B.</p>
-        <div class="hero-actions">
-          <a class="btn btn-solid appear appear--btn" href="https://github.com/aryanmehrotra/sbx" style="--d:.96s">Get started</a>
-          <a class="btn btn-ghost appear appear--side" href="https://github.com/aryanmehrotra/sbx#readme" style="--d:1.10s">Read the docs</a>
-        </div>
-      </div>
-    </main>
+  <main class="hero" id="top">
+    <span class="badge appear appear--pop" style="--d:.22s">
+      <svg viewBox="0 0 24 24" fill="white"><path d="M12 2.6C12.55 2.6 12.88 3.15 13.08 4.7c.62 4.7 1.52 5.6 6.22 6.22 1.55.2 2.1.53 2.1 1.08s-.55.88-2.1 1.08c-4.7.62-5.6 1.52-6.22 6.22-.2 1.55-.53 2.1-1.08 2.1s-.88-.55-1.08-2.1c-.62-4.7-1.52-5.6-6.22-6.22C3.15 12.88 2.6 12.55 2.6 12s.55-.88 2.1-1.08c4.7-.62 5.6-1.52 6.22-6.22C11.12 3.15 11.45 2.6 12 2.6Z"/></svg>
+      Scale-to-Zero Dev Infrastructure
+    </span>
+    <h1>
+      <span class="headline-line appear appear--mask" style="--d:.42s"><em>Scale to zero</em> for your</span>
+      <span class="headline-line appear appear--mask" style="--d:.62s">whole dev stack.</span>
+    </h1>
+    <p class="lede appear appear--soft" style="--d:.82s;animation-duration:1.25s">Give every branch, task or agent a real Postgres, Redis or browser — on your laptop, a VM or a Kubernetes cluster, and drive them all from one CLI. Awake on connect, asleep at 0&nbsp;B.</p>
+    <div class="hero-actions">
+      <a class="btn btn-solid appear appear--btn" href="#install" style="--d:.96s">Get started</a>
+      <a class="btn btn-ghost appear appear--side" href="#how" style="--d:1.10s">See how it works</a>
+    </div>
+  </main>
 
-    <section class="showcase appear appear--soft" style="--d:1.0s;animation-duration:1.2s">
-      <div class="term">
-        <div class="tb"><i class="tdot r"></i><i class="tdot y"></i><i class="tdot g"></i><span class="tt">my-branch — sbx</span></div>
+  <section class="showcase appear appear--soft" id="how" style="--d:1.0s;animation-duration:1.2s">
+    <div class="term">
+      <div class="tb"><i class="tdot r"></i><i class="tdot y"></i><i class="tdot g"></i><span class="tt">my-branch — sbx</span></div>
 <pre><span class="p">$ sbx create my-branch --template postgres</span>
 <span class="p">$ eval "$(sbx env my-branch)"</span>
 <span class="p">$ psql -U app -d app</span>   <span class="c"># &#8592; this wakes it</span>
@@ -255,59 +203,85 @@
 <span class="c"># deployed to a VM or cluster? drive it all from the CLI:</span>
 <span class="p">$ sbx ui --connect https://sbx.example.dev</span> <span class="curs"></span>
 </pre>
-      </div>
-    </section>
-
-    <div class="taglabels appear appear--soft" style="--d:1.15s">
-      <span><b>docker</b> or <b>kubernetes</b></span>
-      <span><b>laptop</b>, <b>VM</b> or <b>cluster</b></span>
-      <span>managed from <b>one CLI</b></span>
-      <span><b>open source</b> · MIT</span>
     </div>
+  </section>
 
-    <footer class="stats">
-      <span class="stat appear appear--stat" style="--d:1.12s">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="g1" x1="3" y1="2" x2="14" y2="22"><stop offset="0" stop-color="#ffffff" stop-opacity=".38"/><stop offset="1" stop-color="#3a3a3a" stop-opacity=".62"/></linearGradient><linearGradient id="g2" x1="14" y1="2" x2="24" y2="22"><stop offset="0" stop-color="#3a3a3a" stop-opacity=".38"/><stop offset="1" stop-color="#ffffff" stop-opacity=".62"/></linearGradient></defs><rect x="3.4" y="2.6" width="7.2" height="18.8" rx="3.6" fill="url(#g1)"/><rect x="13.4" y="2.6" width="7.2" height="18.8" rx="3.6" fill="url(#g2)"/><rect x="9.2" y="10.9" width="5.6" height="2.2" rx="1.1" fill="#4a4a4a"/></svg>
-        0&nbsp;B memory when idle
-      </span>
-      <span class="stat appear appear--stat" style="--d:1.28s">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.4" y="2.4" width="19.2" height="19.2" rx="6.2" fill="#ffffff"/><path d="M11.4 6.6 8 12.8h3l-.7 4.6 3.9-6.4h-3.1z" fill="#111"/></svg>
-        191&nbsp;ms redis wake
-      </span>
-      <span class="stat appear appear--stat" style="--d:1.44s">
-        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="#e8e8e8" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 3 20 7.2 12 11.4 4 7.2 12 3"/><polyline points="4 12 12 16.2 20 12"/><polyline points="4 16.6 12 20.8 20 16.6"/></svg>
-        laptop, VM or Kubernetes
-      </span>
-    </footer>
+  <section>
+    <div class="wrap">
+      <div class="eyebrow">how it works</div>
+      <h2 class="sec-h">There is no <em>start</em>. There is no <em>stop</em>.</h2>
+      <p class="sec-p">Opening a socket is the only signal — so any tool wakes a sandbox without knowing sbx exists, and a few idle minutes sleep it back to zero.</p>
+      <div class="steps">
+        <div class="step"><div class="n">01</div><h3>Create it</h3><p>One command realises the spec — a real Postgres, Redis or browser. <span class="k">--template</span> works with nothing on disk.</p></div>
+        <div class="step"><div class="n">02</div><h3>Forget it</h3><p>Ignore it and it sleeps to <span class="k">0 B</span> — a stopped container, volume intact. You never turn it off.</p></div>
+        <div class="step"><div class="n">03</div><h3>Connect</h3><p><span class="k">psql</span>, a pool, Playwright or a test runner opens a socket and it's back in a second. You never turn it on.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="eyebrow">built for branches · agents · CI</div>
+      <h2 class="sec-h">Deploy anywhere. <em>Manage from one CLI.</em></h2>
+      <p class="sec-p">The same spec runs on your laptop, a VM, or a Kubernetes cluster — and <span style="font-family:var(--mono);color:#d8d8d8">sbx ui --connect</span> drives every sandbox, wherever it lives.</p>
+      <div class="feat">
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg><h3>Wakes on a socket</h3><p>Any TCP connection. No SDK, no client library, no wrapper.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg><h3>Sleeps to 0 B</h3><p>Idle sandboxes cost no memory. Volume intact, back in a second.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"></polygon><polyline points="2 15.5 12 22 22 15.5"></polyline></svg><h3>Docker or Kubernetes</h3><p>The same spec local or in a cluster. <span class="k">sbx doctor</span> tells you what a host can do.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 18v3"></path><polyline points="6 9 9 12 6 15"></polyline></svg><h3>Manage from the CLI</h3><p><span class="k">sbx ui --connect</span> reaches sandboxes on a VM or cluster and drives them from your terminal.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><circle cx="18" cy="8" r="2.4"></circle><path d="M6 8.4v7.2M8.3 6.7l7.5 .9M18 10.4c0 4-3 4.6-11.8 5.4"></path></svg><h3>Snapshot &amp; fork</h3><p>Seed one database, then fork a hundred. The migration runs a single time.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><h3>One committed file</h3><p><span class="k">sandbox.json</span> says what a branch needs. Reads with <span class="k">--json</span> for agents.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="eyebrow">one static binary · zero dependencies</div>
+      <h2 class="sec-h" id="install">Install in one line.</h2>
+      <div class="install">
+        <div class="copybox">
+          <code id="cmd">curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code>
+          <button type="button" onclick="copyCmd(this)">Copy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stats">
+    <span class="stat appear appear--stat" style="--d:.1s">
+      <svg viewBox="0 0 24 24"><defs><linearGradient id="g1" x1="3" y1="2" x2="14" y2="22"><stop offset="0" stop-color="#fff" stop-opacity=".38"/><stop offset="1" stop-color="#3a3a3a" stop-opacity=".62"/></linearGradient><linearGradient id="g2" x1="14" y1="2" x2="24" y2="22"><stop offset="0" stop-color="#3a3a3a" stop-opacity=".38"/><stop offset="1" stop-color="#fff" stop-opacity=".62"/></linearGradient></defs><rect x="3.4" y="2.6" width="7.2" height="18.8" rx="3.6" fill="url(#g1)"/><rect x="13.4" y="2.6" width="7.2" height="18.8" rx="3.6" fill="url(#g2)"/><rect x="9.2" y="10.9" width="5.6" height="2.2" rx="1.1" fill="#4a4a4a"/></svg>
+      0&nbsp;B memory when idle</span>
+    <span class="stat appear appear--stat" style="--d:.24s">
+      <svg viewBox="0 0 24 24"><rect x="2.4" y="2.4" width="19.2" height="19.2" rx="6.2" fill="#fff"/><path d="M11.4 6.6 8 12.8h3l-.7 4.6 3.9-6.4h-3.1z" fill="#111"/></svg>
+      191&nbsp;ms redis wake</span>
+    <span class="stat appear appear--stat" style="--d:.38s">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#e8e8e8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 3 20 7.2 12 11.4 4 7.2 12 3"/><polyline points="4 12 12 16.2 20 12"/><polyline points="4 16.6 12 20.8 20 16.6"/></svg>
+      laptop, VM or Kubernetes</span>
   </div>
 
-  <div class="menu-backdrop"></div>
+  <footer class="foot">
+    <div><span style="color:#fff">sbx</span> · MIT · zero dependencies</div>
+    <div><a href="https://github.com/aryanmehrotra/sbx">github.com/aryanmehrotra/sbx</a></div>
+  </footer>
 
   <script>
   (function(){
-    var appears = Array.prototype.slice.call(document.querySelectorAll('.appear'));
-    var photo = document.querySelector('.hero-photo');
-    function markIn(el){ el.classList.add('is-in'); }
-    appears.forEach(function(el){ el.addEventListener('animationend', function(){ markIn(el); }, {once:true}); });
+    var appears=[].slice.call(document.querySelectorAll('.appear'));
+    appears.forEach(function(el){ el.addEventListener('animationend',function(){ el.classList.add('is-in'); },{once:true}); });
     requestAnimationFrame(function(){ requestAnimationFrame(function(){
-      var anims = (typeof document.getAnimations === 'function') ? document.getAnimations() : [];
-      var live = anims.some(function(a){ return a.playState === 'running' || a.playState === 'finished'; });
-      if(!live){ appears.forEach(markIn); if(photo) photo.classList.add('is-in'); }
+      var a=(typeof document.getAnimations==='function')?document.getAnimations():[];
+      if(!a.some(function(x){return x.playState==='running'||x.playState==='finished';})){ appears.forEach(function(el){el.classList.add('is-in');}); }
     }); });
-
-    var burger = document.querySelector('.burger');
-    var nav = document.getElementById('site-nav');
-    var mq = window.matchMedia('(min-width: 901px)');
-    function setOpen(open){
-      document.body.classList.toggle('menu-open', open);
-      if(burger){ burger.setAttribute('aria-expanded', open ? 'true':'false');
-        burger.setAttribute('aria-label', open ? 'Close menu':'Open menu'); }
-    }
-    if(burger){ burger.addEventListener('click', function(){ setOpen(!document.body.classList.contains('menu-open')); }); }
-    if(nav){ nav.addEventListener('click', function(e){ if(e.target.closest('a')) setOpen(false); }); }
-    document.querySelector('.menu-backdrop').addEventListener('click', function(){ setOpen(false); });
-    document.addEventListener('keydown', function(e){ if(e.key === 'Escape') setOpen(false); });
-    mq.addEventListener('change', function(e){ if(e.matches) setOpen(false); });
+    var burger=document.querySelector('.burger'), nav=document.getElementById('site-nav'),
+        mq=window.matchMedia('(min-width:901px)');
+    function setOpen(o){ document.body.classList.toggle('menu-open',o);
+      if(burger){ burger.setAttribute('aria-expanded',o?'true':'false'); burger.setAttribute('aria-label',o?'Close menu':'Open menu'); } }
+    if(burger) burger.addEventListener('click',function(){ setOpen(!document.body.classList.contains('menu-open')); });
+    if(nav) nav.addEventListener('click',function(e){ if(e.target.closest('a')) setOpen(false); });
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape') setOpen(false); });
+    mq.addEventListener('change',function(e){ if(e.matches) setOpen(false); });
+    window.copyCmd=function(b){ navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(function(){ var o=b.textContent; b.textContent='Copied ✓'; setTimeout(function(){b.textContent=o;},1400); }); };
   })();
   </script>
 </body>
