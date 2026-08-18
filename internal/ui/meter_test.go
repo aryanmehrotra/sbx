@@ -219,7 +219,7 @@ func TestASleepingServiceFillsItsBlock(t *testing.T) {
 		metered: true,
 	}
 
-	block := detailBlock(asleep, widths(asleep.rows, 120), plan(30, 1, wantDetail(asleep)).detailRows, 120)
+	block := detailBlock(asleep, widths(asleep.rows, 120), plan(30, 1, wantDetail(asleep), 3).detailRows, 120)
 
 	for i, l := range block {
 		if strings.TrimSpace(plainText(l)) == "" {

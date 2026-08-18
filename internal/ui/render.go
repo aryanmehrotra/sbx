@@ -103,7 +103,7 @@ func render(m model, rows, cols int) string {
 
 	shown := m.view()
 
-	l := plan(rows, len(shown), wantDetail(m))
+	l := plan(rows, len(shown), wantDetail(m), wantPane(m))
 	w := widths(shown, cols)
 
 	var out []string
@@ -341,22 +341,17 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 	// is the list that can.
 	members := m.membersOf(r.Sandbox)
 
-	// One geometry for every member line. The widest address decides where the readings begin,
-	// so a service publishing two ports - "127.0.0.1:20002 127.0.0.1:20003", twice as wide as
-	// its neighbours' - does not push its own numbers out of the column the others share.
+	// One grid for the whole block, every column as wide as the widest thing in it.
 	//
-	// Where the table's columns are further right they win, and then the readings sit under the
-	// table's own headings as well as under each other. Where they are not, these lines line up
-	// with themselves, which is the alignment a reader is actually comparing.
-	addrWidth := 0
-	for _, s := range members {
-		addrWidth = max(addrWidth, visibleLen(s.Address))
+	// Nothing is cut to make the sums work. A service publishing two ports carries both, and a
+	// name nobody shortened stays whole - so the columns are measured from what is actually
+	// there rather than from a constant somebody guessed, which is the difference between a
+	// table and a list of lines that happen to have spaces in them.
+	g := memberGrid(members)
+
+	if len(members) > 0 && len(out) < space {
+		out = append(out, memberHeader(g, cols))
 	}
-
-	addrWidth = min(addrWidth, maxMemberAddr)
-
-	cpuEnd := max(2+w.sandbox+2+w.service+2+6+2+w.cpu, memberPrefix+addrWidth+2+w.cpu)
-	memEnd := cpuEnd + 2 + w.mem
 
 	for i, s := range members {
 		room := space - len(out)
@@ -374,7 +369,7 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 			break
 		}
 
-		out = append(out, truncate(memberLine(m, s, r, addrWidth, cpuEnd, memEnd, cols), cols))
+		out = append(out, truncate(memberLine(m, s, r, g, cols), cols))
 	}
 
 	return padTo(out, space, cols)
@@ -391,54 +386,49 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 // Where the name, state and address have already run past that point - a long service name on a
 // narrow terminal - the readings follow on after a space instead. Alignment is worth having and
 // not worth overlapping the address to get.
-func memberLine(m model, s row, sandbox row, addrWidth, cpuEnd, memEnd, width int) string {
+func memberLine(m model, s row, sandbox row, g grid, width int) string {
 	state, colour := "asleep", dim
 	if s.Awake {
 		state, colour = "AWAKE", green
 	}
 
-	// Cut to the shared width, as the table's own ADDRESS column is, so that one long address
-	// costs its own line and not everybody's.
-	addr := s.Address
-	if visibleLen(addr) > addrWidth {
-		addr = truncate(addr, addrWidth)
+	// Every cell padded to the block's own width, so each column is where the header says it is
+	// on every row - including the row whose address is twice as wide as the rest, which keeps
+	// its address in full rather than being cut to make the arithmetic easier.
+	line := fmt.Sprintf("   %-*s  %s%-*s%s  %s%-*s%s",
+		g.service, s.Service, colour, g.state, state, reset, dim, g.addr, s.Address, reset)
+
+	cpu, mem, share := "", "", ""
+
+	if s.Awake {
+		// A sample that has not arrived is not zero, and says so differently.
+		cpu, mem = "…", "…"
+
+		if s.CPUKnown {
+			cpu = fmt.Sprintf("%.1f%%", s.CPU)
+		}
+
+		if s.MemKnown {
+			mem = shortBytes(s.MemBytes)
+
+			// Of the sandbox's own total rather than of a ceiling: the question is which service
+			// the memory went to, and most services have no ceiling to be a percentage of.
+			if sandbox.MemKnown && sandbox.MemBytes > 0 {
+				share = fmt.Sprintf("%.0f%%", 100*float64(s.MemBytes)/float64(sandbox.MemBytes))
+			}
+		}
 	}
 
-	line := fmt.Sprintf("   %-14s %s%-6s%s  %s%s%s",
-		s.Service, colour, state, reset, dim, addr, reset)
+	line += fmt.Sprintf("  %*s  %*s  %s%*s%s", g.cpu, cpu, g.mem, mem, dim, g.share, share, reset)
 
-	if !s.Awake {
-		return line
-	}
-
-	cpuText := "…"
-	if s.CPUKnown {
-		cpuText = fmt.Sprintf("%.1f%%", s.CPU)
-	}
-
-	memText := "…"
-	if s.MemKnown {
-		memText = shortBytes(s.MemBytes)
-	}
-
-	line = endAt(line, cpuText, cpuEnd)
-	line = endAt(line, memText, memEnd)
-
-	// Of the sandbox's own total rather than of a ceiling: this is about which service the
-	// memory went to, and most services have no ceiling to be a percentage of.
-	if s.MemKnown && sandbox.MemKnown && sandbox.MemBytes > 0 {
-		line += fmt.Sprintf(" %s%3.0f%%%s", dim,
-			100*float64(s.MemBytes)/float64(sandbox.MemBytes), reset)
-	}
-
-	// Whatever is left, and only if it is enough to draw a shape rather than a smudge.
-	if room := width - visibleLen(line) - 2; room >= 12 {
+	// Whatever is left, and only where it is enough to draw a shape rather than a smudge.
+	if room := width - visibleLen(line) - 2; room >= 12 && s.Awake {
 		var values []float64
 		for _, sample := range m.series[s.Ref] {
 			values = append(values, float64(sample.mem))
 		}
 
-		if trace := spark(values, 0, min(room, 40)); trace != "" {
+		if trace := spark(values, 0, min(room, 44)); trace != "" {
 			line += "  " + dim + trace + reset
 		}
 	}
@@ -510,6 +500,34 @@ func systemBody(m model, space, cols int) []string {
 			shortBytes(ours), shortBytes(others), reset), cols))
 	}
 
+	// One width for the names, taken from the names that are actually there. A fixed column is
+	// exact right up until something overflows it, and then that row and every wider one after
+	// it carry their numbers a few characters further right - which is precisely what a list of
+	// containers named sbx-<sandbox>-<service> does, and what makes this read as a ragged list
+	// rather than a table.
+	nameCol := 0
+
+	for _, n := range sorted {
+		if n.Running {
+			nameCol = max(nameCol, visibleLen(n.Name))
+		}
+	}
+
+	nameCol = clamp(nameCol, len("CONTAINER"), max(len("CONTAINER"), cols-30))
+
+	memCol := len("MEMORY")
+	for _, n := range sorted {
+		if n.Running {
+			memCol = max(memCol, len(shortBytes(n.MemBytes)))
+		}
+	}
+
+	if len(out) < space {
+		out = append(out, truncate(fmt.Sprintf("  %s%-*s  %*s  %-*s  %s%s",
+			dim, nameCol, "CONTAINER", memCol, "MEMORY", tableBarCells+2, "SHARE", "WHOSE",
+			reset), cols))
+	}
+
 	for _, n := range sorted {
 		if len(out) >= space {
 			break
@@ -521,18 +539,18 @@ func systemBody(m model, space, cols int) []string {
 			continue
 		}
 
-		who := dim + "  " + reset
+		who := ""
 		if n.Ours {
-			who = green + "  sbx" + reset
+			who = "  " + green + "sbx" + reset
 		}
 
-		bar := ""
+		bar := "  " + strings.Repeat(" ", tableBarCells+2)
 		if m.host.MemBytes > 0 {
 			bar = "  " + dim + smallBar(float64(n.MemBytes)/float64(m.host.MemBytes)) + reset
 		}
 
-		out = append(out, truncate(fmt.Sprintf("  %-34s %s%7s%s%s%s",
-			n.Name, reset, shortBytes(n.MemBytes), reset, bar, who), cols))
+		out = append(out, truncate(fmt.Sprintf("  %-*s  %s%*s%s%s%s",
+			nameCol, n.Name, reset, memCol, shortBytes(n.MemBytes), reset, bar, who), cols))
 	}
 
 	if asleep > 0 && len(out) < space {
@@ -541,6 +559,55 @@ func systemBody(m model, space, cols int) []string {
 
 	return out
 }
+
+// grid is a block's column widths, measured from what is in it.
+//
+// A dashboard reads as a table only when every row agrees where its columns are, and the way to
+// guarantee that is to take the widths from the data once and hand the same numbers to every
+// line. Constants cannot do it: they are exact until the first thing that does not fit, and
+// then every wider row after it is off by however much it overflowed.
+type grid struct {
+	service, state, addr int
+	cpu, mem, share      int
+	readingsAt           int // the column the numbers begin at
+}
+
+func memberGrid(members []row) grid {
+	// "asleep" is a column wider than "STATE" and one wider than "AWAKE", which is exactly the
+	// kind of off-by-one that shifts half a table by a single character.
+	g := grid{service: len("SERVICE"), state: len("asleep"), addr: len("ADDRESS"),
+		cpu: len("CPU"), mem: len("MEMORY"), share: len("SHARE")}
+
+	for _, s := range members {
+		g.service = max(g.service, visibleLen(s.Service))
+		g.addr = max(g.addr, visibleLen(s.Address))
+
+		if s.CPUKnown {
+			g.cpu = max(g.cpu, len(fmt.Sprintf("%.1f%%", s.CPU)))
+		}
+
+		if s.MemKnown {
+			g.mem = max(g.mem, len(shortBytes(s.MemBytes)))
+		}
+	}
+
+	// Three spaces of indent, then the columns with two between each.
+	g.readingsAt = 3 + g.service + 2 + g.state + 2 + g.addr + 2
+
+	return g
+}
+
+// memberHeader names the columns under a sandbox, because a column of figures with nothing over
+// it is a number the reader has to identify from its shape.
+func memberHeader(g grid, cols int) string {
+	return truncate(fmt.Sprintf("   %s%-*s  %-*s  %-*s  %*s  %*s  %*s%s",
+		dim, g.service, "SERVICE", g.state, "STATE", g.addr, "ADDRESS",
+		g.cpu, "CPU", g.mem, "MEMORY", g.share, "SHARE", reset), cols)
+}
+
+// maxSystemName caps the name column, so one container with a very long name cannot spend the
+// whole width on saying so and leave no room for the figure beside it.
+const maxSystemName = 44
 
 // maxMemberAddr caps what one address may take from the line. Two loopback addresses fit; a
 // service publishing five does not get to spend the whole width on saying so.

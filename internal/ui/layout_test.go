@@ -18,7 +18,7 @@ func TestTheTableGrowsToFillTheScreen(t *testing.T) {
 	prev := 0
 
 	for _, rows := range []int{14, 20, 30, 45, 60} {
-		l := plan(rows, len(m.rows), detailFull)
+		l := plan(rows, len(m.rows), detailFull, 3)
 
 		if l.tableRows <= prev {
 			t.Errorf("at %d rows the table got %d lines, no more than the %d it had on a "+
@@ -37,7 +37,7 @@ func TestTheTableGrowsToFillTheScreen(t *testing.T) {
 // With a handful of sandboxes on a tall terminal there is nothing to fill the table with, so
 // the slack goes to the pane rather than becoming a void in the middle of the screen.
 func TestSlackGoesToThePaneNotToNothing(t *testing.T) {
-	l := plan(50, 3, detailFull)
+	l := plan(50, 3, detailFull, 3)
 
 	if l.paneRows < 5 {
 		t.Errorf("with 3 sandboxes on a 50-row terminal the pane got only %d lines, leaving "+
@@ -60,7 +60,7 @@ func TestSmallTerminalsDegradeInOrder(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		l := plan(c.rows, 5, detailFull)
+		l := plan(c.rows, 5, detailFull, 3)
 
 		if (l.paneRows > 0) != c.wantPane {
 			t.Errorf("at %d rows: pane=%d, wanted present=%v", c.rows, l.paneRows, c.wantPane)

@@ -45,8 +45,9 @@ const (
 )
 
 // detailSandboxFixed is what a sandbox's block spends before its services: the name and the
-// connect command, then cpu and memory with their history.
-const detailSandboxFixed = 3
+// connect command, cpu and memory with their history, and the row of column headings over the
+// services themselves.
+const detailSandboxFixed = 4
 
 // wantDetail is the tallest the detail block could usefully be for this model.
 //
@@ -67,6 +68,21 @@ func wantDetail(m model) int {
 	return detailFull
 }
 
+// wantPane is the tallest the bottom pane could usefully be.
+//
+// Events and logs scroll, so three lines is a window onto them and more is a courtesy. The
+// system pane does not scroll in the same sense - it is a list of what is on the machine, and
+// the answer somebody opened it for is which container is holding the memory, which is not
+// visible if the list is cut to three.
+func wantPane(m model) int {
+	if m.pane == paneSystem {
+		// Two lines of summary, the column headings, one per container, and the asleep tally.
+		return 4 + len(m.neighbours)
+	}
+
+	return 3
+}
+
 // plan divides rows between the table and the panes below it.
 //
 // Spare space goes into detail rather than into padding. With four sandboxes on a forty-row
@@ -74,7 +90,7 @@ func wantDetail(m model) int {
 // difference on blank lines - which is how a working dashboard came to look like a stopped
 // one. The same space spent on the selected sandbox's address, its connect command and its
 // usage over time is space that answers the next question instead.
-func plan(rows, items, want int) layout {
+func plan(rows, items, want, wantPane int) layout {
 	l := layout{header: true, footer: true}
 
 	fixed := lineTitle + lineRule
@@ -111,8 +127,12 @@ func plan(rows, items, want int) layout {
 
 	rest := free - table
 
-	// Detail grows to its full block before the pane takes anything above its own minimum.
-	detail := clamp(rest-3, 1, want)
+	// What is left is split between the block and the pane, each asking for what it actually has
+	// to show. The pane used to be given three lines and no more, which was right while it only
+	// ever held events - and wrong the moment `a` filled it with every container on the machine,
+	// because then the thing somebody had just asked for was the thing with no room.
+	paneWant := max(3, wantPane)
+	detail := clamp(rest-paneWant, 1, want)
 
 	// The table's floor buys stillness: with three sandboxes on screen, adding a fourth should
 	// not shift every pane below it. Those reserved rows are blank until the fleet grows, and
@@ -132,6 +152,9 @@ func plan(rows, items, want int) layout {
 	detail = clamp(detail, 1, max(1, rest-3))
 
 	l.detailRows = detail
+	// No ceiling here: whatever the block does not need is the pane's, which is what keeps a
+	// tall terminal full rather than padded. Capping it was how three sandboxes on a fifty-row
+	// screen came to sit above a three-line pane and a lot of nothing.
 	l.paneRows = max(3, rest-detail)
 
 	// Whatever is still unclaimed goes to the table, so the screen ends up full.

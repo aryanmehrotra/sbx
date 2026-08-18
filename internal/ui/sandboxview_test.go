@@ -350,28 +350,26 @@ func TestASleepingServiceShowsNoShare(t *testing.T) {
 	}
 }
 
-// The table says CPU and MEMORY over two columns, and the services inside a sandbox report the
-// same two figures. Printed a few characters to the right of them they were close enough to look
-// like a mistake and far enough that the eye cannot read down the column.
+// Every member line agrees with the block's own heading, whatever is in it.
 //
-// Measured rather than eyeballed, because eyeballing is what missed it.
-func TestAMemberLineEndsItsReadingsWhereTheTableDoes(t *testing.T) {
-	// A sandbox name long enough that the table's columns sit right of the address, which is
-	// the ordinary case and the one worth aligning.
+// This used to assert that the readings landed under the *table's* CPU and MEMORY columns
+// instead. Honouring that meant cutting an address to fit - a service publishing two ports
+// carries thirty-one columns of them - and nothing on this screen is worth hiding a port for.
+// So the block has a heading of its own, its columns are measured from what is in it, and the
+// thing to assert is that the heading and the rows are one grid.
+func TestEveryMemberLineAgreesWithItsHeading(t *testing.T) {
 	rows := []row{
-		{Sandbox: "zopnight-today-work", Service: "mysql", Awake: true, Ref: "r1",
-			Address: "127.0.0.1:20000", CPU: 5, CPUKnown: true, MemBytes: 300 << 20, MemKnown: true},
-		{Sandbox: "zopnight-today-work", Service: "redis", Awake: true, Ref: "r2",
-			Address: "127.0.0.1:20001", CPU: 2, CPUKnown: true, MemBytes: 4 << 20, MemKnown: true},
+		{Sandbox: "work", Service: "clickhouse", Awake: true, Ref: "r1",
+			Address: "127.0.0.1:20002 127.0.0.1:20003",
+			CPU:     20.7, CPUKnown: true, MemBytes: 364 << 20, MemKnown: true},
+		{Sandbox: "work", Service: "mysql", Awake: true, Ref: "r2", Address: "127.0.0.1:20000",
+			CPU: 5.3, CPUKnown: true, MemBytes: 100 << 20, MemKnown: true},
+		{Sandbox: "work", Service: "redis", Awake: false, Ref: "r3", Address: "127.0.0.1:20001"},
 	}
 
-	frame := plain(render(model{
-		version: "v0", rows: rows, grouped: true, metered: true,
-	}, 26, 132))
+	frame := plain(render(model{version: "v0", rows: rows, grouped: true, metered: true}, 30, 150))
 
-	// Counted in runes, not bytes. The selected row is marked with "›", which is three bytes
-	// and one column - a byte offset made the table look two columns out when it was not.
-	endOf := func(line, token string) int {
+	end := func(line, token string) int {
 		i := strings.Index(line, token)
 		if i < 0 {
 			return -1
@@ -380,45 +378,45 @@ func TestAMemberLineEndsItsReadingsWhereTheTableDoes(t *testing.T) {
 		return utf8.RuneCountInString(line[:i]) + utf8.RuneCountInString(token)
 	}
 
-	var header, row, member string
-
-	for _, l := range strings.Split(frame, "\n") {
-		switch {
-		case strings.Contains(l, "SANDBOX") && strings.Contains(l, "MEMORY"):
-			header = l
-		case strings.Contains(l, "zopnight-today-work") && strings.Contains(l, "2 services"):
-			if row == "" {
-				row = l
+	find := func(prefix string) string {
+		for _, l := range strings.Split(frame, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(l), prefix) {
+				return l
 			}
-		case strings.HasPrefix(strings.TrimSpace(l), "mysql"):
-			member = l
 		}
+
+		return ""
 	}
 
-	if header == "" || row == "" || member == "" {
-		t.Fatalf("could not find the three lines to compare:\n%s", frame)
+	head, wide, narrow := find("SERVICE"), find("clickhouse"), find("mysql")
+
+	if head == "" || wide == "" || narrow == "" {
+		t.Fatalf("could not find the heading and two rows:\n%s", frame)
 	}
 
-	for _, c := range []struct {
-		what              string
-		head, table, memb string
-	}{
-		{"cpu", "CPU", "7.0%", "5.0%"},
-		{"memory", "MEMORY", "304 MB", "300m"},
+	for _, c := range []struct{ what, h, a, b string }{
+		{"cpu", "CPU", "20.7%", "5.3%"},
+		{"memory", "MEMORY", "364m", "100m"},
+		{"share", "SHARE", "78%", "22%"},
 	} {
-		h, r, mm := endOf(header, c.head), endOf(row, c.table), endOf(member, c.memb)
+		x, y, z := end(head, c.h), end(wide, c.a), end(narrow, c.b)
 
-		if h < 0 || r < 0 || mm < 0 {
-			t.Errorf("%s: missing a column (header %d, row %d, member %d)\n%s",
-				c.what, h, r, mm, frame)
+		if x < 0 || y < 0 || z < 0 {
+			t.Errorf("%s: missing a column (heading %d, wide %d, narrow %d)\n%s",
+				c.what, x, y, z, frame)
 
 			continue
 		}
 
-		if h != r || r != mm {
-			t.Errorf("%s ends at column %d in the header, %d in the table and %d under it - "+
-				"three geometries for one column\n%s", c.what, h, r, mm, frame)
+		if x != y || y != z {
+			t.Errorf("%s ends at %d in the heading, %d on the two-port row and %d on the other\n%s",
+				c.what, x, y, z, frame)
 		}
+	}
+
+	// And both ports are still there. The alignment was never worth a port for.
+	if !strings.Contains(frame, "127.0.0.1:20002 127.0.0.1:20003") {
+		t.Errorf("an address was cut to make the columns line up:\n%s", frame)
 	}
 }
 
