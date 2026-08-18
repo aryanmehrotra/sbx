@@ -510,10 +510,10 @@ func TestOneWideAddressDoesNotBreakTheColumn(t *testing.T) {
 // Measured in runes: the selection marker is one column and three bytes.
 func TestTheBlockUsesTheTablesColumns(t *testing.T) {
 	rows := []row{
-		{Sandbox: "zopnight-gursewak-agent", Service: "clickhouse", Awake: true, Ref: "r1",
+		{Sandbox: "analytics-review-agent", Service: "clickhouse", Awake: true, Ref: "r1",
 			Address: "127.0.0.1:20021 127.0.0.1:20022",
 			CPU:     14.7, CPUKnown: true, MemBytes: 563 << 20, MemKnown: true},
-		{Sandbox: "zopnight-gursewak-agent", Service: "gateway", Awake: true, Ref: "r2",
+		{Sandbox: "analytics-review-agent", Service: "gateway", Awake: true, Ref: "r2",
 			Address: "127.0.0.1:20027", CPU: 2.8, CPUKnown: true, MemBytes: 41 << 20, MemKnown: true},
 	}
 

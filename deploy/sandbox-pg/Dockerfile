@@ -9,7 +9,7 @@
 # What you get from the platform for free: HTTPS, a hostname, and scale-to-zero - the database
 # costs nothing while nobody is connected, which is the same bargain sbx makes locally.
 #
-# What you do NOT get, and should know before storing anything you care about: a zopcloud
+# What you do NOT get, and should know before storing anything you care about: a managed-platform
 # service has no persistent volume, so this is a database that starts empty every time the
 # container is replaced. It is the right shape for a branch's test data and the wrong shape for
 # anything you would miss.

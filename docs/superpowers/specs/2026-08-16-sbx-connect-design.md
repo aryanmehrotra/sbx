@@ -12,7 +12,7 @@ that exists today.
 
 It leaves out the person this project should serve best: somebody whose laptop cannot
 comfortably run a Postgres, a ClickHouse and a browser at once. They have a deploy platform —
-ZopDay ships an image to a Kubernetes cluster or a VM — and an agent that could use a sandbox
+The platform ships an image to a Kubernetes cluster or a VM — and an agent that could use a sandbox
 if it could reach one. Today it cannot.
 
 **The constraint that decides the design:** almost no platform gives you a raw TCP port. Vercel
@@ -63,7 +63,7 @@ Written before the design so the design can be checked against them.
 
 | | what happens | does the design cover it |
 |---|---|---|
-| **1. Weak laptop, agent needs a database** | deploy sbx via ZopDay, `sbx connect`, agent runs `psql` and a test suite against `127.0.0.1:20040` | yes — this is the driving case |
+| **1. Weak laptop, agent needs a database** | deploy sbx via the platform, `sbx connect`, agent runs `psql` and a test suite against `127.0.0.1:20040` | yes — this is the driving case |
 | **2. Agent discovers what exists** | agent asks what sandboxes are there before using one | yes — `GET /v1/fleet` |
 | **3. Sandbox is asleep when the agent connects** | first connection wakes it, agent waits and proceeds | yes — the tunnel dials the daemon's own wake proxy, so this is free |
 | **4. Laptop already runs a local sbx** | local daemon already owns 20000–21199 on loopback, so the client cannot bind | **partly — see Port collision below.** This is the most likely first bug |
@@ -216,7 +216,7 @@ Authorization: Bearer <token>
 ```
 
 - Read from `SBX_CONNECT_TOKEN`. Platforms inject env vars; that is the path of least friction
-  for ZopDay, Cloud Run and a systemd unit alike.
+  for such a platform, Cloud Run and a systemd unit alike.
 - **`--connect-addr` without a token is a startup error, not a warning.** The one failure mode
   worth engineering against is a deployment that is reachable and open, and the way that
   happens is a flag that "worked" in testing.
@@ -253,7 +253,7 @@ the token; they exist so that a scan or a loop cannot exhaust the deployment. To
 expiry and per-sandbox scoping are out of scope for v1 and named here so their absence is a
 decision rather than an oversight.
 
-**What this is not.** It is not org-level authorization. ZopDay's gateway already validates JWTs
+**What this is not.** It is not org-level authorization. The platform's gateway already validates JWTs
 and checks org access, and its MCP server owns no authz for exactly this reason. A gateway in
 front adds that without sbx knowing about it.
 
@@ -291,7 +291,7 @@ finding parser bugs, or the implementation passing ~700 lines.
 ## Client-side: `sbx connect`
 
 ```sh
-sbx connect https://sbx.my-org.zop.dev            # everything the fleet has
+sbx connect https://sbx.my-org.example.dev            # everything the fleet has
 sbx connect https://…  --sandbox my-branch        # only that sandbox's ports
 sbx connect https://…  --sandbox a --sandbox b    # repeatable, so a subset needs no offset
 sbx connect https://…  --token-env MY_VAR
@@ -357,9 +357,9 @@ The point of the design is that it is testable without a cloud account.
 - **Live, once:** against a real deployment, wake a sleeping Postgres through the tunnel with
   `psql`. Recorded in the spec's follow-up notes, not automated.
 
-## Deploying on ZopDay
+## Deploying on a managed platform
 
-ZopDay ships an image to a Kubernetes cluster or a VM. sbx already builds a container image
+The platform ships an image to a Kubernetes cluster or a VM. sbx already builds a container image
 (`deploy/Dockerfile`) that carries `kubectl` for the in-cluster provider.
 
 **On a VM with docker** — the full capability set. The container needs the docker socket mounted
@@ -400,17 +400,17 @@ supports.
 
 ## What happened when it was actually deployed
 
-Deployed to a real ZopDay environment (org "Aryan's Project", project `observability`,
-environment `prod` - `target: zopcloud`, `kind: vm-pool`, GCP) through the zopnight MCP server,
+Deployed to a real managed environment (a real org and project,
+environment `prod` - `target: <the platform>`, `kind: vm-pool`, GCP) through the platform's MCP server,
 using the root Dockerfile added for it.
 
 **The deploy succeeded and the service cannot work.** Both halves matter:
 
-- ZopDay built the repository at commit `f422ad4`, pushed
+- The platform built the repository at commit `f422ad4`, pushed
   `us-central1-docker.pkg.dev/.../sbx-connect`, ran `vm-service-deploy` in 21s, and reported
   `deployment active`. `list_services` shows it `active / active`.
-- The endpoint never serves sbx. Every request to `https://sbx-connect.zopcloud.zop.dev/healthz`
-  returns 7834 bytes of zopcloud's own "Starting up…" page rather than sbx's three-byte `ok`,
+- The endpoint never serves sbx. Every request to `https://sbx-connect.example.dev/healthz`
+  returns 7834 bytes of the platform's own "Starting up…" page rather than sbx's three-byte `ok`,
   across eight attempts over four minutes.
 
 The reason is structural rather than a misconfiguration. `deploy_service` takes a repository or
@@ -419,11 +419,11 @@ managing sibling containers, so with no docker socket it exits at startup naming
 it looked at, which is what it should do. The platform's scale-to-zero then never completes a
 wake, and its holding page answers forever.
 
-**So a zopcloud service is the wrong shape to run sbx in**, and this is worth stating plainly
+**So such a service is the wrong shape to run sbx in**, and this is worth stating plainly
 rather than filing as a bug: a platform whose contract is "one HTTP port and env vars" cannot
 host a thing whose contract is "give me the container runtime". The deployment shapes that do
 work are the two the design already named - a VM where the socket can be mounted, and a cluster
-where `deploy/activator.yaml` gives it a ServiceAccount. ZopDay can *provision* the first; it
+where `deploy/activator.yaml` gives it a ServiceAccount. The platform can *provision* the first; it
 cannot deploy into it as an ordinary service.
 
 **What was fixed, and what it changed.** `sbx serve` now stays up when it cannot reach a
@@ -448,7 +448,7 @@ process is healthy. That is the same failure shape as two other bugs found this 
 cloudflared URL that answered 405, and a docker limit-clear that changed nothing - all three
 being "reported success, reached nothing".
 
-## Working on top of zopcloud, rather than under it
+## Working on top of the platform, rather than under it
 
 The deployment above proved sbx cannot *manage* anything on a platform that gives one HTTP port
 and no container runtime. The inverse turns out to work, and it is the more useful half.
@@ -458,10 +458,10 @@ the same container as a database, front its loopback port, and the platform's si
 becomes a TCP path to it:
 
 ```
-psql :5432 → sbx connect → wss://pg.zopcloud.zop.dev → sbx → 127.0.0.1:5432 → postgres
+psql :5432 → sbx connect → wss://pg.example.dev → sbx → 127.0.0.1:5432 → postgres
 ```
 
-Proven on zopcloud, in this order, so that each step failing would have been obvious:
+Proven on that platform, in this order, so that each step failing would have been obvious:
 
 1. **Does a WebSocket upgrade survive their ingress?** Deployed sbx fronting its own HTTP port -
    no extra software - and fetched `/v1/fleet` *through* the tunnel. The response was

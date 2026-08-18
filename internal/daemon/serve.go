@@ -160,7 +160,7 @@ func Serve(args []string) error {
 	// The two cases genuinely differ. On a laptop, failing fast is right: you typed a command,
 	// you get the reason, you fix it. Deployed, exiting is the worst thing it can do - the
 	// process vanishes, the platform's scale-to-zero never completes a wake, and the operator
-	// gets a holding page forever with nothing to read. Measured on zopcloud: the deploy
+	// gets a holding page forever with nothing to read. Measured on one managed platform: the deploy
 	// reported active and the endpoint served the platform's "Starting up..." page for four
 	// minutes, because there was nothing listening to say otherwise.
 	//

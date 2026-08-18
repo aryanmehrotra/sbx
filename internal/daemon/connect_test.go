@@ -364,7 +364,7 @@ func TestFleetCarriesWhatTheClientNeeds(t *testing.T) {
 //
 // Exiting is right on a laptop and wrong once deployed: the process vanishes, the platform's
 // scale-to-zero never completes a wake, and the operator gets a holding page forever with
-// nothing to read. Measured on zopcloud before this existed - four minutes of "Starting up…".
+// nothing to read. Measured on a managed platform before this existed - four minutes of "Starting up…".
 func TestADaemonWithNoRuntimeStaysUpAndExplains(t *testing.T) {
 	d := daemonFronting(1, "i1")
 	d.startupErr = errors.New("no docker daemon found on linux: set DOCKER_HOST, or pass --socket")

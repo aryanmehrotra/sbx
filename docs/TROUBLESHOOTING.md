@@ -159,6 +159,12 @@ one. → [SPEC.md](SPEC.md)
 **A first wake on a cold machine includes the image pull.** `sbx prewarm` moves it somewhere
 you can cache.
 
+**A wake cannot be reported faster than the probe interval.** It is not over until the health
+answer changes, and that answer is only re-evaluated every `health_interval` - 300 ms by default.
+A service that is genuinely ready in 40 ms reports as 300 ms, and as a second if you set `1s`.
+Turn it down for a service whose readiness you want caught quickly; turn it up, sandbox-wide, to
+spend less of the machine on probing a fleet that is mostly idle. → [SPEC.md](SPEC.md)
+
 ---
 
 ## `sbx create` is slow the more sandboxes exist
