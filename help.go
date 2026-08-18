@@ -185,9 +185,10 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"`a` shows the machine instead: every container on it, ours or not, and what each\n" +
 			"is holding. What is using the memory is rarely answered by the sandboxes alone.\n\n" +
 			"--connect watches a deployed sbx rather than this machine, taking the same URLs\n" +
-			"and tokens as sbx connect - several of them merge into one screen. It is\n" +
-			"read-only: a connect endpoint carries bytes and reports what it is fronting, so\n" +
-			"waking, sleeping, capping and removing are refused there and say so.",
+			"and tokens as sbx connect - several of them merge into one screen. Over connect\n" +
+			"the same keys act on the deployment (wake, sleep, L limit, d remove, l logs), and\n" +
+			"f forwards a service's ports to this machine so psql or redis-cli reaches it\n" +
+			"without a second sbx connect. Each is authorised by the connect token.",
 		"sbx ui --connect https://sbx.example.dev",
 	},
 	"history": {

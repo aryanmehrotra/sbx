@@ -1551,6 +1551,13 @@ func footer(m model, paneRows, cols int) string {
 		full = "  all of it is on screen   l switches   ⇥ table   r refresh   q quit"
 		short = "  l switches  ⇥ table  q quit"
 
+	case m.remote:
+		// Over connect the address on screen is the deployment's, so `f` forwards it to a real
+		// local port. Remove is still offered; system and the machine memory are not, because
+		// they are about a machine this dashboard is not on.
+		full = "  ↑↓ move   ⏎ wake   s sleep   v sandboxes   f forward   l logs   L limit   d remove   q quit"
+		short = "  ↑↓ ⏎ wake  s sleep  f fwd  l logs  q quit"
+
 	default:
 		full = "  ↑↓ move   ⏎ wake   s sleep   v sandboxes   a system   l logs   L limit   d remove   q quit"
 		short = "  ↑↓ ⏎ wake  s sleep  v sbx  a sys  l logs  q quit"

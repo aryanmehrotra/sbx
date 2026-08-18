@@ -5,7 +5,9 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -429,4 +431,80 @@ func mustParse(t *testing.T, raw string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// Port-forward, end to end: a client on this machine reaches a service that is "elsewhere"
+// (here, a loopback echo server the daemon fronts) through a port the dashboard bound. This is
+// the whole point of the f key - no separate sbx connect, and the bytes arrive.
+func TestForwardCarriesBytesToTheService(t *testing.T) {
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+
+	port := echo.Addr().(*net.TCPAddr).Port
+
+	d := daemonFronting(port, "i1")
+	d.provider = &metered{}
+	ts := serverFor(t, d)
+
+	r := remoteFor(t, ts.URL)
+
+	units, err := r.List(context.Background(), "")
+	if err != nil || len(units) == 0 {
+		t.Fatalf("List gave %d units, err %v", len(units), err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	forwards, err := r.Forward(ctx, units[0].Ref)
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+
+	if len(forwards) != 1 {
+		t.Fatalf("expected one forwarded port, got %d", len(forwards))
+	}
+
+	local := forwards[0].Local
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", local), 5*time.Second)
+	if err != nil {
+		t.Fatalf("could not reach the forwarded port %d: %v", local, err)
+	}
+	defer conn.Close()
+
+	want := []byte("hello through the forward")
+	if _, err := conn.Write(want); err != nil {
+		t.Fatal(err)
+	}
+
+	got := make([]byte, len(want))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("reading the echo back: %v", err)
+	}
+
+	if string(got) != string(want) {
+		t.Errorf("through the forward got %q, want %q", got, want)
+	}
+
+	again, err := r.Forward(ctx, units[0].Ref)
+	if err != nil || len(again) != 1 || again[0].Local != local {
+		t.Errorf("second Forward should return the same port %d, got %v (err %v)", local, again, err)
+	}
 }

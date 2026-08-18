@@ -298,6 +298,11 @@ type model struct {
 	update  string
 	version string
 
+	// remote is set when the dashboard is reading a deployment over sbx connect rather than this
+	// machine. It changes a couple of user-facing things - the footer offers `f forward`, wake
+	// asks the endpoint rather than dialling - and nothing about the layout.
+	remote bool
+
 	// err is the last refresh failure, shown rather than hidden: a dashboard that silently
 	// stops updating when docker dies is worse than one that says docker died.
 	err error

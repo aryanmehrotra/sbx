@@ -489,6 +489,28 @@ func parseSize(s string) (uint64, error) {
 	return got, nil
 }
 
+// Forward is one local port standing in for a remote one, once a Forwarder has bound it.
+type Forward struct {
+	Service string
+	Local   int // the port bound on 127.0.0.1 here
+	Remote  int // the port the service is on over there
+}
+
+// Forwarder binds a deployed service's ports locally and tunnels them, so a client on this
+// machine reaches a sandbox that is somewhere else.
+//
+// Optional, and only the remote provider has it: a local sandbox's addresses are already real
+// ports on this machine, so there is nothing to forward. Over `sbx ui --connect` they are not -
+// the address on screen is the deployment's - and this is what makes pressing a key on a service
+// enough to open psql or redis-cli against it, without a second `sbx connect` in another window.
+//
+// It is idempotent: forwarding a service already forwarded returns the ports it is already on
+// rather than binding a second set. The forwards live until the context passed to it is done,
+// which the dashboard ties to its own lifetime, so quitting closes them.
+type Forwarder interface {
+	Forward(ctx context.Context, ref string) ([]Forward, error)
+}
+
 // Meter reports what running services are costing.
 //
 // Optional like the rest. A service that is asleep has no sample and is not an error: it is a

@@ -66,7 +66,7 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 	d := &dash{
 		opt:    opt,
 		remote: opt.Remote,
-		model:  model{version: opt.Version, update: update.Available(opt.Version)},
+		model:  model{version: opt.Version, update: update.Available(opt.Version), remote: opt.Remote},
 		prev:   map[string]provider.Usage{},
 
 		limitsSeen: map[string]time.Time{},
@@ -514,9 +514,58 @@ func (d *dash) handle(ctx context.Context, k tui.Key) bool {
 
 	case k.Rune == 'r':
 		go d.refresh(context.WithoutCancel(ctx))
+
+	case k.Rune == 'f':
+		// Forward a deployed service's ports to this machine, so the address on screen becomes a
+		// real local port and psql or redis-cli reaches it. Only over --connect: a local
+		// sandbox's addresses are already ports on this machine, so there is nothing to forward.
+		if fwd, ok := d.opt.Provider.(interface {
+			Forward(context.Context, string) ([]provider.Forward, error)
+		}); ok && d.remote {
+			if r, sel := d.model.currentRow(); sel {
+				// context.WithoutCancel: the forward outlives this keypress and lives for the
+				// dashboard's run, so it must not be tied to a per-action context.
+				go d.forward(context.WithoutCancel(ctx), fwd, r)
+			}
+		} else if !d.remote {
+			d.model.message, d.model.messageAt =
+				"forwarding is for --connect: a local sandbox's ports are already on this machine", time.Now()
+		}
 	}
 
 	return false
+}
+
+// forward binds a deployed service's ports locally and reports the address to connect to.
+func (d *dash) forward(ctx context.Context, fwd interface {
+	Forward(context.Context, string) ([]provider.Forward, error)
+}, r row) {
+	if r.Members > 0 {
+		d.say("forwarding acts on a service - press v to see them")
+
+		return
+	}
+
+	forwards, err := fwd.Forward(ctx, r.Ref)
+	if err != nil {
+		d.say("could not forward %s/%s: %v", r.Sandbox, r.Service, err)
+
+		return
+	}
+
+	if len(forwards) == 0 {
+		d.say("%s/%s fronts nothing to forward", r.Sandbox, r.Service)
+
+		return
+	}
+
+	// The first port is what most clients want; if there are more, the rest are named after it.
+	parts := make([]string, 0, len(forwards))
+	for _, f := range forwards {
+		parts = append(parts, fmt.Sprintf("127.0.0.1:%d", f.Local))
+	}
+
+	d.say("forwarding %s → %s/%s (open until you quit)", strings.Join(parts, " "), r.Sandbox, r.Service)
 }
 
 // scrollPane moves the pane's window. It reports whether the key was one of its own, so that

@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -45,13 +47,21 @@ type Remote struct {
 	// Remove takes a sandbox name rather than a ref, so it needs its own routing.
 	route         map[string]refTarget
 	sandboxSource map[string]*source
+
+	// Active port-forwards, keyed by ref, so a second request is idempotent and the listeners
+	// can be found again. Held under mu.
+	forwards map[string][]provider.Forward
 }
 
 // refTarget is the deployment a namespaced ref belongs to, and the bare ref that deployment
-// issued - which is what the far side stored it under.
+// issued - which is what the far side stored it under - plus what port-forwarding needs: the
+// ports the service fronts and the instance a dial must name.
 type refTarget struct {
-	src *source
-	raw string
+	src      *source
+	raw      string
+	service  string
+	ports    []int
+	instance string
 }
 
 // NewRemote resolves the endpoints and returns a Provider that reads them.
@@ -73,6 +83,7 @@ func NewRemote(endpoints []Endpoint, sandbox []string) (*Remote, error) {
 		limits:        map[string]provider.Limits{},
 		route:         map[string]refTarget{},
 		sandboxSource: map[string]*source{},
+		forwards:      map[string][]provider.Forward{},
 	}, nil
 }
 
@@ -150,8 +161,12 @@ func (r *Remote) List(ctx context.Context, sandbox string) ([]provider.Unit, err
 			}
 
 			// So a control call for this ref reaches the deployment that issued it, with the
-			// bare ref that deployment stored - not the namespaced one this side shows.
-			route[ref] = refTarget{src: res.src, raw: f.Ref}
+			// bare ref that deployment stored - not the namespaced one this side shows - and so
+			// a forward has the ports and instance it needs to bind and dial.
+			route[ref] = refTarget{
+				src: res.src, raw: f.Ref, service: f.Service,
+				ports: f.Ports, instance: f.Instance,
+			}
 
 			// Remove routes by sandbox. First writer wins: two deployments with a sandbox of the
 			// same name is the same collision that namespaces refs, and there is no ref here to
@@ -295,6 +310,81 @@ func (r *Remote) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	return control(ctx, src, "remove", map[string]any{"sandbox": sandbox})
+}
+
+// Forward binds the service's ports on 127.0.0.1 and tunnels each to the deployment, so a
+// client here reaches a sandbox that is elsewhere without a separate `sbx connect`.
+//
+// Idempotent: a service already forwarded returns the ports it is already on. The listeners run
+// under ctx - the dashboard's own - so quitting the dashboard closes them and frees the ports.
+func (r *Remote) Forward(ctx context.Context, ref string) ([]provider.Forward, error) {
+	r.mu.Lock()
+
+	if existing, ok := r.forwards[ref]; ok {
+		r.mu.Unlock()
+
+		return existing, nil
+	}
+
+	t, ok := r.route[ref]
+	r.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("no deployment is fronting %q - it was not in the last listing", ref)
+	}
+
+	if len(t.ports) == 0 {
+		return nil, fmt.Errorf("%s fronts no port to forward", t.service)
+	}
+
+	var out []provider.Forward
+
+	for _, remote := range t.ports {
+		// The service's own port first, so the address the dashboard already showed is the one
+		// that works. If something here has it - this machine's own sbx serve, another forward -
+		// bind any free port instead and report the real one rather than failing.
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(remote)))
+		if err != nil {
+			ln, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				r.closeForwards(ref)
+
+				return nil, fmt.Errorf("could not bind a local port for %s: %w", t.service, err)
+			}
+		}
+
+		local := ln.Addr().(*net.TCPAddr).Port
+
+		b := boundPort{
+			ln: ln, remote: remote, local: local,
+			instance: t.instance, name: t.service, src: t.src,
+		}
+
+		go serveLocal(ctx, b)
+
+		out = append(out, provider.Forward{Service: t.service, Local: local, Remote: remote})
+
+		// Remembered per listener, so a quit or a re-list can close exactly these.
+		r.mu.Lock()
+		r.forwards[ref] = append(r.forwards[ref], provider.Forward{
+			Service: t.service, Local: local, Remote: remote,
+		})
+		r.mu.Unlock()
+
+		// Closing the listener when ctx ends is what serveLocal's Accept-loop exit needs: an
+		// Accept on a closed listener returns, and the goroutine falls out.
+		context.AfterFunc(ctx, func() { _ = ln.Close() })
+	}
+
+	return out, nil
+}
+
+// closeForwards drops a ref's partly-bound listeners after a mid-bind failure, so a retry does
+// not meet its own half-open ports.
+func (r *Remote) closeForwards(ref string) {
+	r.mu.Lock()
+	delete(r.forwards, ref)
+	r.mu.Unlock()
 }
 
 // Logs streams a tail from the control endpoint into w. Not following: the dashboard reads a

@@ -242,11 +242,14 @@ SBX_CONNECT_TOKEN_DB=... SBX_CONNECT_TOKEN_CACHE=... \
 ```
 
 Several deployments merge into one screen exactly as their ports do, each service showing its
-state, cpu, memory and whatever ceiling it has. It is **read-only**, and that is a decision: a
-connect token buys reading what is fronted and carrying bytes to a port, and a token that leaks
-is a very different incident if it can also destroy a volume. Wake, sleep, limit and remove all
-refuse there and say where they do work. Usage is sampled only when the dashboard asks, so an
-ordinary `sbx connect` costs the deployment no more than it ever did.
+state, cpu, memory and whatever ceiling it has - a fronted deployment reports its own cpu and
+memory from the container's cgroup, so the columns fill even with no runtime behind it. The
+dashboard's keys act on the deployment too: wake, sleep, `L` limit, `d` remove and `l` logs, each
+authorised by the connect token. And **`f` forwards** the selected service's ports to this
+machine, so `psql` or `redis-cli` reaches a database that is not exposed - the same tunnel `sbx
+connect` opens, but for one service straight from the dashboard, held until you quit. Usage is
+sampled only when the dashboard asks, so an ordinary `sbx connect` costs the deployment no more
+than it ever did.
 
 A named deployment reads `SBX_CONNECT_TOKEN_<NAME>` before the shared `SBX_CONNECT_TOKEN`, so
 two deployments do not have to share one secret. If two of them front the same port - two
