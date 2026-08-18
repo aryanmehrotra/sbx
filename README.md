@@ -49,31 +49,48 @@ Five situations. They differ mostly in *who types the commands* - the tool is th
 
 ## Features
 
+Grouped, so you can skim to what you need. Each links to the detail.
+
+**The core**
 | | |
 |---|---|
-| **Wakes on any TCP connection** | no SDK, no client library, no wrapper. Anything with a socket |
-| **Sleeps to 0 B** | a stopped container with its volume intact - an idle sandbox costs no memory at all |
-| **Holds the first connection** | it waits rather than refusing - **5/5 measured**, where a rival that refuses scores 0/5 |
-| **One static binary** | zero non-stdlib dependencies, CI-gated. darwin · linux · freebsd on amd64 · arm64; **Windows via WSL2** (sbx cannot dial a Windows named pipe) |
-| **One committed file** | `sandbox.json` describes what a branch needs. → [SPEC.md](docs/SPEC.md) |
-| **A box for your own commands** | `mounts` puts the repository in a service with your toolchain, so `sbx exec -t my-branch dev sh` is a shell in your code - it sleeps like everything else and `exec` wakes it - [how](docs/USE-CASES.md#9--a-box-to-run-your-own-commands-in) |
-| **Templates built in** | `--template postgres` works with nothing on disk. Pinned by digest, dated |
-| **Snapshot & fork** | save every service's data, then make as many sandboxes from it as you want |
-| **Builds your image** | `build: {context}` instead of `image:`, cached by a hash of the context - not a clock |
-| **Ordering & secrets** | `depends_on` for creation order, `${VAR}` so a committed spec names a secret without holding it |
-| **Limits** | `cpu`, `memory`, `gpus` per service - a laptop running twenty sandboxes needs a ceiling |
-| **Egress deny** | a bridge with no NAT: nothing routed leaves, and it is still reachable and wakeable |
-| **Isolation tiers** | `--isolation gvisor\|kata`, refused with a reason where the runtime is absent |
-| **Two runtimes** | the same spec locally on docker or in a cluster on kubernetes - not the same capabilities either way, and `sbx doctor` tells you what this host can do |
-| **Housekeeping** | `sbx gc` reclaims what dead sandboxes left, listing by default and deleting only with `--force` |
-| **Deploy it anywhere** | `sbx pack` writes the image for a platform that gives one container and one HTTP port; `sbx connect` turns that back into ordinary local ports - several deployments merge into one local port map, so a sandbox spread over a platform still looks like one - [walkthrough](docs/USE-CASES.md#8--a-sandbox-that-is-not-on-your-laptop) |
-| **Drive a deployed sandbox** | `sbx ui --connect https://sbx.example.dev` - the same dashboard, on a sandbox that is somewhere else. Several deployments merge into one screen; the keys act on the deployment (wake, sleep, limit, remove, logs), and `f` forwards a service's ports here so `psql` reaches it. All authorised by the connect token, which is why it is a credential worth guarding |
-| **A live dashboard** | `sbx ui` - every sandbox, awake or not, with cpu and memory per service against what it is allowed, and a trace of where each has been. `v` folds it to one line per sandbox: what it holds, how many are up, what the whole thing costs, and each service's share. `a` shows the machine instead - every container on it, ours or not - and the title carries both machines, since on macOS the VM's ceiling and the laptop's are different numbers. Wake, sleep, read logs, set a limit and remove from the keyboard |
-| **Reads as well as prints** | `--json` on `list`, `doctor`, `history` and `env`, so an agent driving this parses answers instead of column widths. → [AGENTS.md](docs/AGENTS.md) |
-| **History and audit** | `sbx history` records what changed and every wake, with secrets redacted. It reads a file, so it works when docker does not |
-| **Observability** | structured logs on one stdout; [`console/`](console/) adds metrics and health - a *separate* module, so it has dependencies and the daemon still has none |
+| Wakes on any TCP connection | no SDK or client library — anything with a socket |
+| Sleeps to 0 B | stopped container, volume intact; idle costs no memory |
+| Holds the first connection | waits rather than refusing — **5/5 measured**, a refusing rival scores 0/5 |
+| One static binary | zero non-stdlib deps, CI-gated. macOS · Linux · FreeBSD, amd64 · arm64; Windows via WSL2 |
+| One committed file | `sandbox.json` says what a branch needs → [SPEC](docs/SPEC.md) |
 
----
+**Data & builds**
+| | |
+|---|---|
+| Snapshot & fork | save every service's data, fork as many sandboxes from it as you want |
+| Builds your image | `build:` instead of `image:`, cached by content hash |
+| Templates built in | `--template postgres` works with nothing on disk, pinned by digest |
+| Your own commands | `mounts` + `sbx exec` = a shell in your code that sleeps too → [how](docs/USE-CASES.md#9--a-box-to-run-your-own-commands-in) |
+
+**Limits & isolation**
+| | |
+|---|---|
+| Per-service limits | `cpu`, `memory`, `gpus` — a laptop running twenty sandboxes needs a ceiling |
+| Egress deny | nothing routed leaves; still reachable and wakeable |
+| Isolation tiers | `--isolation gvisor\|kata`, refused with a reason where absent |
+| Ordering & secrets | `depends_on` for order, `${VAR}` so a spec names a secret without holding it |
+
+**Run it anywhere**
+| | |
+|---|---|
+| Two runtimes | same spec on docker or kubernetes; `sbx doctor` says what this host can do |
+| Deploy anywhere | `sbx pack` + `sbx connect` turn a one-port platform back into local ports → [walkthrough](docs/USE-CASES.md#8--a-sandbox-that-is-not-on-your-laptop) |
+| Housekeeping | `sbx gc` reclaims what dead sandboxes left, `--force` to delete |
+
+**See & drive it**
+| | |
+|---|---|
+| Live dashboard | `sbx ui` — every sandbox's cpu/memory vs its limit, and a trace of where it's been |
+| Drive a deployment | `sbx ui --connect <url>` — wake, sleep, limit, remove, logs, and `f` to port-forward a service here |
+| Reads as well as prints | `--json` on `list`, `doctor`, `history`, `env` → [AGENTS](docs/AGENTS.md) |
+| History & audit | `sbx history` records changes and wakes, secrets redacted; reads a file, works when docker doesn't |
+| Observability | structured logs on stdout; [`console/`](console/) adds metrics/health as a separate module |
 
 ## What each backend can do
 
