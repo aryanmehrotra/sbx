@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>sbx — Scale-to-Zero Dev Infrastructure</title>
-<meta name="description" content="A real Postgres, Redis or browser per branch, task or agent — awake on connect, asleep at 0 B. Deploy to a laptop, VM or Kubernetes and manage it all from one CLI.">
+<title>sbx — Infrastructure for AI agents</title>
+<meta name="description" content="Give every AI agent its own real Postgres, Redis or browser — a disposable sandbox that wakes on connect and sleeps at 0 B. Deploy to a laptop, VM or Kubernetes; drive it all from one CLI.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cg transform='rotate(-30 12 12)'%3E%3Ccircle cx='7.3' cy='3.2' r='1.45'/%3E%3Crect x='5.5' y='4.7' width='3.6' height='14.6' rx='1.8'/%3E%3Crect x='14.9' y='4.7' width='3.6' height='14.6' rx='1.8'/%3E%3Ccircle cx='16.7' cy='20.8' r='1.45'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -183,13 +183,13 @@
   <main class="hero" id="top">
     <span class="badge appear appear--pop" style="--d:.22s">
       <svg viewBox="0 0 24 24" fill="white"><path d="M12 2.6C12.55 2.6 12.88 3.15 13.08 4.7c.62 4.7 1.52 5.6 6.22 6.22 1.55.2 2.1.53 2.1 1.08s-.55.88-2.1 1.08c-4.7.62-5.6 1.52-6.22 6.22-.2 1.55-.53 2.1-1.08 2.1s-.88-.55-1.08-2.1c-.62-4.7-1.52-5.6-6.22-6.22C3.15 12.88 2.6 12.55 2.6 12s.55-.88 2.1-1.08c4.7-.62 5.6-1.52 6.22-6.22C11.12 3.15 11.45 2.6 12 2.6Z"/></svg>
-      Scale-to-Zero Dev Infrastructure
+      Infrastructure for AI agents
     </span>
     <h1>
-      <span class="headline-line appear appear--mask" style="--d:.42s"><em>Scale to zero</em> for your</span>
-      <span class="headline-line appear appear--mask" style="--d:.62s">whole dev stack.</span>
+      <span class="headline-line appear appear--mask" style="--d:.42s">Give your <em>AI agents</em></span>
+      <span class="headline-line appear appear--mask" style="--d:.62s">a real sandbox.</span>
     </h1>
-    <p class="lede appear appear--soft" style="--d:.82s;animation-duration:1.25s">Give every branch, task or agent a real Postgres, Redis or browser — on your laptop, a VM or a Kubernetes cluster, and drive them all from one CLI. Awake on connect, asleep at 0&nbsp;B.</p>
+    <p class="lede appear appear--soft" style="--d:.82s;animation-duration:1.25s">Every agent, task or branch gets its own Postgres, Redis or browser to work in — a disposable sandbox on your laptop, a VM or a Kubernetes cluster, all driven from one CLI. Awake on connect, asleep at 0&nbsp;B.</p>
     <div class="hero-actions">
       <a class="btn btn-solid appear appear--btn" href="#install" style="--d:.96s">Get started</a>
       <a class="btn btn-ghost appear appear--side" href="#how" style="--d:1.10s">See how it works</a>
@@ -216,7 +216,7 @@
     <div class="wrap">
       <div class="eyebrow">how it works</div>
       <h2 class="sec-h">There is no <em>start</em>. There is no <em>stop</em>.</h2>
-      <p class="sec-p">Opening a socket is the only signal — so any tool wakes a sandbox without knowing sbx exists, and a few idle minutes sleep it back to zero.</p>
+      <p class="sec-p">Opening a socket is the only signal — so an agent’s tools (psql, a driver, a test runner) wake its sandbox without an SDK, and a few idle minutes sleep it back to zero.</p>
       <div class="steps">
         <div class="step"><div class="n">01</div><h3>Create it</h3><p>One command realises the spec — a real Postgres, Redis or browser. <span class="k">--template</span> works with nothing on disk.</p></div>
         <div class="step"><div class="n">02</div><h3>Forget it</h3><p>Ignore it and it sleeps to <span class="k">0 B</span> — a stopped container, volume intact. You never turn it off.</p></div>
