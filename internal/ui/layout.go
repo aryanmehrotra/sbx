@@ -134,6 +134,22 @@ func plan(rows, items, want, wantPane int) layout {
 	paneWant := max(3, wantPane)
 	detail := clamp(rest-paneWant, 1, want)
 
+	// Neither side gets first claim. The pane did, and `a` fills it with a line per container on
+	// the machine - an unbounded ask on a busy box - so a fourteen-service sandbox was left with
+	// exactly its four fixed lines: a SERVICE heading with nothing underneath it, on a block
+	// whose own title said "14 services". A heading promising rows it does not show is a screen
+	// contradicting itself, and it appeared only once somebody opened the system pane, which is
+	// to say only on the machine busy enough to want both.
+	//
+	// Where both cannot have what they asked for they are squeezed in proportion, and the block
+	// keeps its fixed lines plus a service, because that is the smallest block that is not a
+	// contradiction.
+	if want+paneWant > rest {
+		floor := min(want, detailSandboxFixed+1)
+
+		detail = clamp(rest*want/(want+paneWant), min(floor, max(1, rest-3)), want)
+	}
+
 	// The table's floor buys stillness: with three sandboxes on screen, adding a fourth should
 	// not shift every pane below it. Those reserved rows are blank until the fleet grows, and
 	// blank is worth less than an answer - so where the detail block is short of what it has to

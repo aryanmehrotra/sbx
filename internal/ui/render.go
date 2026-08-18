@@ -349,7 +349,10 @@ func sandboxDetail(m model, r row, w cols, space, cols int) []string {
 	// table and a list of lines that happen to have spaces in them.
 	g := memberGrid(members, w)
 
-	if len(members) > 0 && len(out) < space {
+	// Only where a service can follow it. A heading is a promise about the rows under it, and
+	// with room for exactly one more line that room is better spent saying "and 14 more" than
+	// on column names over nothing.
+	if len(members) > 0 && space-len(out) >= 2 {
 		out = append(out, memberHeader(g, cols))
 	}
 

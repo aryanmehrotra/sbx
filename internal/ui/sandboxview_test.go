@@ -660,3 +660,88 @@ func runeIndex(hay, needle string) int {
 
 	return utf8.RuneCountInString(hay[:at])
 }
+
+// Opening the system pane must not empty the sandbox block.
+//
+// The pane asks for a line per container on the machine, which on a busy box is a bigger ask
+// than the screen has. It used to be paid first, so the block was left with its four fixed
+// lines - name, cpu, memory, and the SERVICE heading - and not one service under the heading,
+// on a block whose own title read "14 services".
+func TestTheSystemPaneDoesNotStarveTheSandboxBlock(t *testing.T) {
+	var rows []row
+
+	for i := range 14 {
+		rows = append(rows, row{
+			Sandbox: "big", Service: fmt.Sprintf("svc-%d", i), Awake: true,
+			Ref: fmt.Sprintf("r%d", i), CPU: 5, CPUKnown: true,
+			MemBytes: 100 << 20, MemKnown: true,
+		})
+	}
+
+	m := model{rows: rows, grouped: true, metered: true, pane: paneSystem}
+
+	// A machine with plenty on it, which is when the pane's ask gets large - large enough here
+	// to exceed the whole area below the table on its own, which is the case that collapsed the
+	// block to a single line.
+	for i := range 40 {
+		m.neighbours = append(m.neighbours, provider.Neighbour{
+			Name: fmt.Sprintf("container-%d", i), MemBytes: uint64(i+1) << 20,
+		})
+	}
+
+	lines := strings.Split(plainText(render(m, 45, 150)), "\n")
+
+	var seenHeading, services int
+
+	for _, l := range lines {
+		switch {
+		case strings.Contains(l, "SERVICE") && strings.Contains(l, "SHARE"):
+			seenHeading++
+		case strings.Contains(l, "svc-"):
+			services++
+		}
+	}
+
+	if seenHeading == 0 {
+		t.Fatalf("the block lost its service heading entirely:\n%s", strings.Join(lines, "\n"))
+	}
+
+	if services == 0 {
+		t.Errorf("the block drew a SERVICE heading and listed none of the 14 services under "+
+			"it:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// ...and where there is genuinely only room for the heading, the heading goes rather than
+// standing over nothing.
+func TestAHeadingIsNotDrawnWithoutRowsUnderIt(t *testing.T) {
+	rows := []row{
+		{Sandbox: "big", Service: "a", Awake: true, Ref: "r1"},
+		{Sandbox: "big", Service: "b", Awake: true, Ref: "r2"},
+	}
+
+	m := model{rows: rows, grouped: true, metered: true}
+	r, _ := m.currentRow()
+
+	for space := 1; space <= detailSandboxFixed+2; space++ {
+		out := sandboxDetail(m, r, cols{sandbox: 8, service: 8, state: 6, cpu: 6, mem: 7},
+			space, 150)
+
+		if len(out) > space {
+			t.Errorf("with room for %d lines the block drew %d", space, len(out))
+		}
+
+		heading, listed := false, false
+
+		for _, l := range out {
+			p := plainText(l)
+			heading = heading || (strings.Contains(p, "SERVICE") && strings.Contains(p, "SHARE"))
+			listed = listed || strings.Contains(p, " a ") || strings.Contains(p, "more")
+		}
+
+		if heading && !listed {
+			t.Errorf("with room for %d lines the block drew column names over nothing:\n%s",
+				space, strings.Join(out, "\n"))
+		}
+	}
+}
