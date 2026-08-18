@@ -524,7 +524,7 @@ func TestARemoteTitleDoesNotShowTheLaptopsMemory(t *testing.T) {
 	m := model{
 		version:  "v9",
 		rows:     []row{{Sandbox: "postgres", Service: "fronted", Awake: true}},
-		provider: "connect sbx-connect-test.zopcloud.zop.dev",
+		provider: "connect sbx.example.dev",
 		// machine deliberately left zero, as run.go leaves it when remote.
 	}
 
@@ -534,7 +534,7 @@ func TestARemoteTitleDoesNotShowTheLaptopsMemory(t *testing.T) {
 		t.Errorf("a remote title showed a local host figure: %q", got)
 	}
 
-	if !strings.Contains(got, "connect sbx-connect-test") {
+	if !strings.Contains(got, "connect sbx") {
 		t.Errorf("a remote title did not name the connection: %q", got)
 	}
 }
