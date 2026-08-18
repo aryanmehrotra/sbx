@@ -153,6 +153,13 @@
     section{padding:88px 0 0}
   }
   @media (max-width:560px){ .hero-actions{flex-direction:column;width:100%} .hero-actions .btn{width:100%} }
+
+  .badges{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:26px}
+  .badges span{font-family:var(--mono);font-size:11.5px;color:#8f8f8f;border:1px solid var(--soft);
+    border-radius:999px;padding:5px 12px;letter-spacing:.01em}
+  .shot{margin-top:8px;border-radius:16px;overflow:hidden;border:1px solid var(--border);
+    background:#0a0a0a;box-shadow:0 60px 130px -50px #000,0 0 80px -40px rgba(255,255,255,.1)}
+  .shot img{display:block;width:100%;height:auto}
 </style>
 </head>
 <body style="background:#000;color:#fff">
@@ -186,6 +193,9 @@
     <div class="hero-actions">
       <a class="btn btn-solid appear appear--btn" href="#install" style="--d:.96s">Get started</a>
       <a class="btn btn-ghost appear appear--side" href="#how" style="--d:1.10s">See how it works</a>
+    </div>
+    <div class="badges appear appear--soft" style="--d:1.2s">
+      <span>self-hosted</span><span>no SDK</span><span>docker · kubernetes</span><span>zero deps</span><span>MIT</span>
     </div>
   </main>
 
@@ -227,6 +237,17 @@
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 18v3"></path><polyline points="6 9 9 12 6 15"></polyline></svg><h3>Manage from the CLI</h3><p><span class="k">sbx ui --connect</span> reaches sandboxes on a VM or cluster and drives them from your terminal.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><circle cx="18" cy="8" r="2.4"></circle><path d="M6 8.4v7.2M8.3 6.7l7.5 .9M18 10.4c0 4-3 4.6-11.8 5.4"></path></svg><h3>Snapshot &amp; fork</h3><p>Seed one database, then fork a hundred. The migration runs a single time.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><h3>One committed file</h3><p><span class="k">sandbox.json</span> says what a branch needs. Reads with <span class="k">--json</span> for agents.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="dashboard">
+    <div class="wrap">
+      <div class="eyebrow">one screen</div>
+      <h2 class="sec-h">Watch every sandbox <em>on one screen.</em></h2>
+      <p class="sec-p"><span style="font-family:var(--mono);color:#d8d8d8">sbx ui</span> — cpu and memory against each service's limit, a live trace of where it's been, and one keystroke to wake, sleep, cap or port-forward. Local, or over <span style="font-family:var(--mono);color:#d8d8d8">--connect</span> to a deployment.</p>
+      <div class="shot">
+        <img src="ui.svg" width="1111" height="440" loading="lazy" alt="The sbx dashboard: a table of every sandbox and service with cpu and memory against the limit it is allowed, a detail block for the selected service with a trace of cpu and memory over time, and a log of recent wake and sleep events.">
       </div>
     </div>
   </section>
