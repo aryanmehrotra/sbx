@@ -66,6 +66,18 @@ func (d *dockerProvider) docker(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// probeInterval is what this service asked for, or the default where nothing did.
+//
+// The caller resolves the sandbox's own default into the service before it gets here, so this
+// is the last fallback rather than a second opinion.
+func probeInterval(svc spec.Service) time.Duration {
+	if d, err := time.ParseDuration(svc.HealthInterval); err == nil && d > 0 {
+		return d
+	}
+
+	return spec.DefaultHealthInterval
+}
+
 func containerName(sandbox, service string) string { return "sbx-" + sandbox + "-" + service }
 func volumeName(sandbox, service string) string    { return "sbx-" + sandbox + "-" + service + "-data" }
 
@@ -323,7 +335,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		// open its data directory is not declared broken at 300ms.
 		args = append(args,
 			"--health-cmd", svc.Health,
-			"--health-interval", "300ms",
+			"--health-interval", probeInterval(svc).String(),
 			"--health-timeout", "2s",
 			"--health-retries", "3",
 			"--health-start-period", "60s",

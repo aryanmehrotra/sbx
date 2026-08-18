@@ -94,6 +94,12 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 			return err
 		}
 
+		// And resolve the probe interval here, where the sandbox's own default is still in
+		// scope. A provider is handed one service at a time and cannot see the file it came
+		// from, so leaving this to them would mean docker and kubernetes each re-deriving it
+		// and eventually disagreeing about what the spec said.
+		svc.HealthInterval = sp.ProbeInterval(svc).String()
+
 		if err := createOne(ctx, p, sandbox, slot, start, name, svc, specDir, iso); err != nil {
 			return err
 		}

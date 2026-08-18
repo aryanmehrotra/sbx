@@ -314,9 +314,17 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc spe
 	// generous for the same reason the local start period is - a database opening its data
 	// directory is not a broken database.
 	if svc.Health != "" {
+		// Kubernetes counts probe periods in whole seconds, so a sub-second interval becomes
+		// one second rather than zero - zero means "use the default" to the API server, which
+		// is ten, and a spec asking for a faster probe would have got a slower one.
+		period := int(probeInterval(svc).Round(time.Second) / time.Second)
+		if period < 1 {
+			period = 1
+		}
+
 		container["readinessProbe"] = map[string]any{
 			"exec":                map[string]any{"command": []string{"sh", "-c", svc.Health}},
-			"periodSeconds":       1,
+			"periodSeconds":       period,
 			"timeoutSeconds":      2,
 			"failureThreshold":    60,
 			"initialDelaySeconds": 1,

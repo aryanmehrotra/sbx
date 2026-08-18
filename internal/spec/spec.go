@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Spec is the on-disk sandbox.json.
@@ -31,7 +32,73 @@ type Spec struct {
 	// already reads: {"DB_PORT": "mysql:3306"} becomes DB_PORT=<public port of mysql 3306>.
 	// Without this, adopting sbx would mean changing every script that knows a port.
 	Exports map[string]string `json:"exports,omitempty"`
+
+	// HealthInterval is how often every service in this sandbox is asked whether it is
+	// serving, unless it says otherwise. Empty means the default - see DefaultHealthInterval.
+	//
+	// Here as well as per service because the cost is a property of the sandbox rather than of
+	// any one thing in it: the probes run whether or not anybody is waiting, so a sandbox of
+	// fourteen services at the default interval is running about forty-seven commands a second
+	// inside containers, for ever. On a laptop whose runtime is already busy that is worth
+	// turning down once for the whole file rather than fourteen times.
+	HealthInterval string `json:"health_interval,omitempty"`
 }
+
+// checkInterval refuses a probe interval that would not do what the writer meant.
+//
+// Both ends matter. Below about fifty milliseconds the probe is a command started inside a
+// container more often than most containers can answer one, which spends cpu to learn nothing;
+// above a few minutes the daemon would report a service as still waking long after it was
+// serving, and a wake that appears to take four minutes reads as a hang.
+func checkInterval(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fmt.Errorf("%q is not a duration - try \"1s\" or \"500ms\"", raw)
+	}
+
+	switch {
+	case d < 50*time.Millisecond:
+		return fmt.Errorf("%s is faster than a container can usefully answer; 50ms is the floor", d)
+	case d > 5*time.Minute:
+		return fmt.Errorf("%s would report a service as still waking long after it was serving; "+
+			"5m is the ceiling", d)
+	}
+
+	return nil
+}
+
+// ProbeInterval is how often this service should be asked whether it is serving: its own
+// setting, else the sandbox's, else the default.
+//
+// Resolved in one place because three defaults resolved at three call sites is how docker and
+// kubernetes come to disagree about what the file said.
+func (s Spec) ProbeInterval(svc Service) time.Duration {
+	for _, raw := range []string{svc.HealthInterval, s.HealthInterval} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+
+	return DefaultHealthInterval
+}
+
+// DefaultHealthInterval is how often a service is asked whether it is serving.
+//
+// It is the floor on how long a wake appears to take, because a wake is not over until the
+// answer changes and the answer is only re-evaluated on this interval. Three hundred
+// milliseconds is chosen against that: a wake that is genuinely ready in 40 ms should not be
+// reported as taking a second, and the probe is a command run inside a container, which is not
+// free. Raise it on a machine with many services or a slow runtime; lower it if you are
+// measuring wakes and want the resolution.
+const DefaultHealthInterval = 300 * time.Millisecond
 
 // Service is one wakeable container.
 // Build describes an image to build instead of pull.
@@ -65,6 +132,10 @@ type Service struct {
 	// daemon can only dial the published port, which docker answers before the server
 	// does - so the first query after a wake lands on a socket that is about to close.
 	Health string `json:"health,omitempty"`
+
+	// HealthInterval overrides the sandbox's own, for a service whose probe is expensive or
+	// whose readiness is worth catching quickly.
+	HealthInterval string `json:"health_interval,omitempty"`
 
 	Env  map[string]string `json:"env,omitempty"`
 	Args []string          `json:"args,omitempty"`
@@ -166,6 +237,10 @@ func (s Service) validate(name string) error {
 		return fmt.Errorf("service %q: at least one port is required", name)
 	}
 
+	if err := checkInterval(s.HealthInterval); err != nil {
+		return fmt.Errorf("service %q: health_interval %w", name, err)
+	}
+
 	for _, p := range s.Ports {
 		if p < 1 || p > 65535 {
 			return fmt.Errorf("service %q: port %d out of range", name, p)
@@ -261,6 +336,12 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		if err := svc.validate(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+	}
+
+	// The sandbox-wide default gets the same check as a service's own, or a typo there is one
+	// silently ignored setting rather than fourteen loud ones.
+	if err := checkInterval(s.HealthInterval); err != nil {
+		return nil, fmt.Errorf("%s: health_interval %w", path, err)
 	}
 
 	if err := s.checkDependencies(); err != nil {

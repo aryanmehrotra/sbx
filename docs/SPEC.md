@@ -86,6 +86,7 @@ script that already knows a port.
 | `build` | ●* | Build one instead: `{ "context": "./app", "dockerfile": "Dockerfile" }` |
 | `ports` | ● | Container-side ports. The public and backing ports are **assigned from the sandbox's slot**, never chosen here |
 | `health` | | A command run **inside** the container - how sbx knows it is serving |
+| `health_interval` | `300ms` | How often that command runs. Also settable once for the whole sandbox |
 | `env` | | Environment variables |
 | `args` | | Command arguments, appended to the image's entrypoint |
 | `volume` | | One container path to persist. What makes sleeping safe |
@@ -160,6 +161,37 @@ first:
 ```sh
 docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
 ```
+
+### `health_interval` is what those probes cost
+
+The probe is a command started inside the container, and it runs whether or not anybody is
+waiting for the service. One service at the default 300 ms is nothing; fourteen is about
+forty-seven container commands a second, for ever, on a machine that may already be busy.
+
+```json
+{ "version": 1,
+  "health_interval": "1s",
+  "services": { "db": { "image": "postgres:16-alpine", "ports": [5432],
+                        "health": "pg_isready -U app",
+                        "health_interval": "300ms" } } }
+```
+
+The sandbox-wide setting is the one to reach for - the cost is a property of the fleet rather
+than of any one service in it - and a service can override it where its own readiness is worth
+catching quickly, or where its probe is expensive.
+
+**It is also the floor on how long a wake appears to take.** A wake is not over until the answer
+changes, and the answer is only re-evaluated on this interval, so a service that is genuinely
+ready in 40 ms reports as 300 ms at the default and as a second at `1s`. Turn it up to spend less
+on a large sandbox; turn it down when you are measuring wakes and want the resolution.
+
+Below 50 ms and above 5 m are refused: the first spends cpu to learn nothing, and the second
+reports a service as still waking long after it was serving.
+
+In a cluster this becomes the readiness probe's `periodSeconds`, which counts whole seconds -
+anything under a second becomes one. Zero is not passed through, because to the API server zero
+means "use my default", which is ten: a spec asking for a faster probe would have quietly got a
+slower one.
 
 ### `depends_on` orders creation, and nothing else
 
