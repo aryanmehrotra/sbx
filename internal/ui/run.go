@@ -253,9 +253,17 @@ func (d *dash) refresh(ctx context.Context) {
 		d.model.stats = summarise(events)
 	}
 
-	// Cheap: a file read on linux, two small forks on macOS - beside a round trip to the
-	// container runtime on the same tick, it does not register.
-	d.model.machine = hostinfo.Read()
+	// The machine the person is sitting at - but only when that is the machine the sandboxes
+	// are on. Over --connect the sandboxes are somewhere else, and this laptop's free memory
+	// printed beside the deployment's hostname reads as the deployment's, which is a number
+	// about the wrong computer. The host that sbx actually runs on there would have to come
+	// from the far side, and a fronted deployment has no runtime to ask - so rather than show a
+	// misleading figure, this shows none.
+	if !d.remote {
+		// Cheap: a file read on linux, two small forks on macOS - beside a round trip to the
+		// container runtime on the same tick, it does not register.
+		d.model.machine = hostinfo.Read()
+	}
 
 	d.model.provider = d.opt.Provider.Name()
 	d.model.metered = metered

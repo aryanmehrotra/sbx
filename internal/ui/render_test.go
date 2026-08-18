@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
+	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
@@ -512,5 +513,44 @@ func TestOnlyAddressesAreLinked(t *testing.T) {
 		if got := linkAddresses(s); got != s {
 			t.Errorf("linkAddresses(%q) = %q, want it left alone", s, got)
 		}
+	}
+}
+
+// Over --connect the sandboxes are on another machine, so the laptop's free memory must not be
+// printed in the title beside the deployment's name - a number about the wrong computer reads as
+// one about the right one. run.go leaves model.machine zero in remote mode; this pins that the
+// title then shows the connection and not a host figure.
+func TestARemoteTitleDoesNotShowTheLaptopsMemory(t *testing.T) {
+	m := model{
+		version:  "v9",
+		rows:     []row{{Sandbox: "postgres", Service: "fronted", Awake: true}},
+		provider: "connect sbx-connect-test.zopcloud.zop.dev",
+		// machine deliberately left zero, as run.go leaves it when remote.
+	}
+
+	got := plainText(title(m, 200))
+
+	if strings.Contains(got, "host ") && strings.Contains(got, "free of") {
+		t.Errorf("a remote title showed a local host figure: %q", got)
+	}
+
+	if !strings.Contains(got, "connect sbx-connect-test") {
+		t.Errorf("a remote title did not name the connection: %q", got)
+	}
+}
+
+// ...and locally, where the machine is the one the sandboxes are on, the host figure stays. This
+// is the guard that the fix did not silence it everywhere.
+func TestALocalTitleStillShowsTheMachine(t *testing.T) {
+	m := model{
+		version: "v9",
+		rows:    []row{{Sandbox: "dev", Service: "db", Awake: true}},
+		machine: hostinfo.Machine{Cores: 8, MemBytes: 16 << 30, FreeBytes: 4 << 30},
+	}
+
+	got := plainText(title(m, 200))
+
+	if !strings.Contains(got, "free of") {
+		t.Errorf("a local title dropped the machine's memory: %q", got)
 	}
 }
