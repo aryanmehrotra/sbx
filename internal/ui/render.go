@@ -238,8 +238,8 @@ func tableHeader(m model, w cols) string {
 		what = "CONTAINS"
 	}
 
-	head := fmt.Sprintf("%s  %-*s  %-*s  %-6s  %*s  %*s",
-		dim, w.sandbox, "SANDBOX", w.service, what, "STATE", w.cpu, "CPU", w.mem, "MEMORY")
+	head := fmt.Sprintf("%s  %-*s  %-*s  %-*s  %*s  %*s",
+		dim, w.sandbox, "SANDBOX", w.service, what, w.state, "STATE", w.cpu, "CPU", w.mem, "MEMORY")
 
 	if w.address > 0 {
 		head += "  " + fmt.Sprintf("%-*s", w.address, "ADDRESS")
@@ -416,9 +416,12 @@ func memberLine(m model, s row, sandbox row, g grid, width int) string {
 	// Every cell padded to the block's own width, so each column is where the heading says it is
 	// on every row - including the row whose address is twice as wide as the rest, which keeps
 	// its address in full rather than being cut to make the arithmetic easier.
-	line := fmt.Sprintf("   %-*s  %s%-*s%s  %*s  %*s  %s%*s%s  %s%-*s%s",
+	// Padded by visible width rather than by %-*s, because the address now carries a hyperlink
+	// and fmt would count the escape as part of the column.
+	line := fmt.Sprintf("   %-*s  %s%-*s%s  %*s  %*s  %s%*s%s  %s%s%s",
 		g.service, s.Service, colour, g.state, state, reset,
-		g.cpu, cpu, g.mem, mem, dim, g.share, share, reset, dim, g.addr, s.Address, reset)
+		g.cpu, cpu, g.mem, mem, dim, g.share, share, reset,
+		dim, padRight(linkAddresses(s.Address), g.addr), reset)
 
 	// Whatever is left, and only where it is enough to draw a shape rather than a smudge.
 	if room := width - visibleLen(line) - 2; room >= 12 && s.Awake {
@@ -716,26 +719,7 @@ func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string 
 		marker = "›"
 	}
 
-	state, colour := "asleep", dim
-	if r.Awake {
-		state, colour = "AWAKE", green
-	}
-
-	// A sandbox is not simply awake or asleep - two of its four services can be. "AWAKE" on a
-	// row standing for four things, one of which is running, is a fair summary of the cost and
-	// a bad summary of the state, so the row says which it means.
-	if r.Members > 0 {
-		state = fmt.Sprintf("%d/%d up", r.Woken, r.Members)
-
-		switch {
-		case r.Woken == 0:
-			colour = dim
-		case r.Woken < r.Members:
-			colour = yellow
-		default:
-			colour = green
-		}
-	}
+	state, colour := stateOf(r)
 
 	// An asleep service shows a dash rather than 0. Zero is a measurement and this is not one:
 	// there is nothing running to measure, which is the point of the project. A sample that
@@ -759,17 +743,17 @@ func renderRow(r row, l provider.Limits, metered, selected bool, w cols) string 
 		}
 	}
 
-	line := fmt.Sprintf("%s %-*s  %-*s  %s%-6s%s  %*s  %*s",
+	line := fmt.Sprintf("%s %-*s  %-*s  %s%-*s%s  %*s  %*s",
 		marker,
 		w.sandbox, truncateName(r.Sandbox, w.sandbox),
 		w.service, truncateName(r.Service, w.service),
-		colour, state, reset,
+		colour, w.state, state, reset,
 		w.cpu, cpu,
 		w.mem, mem)
 
 	if w.address > 0 {
 		addr := truncate(shortAddress(r.Address, w.address), w.address)
-		line += "  " + dim + addr + reset
+		line += "  " + dim + linkAddresses(addr) + reset
 
 		if w.meters > 0 {
 			line += strings.Repeat(" ", max(0, w.address-visibleLen(addr)))
@@ -942,7 +926,7 @@ func detailBlock(m model, w cols, space, cols int) []string {
 	// Two lines, always. Merging them where the terminal is wide enough was tempting and made
 	// the block's height depend on its width, which is how a layout ends up padding itself
 	// with a blank line on a wide screen and nowhere else.
-	field("address", r.Address)
+	field("address", linkAddresses(r.Address))
 	field("connect", connect)
 
 	// What is left for the trace and its legend, after the field label, the reading and the
@@ -1132,6 +1116,55 @@ func shortDuration(d time.Duration) string {
 
 // padLeft pads on the left, which is what puts the newest end of a trace against a fixed
 // right edge.
+// link wraps text in OSC 8, the sequence that tells a terminal a run of characters is a
+// hyperlink. iTerm2, WezTerm, Kitty, GNOME Terminal and Windows Terminal all open it on
+// cmd- or ctrl-click; terminals that do not know it ignore it and print the text unchanged,
+// which is what makes it safe to emit without asking what is on the other end.
+//
+// It is deliberately invisible to the width arithmetic - see visibleLen. An escape that gets
+// counted is a column that moves, which is the whole history of this file.
+func link(url, text string) string {
+	if url == "" || plainTheme() {
+		return text
+	}
+
+	return "\x1b]8;;" + url + "\a" + text + "\x1b]8;;\a"
+}
+
+// linkAddresses makes each published address clickable.
+//
+// The address is the one thing on this screen somebody came to use, and it was the one thing
+// they could not click: host:port carries no scheme, so no terminal recognises it on its own.
+//
+// http:// is assumed, because it is the only scheme a browser can follow. A postgres or redis
+// port opens a browser that cannot speak to it - the cost of the ports that a browser can, and
+// the reason this only ever links something already shaped like an address.
+func linkAddresses(s string) string {
+	if s == "" || plainTheme() {
+		return s
+	}
+
+	fields := strings.Fields(s)
+
+	for i, f := range fields {
+		host, port, ok := strings.Cut(f, ":")
+		if !ok || port == "" || strings.Trim(port, "0123456789") != "" {
+			// A truncation mark, a dash, anything that is not host:port. Left alone.
+			continue
+		}
+
+		// shortAddress drops the loopback host where the column is tight, so what is on screen
+		// can be ":20020" - still clickable, but not as a URL without its host put back.
+		if host == "" {
+			host = "127.0.0.1"
+		}
+
+		fields[i] = link("http://"+host+":"+port, f)
+	}
+
+	return strings.Join(fields, " ")
+}
+
 func padLeft(s string, n int) string {
 	if gap := n - visibleLen(s); gap > 0 {
 		return strings.Repeat(" ", gap) + s
@@ -1221,12 +1254,35 @@ func spark(values []float64, ceiling float64, cells int) string {
 	// happening now. A single colour for the whole line says "this service is fine" over a
 	// trace that spent two of its four minutes against the ceiling, and the moment it went bad
 	// is the one thing a history is for.
+	// Against a ceiling, "high" means near the ceiling. Without one it can only mean high for
+	// this service - so the reference becomes the peak of the window, and the colour then agrees
+	// with the height of the trace instead of contradicting it. Uncapped services were drawn a
+	// flat green whatever they did, which is most of them: nothing here has a limit by default,
+	// so the one state worth spotting was the one state never coloured.
+	//
+	// A trace that barely moves is left calm whatever its absolute value. Normalising a flat
+	// line to its own maximum would paint an idle service permanently red, and a dashboard that
+	// cries wolf on idle is one nobody reads when it means it.
+	reference := ceiling
+
+	if reference <= 0 {
+		lo, hi := values[0], values[0]
+
+		for _, v := range values {
+			lo, hi = min(lo, v), max(hi, v)
+		}
+
+		if hi > 0 && lo <= 0.6*hi {
+			reference = hi
+		}
+	}
+
 	colourAt := func(v float64) string {
-		if ceiling <= 0 {
+		if reference <= 0 {
 			return green
 		}
 
-		switch frac := v / ceiling; {
+		switch frac := v / reference; {
 		case frac >= 0.9:
 			return red
 		case frac >= 0.75:
@@ -1522,7 +1578,7 @@ func firstLine(s string) string {
 }
 
 // cols are the computed column widths.
-type cols struct{ sandbox, service, cpu, mem, address, meters int }
+type cols struct{ sandbox, service, state, cpu, mem, address, meters int }
 
 // Sizes for the per-row meters. Ten cells rather than the sixteen the detail block uses,
 // because this one is drawn once per service and the column has to earn its width against the
@@ -1539,8 +1595,41 @@ const (
 )
 
 // rowOverhead is everything in a row that is not one of the sized columns: the selection
-// marker, the space after it, the four gaps before the address, and the state column.
-const rowOverhead = 1 + 1 + (2 * 4) + 6
+// marker, the space after it, and the four gaps before the address.
+const rowOverhead = 1 + 1 + (2 * 4)
+
+// stateOf is a row's state as the table prints it, with the colour that goes with it.
+//
+// A sandbox is not simply awake or asleep - two of its four services can be. "AWAKE" on a row
+// standing for four things, one of which is running, is a fair summary of the cost and a bad
+// summary of the state, so the row says which it means.
+//
+// It is a function rather than two branches inside renderRow because its *width* is what sizes
+// the STATE column. That column was a fixed six, which is exactly "asleep" and two short of
+// "14/14 up": a sandbox holding ten or more services overran it and pushed CPU, MEMORY and both
+// limit cells two columns right of their own headings, on that row alone. Every other column
+// here is measured from the data. This one was guessed, and the guess held only while no
+// sandbox had ten services in it.
+func stateOf(r row) (string, string) {
+	if r.Members > 0 {
+		state := fmt.Sprintf("%d/%d up", r.Woken, r.Members)
+
+		switch {
+		case r.Woken == 0:
+			return state, dim
+		case r.Woken < r.Members:
+			return state, yellow
+		default:
+			return state, green
+		}
+	}
+
+	if r.Awake {
+		return "AWAKE", green
+	}
+
+	return "asleep", dim
+}
 
 // widths sizes the columns to the data, within what the terminal has.
 //
@@ -1549,7 +1638,7 @@ const rowOverhead = 1 + 1 + (2 * 4) + 6
 // truncation, so nothing looked broken, and the one column somebody needs in order to connect
 // had quietly gone.
 func widths(rows []row, total int) cols {
-	w := cols{sandbox: 7, service: 7, cpu: 6, mem: 7}
+	w := cols{sandbox: 7, service: 7, state: len("asleep"), cpu: 6, mem: 7}
 
 	want := 0
 
@@ -1557,6 +1646,11 @@ func widths(rows []row, total int) cols {
 		w.sandbox = max(w.sandbox, len(r.Sandbox))
 		w.service = max(w.service, len(r.Service))
 		want = max(want, len(r.Address))
+
+		// Sized to the widest state actually on screen, so "14/14 up" widens the column for
+		// every row rather than overflowing its own.
+		state, _ := stateOf(r)
+		w.state = max(w.state, len(state))
 	}
 
 	// A steady width while addresses come and go - but only where there are any. A sandbox row
@@ -1567,7 +1661,7 @@ func widths(rows []row, total int) cols {
 	}
 
 	// The address is what somebody came for, so it is paid before the names.
-	spare := total - rowOverhead - w.cpu - w.mem
+	spare := total - rowOverhead - w.state - w.cpu - w.mem
 
 	if budget := spare - w.service - want; w.sandbox > budget {
 		w.sandbox = max(8, budget)
@@ -1684,73 +1778,97 @@ func truncate(s string, n int) string {
 	var (
 		b       strings.Builder
 		visible int
-		inEsc   bool
+		in      = []rune(s)
 	)
 
-	for _, r := range s {
-		switch {
-		case r == '\x1b':
-			inEsc = true
+	// Escapes are copied through and never counted; only what the terminal draws is measured.
+	// The two families end differently - see escapeless - and an OSC 8 URL containing an 'm'
+	// used to end the skip early here too, cutting a line in the middle of a hyperlink.
+	for i := 0; i < len(in); i++ {
+		if in[i] == '\x1b' && i+1 < len(in) && (in[i+1] == '[' || in[i+1] == ']') {
+			start := i
 
-			b.WriteRune(r)
-		case inEsc:
-			b.WriteRune(r)
+			if in[i+1] == '[' {
+				for i += 2; i < len(in) && (in[i] < '@' || in[i] > '~'); i++ {
+				}
+			} else {
+				for i += 2; i < len(in); i++ {
+					if in[i] == '\a' {
+						break
+					}
 
-			if r == 'm' {
-				inEsc = false
+					if in[i] == '\x1b' && i+1 < len(in) && in[i+1] == '\\' {
+						i++
+
+						break
+					}
+				}
 			}
-		default:
-			if visible >= n {
-				return b.String() + reset
-			}
 
-			b.WriteRune(r)
+			b.WriteString(string(in[start:min(i+1, len(in))]))
 
-			visible++
+			continue
 		}
+
+		if visible >= n {
+			return b.String() + reset
+		}
+
+		b.WriteRune(in[i])
+
+		visible++
 	}
 
 	return b.String()
 }
 
-func visibleLen(s string) int {
-	n, inEsc := 0, false
+// visibleLen is how many columns a string occupies once its escapes are discounted.
+//
+// Both kinds have to be skipped. It used to end an escape at the first 'm', which is true of
+// the colour sequences this file is mostly made of and false of OSC 8 hyperlinks, whose URL is
+// arbitrary text: one 'm' anywhere in a URL - and ".com" has one - would end the skip early and
+// count the rest of the URL as visible characters, moving every column after it.
+func visibleLen(s string) int { return len(escapeless(s)) }
 
-	for _, r := range s {
-		switch {
-		case r == '\x1b':
-			inEsc = true
-		case inEsc:
-			if r == 'm' {
-				inEsc = false
+// escapeless returns the runes of s that a terminal actually draws.
+//
+// CSI (\x1b[ ... final byte) is the colour and cursor family. OSC (\x1b] ... BEL or ST) is the
+// hyperlink family, and its payload is a URL, so it can only be ended by its own terminator.
+func escapeless(s string) []rune {
+	in := []rune(s)
+	out := make([]rune, 0, len(in))
+
+	for i := 0; i < len(in); i++ {
+		if in[i] != '\x1b' || i+1 >= len(in) {
+			out = append(out, in[i])
+
+			continue
+		}
+
+		switch in[i+1] {
+		case '[':
+			for i += 2; i < len(in) && (in[i] < '@' || in[i] > '~'); i++ {
+			}
+		case ']':
+			for i += 2; i < len(in); i++ {
+				if in[i] == '\a' {
+					break
+				}
+
+				if in[i] == '\x1b' && i+1 < len(in) && in[i+1] == '\\' {
+					i++
+
+					break
+				}
 			}
 		default:
-			n++
+			out = append(out, in[i])
 		}
 	}
 
-	return n
+	return out
 }
 
 // stripColour removes escapes, for the selected row and for tests, which should assert
 // against what a reader sees rather than against a palette.
-func stripColour(s string) string {
-	var b strings.Builder
-
-	inEsc := false
-
-	for _, r := range s {
-		switch {
-		case r == '\x1b':
-			inEsc = true
-		case inEsc:
-			if r == 'm' {
-				inEsc = false
-			}
-		default:
-			b.WriteRune(r)
-		}
-	}
-
-	return b.String()
-}
+func stripColour(s string) string { return string(escapeless(s)) }

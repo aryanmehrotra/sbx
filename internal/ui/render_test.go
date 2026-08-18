@@ -347,10 +347,10 @@ func TestRowOverheadMatchesTheLayout(t *testing.T) {
 		CPU: 1, CPUKnown: true, MemBytes: 1 << 20, MemKnown: true}
 
 	t.Run("without an address column", func(t *testing.T) {
-		w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7}
+		w := cols{sandbox: 10, service: 8, state: 6, cpu: 6, mem: 7}
 
 		got := visibleLen(renderRow(r, provider.Limits{}, true, false, w))
-		want := rowOverhead + w.sandbox + w.service + w.cpu + w.mem
+		want := rowOverhead + w.sandbox + w.service + w.state + w.cpu + w.mem
 
 		if got != want {
 			t.Errorf("a rendered row is %d columns but the budget assumes %d - rowOverhead is "+
@@ -359,13 +359,13 @@ func TestRowOverheadMatchesTheLayout(t *testing.T) {
 	})
 
 	t.Run("with one", func(t *testing.T) {
-		w := cols{sandbox: 10, service: 8, cpu: 6, mem: 7, address: len(r.Address)}
+		w := cols{sandbox: 10, service: 8, state: 6, cpu: 6, mem: 7, address: len(r.Address)}
 
 		got := visibleLen(renderRow(r, provider.Limits{}, true, false, w))
 
 		// The two extra columns are the gap before the address, which widths() budgets for
 		// separately when it works out what is left over.
-		want := rowOverhead + w.sandbox + w.service + w.cpu + w.mem + 2 + w.address
+		want := rowOverhead + w.sandbox + w.service + w.state + w.cpu + w.mem + 2 + w.address
 
 		if got != want {
 			t.Errorf("a row with an address is %d columns, budget assumes %d", got, want)
@@ -457,5 +457,60 @@ func TestAFailedListingIsNotAnEmptyFleet(t *testing.T) {
 	// And with no error, the hint is exactly what should appear.
 	if !strings.Contains(plain(render(model{version: "v0.1.0"}, 24, 100)), "no sandboxes on this machine") {
 		t.Error("a genuinely empty fleet lost its hint")
+	}
+}
+
+// The address is what somebody came to use, and it was the one thing on screen they could not
+// click - host:port carries no scheme, so no terminal recognises it on its own.
+func TestAnAddressIsClickable(t *testing.T) {
+	m := sample()
+
+	got := render(m, 24, 150)
+	if !strings.Contains(got, "\x1b]8;;http://127.0.0.1:") {
+		t.Errorf("no hyperlink on any address in:\n%s", stripColour(got))
+	}
+}
+
+// ...and the escape it is wrapped in must be worth nothing to the width arithmetic. This is the
+// failure mode that made hyperlinks worth a test rather than a one-liner: the skipper used to
+// end an escape at the first 'm', which is true of every colour sequence in this file and false
+// of a URL. "http://127.0.0.1:20000" has no 'm', so the skip ran on and swallowed the address;
+// a URL that *did* have one would have ended it early and counted the rest as visible columns.
+// Either way the columns after it move, which is the bug this whole file keeps having.
+func TestAHyperlinkCostsNoColumns(t *testing.T) {
+	plainAddr := "127.0.0.1:20000"
+	linked := linkAddresses(plainAddr)
+
+	if linked == plainAddr {
+		t.Fatal("the address was not linked, so this proves nothing")
+	}
+
+	if got, want := visibleLen(linked), len(plainAddr); got != want {
+		t.Errorf("a linked address measures %d columns, the text is %d", got, want)
+	}
+
+	if got := stripColour(linked); got != plainAddr {
+		t.Errorf("stripping a linked address gives %q, want %q", got, plainAddr)
+	}
+
+	// A URL with an 'm' in it, which is most of them outside this project.
+	withM := link("http://example.com/metrics", "here")
+	if got := visibleLen(withM); got != len("here") {
+		t.Errorf("a link whose URL contains 'm' measures %d columns, want %d", got, len("here"))
+	}
+
+	// Truncation has to keep the same rule, or a line gets cut inside a hyperlink.
+	if got := visibleLen(truncate(withM+"tail", 6)); got != 6 {
+		t.Errorf("truncating a line containing a link left %d columns, want 6", got)
+	}
+}
+
+// Only things shaped like an address. A truncation mark or a dash is not a URL, and turning one
+// into a link is how a dashboard offers somebody a link to nowhere.
+func TestOnlyAddressesAreLinked(t *testing.T) {
+	for _, s := range []string{"-", "…", "no readings yet", "asleep"} {
+		if got := linkAddresses(s); got != s {
+			t.Errorf("linkAddresses(%q) = %q, want it left alone", s, got)
+		}
 	}
 }

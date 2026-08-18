@@ -368,25 +368,13 @@ func TestShortBytesReadsLikeSomebodyWouldSayIt(t *testing.T) {
 }
 
 // plainText strips the escape sequences so a test can assert about what a reader sees.
-func plainText(s string) string {
-	var (
-		b  strings.Builder
-		in bool
-	)
-
-	for _, r := range s {
-		switch {
-		case r == '\x1b':
-			in = true
-		case in && (r == 'm' || r == 'K'):
-			in = false
-		case !in:
-			b.WriteRune(r)
-		}
-	}
-
-	return b.String()
-}
+//
+// It shares the production skipper rather than keeping its own. Its own ended an escape at the
+// first 'm' or 'K', which held until an address became an OSC 8 hyperlink: no 'm' in
+// "http://127.0.0.1:20002" meant the skip never ended and the test saw a row with no address in
+// it at all. A stripper that disagrees with the renderer makes every assertion about width a
+// guess.
+func plainText(s string) string { return string(escapeless(s)) }
 
 // The detail block's trend lines carry a reading, a percentage, a trace and a legend, and the
 // arithmetic that divides the row between them has to add up. It did not: the percentage
@@ -465,11 +453,31 @@ func TestTheTraceIsColouredWhereItHappened(t *testing.T) {
 
 // A trace with no ceiling has nothing to be alarmed about, so it stays one colour: a
 // proportion of nothing is not a warning.
-func TestAnUncappedTraceIsNotColouredAsAWarning(t *testing.T) {
-	got := spark([]float64{1, 5, 100, 900}, 0, 20)
+// Nothing here has a limit unless somebody sets one, so "uncapped" is the ordinary case and it
+// used to be drawn a flat green whatever the service did. That made the colour carry no
+// information at all for most of the fleet: the moment a service spiked was the moment the
+// trace was still telling you it was fine.
+//
+// Without a ceiling, "high" can only mean high for this service, so the peak of the window is
+// the reference - which also makes the colour agree with the height of the trace rather than
+// contradict it.
+func TestAnUncappedTraceColoursItsPeak(t *testing.T) {
+	got := spark([]float64{1, 1, 1, 1, 1, 900}, 0, 20)
+
+	if !strings.Contains(got, red) {
+		t.Errorf("an uncapped trace that spiked was drawn as though nothing happened: %q", got)
+	}
+}
+
+// The other half of that rule, and the reason it is not simply "normalise to the peak". A
+// service sitting still at 500m has a peak of 500m, and colouring against it would paint an
+// idle trace permanently red - a dashboard that cries wolf on idle is one nobody believes when
+// it means it.
+func TestAFlatUncappedTraceIsNotColouredAsAWarning(t *testing.T) {
+	got := spark([]float64{500, 505, 498, 502, 500, 499}, 0, 20)
 
 	if strings.Contains(got, red) || strings.Contains(got, yellow) {
-		t.Errorf("an uncapped trace was coloured as though it were near a limit: %q", got)
+		t.Errorf("a service that never moved was coloured as though it had: %q", got)
 	}
 }
 

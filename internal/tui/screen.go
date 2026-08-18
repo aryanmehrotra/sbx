@@ -28,6 +28,22 @@ const (
 	cursorShow   = "\x1b[?25h"
 	clear        = "\x1b[2J"
 	home         = "\x1b[H"
+
+	// Autowrap off for as long as the dashboard owns the screen, and back on when it gives it
+	// up. This is the difference between one bad line and an unreadable dashboard.
+	//
+	// Every frame is built to be exactly as wide and as tall as the terminal. If any line still
+	// comes out one column too wide - a glyph the renderer counted as one cell and the terminal
+	// draws as two is the usual way - the terminal wraps it, the frame becomes taller than the
+	// screen, and writing its last line scrolls. The next frame is then drawn one line lower
+	// than the last, so the screen fills with stacked copies of the header instead of being
+	// overwritten in place, and it never recovers because every redraw scrolls again.
+	//
+	// With wrapping off the terminal drops the overflow instead. A cosmetically short line is a
+	// much smaller bug than a dashboard that has come apart, and the renderer's own tests are
+	// what keep lines the right width in the first place.
+	wrapOff = "\x1b[?7l"
+	wrapOn  = "\x1b[?7h"
 )
 
 // Screen owns the terminal for as long as a dashboard is running.
@@ -84,7 +100,7 @@ func Open(f *os.File) (*Screen, error) {
 
 	s.Rows, s.Cols = size(s.fd)
 
-	fmt.Fprint(s.out, altScreenOn+cursorHide+clear+home)
+	fmt.Fprint(s.out, altScreenOn+cursorHide+wrapOff+clear+home)
 
 	s.watchResize()
 	s.watchSignals(f)
@@ -209,7 +225,7 @@ func (s *Screen) acquire() {
 		s.mu.Unlock()
 	}
 
-	fmt.Fprint(s.out, altScreenOn+cursorHide+clear+home)
+	fmt.Fprint(s.out, altScreenOn+cursorHide+wrapOff+clear+home)
 
 	s.mu.Lock()
 	s.Rows, s.Cols = size(s.fd)
@@ -248,8 +264,20 @@ func (s *Screen) Draw(frame string) {
 	}
 
 	s.last, s.dirty = frame, false
+	rows := s.Rows
 
 	s.mu.Unlock()
+
+	lines := strings.Split(frame, "\n")
+
+	// The other half of the no-scroll rule. A frame is built to the height the caller was told,
+	// but that height and the terminal's can disagree for one frame after a resize - the window
+	// changes between the frame being built and being written - and a frame one line too tall
+	// scrolls the screen exactly like a wrapped line does. Trimming costs a line that was about
+	// to be pushed off the top anyway.
+	if rows > 0 && len(lines) > rows {
+		lines = lines[:rows]
+	}
 
 	var b bytes.Buffer
 
@@ -257,7 +285,7 @@ func (s *Screen) Draw(frame string) {
 
 	// Clearing each line as it is drawn, rather than clearing the screen first, is what stops
 	// the flicker: a full clear followed by a redraw shows an empty screen for one frame.
-	for i, line := range strings.Split(frame, "\n") {
+	for i, line := range lines {
 		if i > 0 {
 			b.WriteString("\n")
 		}
@@ -290,7 +318,7 @@ func (s *Screen) putBack() {
 		signal.Stop(s.stopSignals)
 		signal.Stop(s.contSignals)
 
-		fmt.Fprint(s.out, altScreenOff+cursorShow)
+		fmt.Fprint(s.out, wrapOn+altScreenOff+cursorShow)
 
 		s.mu.Lock()
 		saved := s.saved

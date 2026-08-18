@@ -8,6 +8,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -557,4 +558,105 @@ func TestTheBlockUsesTheTablesColumns(t *testing.T) {
 				c.what, th, bh, br, frame)
 		}
 	}
+}
+
+// A sandbox with ten or more services in it lines its columns up with their headings.
+//
+// The STATE column was a fixed six - exactly "asleep", exactly "AWAKE ", and two short of
+// "14/14 up". A sandbox holding fourteen services overran it, and because everything after it
+// is positioned by counting characters, that row's CPU, MEMORY and both limit cells sat two
+// columns right of their own headings while every smaller sandbox on the same screen was
+// correct. It reads as a table that cannot decide where its columns are, and it only appears
+// once a fleet gets big enough that nobody is looking for a rendering bug any more.
+//
+// Sized from the data now, like every other column here.
+func TestAWideStateDoesNotShiftTheColumnsAfterIt(t *testing.T) {
+	var rows []row
+
+	// Fourteen and three, because the bug needs one sandbox whose state is wider than "asleep"
+	// and one whose state is not, on the same screen.
+	for _, s := range []struct {
+		sandbox string
+		n       int
+	}{{"big", 14}, {"small", 3}} {
+		for i := range s.n {
+			rows = append(rows, row{
+				Sandbox: s.sandbox, Service: fmt.Sprintf("svc-%d", i), Awake: true,
+				Ref: fmt.Sprintf("%s-%d", s.sandbox, i),
+				CPU: 6.5, CPUKnown: true, MemBytes: 100 << 20, MemKnown: true,
+			})
+		}
+	}
+
+	m := model{rows: rows, grouped: true, metered: true}
+
+	var header string
+
+	lines := strings.Split(render(m, 24, 150), "\n")
+	cells := map[string][]int{}
+
+	for _, l := range lines {
+		p := plainText(l)
+
+		switch {
+		case strings.Contains(p, "SANDBOX") && strings.Contains(p, "MEMORY LIMIT"):
+			header = p
+		case strings.Contains(p, "14/14 up"):
+			cells["big"] = dashColumns(p)
+		case strings.Contains(p, "3/3 up"):
+			cells["small"] = dashColumns(p)
+		}
+	}
+
+	if header == "" || len(cells) != 2 {
+		t.Fatalf("did not find the header and both rows in:\n%s", plainText(render(m, 24, 150)))
+	}
+
+	// Both limit cells are an uncapped dash, so their columns are directly comparable with the
+	// headings they belong under.
+	want := []int{runeIndex(header, "CPU LIMIT"), runeIndex(header, "MEMORY LIMIT")}
+
+	for name, got := range cells {
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("the %s sandbox puts its limit cells at %v, but CPU LIMIT and MEMORY LIMIT "+
+				"are at %v\n%s", name, got, want, header)
+		}
+	}
+}
+
+// dashColumns is where a row's uncapped-limit dashes sit, ignoring the hyphens inside names.
+//
+// In runes, not bytes. The selection marker is one column and three bytes, so a byte offset
+// reports every column on the selected row two to the right of where it is drawn - which is
+// the same confusion as the bug this test is here to catch, and it will happily "reproduce"
+// it forever after the code is correct.
+func dashColumns(line string) []int {
+	var at []int
+
+	r := []rune(line)
+
+	for i, c := range r {
+		if c != '-' {
+			continue
+		}
+
+		before := i == 0 || r[i-1] == ' '
+		after := i+1 >= len(r) || r[i+1] == ' '
+
+		if before && after {
+			at = append(at, i)
+		}
+	}
+
+	return at
+}
+
+// runeIndex is strings.Index in columns rather than bytes.
+func runeIndex(hay, needle string) int {
+	at := strings.Index(hay, needle)
+	if at < 0 {
+		return -1
+	}
+
+	return utf8.RuneCountInString(hay[:at])
 }

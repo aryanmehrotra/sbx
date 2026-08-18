@@ -103,7 +103,16 @@ and a key that was rebound.
 
 The bars and the traces are scaled to each service's own ceiling, so height means fullness, and
 every point is coloured by what was happening when it was drawn - a line can be red on the left
-and green on the right. `L` sets a limit on the selected service without leaving the dashboard.
+and green on the right. Nothing has a ceiling until you give it one, so where there is none the
+trace is scaled and coloured against its own peak instead: the question it can still answer is
+"when was this service busy", and a service that never moves stays calm rather than being drawn
+against its own idle. `L` sets a limit on the selected service without leaving the dashboard.
+
+**Every address is a link.** `127.0.0.1:20002` carries no scheme, so no terminal makes it
+clickable on its own; the dashboard marks them up, and iTerm2, WezTerm, Kitty, GNOME Terminal
+and Windows Terminal all open one on cmd- or ctrl-click. It assumes `http://`, which is the only
+scheme a browser can follow - a click on a postgres port opens a browser that cannot speak to
+it, which is the price of the ports where it can.
 
 ---
 
