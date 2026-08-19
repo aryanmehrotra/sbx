@@ -51,6 +51,16 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"the idle policy for one transition.",
 		"sbx sleep agent-42",
 	},
+	"with": {
+		"sbx with <sandbox> [--template T | --spec F] [--keep] [--timeout 90s] -- <command>",
+		"Run a command against an ephemeral sandbox: create it, wait until it serves, run the\n" +
+			"command with the sandbox's env exported, and ALWAYS remove it afterwards - on success,\n" +
+			"on a failing test, or on an interrupt. The Testcontainers shape: the fixture lives\n" +
+			"exactly as long as the command and cleans up even when the command is killed, which a\n" +
+			"create/env/rm script does not guarantee. The command's own exit status is sbx's.\n" +
+			"`--keep` leaves the sandbox for inspection after a failure.",
+		"sbx with test-db --template postgres -- go test ./...",
+	},
 	"add": {
 		"sbx add <sandbox> <service> --image IMG --port N[,...] [--health CMD] [--env K=V,...]",
 		"Put a service into a sandbox that its spec never declared. For an agent mid-task\n" +

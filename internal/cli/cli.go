@@ -576,27 +576,30 @@ func detectShell() string {
 	return "posix"
 }
 
-func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) error {
+// envVars resolves a sandbox's exports into ordered KEY,VALUE pairs. Env formats them for a
+// shell; With injects them into a child process. One resolver, so a scoped run and an `eval`
+// see exactly the same variables.
+func envVars(ctx context.Context, p provider.Provider, path, sandbox string) ([][2]string, error) {
 	// The sandbox is checked first, on purpose. Loading the spec first meant that `sbx env
 	// typo-x` in a directory with no sandbox.json reported the missing spec - so the reader
 	// was told to write a spec when what they had actually done was mistype a name.
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if len(units) == 0 {
-		return UnknownSandbox(ctx, p, sandbox)
+		return nil, UnknownSandbox(ctx, p, sandbox)
 	}
 
 	sp, err := spec.LoadSpec(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	layout, err := sp.Assign()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	slot := units[0].Slot
@@ -619,13 +622,22 @@ func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) 
 	for _, env := range provider.SortedKeys(sp.Exports) {
 		ep, ok := index[sp.Exports[env]]
 		if !ok {
-			return fmt.Errorf("export %s: %s is not assigned an endpoint", env, sp.Exports[env])
+			return nil, fmt.Errorf("export %s: %s is not assigned an endpoint", env, sp.Exports[env])
 		}
 
 		vars = append(vars,
 			[2]string{hostVar(env), ep.Host},
 			[2]string{env, strconv.Itoa(ep.Port)},
 		)
+	}
+
+	return vars, nil
+}
+
+func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) error {
+	vars, err := envVars(ctx, p, path, sandbox)
+	if err != nil {
+		return err
 	}
 
 	if shell == "" {

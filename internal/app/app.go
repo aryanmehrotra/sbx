@@ -185,6 +185,14 @@ func Main(ver string, examples embed.FS, argv []string) int {
 	}
 
 	if err != nil {
+		// A scoped run (`sbx with -- <cmd>`) exits with the command's own status, which is
+		// what CI gates on. The child already printed its own output, so no "sbx: ..." line.
+		// Matched on ChildStatus, not ExitCode, so an ordinary `sbx exec` failure keeps the
+		// normal diagnostic and exit 1.
+		if c, ok := err.(interface{ ChildStatus() int }); ok {
+			return c.ChildStatus()
+		}
+
 		fmt.Fprintf(os.Stderr, "sbx: %v\n", err)
 
 		return 1
@@ -428,6 +436,41 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		return nil
+
+	case "with":
+		// Split at the first bare "--": everything after it is the command to run, kept out
+		// of sbx's own flag parsing so `sbx with db -- go test -v ./...` gives its flags to
+		// go test, not to sbx.
+		head, cmd := splitAtDoubleDash(args)
+		if cmd == nil {
+			return fmt.Errorf("sbx with needs a command after --: sbx with <sandbox> [--template T] -- <command>")
+		}
+
+		fs := newFlagSet("with")
+		specPath := fs.String("spec", defaultSpec, "path to the spec")
+		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
+		optional := fs.Bool("optional", false, "include services marked optional")
+		keep := fs.Bool("keep", false, "leave the sandbox afterwards instead of removing it")
+		timeout := fs.Duration("timeout", 90*time.Second, "how long to wait for services to serve")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(head, 1)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 1 {
+			return missing("with", "sandbox name")
+		}
+
+		p, iso, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		path, err := specFor(fs, positional[0], *tmpl, *specPath)
+		if err != nil {
+			return err
+		}
+
+		return cli.With(context.Background(), p, path, positional[0], *optional, iso, *timeout, *keep, cmd)
 
 	case "checkpoint":
 		fs := newFlagSet("checkpoint")
@@ -952,6 +995,19 @@ func splitPositional(args []string, n int) (positional, rest []string) {
 	return args[:i], args[i:]
 }
 
+// splitAtDoubleDash returns the args before the first bare "--" and the command after it. A
+// nil command means there was no "--" at all, which is different from an empty command after
+// one - the caller reports the first as "you forgot the --" rather than running nothing.
+func splitAtDoubleDash(args []string) (head, cmd []string) {
+	for i, a := range args {
+		if a == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+
+	return args, nil
+}
+
 // usage writes to w rather than always to stderr, because where it goes says whether
 // something went wrong. `sbx --help` was asked for and belongs on stdout, so it can be
 // piped into a pager or grepped; usage printed because a command was wrong is a diagnostic
@@ -972,6 +1028,7 @@ Start here
 
 Every day
   sbx create <sandbox> [--template NAME]        make one. --optional includes optional services
+  sbx with   <sandbox> [--template NAME] -- CMD create it, run CMD with its env, remove it after
   sbx env    <sandbox> [--shell posix|json]     its addresses, as exports or JSON
   sbx list   [--json]                           every sandbox, its services and their state
   sbx ui                                        the same, live, with cpu and memory
