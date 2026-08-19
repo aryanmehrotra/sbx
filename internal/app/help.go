@@ -69,6 +69,21 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"copy; a write in one is invisible to the others.",
 		"sbx fork golden agent-1",
 	},
+	"checkpoint": {
+		"sbx checkpoint <sandbox> <name>",
+		"Save every running service's MEMORY and processes under a name, and freeze it - so a\n" +
+			"resume brings back a half-finished REPL, a warmed cache or a connection mid-handshake,\n" +
+			"not a cold start against a warm disk. Needs CRIU: a Linux host with docker started\n" +
+			"--experimental. Refused with a reason on macOS (Docker Desktop has no checkpoint);\n" +
+			"sbx doctor reports it as `docker checkpoint`. Filesystem-only is sbx snapshot.",
+		"sbx checkpoint agent-42 mid-thought",
+	},
+	"resume": {
+		"sbx resume <sandbox> <name>",
+		"Restore a sandbox from a checkpoint, resuming its memory and processes where they were\n" +
+			"frozen. The pair to checkpoint.",
+		"sbx resume agent-42 mid-thought",
+	},
 	"gc": {
 		"sbx gc [--older-than DURATION] [--snapshots] [--force]",
 		"Reclaim volumes and images that dead sandboxes left behind. Lists what it would\n" +

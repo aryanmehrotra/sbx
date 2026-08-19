@@ -240,6 +240,46 @@ func SnapshotterFor(p Provider) (Snapshotter, error) {
 	return s, nil
 }
 
+// Checkpointer saves and restores a running unit's MEMORY and process state, so a resume
+// picks up where the workload left off instead of cold-starting against a warm disk. This is
+// the one thing E2B and zeropod do that Snapshotter does not: an agent's half-finished REPL,
+// a warmed cache, a connection mid-handshake all come back.
+//
+// Named for what the user wants (a checkpoint of the live process), not for how a backend
+// does it. The docker answer is CRIU, reached through `docker checkpoint`, which the daemon
+// exposes ONLY in experimental mode - and Docker Desktop does not, so on macOS this is
+// refused with a reason rather than approximated. The kubernetes answer is a CRIU shim on the
+// node (this is what zeropod is), which is the cluster operator's to install, not sbx's to
+// reach around for - so the kubernetes provider does not implement this and CheckpointerFor
+// says so plainly. `sbx doctor` reports whether this host can do it before you rely on it.
+type Checkpointer interface {
+	// Checkpoint dumps a running unit's memory and processes under a name. With leaveRunning
+	// false the unit is frozen (stopped) as the dump is taken, which is the CRIU default and
+	// what "park a REPL to resume later" wants; true dumps a copy and keeps it serving.
+	Checkpoint(ctx context.Context, ref, name string, leaveRunning bool) error
+
+	// Restore starts a unit from a named checkpoint, resuming its memory and processes.
+	Restore(ctx context.Context, ref, name string) error
+
+	// Checkpoints lists the checkpoint names saved for a unit.
+	Checkpoints(ctx context.Context, ref string) ([]string, error)
+}
+
+// CheckpointerFor returns the provider's memory-checkpoint support, or a refusal naming the
+// backend. A provider implementing the interface may still refuse at call time when the host
+// lacks CRIU - the type check only says the backend has a path to it at all.
+func CheckpointerFor(p Provider) (Checkpointer, error) {
+	c, ok := p.(Checkpointer)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot checkpoint memory: saving a running "+
+			"process's state needs a CRIU shim under the runtime, which on a cluster is the "+
+			"operator's to install (that is what zeropod is) and not something sbx will reach "+
+			"around it to do", p.Name())
+	}
+
+	return c, nil
+}
+
 // Artifact is something a sandbox left behind.
 type Artifact struct {
 	Kind     string // "volume" or "image"

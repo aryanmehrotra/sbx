@@ -429,6 +429,40 @@ func dispatch(cmd string, args []string) error {
 
 		return nil
 
+	case "checkpoint":
+		fs := newFlagSet("checkpoint")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 2)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 2 {
+			return missing("checkpoint", "arguments")
+		}
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		return cli.Checkpoint(context.Background(), p, positional[0], positional[1])
+
+	case "resume":
+		fs := newFlagSet("resume")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 2)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 2 {
+			return missing("resume", "arguments")
+		}
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		return cli.Resume(context.Background(), p, positional[0], positional[1])
+
 	case "gc":
 		fs := newFlagSet("gc")
 		olderThan := fs.Duration("older-than", 0, "only offer artifacts older than this")
@@ -958,6 +992,8 @@ While you work
 Data
   sbx snapshot <sandbox> <name>                 save every service's filesystem
   sbx fork     <snapshot> <new-sandbox>         a new sandbox from that state
+  sbx checkpoint <sandbox> <name>               save memory + processes (CRIU; Linux only)
+  sbx resume     <sandbox> <name>               bring one back from a checkpoint
   sbx gc       [--force]                        reclaim what dead sandboxes left. Lists by default
 
 Finding out

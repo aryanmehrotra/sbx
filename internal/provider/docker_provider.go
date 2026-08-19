@@ -520,6 +520,79 @@ func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {
 	return err
 }
 
+// checkpointReady returns nil when this daemon can CRIU-checkpoint, or the honest refusal
+// when it cannot. `docker checkpoint` lives behind the daemon's experimental flag, which
+// Docker Desktop (and therefore every macOS host) leaves off - so this is where the "sleeping
+// keeps the disk, not the process" limitation is stated once, before anything is half done.
+func (d *dockerProvider) checkpointReady() error {
+	exp, err := d.docker("info", "--format", "{{.ExperimentalBuild}}")
+	if err != nil {
+		return fmt.Errorf("cannot tell whether this docker daemon supports checkpoint: %w", err)
+	}
+
+	if exp != "true" {
+		return fmt.Errorf("memory checkpoint needs docker's experimental checkpoint/restore " +
+			"API (CRIU), and this daemon reports experimental=false - Docker Desktop and Colima " +
+			"on macOS do not enable it. Filesystem snapshot (sbx snapshot / fork) works here; a " +
+			"memory checkpoint needs a Linux host with a daemon started --experimental. sbx " +
+			"doctor reports this as `docker checkpoint`")
+	}
+
+	return nil
+}
+
+func (d *dockerProvider) Checkpoint(_ context.Context, ref, name string, leaveRunning bool) error {
+	if err := d.checkpointReady(); err != nil {
+		return err
+	}
+
+	args := []string{"checkpoint", "create"}
+	if leaveRunning {
+		args = append(args, "--leave-running")
+	}
+
+	_, err := d.docker(append(args, ref, name)...)
+
+	return err
+}
+
+func (d *dockerProvider) Restore(_ context.Context, ref, name string) error {
+	if err := d.checkpointReady(); err != nil {
+		return err
+	}
+
+	// A restore is a start that seeds the container from the CRIU image instead of its
+	// entrypoint. The container has to exist and be stopped, which is exactly the state a
+	// non-leave-running Checkpoint left it in.
+	_, err := d.docker("start", "--checkpoint", name, ref)
+
+	return err
+}
+
+func (d *dockerProvider) Checkpoints(_ context.Context, ref string) ([]string, error) {
+	if err := d.checkpointReady(); err != nil {
+		return nil, err
+	}
+
+	out, err := d.docker("checkpoint", "ls", ref)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+
+	for i, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if i == 0 || line == "" { // skip the "CHECKPOINT NAME" header
+			continue
+		}
+
+		names = append(names, strings.Fields(line)[0])
+	}
+
+	return names, nil
+}
+
 func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, error) {
 	out, err := d.docker("images", "--format", "{{.Repository}}:{{.Tag}}", "--filter",
 		"reference="+prefix+"*")
