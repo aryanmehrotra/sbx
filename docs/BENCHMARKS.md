@@ -25,15 +25,13 @@ Every tag attaches a `bench.md` to its GitHub release: `RoundTrip` and `Stream`,
 with the runner's cpu, memory, kernel and Go version written at the top.
 
 **It does not touch the numbers on this page.** A GitHub runner is a shared, virtualised machine
-whose neighbours are invisible; its figures are not comparable to a laptop's, and writing them
-in here would replace measurements somebody took and can describe with numbers nobody can
-attribute - while the text above still said they came from a MacBook. The attached file is for
-comparing one release against the release before it, on the same shape of machine, which is the
-question a benchmark in a pipeline can actually answer.
+whose neighbours are invisible, so its figures aren't comparable to a laptop's. The attached file
+is for comparing one release against the one before it on the same shape of machine — the question
+a benchmark in a pipeline can actually answer.
 
-Wake latency is deliberately not in it. It needs containers and is dominated by whatever else
-the runner is doing, and a number that noisy published on every tag teaches people to ignore the
-file it is in. `scripts/bench.sh` is how that one is measured, on a machine you can describe.
+Wake latency is deliberately not in it: it needs containers and is dominated by whatever else the
+runner is doing, and a number that noisy on every tag teaches people to ignore the file it's in.
+`scripts/bench.sh` measures that one, on a machine you can describe.
 
 ---
 
@@ -184,23 +182,13 @@ other load is held off), found the knee exactly:
 tuned the proxied path up by about a third over the old 32 KiB. The **57% of direct** headline
 above was measured on a quiet machine before the change and is the conservative figure to quote
 until the direct baseline is re-measured somewhere quiet enough to be stable - under load it
-swung ±35%, which is too much to divide by honestly.
+swung ±35%, too much to divide by honestly.
 
-**A bigger buffer was tried and is worse**, which is the opposite of the obvious fix. Each
-direction copies through a 32 KiB buffer, and the reasonable suggestion is that fewer, larger
-syscalls would be cheaper:
-
-```
-   32 KiB   5274 MB/s      (what it does)
-   64 KiB   5541 MB/s      within the noise
-  256 KiB   2654 MB/s      half the throughput
-```
-
-So it stays at 32 KiB. On Linux there is a real avenue this does not take - `io.Copy` between
-two `*net.TCPConn` can reach `splice(2)` and avoid the userspace copy entirely - but the
-per-chunk `touch()` that records activity is exactly what defeats the type assertion
-`splice` depends on, and these numbers are from macOS, where `splice` does not exist. Worth
-revisiting with a Linux measurement; not worth guessing at.
+**One avenue this deliberately leaves on the table.** On Linux, `io.Copy` between two
+`*net.TCPConn` can reach `splice(2)` and skip the userspace copy entirely - but the per-chunk
+`touch()` that records activity is exactly what defeats the type assertion `splice` depends on,
+and these numbers are macOS, where `splice` does not exist. Worth a Linux measurement; not worth
+guessing at.
 
 ---
 
@@ -221,18 +209,15 @@ connection, so the round-trip figure does not describe it.
   per-connection cost   median +0.10 ms   IQR [-0.03, +0.21]   slower in 13/20 pairs
 ```
 
-**The first version of this gate was wrong, and in the flattering direction.** It compared
-a difference of *medians* against `max - min` of the raw samples - a threshold set by whichever
-single outlier was worst, which any small delta passes automatically. It then reported
-"indistinguishable from zero" about the number that verifies this project's own headline fix.
-
-The samples are collected in interleaved pairs, so the pairing was there and thrown away.
-
-`connbench.sh` now subtracts pair by pair, as `measure.sh` has always required, and reports the
-median delta with its IQR.
+**The first version of this gate was wrong, in the flattering direction.** It compared a
+difference of *medians* against `max - min` of the raw samples — a threshold set by the worst
+single outlier, which any small delta passes automatically — then reported "indistinguishable
+from zero" about the number that verifies this project's own headline fix. The samples are
+collected in interleaved pairs, so the pairing was there and thrown away. `connbench.sh` now
+subtracts pair by pair and reports the median delta with its IQR.
 
 The honest reading: on a quiet machine the cost is a fraction of a millisecond and the IQR
-straddles zero, so it is not resolvable. What *is* claimed is that it is not 68 ms.
+straddles zero, so it's not resolvable. What *is* claimed is that it's not 68 ms.
 
 **It was 68 ms.** The daemon re-ran the health command through `docker exec` on every
 accepted connection - including connections to a sandbox it had woken minutes earlier and
@@ -267,18 +252,15 @@ here is the other end of the range - the browser template, woken by a plain CDP 
 Cold ≈ 4356/3744/3030, median **3744 ms**; warm 703/829, median **766 ms**.
 
 **Two regimes, not one number.** Reporting `median 3030 ms` over that series was wrong in a
-quieter way than the 624 ms it replaced: the samples fall monotonically until they plateau,
-which is layer and page-cache warming, and a median over a warming series is a statistic of
-nothing. Cold is about 4.4 s, warm about 0.75 s, n=5, macOS arm64. The honest summary is that
-a browser costs seconds on first touch and well under a second thereafter - which is better
-than the single number suggested, and is the shape a caller should plan for.
+quieter way than the 624 ms it replaced: the samples fall monotonically until they plateau
+(layer and page-cache warming), and a median over a warming series is a statistic of nothing.
+Cold ≈ 4.4 s, warm ≈ 0.75 s, n=5, macOS arm64 — a browser costs seconds on first touch and well
+under a second thereafter, which is the shape a caller should plan for.
 
-**Neither is the 624 ms this project's own use-case doc claimed** before anybody ran it. That number had no script behind it and was wrong by a factor of five; it is the reason
-every figure in these docs now names the script that produced it.
-
-The spread is real and wide, and the wake is Chrome's own startup rather than sbx's - the
-same image started by hand costs the same. Which is the honest framing for the whole feature:
-sbx removes the cost of a browser nobody is using, not the cost of starting one.
+**Neither is the 624 ms this project's own use-case doc claimed** before anybody ran it: no
+script behind it, wrong by 5×, and the reason every figure in these docs now names its script.
+The wake is Chrome's own startup, not sbx's — the same image started by hand costs the same. Which
+is the honest framing: sbx removes the cost of a browser nobody is using, not of starting one.
 
 ---
 
@@ -495,18 +477,16 @@ an idle laptop and a wake on one that is paging are not the same measurement. Se
 figures in this project's history were taken during a period when the VM had 107 MB free and
 a load average of 20; they were wrong by an order of magnitude and are not in this file.
 
-**A worked example, from the session that wrote most of this page.** After several hours of
-end-to-end suites the same machine sat at load average 9 with 30 containers and 484 volumes,
-and `bench.sh 20` returned a median of 262 ms with a standard deviation of 314 ms - against
-the 191 ms / stdev 24 ms above. The number above was not replaced, for two reasons worth
-stating:
+**A worked example, from the session that wrote most of this page.** After hours of end-to-end
+suites the same machine sat at load average 9 with 30 containers and 484 volumes, and `bench.sh
+20` returned median 262 ms, stdev 314 ms — against the 191 ms / stdev 24 ms above. The 191 ms
+was not replaced, for two reasons:
 
-- **A noisy measurement does not refute a clean one.** The stdev is thirteen times larger;
-  what it measures is the machine, not the wake.
-- **Whether the code regressed is a different question, and it has a different answer.** An
-  interleaved A/B of the two builds on that same loaded machine - order alternating, n=14 -
-  showed no difference outside the noise in either direction. A paired comparison survives
-  conditions that destroy an absolute one, which is why the harness is built that way.
+- **A noisy measurement does not refute a clean one.** The stdev is thirteen times larger; it
+  measures the machine, not the wake.
+- **Whether the code regressed is a different question with a different answer.** An interleaved
+  A/B of the two builds on that same loaded machine (order alternating, n=14) showed no difference
+  outside the noise either way. A paired comparison survives conditions that destroy an absolute
+  one — which is why the harness is built that way.
 
-So the honest position is: 191 ms stands as measured under the conditions named beside it, and
-nothing since has been shown to move it.
+So: 191 ms stands as measured under the conditions named beside it, and nothing since has moved it.
