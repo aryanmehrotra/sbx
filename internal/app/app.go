@@ -1049,7 +1049,7 @@ While you work
 Data
   sbx snapshot <sandbox> <name>                 save every service's filesystem
   sbx fork     <snapshot> <new-sandbox>         a new sandbox from that state
-  sbx checkpoint <sandbox> <name>               save memory + processes (CRIU; Linux only)
+  sbx checkpoint <sandbox> <name>               save memory + processes (CRIU on Linux, via podman)
   sbx resume     <sandbox> <name>               bring one back from a checkpoint
   sbx gc       [--force]                        reclaim what dead sandboxes left. Lists by default
 

@@ -524,7 +524,47 @@ func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {
 // when it cannot. `docker checkpoint` lives behind the daemon's experimental flag, which
 // Docker Desktop (and therefore every macOS host) leaves off - so this is where the "sleeping
 // keeps the disk, not the process" limitation is stated once, before anything is half done.
+// isPodman reports whether the endpoint is podman rather than dockerd. It matters because the
+// two implement CRIU differently, and only one of them implements it well: docker's
+// checkpoint/restore is unmaintained and its RESTORE fails on the same host where podman's
+// succeeds (measured - see DECISIONS.md). Detected by the socket name first, and confirmed by
+// the version components when the socket is generic.
+func (d *dockerProvider) isPodman() bool {
+	if strings.Contains(d.endpoint.Address, "podman") {
+		return true
+	}
+
+	out, err := d.docker("version", "--format", "{{range .Server.Components}}{{.Name}};{{end}}")
+
+	return err == nil && strings.Contains(strings.ToLower(out), "podman")
+}
+
+// podman runs the podman CLI against the same endpoint. Used only for checkpoint/restore,
+// where podman's native command is reliable and docker's compat API is not.
+func (d *dockerProvider) podman(args ...string) (string, error) {
+	cmd := exec.Command("podman", append([]string{"--url", d.endpoint.String()}, args...)...)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("podman %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+
+	return strings.TrimSpace(string(out)), nil
+}
+
 func (d *dockerProvider) checkpointReady() error {
+	// podman needs no experimental flag; it needs CRIU on the host and its own CLI here, and
+	// says so clearly itself if CRIU is missing. This is the path that actually restores.
+	if d.isPodman() {
+		if _, err := exec.LookPath("podman"); err != nil {
+			return fmt.Errorf("memory checkpoint against a podman runtime drives `podman "+
+				"container checkpoint`, whose CRIU integration restores where docker's does not "+
+				"- but the podman CLI is not on PATH here: %w", err)
+		}
+
+		return nil
+	}
+
 	exp, err := d.docker("info", "--format", "{{.ExperimentalBuild}}")
 	if err != nil {
 		return fmt.Errorf("cannot tell whether this docker daemon supports checkpoint: %w", err)
@@ -534,8 +574,9 @@ func (d *dockerProvider) checkpointReady() error {
 		return fmt.Errorf("memory checkpoint needs docker's experimental checkpoint/restore " +
 			"API (CRIU), and this daemon reports experimental=false - Docker Desktop and Colima " +
 			"on macOS do not enable it. Filesystem snapshot (sbx snapshot / fork) works here; a " +
-			"memory checkpoint needs a Linux host with a daemon started --experimental. sbx " +
-			"doctor reports this as `docker checkpoint`")
+			"memory checkpoint needs a Linux host with a daemon started --experimental (or a " +
+			"podman runtime, whose restore is the reliable one). sbx doctor reports this as " +
+			"`docker checkpoint`")
 	}
 
 	return nil
@@ -543,6 +584,21 @@ func (d *dockerProvider) checkpointReady() error {
 
 func (d *dockerProvider) Checkpoint(_ context.Context, ref, name string, leaveRunning bool) error {
 	if err := d.checkpointReady(); err != nil {
+		return err
+	}
+
+	if d.isPodman() {
+		// Podman checkpoints in place: the dump is held with the container, so resume needs no
+		// name. `name` is sbx's label - podman keeps the most recent checkpoint per container.
+		// This is the branch that actually works: a redis with no on-disk persistence, its key
+		// set only in memory, comes back with the key present after resume.
+		args := []string{"container", "checkpoint"}
+		if leaveRunning {
+			args = append(args, "--leave-running")
+		}
+
+		_, err := d.podman(append(args, ref)...)
+
 		return err
 	}
 
@@ -561,6 +617,14 @@ func (d *dockerProvider) Restore(_ context.Context, ref, name string) error {
 		return err
 	}
 
+	if d.isPodman() {
+		// In-place restore of the container podman froze; the name is not part of podman's
+		// model, so it is accepted for API symmetry and not passed on.
+		_, err := d.podman("container", "restore", ref)
+
+		return err
+	}
+
 	// A restore is a start that seeds the container from the CRIU image instead of its
 	// entrypoint. The container has to exist and be stopped, which is exactly the state a
 	// non-leave-running Checkpoint left it in.
@@ -572,6 +636,20 @@ func (d *dockerProvider) Restore(_ context.Context, ref, name string) error {
 func (d *dockerProvider) Checkpoints(_ context.Context, ref string) ([]string, error) {
 	if err := d.checkpointReady(); err != nil {
 		return nil, err
+	}
+
+	if d.isPodman() {
+		// Podman holds one in-place checkpoint per container; report whether this one has it.
+		out, err := d.podman("container", "inspect", "--format", "{{.State.Checkpointed}}", ref)
+		if err != nil {
+			return nil, err
+		}
+
+		if strings.TrimSpace(out) == "true" {
+			return []string{"checkpoint"}, nil
+		}
+
+		return nil, nil
 	}
 
 	out, err := d.docker("checkpoint", "ls", ref)

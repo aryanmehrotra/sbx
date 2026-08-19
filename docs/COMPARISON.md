@@ -19,7 +19,7 @@ say where the ◐ and ○ are choices rather than gaps.
 | Arbitrary stateful services | ● | ◐ | ● | ◐ | ◐ | ● | ○ pg | ● |
 | Multiple services, one spec | ● | ○ | ○ | ○ | ○ | ◐ | ○ | ● |
 | Zero cost at rest | ● | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ○ |
-| RAM-state snapshot | ◐ CRIU/Linux | ● | ● | ● | ◐ | ● | n/a | ○ |
+| RAM-state snapshot | ◐ podman/Linux | ● | ● | ● | ◐ | ● | n/a | ○ |
 | VM-grade isolation | ◐ kata | ● | ◐ | ● | ● | ● | ● | ● |
 | Public URL per sandbox | ● | ● | ● | ● | ● | ● | n/a | ● |
 | GPU | ◐ docker | ◐ | ◐ | ● | ○ | ● | n/a | ● |
@@ -338,7 +338,7 @@ each is less proven than the incumbent it competes with, and both facts are stat
 | If you need | sbx | still use the incumbent when |
 |---|---|---|
 | To run untrusted code | `--isolation gvisor` (a userspace kernel) or `--isolation kata` (a real microVM), opt-in, refused where the runtime isn't installed | you want it **by default and battle-tested** — E2B, Vercel Sandbox and Modal run every workload in a Firecracker VM; sbx's *default* is a shared-kernel container and its kata path is not exercised in this repo |
-| An agent's REPL resumed mid-thought | `sbx checkpoint` / `sbx resume` — CRIU memory + process save/restore | you're on **macOS, or want it proven** — checkpoint needs a Linux host with docker `--experimental` and is not verified end-to-end here; E2B's RAM snapshot is cross-platform and shipped |
+| An agent's REPL resumed mid-thought | `sbx checkpoint` / `sbx resume` — CRIU memory + process save/restore, **proven end to end** (a redis key set only in memory survives a freeze/resume) on a Linux **podman** runtime | you're on **macOS**, or want it cross-platform — CRIU needs Linux, and docker's own restore is broken so it wants a podman runtime; E2B's RAM snapshot is cross-platform and shipped |
 | Ephemeral fixtures in a test run | `sbx with <sandbox> -- <cmd>` — created, run with env exported, always removed | you want **in-process, language-native** fixtures with no daemon — Testcontainers |
 | A URL per pull request | the [`pr-preview`](../examples/pr-preview/) recipe — fork per PR, `sbx url`, teardown on close, and idle previews sleep to **0 B** | you want a **managed control plane and team UI** — Northflank, Uffizzi, Okteto |
 | Branching Postgres that scales to zero | `sbx fork` (branch) + idle sleep (to zero) — the capability, on hardware you own | you want **someone else to operate it** — Neon is the same capability, hosted |

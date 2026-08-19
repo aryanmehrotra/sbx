@@ -57,7 +57,7 @@ Five situations. They differ mostly in *who types the commands* — the tool is 
 | | |
 |---|---|
 | Snapshot & fork | save every service's data, fork as many sandboxes from it as you want |
-| Checkpoint & resume | save memory + processes and bring them back (CRIU; Linux + experimental docker) |
+| Checkpoint & resume | save memory + processes and bring them back — proven on Linux via podman (CRIU) |
 | Ephemeral runs | `sbx with … -- <cmd>` — created, run, always torn down; fixtures for a test |
 | Builds your image | `build:` instead of `image:`, cached by content hash |
 | Templates built in | `--template postgres` works with nothing on disk, pinned by digest |
@@ -176,7 +176,7 @@ and `egress:"deny"` are refused there, not approximated.
 | `sbx add` | drop in a service nobody declared — the agent affordance |
 | `sbx url` | a public link that wakes it when opened |
 | `sbx snapshot` / `fork` | save every service's data, then make as many sandboxes from it as you want |
-| `sbx checkpoint` / `resume` | save memory **and** processes and bring them back — CRIU, Linux + experimental docker; refused elsewhere |
+| `sbx checkpoint` / `resume` | save memory **and** processes and bring them back — CRIU on Linux, via a podman runtime (docker's own restore is broken); refused on macOS |
 | `sbx with` | create a sandbox, run a command with its env, always remove it — ephemeral fixtures for a test run |
 | `sbx init` / `validate` | write the spec · check one without creating anything |
 | `sbx prewarm` | pull the images now, so the first create isn't a download |

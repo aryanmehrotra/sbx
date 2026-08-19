@@ -81,11 +81,12 @@ var help = map[string]struct{ synopsis, about, example string }{
 	},
 	"checkpoint": {
 		"sbx checkpoint <sandbox> <name>",
-		"Save every running service's MEMORY and processes under a name, and freeze it - so a\n" +
-			"resume brings back a half-finished REPL, a warmed cache or a connection mid-handshake,\n" +
-			"not a cold start against a warm disk. Needs CRIU: a Linux host with docker started\n" +
-			"--experimental. Refused with a reason on macOS (Docker Desktop has no checkpoint);\n" +
-			"sbx doctor reports it as `docker checkpoint`. Filesystem-only is sbx snapshot.",
+		"Save every running service's MEMORY and processes, and freeze it - so a resume brings\n" +
+			"back a half-finished REPL, a warmed cache or a connection mid-handshake, not a cold\n" +
+			"start against a warm disk. Needs CRIU on a Linux host. Verified on a **podman**\n" +
+			"runtime, whose CRIU restore is reliable; docker's own checkpoint restore is\n" +
+			"unmaintained and fails even where podman succeeds, so sbx routes through podman when\n" +
+			"it is the runtime. Refused with a reason on macOS. Filesystem-only is sbx snapshot.",
 		"sbx checkpoint agent-42 mid-thought",
 	},
 	"resume": {

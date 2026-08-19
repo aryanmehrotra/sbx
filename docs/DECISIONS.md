@@ -357,3 +357,26 @@ image has to be on whichever node the scheduler later picks, which means a Daemo
 creating in somebody's cluster uninvited.
 
 [daytona-builder]: https://www.daytona.io/docs/en/declarative-builder/
+
+### Memory checkpoint goes through podman, because docker's restore is broken
+
+`sbx checkpoint` / `resume` save a running process with CRIU, not just its disk. The obvious
+primitive is `docker checkpoint create` / `docker start --checkpoint`, and it half-works: the
+**dump** is fine, but the **restore** fails. Measured on a Linux host (Ubuntu 24.04, kernel 6.8,
+built CRIU 3.19, docker 29 with `--experimental`): `docker start --checkpoint` dies with
+`bind-mount /proc/0/ns/net -> …: no such file or directory`, and with `--network none` it dies
+with `content … already exists` instead. Two different docker/containerd bugs; the feature is
+effectively unmaintained upstream.
+
+CRIU itself is not the problem. `criu check` passes on the same kernel, and **podman** — whose
+CRIU integration Red Hat maintains for production use — checkpoints and restores the identical
+workload cleanly: a redis started `--save "" --appendonly no` (no disk persistence at all), with a
+key set only in memory, comes back after `podman container checkpoint` + `restore` with the key
+**present**. The only way that key survives is a real memory restore.
+
+So the provider detects podman (by its socket, confirmed by the version components) and drives
+`podman container checkpoint` / `restore` in place, and keeps the docker path only as the
+fallback it is. The whole cycle is proven end to end through `sbx checkpoint` / `sbx resume`
+against a podman runtime; on docker the restore is docker's to fix. This is why `sbx doctor` and
+the help now say checkpoint is reliable on a **podman** runtime, not merely "Linux with
+experimental docker".

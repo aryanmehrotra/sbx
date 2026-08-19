@@ -14,11 +14,13 @@ import (
 // so an agent's half-finished REPL, a warmed cache or a connection mid-handshake comes back
 // exactly as it was - the one thing E2B and zeropod do that a disk snapshot cannot.
 //
-// It is honest about where it cannot run. `docker checkpoint` is CRIU behind the daemon's
-// experimental flag, which Docker Desktop and Colima on macOS leave off, so on a Mac this
-// refuses with a reason and points at snapshot/fork. On a cluster the mechanism is a per-node
-// shim (that is what zeropod is), the operator's to install, so the kubernetes provider does
-// not offer it. `sbx doctor` reports `docker checkpoint` so you know before you rely on it.
+// It is honest about where it runs. CRIU needs a Linux host, so on macOS this refuses with a
+// reason and points at snapshot/fork. And of the two Linux runtimes only one restores reliably:
+// docker's own checkpoint/restore is unmaintained and its restore fails, so the provider routes
+// through `podman container checkpoint` / `restore` when podman is the runtime - proven end to
+// end, memory and all (DECISIONS.md has the measurement). On a cluster the mechanism is a
+// per-node shim (that is what zeropod is), the operator's to install, so the kubernetes provider
+// does not offer it. `sbx doctor` reports the capability so you know before you rely on it.
 //
 // This is the EXPLICIT pair, driven by you, the way snapshot/fork are - not yet a
 // memory-preserving idle sleep, which would checkpoint on the daemon's idle timer and restore
