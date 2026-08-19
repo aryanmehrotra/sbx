@@ -57,6 +57,8 @@ Five situations. They differ mostly in *who types the commands* — the tool is 
 | | |
 |---|---|
 | Snapshot & fork | save every service's data, fork as many sandboxes from it as you want |
+| Checkpoint & resume | save memory + processes and bring them back (CRIU; Linux + experimental docker) |
+| Ephemeral runs | `sbx with … -- <cmd>` — created, run, always torn down; fixtures for a test |
 | Builds your image | `build:` instead of `image:`, cached by content hash |
 | Templates built in | `--template postgres` works with nothing on disk, pinned by digest |
 | Your own commands | `mounts` + `sbx exec` = a shell in your code that sleeps too |
@@ -174,6 +176,8 @@ and `egress:"deny"` are refused there, not approximated.
 | `sbx add` | drop in a service nobody declared — the agent affordance |
 | `sbx url` | a public link that wakes it when opened |
 | `sbx snapshot` / `fork` | save every service's data, then make as many sandboxes from it as you want |
+| `sbx checkpoint` / `resume` | save memory **and** processes and bring them back — CRIU, Linux + experimental docker; refused elsewhere |
+| `sbx with` | create a sandbox, run a command with its env, always remove it — ephemeral fixtures for a test run |
 | `sbx init` / `validate` | write the spec · check one without creating anything |
 | `sbx prewarm` | pull the images now, so the first create isn't a download |
 | `sbx gc` | reclaim volumes whose sandbox is gone; `--snapshots` includes saved states, `--force` deletes |
@@ -216,14 +220,17 @@ The condensed feature matrix — ● yes · ◐ partial · ○ no. → [COMPARIS
 | Self-hosted, no account | ● | ○ | ◐ | ○ | ○ | ○ | ○ |
 | Multiple services, one spec | ● | ○ | ○ | ○ | ○ | ◐ | ○ |
 | Zero cost at rest | ● | ◐ | ◐ | ◐ | ◐ | ◐ | ◐ |
-| RAM-state snapshot | ○ | ● | ● | ● | ◐ | ● | n/a |
-| VM-grade isolation | ○ | ● | ◐ | ● | ● | ● | ● |
+| RAM-state snapshot | ◐ | ● | ● | ● | ◐ | ● | n/a |
+| VM-grade isolation | ◐ | ● | ◐ | ● | ● | ● | ● |
 | Production-proven | ○ | ● | ● | ● | ● | ● | ● |
 
 **Yes, if** your branches share one database; if an agent needs a workspace that dies with the
-task; if CI waits longer for a stack than it spends testing. **No, if** you need to run code you
-didn't write (a container shares your kernel — E2B, Vercel Sandbox or Modal give you a real one),
-or if you want someone else to operate it (that's Neon).
+task; if CI waits longer for a stack than it spends testing. **Probably still something else, if**
+you need proven isolation for code you didn't write (sbx has `--isolation kata`, a real microVM,
+but it is opt-in and unproven here — E2B, Vercel Sandbox and Modal give it by default), or you
+want someone else to operate it (that's Neon). The full, honest breakdown — including where sbx
+now *does* have an answer and how far each is proven — is in
+[COMPARISON.md](docs/COMPARISON.md#where-sbx-now-has-an-answer--and-where-to-still-use-something-else).
 
 ### Honest limits
 

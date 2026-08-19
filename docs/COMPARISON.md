@@ -19,15 +19,17 @@ say where the ◐ and ○ are choices rather than gaps.
 | Arbitrary stateful services | ● | ◐ | ● | ◐ | ◐ | ● | ○ pg | ● |
 | Multiple services, one spec | ● | ○ | ○ | ○ | ○ | ◐ | ○ | ● |
 | Zero cost at rest | ● | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ○ |
-| RAM-state snapshot | ○ | ● | ● | ● | ◐ | ● | n/a | ○ |
-| VM-grade isolation | ○ | ● | ◐ | ● | ● | ● | ● | ● |
+| RAM-state snapshot | ◐ CRIU/Linux | ● | ● | ● | ◐ | ● | n/a | ○ |
+| VM-grade isolation | ◐ kata | ● | ◐ | ● | ● | ● | ● | ● |
 | Public URL per sandbox | ● | ● | ● | ● | ● | ● | n/a | ● |
-| GPU | ○ | ◐ | ◐ | ● | ○ | ● | n/a | ● |
+| GPU | ◐ docker | ◐ | ◐ | ● | ○ | ● | n/a | ● |
 | Production-proven | ○ | ● | ● | ● | ● | ● | ● | ● |
 
-**Read the bottom two rows before the top four.** Every hosted platform here has real isolation
-and real users; this has neither. What it has is the top four rows, and whether that trade is
-right depends entirely on whether your sandbox runs your own services or someone else's code.
+**Read the bottom row before the top four.** `Production-proven` is the one still-flat ○, and it
+is the one that matters most: every hosted platform here has real users and this does not. The
+three ◐ additions (a kata microVM, CRIU checkpoint on Linux, docker GPU passthrough) are opt-in or
+experimental, added recently and marked partial for exactly that reason. Whether the trade is
+right depends on whether your sandbox runs your own services or someone else's code.
 
 ---
 
@@ -52,7 +54,7 @@ products that share almost nothing:
 
 **sbx is the right-hand column.** For untrusted model-authored code that needs a kernel boundary,
 the left-hand column is what you want, and this is not competing for it — see
-[where to use something else](#where-to-use-something-else).
+[where to use something else](#where-sbx-now-has-an-answer--and-where-to-still-use-something-else).
 
 ## The axis that actually separates them
 
@@ -127,7 +129,7 @@ quadrantChart
 ```
 
 **We are bottom-right — fast, and narrow — and that is the correct place for us.** The breadth
-score deliberately counts eight things we mostly *don't* do (VM isolation, RAM snapshot, GPU,
+score deliberately counts eight things we mostly *don't* do, or do only partially (a kata VM, CRIU on Linux, GPU passthrough,
 arbitrary stateful services, a public URL, someone else operating it, multi-tenant security,
 production-proven); scored on rows we'd have picked, every one of these charts would put us
 top-right, which is exactly why the score doesn't use them.
@@ -322,21 +324,33 @@ Still open, honestly:
   is one `pg_dump` can't use. The `○` is a choice — but a real difference for anyone who wants
   `Sandbox.create()`.
 - **SSH and VNC.** `exec -t` is a PTY; neither of the other two is there.
-- **Memory restore** — the row above, and the one we lose outright. `sbx snapshot`/`fork` do the
-  fan-out half (many sandboxes from one saved state) but the state is a filesystem, not a memory
-  image, so a fork starts cold. Half a row, marked as half.
+- **Memory restore.** `sbx checkpoint` / `resume` now save and restore a running process's
+  memory (CRIU) — but only on a Linux host with docker `--experimental`, refused on macOS and not
+  verified end-to-end in this repo. `sbx snapshot`/`fork` stay filesystem-only, so a *fork* still
+  starts cold. Genuinely less than E2B here, which restores RAM cross-platform and shipped.
 
-## Where to use something else
+## Where sbx now has an answer — and where to still use something else
 
-| If you need | Use | Why |
+This section used to be a flat list of "use something else". Several of those rows now have an
+sbx answer, added deliberately. The honest part is the right-hand column: each one is real, and
+each is less proven than the incumbent it competes with, and both facts are stated.
+
+| If you need | sbx | still use the incumbent when |
 |---|---|---|
-| To run genuinely untrusted code | **E2B, Vercel Sandbox, Modal** | Firecracker microVMs; a container shares your kernel |
-| An agent's REPL resumed mid-thought | **E2B** | RAM snapshot; this restores disk only |
-| A URL per pull request, for reviewers | **Northflank, Uffizzi, Okteto** | Built for the PR lifecycle, with teardown |
-| Serverless Postgres, hosted, that's it | **Neon** | Branching and scale-to-zero, operated by someone else |
-| Ephemeral fixtures inside a test run | **Testcontainers** | Ephemeral is the whole design; nothing to sleep |
-| HTTP-only, already on Knative | **Knative** | Mature, and this is not |
-| GPU on the sandbox side | **Modal** | No substitute at the moment |
+| To run untrusted code | `--isolation gvisor` (a userspace kernel) or `--isolation kata` (a real microVM), opt-in, refused where the runtime isn't installed | you want it **by default and battle-tested** — E2B, Vercel Sandbox and Modal run every workload in a Firecracker VM; sbx's *default* is a shared-kernel container and its kata path is not exercised in this repo |
+| An agent's REPL resumed mid-thought | `sbx checkpoint` / `sbx resume` — CRIU memory + process save/restore | you're on **macOS, or want it proven** — checkpoint needs a Linux host with docker `--experimental` and is not verified end-to-end here; E2B's RAM snapshot is cross-platform and shipped |
+| Ephemeral fixtures in a test run | `sbx with <sandbox> -- <cmd>` — created, run with env exported, always removed | you want **in-process, language-native** fixtures with no daemon — Testcontainers |
+| A URL per pull request | the [`pr-preview`](../examples/pr-preview/) recipe — fork per PR, `sbx url`, teardown on close, and idle previews sleep to **0 B** | you want a **managed control plane and team UI** — Northflank, Uffizzi, Okteto |
+| Branching Postgres that scales to zero | `sbx fork` (branch) + idle sleep (to zero) — the capability, on hardware you own | you want **someone else to operate it** — Neon is the same capability, hosted |
+| GPU on the sandbox | `gpus:` — docker `--gpus` passthrough to a local GPU | you want a **managed GPU fleet** — Modal |
+| HTTP-only, already on Knative | — | **Knative**: mature, and this is not |
+
+The right column is not hedging. Proven multi-tenant isolation, cross-platform memory restore,
+managed operation, and a decade of production hours are real advantages, and every one of them
+belongs to the hosted platforms. sbx's additions make it the answer **when you are self-hosting
+and want one tool that does these on your own box** — they do not make it more battle-tested than
+a platform with real users, which it still is not (`Production-proven` is the one row in the table
+at the top that is still a flat ○, and it is the one that matters most).
 
 ## Sources
 
