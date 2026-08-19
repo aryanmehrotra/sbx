@@ -3,7 +3,7 @@
 > **Short version:** wake 191 ms (redis) to ~1 s (postgres) · a new connection costs nothing
 > measurable · bulk transfer runs at 57% of direct · a sleeping sandbox is 0 B of memory.
 > Every number names the script that produced it, and the ones this project got wrong are
-> [listed as corrections](COMPARISON.md#what-we-have-actually-measured-and-what-we-have-only-read).
+> [listed as corrections](COMPARISON.md#what-weve-measured-and-what-weve-only-read).
 
 Every number here was measured on the machine described beside it, by a script in this repo
 that you can run. Nothing is quoted from a single run.

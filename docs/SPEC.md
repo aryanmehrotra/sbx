@@ -6,9 +6,8 @@
 
 `sandbox.json` - one file, committed to your repo, describing what a branch needs to run.
 
-A spec never says **when** to start or stop anything. It says what exists, how to tell when it
-is serving, and how to reach it. Lifecycle belongs to `sbx serve`, which watches the ports. If
-a spec could start something, the spec would eventually be the thing that left it running.
+It says what exists, how to tell when it is serving, and how to reach it - never when to start or
+stop. Lifecycle belongs to `sbx serve`, which watches the ports.
 
 ---
 
@@ -43,13 +42,12 @@ a spec could start something, the spec would eventually be the thing that left i
 }
 ```
 
-**Note the postgres health command.** It is `psql ... select 1`, not `pg_isready`.
-`pg_isready` answers yes while postgres is still bootstrapping - before `POSTGRES_DB` exists -
-so `init` would run against a database that is not there yet. Every bundled template uses the
-`psql` form for this reason, and so does `sbx init`.
+**Note the postgres health command:** `psql ... select 1`, not `pg_isready`, which answers yes
+while postgres is still bootstrapping - before `POSTGRES_DB` exists - so `init` would run against
+a database not there yet. Every bundled template and `sbx init` use the `psql` form.
 
-Every image above is shown with a readable tag; the shipped templates additionally pin a
-digest, which is what `scripts/pin-templates.sh` maintains.
+Images show a readable tag; the shipped templates additionally pin a digest, maintained by
+`scripts/pin-templates.sh`.
 
 ---
 
@@ -63,14 +61,12 @@ digest, which is what `scripts/pin-templates.sh` maintains.
 
 ### Every port export gets a host to go with it
 
-A declared export produces two variables, not one. `DATABASE_PORT` also yields
-`DATABASE_HOST`; `PGPORT` yields `PGHOST` - no underscore, because that is what libpq itself
-reads, and it is why `psql -U app -d app` with no host or port argument reaches the sandbox at
-all. `MYSQL_PORT` yields `MYSQL_HOST` by the same rule.
+A declared export produces two variables. `DATABASE_PORT` also yields `DATABASE_HOST`; `PGPORT`
+yields `PGHOST` - no underscore, which is what libpq reads, and why `psql -U app -d app` with no
+host or port argument reaches the sandbox. `MYSQL_PORT` yields `MYSQL_HOST` likewise.
 
-The rule is: strip a trailing `_PORT` if there is one, otherwise a trailing `PORT`, and append
-`_HOST` or `HOST` to match. A bare `PORT` export is left alone rather than becoming `_HOST`,
-which would be neither useful nor obviously wrong to whoever wrote it.
+The rule: strip a trailing `_PORT` if there is one, otherwise a trailing `PORT`, and append
+`_HOST` or `HOST` to match. A bare `PORT` export is left alone rather than becoming `_HOST`.
 
 **`exports` is how adoption stays cheap.** `{"DB_PORT": "mysql:3306"}` becomes
 `DB_PORT=<public port of mysql 3306>`. Without it, adopting sbx would mean editing every
@@ -108,13 +104,11 @@ script that already knows a port.
 { "build": { "context": "./app" }, "ports": [3000] }
 ```
 
-`context` is relative to the spec file. `dockerfile` defaults to `Dockerfile` and is relative
-to the context. Both is an error rather than a precedence rule - which of the two wins is
-exactly the thing a reader guesses wrong, and guessing means running an image the file does
-not appear to describe.
+`context` is relative to the spec file; `dockerfile` defaults to `Dockerfile` and is relative
+to the context. Both is an error rather than a precedence rule - which wins is exactly what a
+reader guesses wrong.
 
-**The tag is a hash of the context**, so an unchanged context is a cache hit and no build
-runs at all:
+**The tag is a hash of the context**, so an unchanged context is a cache hit and no build runs:
 
 ```
 $ sbx create feat-x            # first time
@@ -134,25 +128,23 @@ Three things are deliberately in or out of the hash:
 | **file modes - in** | a script that stops being executable is a different image, and a silent cache hit there fails at runtime |
 | **`.git`, `node_modules` - out** | otherwise every commit and every install busts the cache |
 
-Why not expire it on a timer instead? Because a clock is wrong in both directions at once -
-it rebuilds what has not changed and reuses what has.
+Why not expire it on a timer? A clock is wrong in both directions - it rebuilds what has not
+changed and reuses what has.
 → [DECISIONS.md](DECISIONS.md#a-built-image-is-keyed-by-its-content-never-by-its-age)
 
 Docker only. In a cluster, building means pushing to a registry the nodes can pull from -
-credentials and a registry sbx has no business assuming - so `sbx create` says so and stops
-rather than half-working.
+credentials sbx has no business assuming - so `sbx create` says so and stops.
 
 ### Why ports aren't yours to choose
 
 Two repos that both picked 5432 collide the moment somebody opens both. Each sandbox gets a
-slot, and ports are assigned from it. `exports` is the seam that keeps this invisible to your
-tooling.
+slot; ports are assigned from it, and `exports` keeps this invisible to your tooling.
 
 ### `health` is close to required
 
 Without it the daemon can only dial the published port - and Docker answers that before the
-server inside does. The first query after a wake then lands on a socket that is about to
-close. → [DECISIONS.md](DECISIONS.md#a-published-port-is-not-readiness)
+server inside does, so the first query after a wake lands on a socket about to close.
+→ [DECISIONS.md](DECISIONS.md#a-published-port-is-not-readiness)
 
 **The health command must exist in the image.** A Chrome image with no `wget` cannot be
 health-checked with `wget`, and the failure looks like a service that never starts. Check
@@ -164,9 +156,9 @@ docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
 
 ### `health_interval` is what those probes cost
 
-The probe is a command started inside the container, and it runs whether or not anybody is
-waiting for the service. One service at the default 300 ms is nothing; fourteen is about
-forty-seven container commands a second, for ever, on a machine that may already be busy.
+The probe is a command started inside the container, and runs whether or not anybody is
+waiting. One service at the default 300 ms is nothing; fourteen is about forty-seven container
+commands a second, for ever.
 
 ```json
 { "version": 1,
@@ -176,21 +168,19 @@ forty-seven container commands a second, for ever, on a machine that may already
                         "health_interval": "300ms" } } }
 ```
 
-The sandbox-wide setting is the one to reach for - the cost is a property of the fleet rather
-than of any one service in it - and a service can override it where its own readiness is worth
-catching quickly, or where its probe is expensive.
+Reach for the sandbox-wide setting - the cost is a property of the fleet - and override it on a
+service where readiness is worth catching quickly or the probe is expensive.
 
 **It is also the floor on how long a wake appears to take.** A wake is not over until the answer
-changes, and the answer is only re-evaluated on this interval, so a service that is genuinely
-ready in 40 ms reports as 300 ms at the default and as a second at `1s`. Turn it up to spend less
-on a large sandbox; turn it down when you are measuring wakes and want the resolution.
+changes, re-evaluated only on this interval, so a service ready in 40 ms reports as 300 ms at the
+default and a second at `1s`. Turn it up on a large sandbox; turn it down when measuring wakes.
 
-Below 50 ms and above 5 m are refused: the first spends cpu to learn nothing, and the second
-reports a service as still waking long after it was serving.
+Below 50 ms and above 5 m are refused: the first spends cpu to learn nothing, the second reports a
+service as still waking long after it served.
 
 In a cluster this becomes the readiness probe's `periodSeconds`, which counts whole seconds -
-anything under a second becomes one. Zero is not passed through, because to the API server zero
-means "use my default", which is ten: a spec asking for a faster probe would have quietly got a
+anything under a second becomes one. Zero is not passed through: to the API server zero means
+"use my default", which is ten, so a spec asking for a faster probe would have quietly got a
 slower one.
 
 ### `depends_on` orders creation, and nothing else
@@ -201,22 +191,19 @@ slower one.
 ```
 
 Without it, services are created alphabetically - so `api` comes up before `postgres`, and an
-app that dials its database at boot fails for a reason that is nowhere in the file. This
-mattered much less before `build:` existed, when everything in a spec was a backing service
-that waited for nobody.
+app that dials its database at boot fails for a reason nowhere in the file.
 
 Two things it deliberately does **not** do:
 
-**It does not change ports.** Ordinals stay alphabetical, so adding `depends_on` to a spec
-never moves an existing sandbox's addresses. Somebody's `DATABASE_PORT` changing because a
-colleague declared a dependency would be a worse bug than the race it fixes.
+**It does not change ports.** Ordinals stay alphabetical, so adding `depends_on` never moves an
+existing sandbox's addresses - a worse bug than the race it fixes.
 
-**It does not order wakes.** The daemon wakes what is connected to, and after a sleep there is
-no "startup" for an ordering rule to attach to. A service that needs another at runtime should
-retry - which it has to anyway, because that is what waking looks like from the inside.
+**It does not order wakes.** The daemon wakes what is connected to; after a sleep there is no
+"startup" for an ordering rule to attach to. A service that needs another at runtime should
+retry - which is what waking looks like from inside anyway.
 
-A dependency on a service the spec does not declare is refused, rather than being a rule that
-silently never applied. So is a cycle.
+A dependency on a service the spec does not declare is refused, rather than silently never
+applying. So is a cycle.
 
 ### `${VAR}` keeps a secret out of a committed file
 
@@ -224,34 +211,32 @@ silently never applied. So is a cycle.
 { "env": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" } }
 ```
 
-`sandbox.json` is meant to be committed. For `POSTGRES_PASSWORD: "app"` on a throwaway local
-database that is fine and will stay fine; for a private registry credential or a real key some
-fixture seeding needs, it means a secret in git. A value in `env` may instead reference the
-environment sbx was invoked with.
+`sandbox.json` is meant to be committed. `POSTGRES_PASSWORD: "app"` on a throwaway local database
+is fine; a private registry credential or a real key some fixture seeding needs would be a secret
+in git. A value in `env` may instead reference the environment sbx was invoked with.
 
 Deliberately the smallest version of this:
 
 - **`env` values only.** Not images, not health commands, not init steps - expansion inside a
   command is where this stops being substitution and starts being a shell.
-- **No defaults or nesting.** No `${VAR:-fallback}`. Each of those is a small syntax nobody
-  asked for and everyone has to learn, and your shell already has all of them.
-- **An unset variable is an error**, reported before anything is created, listing every
-  missing name at once. A database that came up with an empty password because a variable was
-  not exported is a failure that looks like success.
+- **No defaults or nesting.** No `${VAR:-fallback}` - your shell already has all of them.
+- **An unset variable is an error**, reported before anything is created, listing every missing
+  name at once. A database up with an empty password because a variable was not exported is a
+  failure that looks like success.
 - **`${...}` only** - a bare `$NAME` is left alone, so a password containing a dollar sign
   survives.
 
 Anything further - Vault, 1Password, a cloud secret manager - stays out: a dependency, a
-network call, and a credential needed to fetch the credential, in a binary whose whole claim
-is that it has none of those.
+network call, and a credential to fetch the credential, in a binary whose whole claim is that it
+has none.
 
 ### sbx remembers which spec a sandbox came from
 
 `--template postgres` had to be repeated on `create`, then `env`, then `fork`. Forgetting it
-gave you one of two things, and the second is worse: `open sandbox.json: no such file` if the
-directory had none, or - if an unrelated `sandbox.json` happened to be there - a clean success
-against the wrong spec. Ordinals are assigned alphabetically over the declared service names,
-so a different-but-valid spec shifts them and `sbx env` prints a plausible, wrong port.
+gave one of two things, the second worse: `open sandbox.json: no such file` if the directory had
+none, or - if an unrelated `sandbox.json` happened to be there - a clean success against the wrong
+spec, since ordinals assigned alphabetically over the declared service names shift and `sbx env`
+prints a plausible, wrong port.
 
 So sbx writes it down, under `~/.sbx/origins/`, and uses it when nothing was asked for:
 
@@ -264,10 +249,10 @@ sbx env    agent-1               # still no flag
 ```
 
 Always a **default**, never a source of truth: an explicit `--spec` or `--template` wins, a
-missing or unreadable record changes nothing, and no command fails because of it. The
-containers and their labels remain the only place the truth about a sandbox lives. A recorded
-path that has since been deleted is ignored rather than used, because sending every later
-command at a path that no longer exists is worse than falling back to the working directory.
+missing or unreadable record changes nothing, and no command fails because of it. The containers
+and their labels remain where a sandbox's truth lives. A recorded path since deleted is ignored
+rather than used - chasing a path that no longer exists is worse than falling back to the
+working directory.
 
 ### Check it without creating it
 
@@ -277,9 +262,8 @@ sbx validate path/to/spec.json
 ```
 
 Reads the file, resolves ports and ordering, and creates nothing - so a pre-commit hook or a
-lint job can check a change to a committed spec without a docker daemon. It runs the same
-loader `create` does, which is the only way it is worth having: a separate validator would
-drift, and a spec that passes lint and fails create is worse than no lint.
+lint job can check a committed spec without a docker daemon. It runs the same loader `create`
+does, so lint never drifts from create.
 
 It also names anything it merely dislikes, like a service with no `health`.
 
@@ -294,11 +278,10 @@ it would be at best wasted and at worst destructive.
 { "image": "postgres:16-alpine", "ports": [5432], "cpu": "0.5", "memory": "512m" }
 ```
 
-Unset means unlimited, which is fine for one sandbox and stops being fine at twenty: a
-machine running a sandbox per branch otherwise has no ceiling at all, and the thing that
-fails is the machine rather than the sandbox. Docker gets `--cpus`/`--memory`; a cluster gets
-`resources.limits`. Requests are deliberately left alone in the cluster case - those change
-scheduling, which is the operator's business.
+Unset means unlimited, fine for one sandbox and not for twenty: a machine running a sandbox per
+branch otherwise has no ceiling, and it is the machine that fails, not the sandbox. Docker gets
+`--cpus`/`--memory`; a cluster gets `resources.limits`. Requests are left alone in the cluster
+case - those change scheduling, the operator's business.
 
 ### `egress: "deny"` blocks the way out, not the way in
 
@@ -307,17 +290,17 @@ scheduling, which is the operator's business.
 ```
 
 Docker gets a per-sandbox bridge with IP masquerade disabled: no NAT off the host, so nothing
-routed leaves - and docker still publishes ports into it, so waking is untouched. Verified
-both directions: the service could not fetch `example.com`, and it still woke on a connection
-and answered 200.
+routed leaves - and docker still publishes ports into it, so waking is untouched. Verified both
+directions: the service could not fetch `example.com`, and it still woke on a connection and
+answered 200.
 
-The obvious alternatives do not work and were tried: `--internal` and `--network none` both
+The obvious alternatives were tried and do not work: `--internal` and `--network none` both
 block egress **and** stop docker publishing the port, producing a sandbox that can never be
 woken. → [DECISIONS.md](DECISIONS.md)
 
 It is **not a domain allow-list**. Docker has no primitive for that; doing it properly needs a
-filtering proxy in the data path, which is a component with a lifecycle rather than a flag.
-DNS still resolves - docker's resolver sits on the bridge and needs no route out.
+filtering proxy in the data path, a component with a lifecycle rather than a flag. DNS still
+resolves - docker's resolver sits on the bridge and needs no route out.
 
 The kubernetes provider **refuses** a service that declares it rather than starting one with
 egress open: the cluster answer is a NetworkPolicy, only some CNIs enforce them, and a
@@ -364,8 +347,7 @@ service is close to isomorphic to an sbx one. The mapping, field for field:
 | - | `exports` | the piece compose has no equivalent of, and the reason adoption is cheap |
 
 **The one that surprises people is `ports`.** Compose lets you choose the host port; sbx does
-not, because two repos that both chose 5432 collide the moment somebody opens both. You
-declare the container port and read the assigned one back through `exports`.
+not - you declare the container port and read the assigned one back through `exports`.
 
 A two-service compose file:
 

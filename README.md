@@ -84,7 +84,7 @@ identical on docker and kubernetes; the capabilities are not. Locally a Docker-c
 is a prerequisite (Docker Desktop, Colima, Rancher Desktop or rootless podman) — and on macOS or
 Windows that runtime is a Linux VM, because a Linux container *is* a set of Linux kernel features.
 Where a capability is missing it is refused with a reason, never approximated; `sbx doctor` says
-what this host can do. [Full table](docs/COMPARISON.md#same-spec-two-runtimes---and-not-the-same-capabilities); the short version:
+what this host can do. [Full table](docs/COMPARISON.md#same-spec-two-runtimes--and-not-the-same-capabilities); the short version:
 
 | | docker | k8s | |
 |---|:---:|:---:|---|
