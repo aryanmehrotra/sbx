@@ -227,6 +227,7 @@ daemon's part. `build:` and `egress: "deny"` are **refused** there rather than a
 | `sbx create` / `rm` | make one from `sandbox.json` or `--template`, destroy it with its data |
 | `sbx env` | exports for your tooling - posix, fish, powershell, cmd, **json** |
 | `sbx ready` | wake it and block until it's serving - the CI one-liner |
+| `sbx wake` / `sleep` | park a sandbox now or bring it back - explicit on-demand, for an orchestrator that won't wait on the idle timer |
 | `sbx exec [-t]` | run anything inside it; `-t` attaches a terminal for a shell or `psql` |
 | `sbx logs [-f]` | **every service on one stdout**, structured - the one command that does *not* wake anything |
 | `sbx cp` | files in and out (`:` marks the inside path) |
