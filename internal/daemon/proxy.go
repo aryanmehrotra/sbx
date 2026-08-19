@@ -194,13 +194,15 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 
 // relayBuf is the copy buffer for one direction of a tunnel.
 //
-// 128 KiB, up from 32, and pooled. The size is the throughput lever: a bulk transfer's cost is
-// dominated by the read/write syscall pair per chunk, and on loopback a socket often has more
-// than 32 KiB ready - so a bigger buffer drains it in fewer syscalls, which is most of the 43%
-// a proxied stream used to pay. The pool is the connection-churn lever: the old code allocated
-// two fresh 32 KiB buffers on every connection, which a client that opens hundreds of short
-// connections - a pool with no reuse, an agent hammering redis - turned into steady GC pressure.
-var relayBuf = 128 << 10
+// 64 KiB, up from 32, and pooled. The size is the throughput lever: a bulk transfer's cost is
+// dominated by the read/write syscall pair per chunk, so a bigger buffer drains a loopback socket
+// in fewer syscalls. 64 is the measured sweet spot, not a guess: in a reserved-core benchmark it
+// ran +36% over 32 KiB and with the tightest variance, while 128 and 256 KiB were both slower and
+// far noisier - a buffer that no longer fits the cache thrashes it. See docs/BENCHMARKS.md. The
+// pool is the connection-churn lever: the old code allocated two fresh buffers on every
+// connection, which a client opening hundreds of short ones - an agent hammering redis - turned
+// into steady GC pressure; from the pool it is zero allocation after warmup.
+var relayBuf = 64 << 10
 
 var relayBufPool = sync.Pool{New: func() any { b := make([]byte, relayBuf); return &b }}
 

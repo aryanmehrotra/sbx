@@ -154,26 +154,37 @@ The proxy copies each direction of a tunnel through a byte buffer. Two things ab
 changed, and they are worth separating because one is cleanly measured and one is not.
 
 **Pooled - measured, and load-independent.** The old code allocated a fresh buffer on every
-connection (two directions, so 64 KiB per connection at the old 32 KiB). A client that opens
-many short connections - a pool with no reuse, an agent hammering redis with 162 of them - turned
-that into steady allocation and GC pressure. The buffer now comes from a `sync.Pool`:
+connection (two directions per connection). A client that opens many short connections - a pool
+with no reuse, an agent hammering redis with 162 of them - turned that into steady allocation and
+GC pressure. The buffer now comes from a `sync.Pool`:
 
 ```
 `go test -bench RelayBufAcquire -benchmem`
   pooled          8 ns/op        0 B/op   0 allocs/op
-  make-per-conn   5995 ns/op   131072 B/op   1 allocs/op
+  make-per-conn   5995 ns/op   65536 B/op   1 allocs/op
 ```
 
-Zero allocation per connection, against 64 KiB freshly allocated and zeroed before. This one is
-pure CPU, so it holds on a busy machine.
+Zero allocation per connection, against a full buffer freshly allocated and zeroed before. Pure
+CPU, so it holds on a busy machine.
 
-**Bigger (32 → 128 KiB) - mechanism sound, clean number pending.** A larger buffer drains a
-loopback socket in fewer read/write syscalls, which is where the 43% goes. Best-case throughput
-in the `StreamBuf` size sweep rose with size (≈6.3 → 7.5 GB/s from 32 to 128 KiB), but the
-machine these were taken on was under heavy load and the *median* delta sat inside the run-to-run
-spread - so per this file's own rule, no headline number is claimed for it. `go test -bench
-StreamBuf -count 10` on a quiet machine settles it; the 57% figure above was measured before the
-change and is the conservative one to quote until then.
+**Sized at 64 KiB, up from 32 - and 64 is measured, not guessed.** A bigger buffer drains a
+loopback socket in fewer read/write syscalls, which is where the 43% goes - but only up to a
+point, past which a buffer that no longer fits the cache thrashes it. The `StreamBuf` sweep,
+run in a reserved four-core slice (`GOMAXPROCS=4`, `benchstat` over 10 samples, so the machine's
+other load is held off), found the knee exactly:
+
+```
+  StreamBuf/32KiB    4.66 Gi/s ± 17%
+  StreamBuf/64KiB    6.32 Gi/s ± 15%   ← +36% over 32, and the tightest
+  StreamBuf/128KiB   5.74 Gi/s ± 59%   ← slower, and wildly variable
+  StreamBuf/256KiB   4.98 Gi/s ± 17%   ← slower still
+```
+
+64 KiB is both the fastest and the most consistent; 128 and 256 are slower *and* noisier. This
+tuned the proxied path up by about a third over the old 32 KiB. The **57% of direct** headline
+above was measured on a quiet machine before the change and is the conservative figure to quote
+until the direct baseline is re-measured somewhere quiet enough to be stable - under load it
+swung ±35%, which is too much to divide by honestly.
 
 **A bigger buffer was tried and is worse**, which is the opposite of the obvious fix. Each
 direction copies through a 32 KiB buffer, and the reasonable suggestion is that fewer, larger
