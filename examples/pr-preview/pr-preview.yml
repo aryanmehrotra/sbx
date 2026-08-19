@@ -1,0 +1,61 @@
+# A URL per pull request, on a self-hosted sbx box. Template - adapt the deploy step to your app.
+#
+# Secrets this expects:
+#   PREVIEW_HOST      user@host of the always-on box running `sbx serve` with a `golden` snapshot
+#   PREVIEW_SSH_KEY   a private key that can SSH to it
+#
+# The teardown job is the part to copy exactly: a preview that outlives its PR is a leak.
+name: pr-preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+# One preview per PR; a new push supersedes the running deploy for that PR rather than stacking.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SSH to the preview host
+        run: |
+          install -m 600 /dev/stdin "$HOME/key" <<< "${{ secrets.PREVIEW_SSH_KEY }}"
+          echo "SBX=ssh -i $HOME/key -o StrictHostKeyChecking=accept-new ${{ secrets.PREVIEW_HOST }}" >> "$GITHUB_ENV"
+
+      - name: Fork the golden state into a per-PR sandbox
+        run: |
+          PR="pr-${{ github.event.pull_request.number }}"
+          # Idempotent: a re-run of an open PR forks fresh from golden.
+          $SBX "sbx rm $PR 2>/dev/null || true; sbx fork golden $PR"
+
+      # Adapt this to how your app is built and started. The point is only that it ends up
+      # running inside the PR's sandbox, reachable on the port the spec exports.
+      - name: Deploy the build into the sandbox
+        run: |
+          PR="pr-${{ github.event.pull_request.number }}"
+          $SBX "cd ~/app && git fetch && git checkout ${{ github.event.pull_request.head.sha }} && ./deploy.sh $PR"
+
+      - name: Publish the preview URL and comment it
+        run: |
+          PR="pr-${{ github.event.pull_request.number }}"
+          URL=$($SBX "sbx url $PR web --via ssh")
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "Preview: $URL — it sleeps to 0 B when idle and wakes when you open it."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove the PR's sandbox and its data
+        run: |
+          install -m 600 /dev/stdin "$HOME/key" <<< "${{ secrets.PREVIEW_SSH_KEY }}"
+          SBX="ssh -i $HOME/key -o StrictHostKeyChecking=accept-new ${{ secrets.PREVIEW_HOST }}"
+          $SBX "sbx rm pr-${{ github.event.pull_request.number }} 2>/dev/null || true"

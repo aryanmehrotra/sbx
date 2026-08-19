@@ -195,7 +195,7 @@ func Doctor(ctx context.Context) Report {
 	rep.Capabilities = append(rep.Capabilities, Capability{
 		Name: "docker checkpoint", Have: exp == "true",
 		Detail:  "daemon experimental=" + orUnknown(exp),
-		Meaning: "memory-state sleep is unavailable; sleeping keeps the disk, not the process",
+		Meaning: "sbx checkpoint / resume is unavailable; sleeping and forking keep the disk, not the process",
 	})
 
 	kubectlOK, kubectlWhere := have("kubectl")
