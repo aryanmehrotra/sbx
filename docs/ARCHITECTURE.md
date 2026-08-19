@@ -4,9 +4,8 @@ Everything here follows from one rule:
 
 > **Nothing may start or stop a sandbox except the thing that can see demand.**
 
-Whatever else can start one eventually becomes the thing that left one running, and then two
-components believe they own the lifecycle and disagree while you are debugging something
-else.
+Anything else that can start one eventually leaves one running — then two components each
+believe they own the lifecycle, and disagree while you debug something else.
 
 ---
 
@@ -99,9 +98,8 @@ A Service that selects the workload **cannot answer at zero replicas**. So there
                                      └─────────┘
 ```
 
-Because it splices bytes rather than parsing a protocol, it works for Postgres, Redis, gRPC
-and anything else over TCP. The RBAC it runs under can **scale** a Deployment and cannot
-**create or destroy** one.
+It splices bytes rather than parsing a protocol, so it works for Postgres, Redis, gRPC —
+anything over TCP. Its RBAC can **scale** a Deployment, not **create or destroy** one.
 
 ---
 
@@ -122,11 +120,11 @@ and anything else over TCP. The RBAC it runs under can **scale** a Deployment an
    guard: cannot sleep until seen serving once
 ```
 
-**Bytes, not connections.** A connection pool holds sockets open forever; a sandbox fronted
-by a running service would never sleep.
+**Bytes, not connections.** A pool holds sockets open forever, so a sandbox fronted by a
+running service would never sleep.
 
 **The guard is not theoretical.** Without it, the activator scaled a sandbox to zero 39
-seconds into its own creation, while the command creating it was still waiting.
+seconds into its own creation, while the creating command was still waiting.
 
 ---
 
@@ -146,13 +144,13 @@ seconds into its own creation, while the command creating it was still waiting.
 ```
 
 **Allocated, not hashed.** Hashing names into 60 slots collided on the first six branch
-names tried, and two sandboxes on one slot fight over ports. Docker labels are the registry,
-so there is no state file to drift from reality.
+names tried, and two sandboxes on one slot fight over ports. Docker labels are the registry —
+no state file to drift from reality.
 
-**Optional services still reserve ordinals**, so adding one later never moves an existing
-service out from under a config that recorded where it was.
+**Optional services still reserve ordinals**, so adding one later never shifts an existing
+service out from under a config that recorded its port.
 
-In a cluster none of this applies: a pod has its own address, so Postgres is `:5432` on a
+None of this applies in a cluster: a pod has its own address, so Postgres is `:5432` on a
 name. The port arithmetic is a workaround for one shared loopback.
 
 ---
@@ -164,7 +162,7 @@ sbx create my-branch                        # docker, this machine
 sbx create my-branch --provider kubernetes  # the same spec, a cluster
 ```
 
-Everything the spec declares maps onto both. Nothing in `sandbox.json` names a backend:
+Everything the spec declares maps onto both; nothing in `sandbox.json` names a backend:
 
 | | docker | kubernetes |
 |---|---|---|
@@ -175,8 +173,8 @@ Everything the spec declares maps onto both. Nothing in `sandbox.json` names a b
 | storage | named volume | PVC |
 | isolation | `--runtime` | `runtimeClassName` |
 
-The right-hand column is the reason the provider is an interface rather than a flag: the wake
-policy above doesn't know which of these it is driving.
+The right-hand column is why the provider is an interface, not a flag: the wake policy above
+doesn't know which it drives.
 
 ---
 

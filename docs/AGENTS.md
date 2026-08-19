@@ -1,13 +1,13 @@
 # sbx for coding agents
 
 > **Short version:** paste the block below into your project's `AGENTS.md`, `CLAUDE.md`, or
-> whatever your assistant reads. The rest of this page is why each line is there, and the
-> commands an agent will reach for once it starts.
+> whatever your assistant reads. The rest is why each line is there, plus the commands an agent
+> reaches for.
 
-An agent working on a branch keeps needing somewhere to put a database. The usual answers are
-bad in ways that only show up later: `docker run postgres` leaves a container that outlives the
-task and belongs to nobody, and a shared local database means a migration tried on one branch is
-a migration done to all of them. sbx gives the task its own, and takes it away again.
+An agent on a branch keeps needing somewhere to put a database. The usual answers fail later:
+`docker run postgres` leaves a container that outlives the task and belongs to nobody; a shared
+database turns a migration tried on one branch into one done to all. sbx gives the task its own,
+then takes it away.
 
 ---
 
@@ -44,25 +44,23 @@ Rules:
 - If a command fails, run `sbx doctor` before guessing: it says whether docker is even up.
 ```
 
-That block is deliberately short. Everything below is for the agent that needs more than the
-common case.
+Everything below is for the agent that needs more than the common case.
 
 ---
 
 ## The four things that are not obvious
 
-**1. There is no `up` and no `down`.** A service is asleep until something opens a socket to it,
-and asleep means zero memory rather than a stopped container you have to remember. So an agent
-never "starts" anything: it connects, and that is the start. `sbx ready` exists only because a
-script's next line runs immediately and a port that is merely open is not the same as a database
-that will answer.
+**1. There is no `up` and no `down`.** A service sleeps until something opens a socket to it —
+zero memory, not a stopped container to remember. Connecting is the start; an agent never
+"starts" anything. `sbx ready` exists because a script's next line runs immediately, and an open
+port is not yet a database that answers.
 
 **2. The ports are assigned, not chosen.** Each sandbox gets a block, so two branches can both
-have "a postgres" without either knowing about the other. `sbx env` prints the real ones. An
-agent that writes `localhost:5432` into a config has hardcoded another task's database.
+have "a postgres" without knowing about each other. `sbx env` prints the real ones; writing
+`localhost:5432` into a config hardcodes another task's database.
 
 **3. One daemon per machine.** `sbx serve` owns every sandbox's ports. If it is not running,
-`sbx env` prints addresses that nothing answers on - which looks exactly like a broken service.
+`sbx env` prints addresses nothing answers on — indistinguishable from a broken service.
 `sbx doctor` says so in one line.
 
 **4. A sandbox is the unit.** `sbx env`, `sbx rm`, `sbx logs` and `sbx snapshot` all take a
@@ -91,8 +89,8 @@ sbx fork ready attempt-1        # a full copy, its own ports
 sbx fork ready attempt-2        # a write in one is invisible to the other
 ```
 
-This is the one that changes what is affordable: the expensive part of a per-task database is
-the seeding, not the container, and this pays it once.
+This changes what is affordable: the cost of a per-task database is the seeding, not the
+container — pay it once.
 
 **A service the spec never mentioned, mid-task**
 
@@ -109,9 +107,9 @@ sbx ready repro
 
 **Somewhere to run your own commands, with the repository in it**
 
-`sbx exec` drops you into the container of the service you name, and a postgres image has psql
-and no git. For running a build, a script or a test suite inside the sandbox, declare a service
-whose job is to hold the toolchain and mount the source into it:
+`sbx exec` drops you into the named service's container, but a postgres image has psql and no
+git. To run a build, script or test suite in the sandbox, declare a service that holds the
+toolchain and mounts the source:
 
 ```json
 { "dev": { "image": "golang:1.26-alpine", "ports": [7777],
@@ -124,9 +122,9 @@ sbx exec my-task dev go test ./...
 ```
 
 `args` keeps it alive - a container whose command exits is gone. `ports` is required by the
-spec and unused here: everything else in sbx is reached by opening a socket, and this is the one
-service that is not. A relative mount is resolved against the directory the spec is in, so `"."`
-is the repository. → [USE-CASES.md](USE-CASES.md#9--a-box-to-run-your-own-commands-in)
+spec but unused here: everything else in sbx is reached over a socket; this service is the
+exception. A relative mount resolves against the spec's directory, so `"."` is the repository.
+→ [USE-CASES.md](USE-CASES.md#9--a-box-to-run-your-own-commands-in)
 
 **Find out what is going on**
 
@@ -157,25 +155,23 @@ An agent should parse these rather than the human tables:
 | `sbx doctor --json` | capabilities, each absent one saying what its absence costs |
 | `sbx history [sandbox] --json` | newline-delimited records: wakes, sleeps, and commands that changed something |
 
-`sbx validate` checks a spec and creates nothing, which is the cheap way for an agent to find
-out whether the file it just wrote is right.
+`sbx validate` checks a spec and creates nothing — the cheap way to check a file just written.
 
 ---
 
 ## What it will refuse, and why
 
-An agent that knows these will not spend a turn fighting them:
+Knowing these saves an agent a turn spent fighting them:
 
-- **`build:` in a spec, on kubernetes.** Building in a cluster means a registry the nodes can
+- **`build:` in a spec, on kubernetes.** Building in a cluster needs a registry the nodes can
   pull from, which sbx cannot assume. Name an `image` instead.
-- **`egress: "deny"` on kubernetes.** The equivalent is a NetworkPolicy, and only some CNIs
-  enforce one. Applying it and reporting success would leave a service wide open while the spec
-  said otherwise.
+- **`egress: "deny"` on kubernetes.** The equivalent is a NetworkPolicy, which only some CNIs
+  enforce; applying it and reporting success would leave a service wide open against the spec.
 - **`sbx url` on kubernetes.** It points at an Ingress rather than inventing a tunnel to a pod.
-- **Clearing a limit on docker.** Docker cannot remove a ceiling from a container that exists;
+- **Clearing a limit on docker.** Docker cannot remove a ceiling from an existing container;
   recreate the sandbox. A cluster can, and is allowed to.
-- **`sbx connect` to an `http://` URL that is not on this machine.** The token would cross the
-  network in the clear.
+- **`sbx connect` to an `http://` URL not on this machine.** The token would cross the network in
+  the clear.
 
 Every refusal names the field or the flag it came from, so the message is usually the fix.
 
@@ -192,15 +188,15 @@ sbx connect db=https://db.example.dev cache=https://cache.example.dev
 #   cache  ->  127.0.0.1:6379
 ```
 
-The tools stay ordinary: `psql -h 127.0.0.1 -p 5432` reaches a database somewhere else without
-knowing anything happened. → [USE-CASES.md](USE-CASES.md#8--a-sandbox-that-is-not-on-your-laptop)
+Then `psql -h 127.0.0.1 -p 5432` reaches a database elsewhere without knowing anything happened.
+→ [USE-CASES.md](USE-CASES.md#8--a-sandbox-that-is-not-on-your-laptop)
 
 ---
 
 ## If something is wrong
 
-Run `sbx doctor` first. Most of what an agent hits is one of four things, and the daemon not
-running is the most common by a distance.
+Run `sbx doctor` first. Most of what an agent hits is one of four things — the daemon not
+running, most often by a distance.
 
-→ [TROUBLESHOOTING.md](TROUBLESHOOTING.md) is written as symptom → cause → fix, and is worth
-pointing an agent at directly when it is stuck.
+→ [TROUBLESHOOTING.md](TROUBLESHOOTING.md) is written as symptom → cause → fix — point an agent
+at it directly when it is stuck.
