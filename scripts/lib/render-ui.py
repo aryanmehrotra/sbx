@@ -31,7 +31,7 @@ XTERM = {
 FG = "#c9d1d9"
 BG = "#0d1117"
 
-CELL_W = 7.22
+CELL_W = 7.8  # true advance of ui-monospace/SF Mono at 13px; per-glyph x below pins to this grid
 CELL_H = 16.0
 PAD_X = 14
 PAD_Y = 40  # room for the window chrome
@@ -171,12 +171,19 @@ def render(rows, alt):
                 )
 
         spans = []
-        for _, text, cell in runs(cells, lambda c: (c[1], c[3])):
+        for start, text, cell in runs(cells, lambda c: (c[1], c[3])):
             if not text.strip():
                 spans.append(html.escape(text))
                 continue
+            # Nail every glyph to its grid column with an explicit x list. Left to flow, the
+            # text advances at the viewer's own monospace metric; if that runs even a little
+            # wider than CELL_W, a full-width row drifts off the right of the canvas and off
+            # its own background rects - which is exactly what clipped the committed picture.
+            # A per-glyph x is honoured by every SVG renderer, unlike textLength, so text,
+            # rects and canvas width agree no matter which monospace font the viewer has.
+            xs = " ".join(f"{PAD_X + (start + i) * CELL_W:.1f}" for i in range(len(text)))
             cls = ' class="b"' if cell[3] else ""
-            spans.append(f'<tspan fill="{cell[1]}"{cls}>{html.escape(text)}</tspan>')
+            spans.append(f'<tspan x="{xs}" fill="{cell[1]}"{cls}>{html.escape(text)}</tspan>')
 
         if any(c[0].strip() for c in cells):
             out.append(
