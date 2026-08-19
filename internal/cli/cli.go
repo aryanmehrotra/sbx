@@ -751,6 +751,50 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 	return nil
 }
 
+// Sleep parks a sandbox now: it stops every running service, dropping each to 0 B of memory
+// without waiting out the idle timer. This is an explicit override of the idle policy, not a
+// second owner of the lifecycle - the daemon still wakes them on the next connection, exactly
+// as it would have. It is the pair to Ready: one command to stand a sandbox down, one to bring
+// it up, for an orchestrator that wants to park a sandbox rather than wait for it to go quiet.
+func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
+	units, err := p.List(ctx, sandbox)
+	if err != nil {
+		return err
+	}
+
+	if len(units) == 0 {
+		return UnknownSandbox(ctx, p, sandbox)
+	}
+
+	slept := 0
+
+	for _, u := range units {
+		if !u.Running {
+			continue
+		}
+
+		// The same call the dashboard's `s` makes. Locally the daemon's cached "awake" goes
+		// stale for a moment, and is corrected the way it always is: the next connection dials
+		// a stopped container, the belief is revoked, and it is woken again.
+		if err := p.Stop(ctx, u.Ref); err != nil {
+			return fmt.Errorf("%s: %w", u.Ref, err)
+		}
+
+		fmt.Printf("  %-24s slept\n", u.Service)
+		slept++
+	}
+
+	if slept == 0 {
+		fmt.Printf("sandbox %q is already asleep\n", sandbox)
+
+		return nil
+	}
+
+	fmt.Printf("sandbox %q asleep - %d service(s) at 0 B\n", sandbox, slept)
+
+	return nil
+}
+
 // hostVar is the companion variable for a declared port export.
 //
 // `DATABASE_PORT` gets `DATABASE_HOST`, which is the convention most application config

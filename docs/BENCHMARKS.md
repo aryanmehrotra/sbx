@@ -148,6 +148,33 @@ practice, far above what the workloads behind it produce: 6.8 GB/s on loopback i
 magnitude more than a Postgres `COPY` will feed you, so the binding constraint stays the
 database. It would matter for something that genuinely streams at memory speed.
 
+### The relay buffer: pooled, and bigger
+
+The proxy copies each direction of a tunnel through a byte buffer. Two things about that buffer
+changed, and they are worth separating because one is cleanly measured and one is not.
+
+**Pooled - measured, and load-independent.** The old code allocated a fresh buffer on every
+connection (two directions, so 64 KiB per connection at the old 32 KiB). A client that opens
+many short connections - a pool with no reuse, an agent hammering redis with 162 of them - turned
+that into steady allocation and GC pressure. The buffer now comes from a `sync.Pool`:
+
+```
+`go test -bench RelayBufAcquire -benchmem`
+  pooled          8 ns/op        0 B/op   0 allocs/op
+  make-per-conn   5995 ns/op   131072 B/op   1 allocs/op
+```
+
+Zero allocation per connection, against 64 KiB freshly allocated and zeroed before. This one is
+pure CPU, so it holds on a busy machine.
+
+**Bigger (32 → 128 KiB) - mechanism sound, clean number pending.** A larger buffer drains a
+loopback socket in fewer read/write syscalls, which is where the 43% goes. Best-case throughput
+in the `StreamBuf` size sweep rose with size (≈6.3 → 7.5 GB/s from 32 to 128 KiB), but the
+machine these were taken on was under heavy load and the *median* delta sat inside the run-to-run
+spread - so per this file's own rule, no headline number is claimed for it. `go test -bench
+StreamBuf -count 10` on a quiet machine settles it; the 57% figure above was measured before the
+change and is the conservative one to quote until then.
+
 **A bigger buffer was tried and is worse**, which is the opposite of the obvious fix. Each
 direction copies through a 32 KiB buffer, and the reasonable suggestion is that fewer, larger
 syscalls would be cheaper:

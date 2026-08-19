@@ -37,6 +37,20 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"starts the moment this returns and a port that is merely open is not enough.",
 		"sbx create ci-$GITHUB_RUN_ID --template postgres && sbx ready ci-$GITHUB_RUN_ID",
 	},
+	"wake": {
+		"sbx wake <sandbox> [--timeout 90s]",
+		"Wake a sandbox now and wait until it is serving - the same wake a connection triggers,\n" +
+			"asked for explicitly. The pair to sleep, for an orchestrator that parks and resumes\n" +
+			"sandboxes rather than waiting on the idle timer.",
+		"sbx wake agent-42",
+	},
+	"sleep": {
+		"sbx sleep <sandbox>",
+		"Park a sandbox now: stop every running service and drop it to 0 B, without waiting out\n" +
+			"the idle timer. The daemon still wakes it on the next connection - this only overrides\n" +
+			"the idle policy for one transition.",
+		"sbx sleep agent-42",
+	},
 	"add": {
 		"sbx add <sandbox> <service> --image IMG --port N[,...] [--health CMD] [--env K=V,...]",
 		"Put a service into a sandbox that its spec never declared. For an agent mid-task\n" +

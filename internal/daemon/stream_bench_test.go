@@ -13,10 +13,12 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,4 +140,78 @@ func BenchmarkStreamProxied(b *testing.B) {
 	waitForListener(b, port)
 
 	drain(b, listenAddr(port))
+}
+
+// BenchmarkStreamBuf sweeps the relay buffer size in one invocation, so the comparison is
+// robust to a machine whose load drifts between separate runs - the failure mode CONTRIBUTING.md
+// warns about. Run: go test -run '^$' -bench StreamBuf -count 8 ./internal/daemon/
+func BenchmarkStreamBuf(b *testing.B) {
+	log.SetOutput(io.Discard)
+	b.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	saved := relayBuf
+	b.Cleanup(func() {
+		relayBuf = saved
+		relayBufPool = sync.Pool{New: func() any { x := make([]byte, relayBuf); return &x }}
+	})
+
+	for _, size := range []int{32 << 10, 64 << 10, 128 << 10, 256 << 10} {
+		size := size
+		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
+			relayBuf = size
+			relayBufPool = sync.Pool{New: func() any { x := make([]byte, relayBuf); return &x }}
+
+			up := sink(b)
+
+			front, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				b.Fatal(err)
+			}
+			port := front.Addr().(*net.TCPAddr).Port
+			_ = front.Close()
+
+			u := newUnit("bench", "svc", "ref", "inst-ref", "bench", nil, true)
+			u.mu.Lock()
+			u.served = true
+			u.mu.Unlock()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			go func() {
+				_ = u.serve(ctx, alwaysServing{}, leg{
+					Listen:   port,
+					Upstream: provider.Endpoint{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port},
+				}, 5*time.Second)
+			}()
+
+			waitForListener(b, port)
+			drain(b, listenAddr(port))
+		})
+	}
+}
+
+// BenchmarkRelayBufAcquire isolates the allocation cost of the copy buffer from all network and
+// scheduler noise - it is pure CPU, so it is robust on a busy machine where the throughput
+// benchmarks are not. It proves the one load-independent claim: pooling removes the per-connection
+// 128 KiB allocation the old code paid on every tunnel. Two directions per connection, so the
+// real saving is twice what one iteration here shows.
+func BenchmarkRelayBufAcquire(b *testing.B) {
+	b.Run("pooled", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			bp := relayBufPool.Get().(*[]byte)
+			buf := *bp
+			buf[0] = byte(i) // touch it so nothing is optimised away
+			relayBufPool.Put(bp)
+		}
+	})
+	b.Run("make-per-conn", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			buf := make([]byte, relayBuf) // the old behaviour: a fresh buffer every connection
+			buf[0] = byte(i)
+			_ = buf
+		}
+	})
 }

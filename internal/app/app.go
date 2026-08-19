@@ -329,6 +329,45 @@ func dispatch(cmd string, args []string) error {
 
 		return cli.Ready(context.Background(), p, positional[0], *timeout)
 
+	// wake and sleep are the explicit on-demand pair. Resume already happened on any
+	// connection; these give an orchestrator a verb to park a sandbox now and bring it back,
+	// without waiting on the idle timer. The daemon still owns the idle policy - these only
+	// override it for one transition.
+	case "wake":
+		fs := newFlagSet("wake")
+		timeout := fs.Duration("timeout", 90*time.Second, "give up after this long")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 1)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 1 {
+			return missing(cmd, "sandbox name")
+		}
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		return cli.Ready(context.Background(), p, positional[0], *timeout)
+
+	case "sleep":
+		fs := newFlagSet("sleep")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 1)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 1 {
+			return missing(cmd, "sandbox name")
+		}
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		return cli.Sleep(context.Background(), p, positional[0])
+
 	case "add":
 		return runAdd(args)
 
@@ -913,6 +952,8 @@ While you work
   sbx connect <url>...                          local ports for DEPLOYED sbx, several as one map
   sbx pack   [service] [--spec F]               build contexts for a platform that takes one container
   sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
+  sbx wake   <sandbox> [--timeout 90s]          wake it now and wait until serving
+  sbx sleep  <sandbox>                          park it now: stop every service, drop to 0 B
 
 Data
   sbx snapshot <sandbox> <name>                 save every service's filesystem

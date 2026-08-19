@@ -192,9 +192,24 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 	<-done
 }
 
+// relayBuf is the copy buffer for one direction of a tunnel.
+//
+// 128 KiB, up from 32, and pooled. The size is the throughput lever: a bulk transfer's cost is
+// dominated by the read/write syscall pair per chunk, and on loopback a socket often has more
+// than 32 KiB ready - so a bigger buffer drains it in fewer syscalls, which is most of the 43%
+// a proxied stream used to pay. The pool is the connection-churn lever: the old code allocated
+// two fresh 32 KiB buffers on every connection, which a client that opens hundreds of short
+// connections - a pool with no reuse, an agent hammering redis - turned into steady GC pressure.
+var relayBuf = 128 << 10
+
+var relayBufPool = sync.Pool{New: func() any { b := make([]byte, relayBuf); return &b }}
+
 // pipe copies one direction, stamping activity as it goes.
 func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
-	buf := make([]byte, 32*1024)
+	bp := relayBufPool.Get().(*[]byte)
+	defer relayBufPool.Put(bp)
+
+	buf := *bp
 
 	for {
 		n, rerr := src.Read(buf)
