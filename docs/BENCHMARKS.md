@@ -16,6 +16,7 @@ go test -run '^$' -bench Stream -count 10 ./internal/daemon   # bulk throughput
 ./scripts/e2e.sh 3                                   # several sandboxes at once
 ./scripts/recovery.sh                                # kill the daemon, twice
 ./scripts/fork-e2e.sh                                # snapshot, fork twice, prove independence
+./scripts/interrupt-e2e.sh                           # kill a volume copy mid-write, source stays intact
 scripts/compare.sh 20                                # sbx against the field
 ```
 
