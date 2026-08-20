@@ -272,7 +272,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 
 	// Before the container joins it, and only when something asks. Fails closed: a service
 	// that declared "deny" and could not get the network must not start with egress open.
-	if svc.Egress == spec.EgressDeny {
+	if svc.Egress == spec.EgressDeny || len(svc.EgressAllow) > 0 {
 		if err := d.ensureEgressNetwork(sandbox); err != nil {
 			return err
 		}
@@ -319,7 +319,26 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--gpus", svc.GPUs)
 	}
 
-	if svc.Egress == spec.EgressDeny {
+	// An allow-list gets the no-NAT bridge too - direct egress denied - plus a filtering proxy
+	// on the gateway as its one way out. HTTP(S)_PROXY points ordinary clients at it; a client
+	// that ignores the proxy and dials out directly has no route, so the allow-list holds.
+	if len(svc.EgressAllow) > 0 {
+		gw, err := d.egressGateway(sandbox)
+		if err != nil {
+			return err
+		}
+
+		proxy := "http://" + net.JoinHostPort(gw, strconv.Itoa(EgressProxyPort))
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			args = append(args, "-e", k+"="+proxy)
+		}
+
+		args = append(args,
+			"--label", labelEgressAllow+"="+strings.Join(svc.EgressAllow, ","),
+			"--label", labelEgressGateway+"="+gw)
+	}
+
+	if svc.Egress == spec.EgressDeny || len(svc.EgressAllow) > 0 {
 		args = append(args, "--network", egressNetwork(sandbox))
 	}
 
@@ -414,6 +433,23 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 }
 
 func egressNetwork(sandbox string) string { return "sbx-noegress-" + sandbox }
+
+// egressGateway returns the gateway IP of a sandbox's no-NAT bridge - the host address a
+// container on it can reach (local traffic, so it needs no route out), and where the egress
+// filter binds. Read after the network exists, so an allow-list can point HTTP_PROXY at it.
+func (d *dockerProvider) egressGateway(sandbox string) (string, error) {
+	gw, err := d.docker("network", "inspect", egressNetwork(sandbox),
+		"--format", "{{(index .IPAM.Config 0).Gateway}}")
+	if err != nil {
+		return "", fmt.Errorf("finding the egress gateway for %s: %w", sandbox, err)
+	}
+
+	if gw = strings.TrimSpace(gw); gw == "" {
+		return "", fmt.Errorf("the egress bridge for %s has no gateway address", sandbox)
+	}
+
+	return gw, nil
+}
 
 // ensureEgressNetwork creates a bridge with IP masquerade disabled.
 //
@@ -935,13 +971,18 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 		slot, _ := strconv.Atoi(c.Labels[labelSlot])
 
 		u := Unit{
-			Sandbox:  c.Labels[labelSandbox],
-			Service:  c.Labels[labelService],
-			Slot:     slot,
-			Ref:      c.name(),
-			Instance: c.ID,
-			Running:  c.State == "running",
-			Index:    (pairs[0].Public - publicBase) % blockSize,
+			Sandbox:       c.Labels[labelSandbox],
+			Service:       c.Labels[labelService],
+			Slot:          slot,
+			Ref:           c.name(),
+			Instance:      c.ID,
+			Running:       c.State == "running",
+			Index:         (pairs[0].Public - publicBase) % blockSize,
+			EgressGateway: c.Labels[labelEgressGateway],
+		}
+
+		if a := c.Labels[labelEgressAllow]; a != "" {
+			u.EgressAllow = strings.Split(a, ",")
 		}
 
 		for _, pr := range pairs {

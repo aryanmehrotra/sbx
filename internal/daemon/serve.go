@@ -85,6 +85,7 @@ func New(p provider.Provider, idle, ready, refresh time.Duration) *daemon {
 		refresh:  refresh,
 		units:    map[string]*unit{},
 		stop:     map[string]context.CancelFunc{},
+		egress:   map[string]*egressProxy{},
 	}
 }
 
@@ -104,9 +105,10 @@ type daemon struct {
 	ready   time.Duration
 	refresh time.Duration
 
-	mu    sync.Mutex
-	units map[string]*unit              // ref -> unit
-	stop  map[string]context.CancelFunc // ref -> listener cancel
+	mu     sync.Mutex
+	units  map[string]*unit              // ref -> unit
+	stop   map[string]context.CancelFunc // ref -> listener cancel
+	egress map[string]*egressProxy       // bridge gateway -> running egress filter
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -198,6 +200,7 @@ func Serve(args []string) error {
 		refresh:    *refresh,
 		units:      map[string]*unit{},
 		stop:       map[string]context.CancelFunc{},
+		egress:     map[string]*egressProxy{},
 	}
 
 	var connectSrv *http.Server
@@ -369,6 +372,10 @@ func (d *daemon) discover(ctx context.Context) {
 		delete(d.stop, ref)
 	}
 	d.mu.Unlock()
+
+	// A sandbox with an egress allow-list gets a filtering proxy on its bridge gateway,
+	// started here and torn down when the sandbox goes. Off the wake path.
+	d.reconcileEgress(found)
 }
 
 // forget drops a unit so the next discovery tick can rebuild it.

@@ -36,6 +36,9 @@ const (
 	labelService = "sbx.service" // its name within the sandbox
 	labelPorts   = "sbx.ports"   // public:backing pairs sbx serve should front
 
+	labelEgressAllow   = "sbx.egress.allow"   // comma-joined egress allow-list, when set
+	labelEgressGateway = "sbx.egress.gateway" // the bridge gateway its egress filter listens on
+
 	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
 	// names rather than risking a silently rejected manifest.
 	kubeLabelSandbox   = "sbx-sandbox"
@@ -84,7 +87,16 @@ type Unit struct {
 	Client   []Endpoint
 	Listen   []int
 	Upstream []Endpoint
+
+	// EgressAllow and EgressGateway carry a service's egress allow-list to the daemon, which
+	// runs a filtering proxy for it on the gateway. Both empty when there is no allow-list.
+	EgressAllow   []string
+	EgressGateway string
 }
+
+// EgressProxyPort is where a sandbox's egress filter listens on its no-NAT bridge gateway. The
+// provider injects it into HTTP_PROXY and the daemon binds it; one constant so they agree.
+const EgressProxyPort = 20999
 
 // Isolation is how strongly a sandbox is separated from its host and its neighbours.
 type Isolation string

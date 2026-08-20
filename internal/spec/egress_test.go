@@ -53,3 +53,22 @@ func contains(hay, needle string) bool {
 
 	return false
 }
+
+// egress_allow is enforced by a filtering proxy; a spec that pairs it with egress "deny" would
+// deny the allowed hosts too, and a blank host is a hole. Both must be caught at load time.
+func TestEgressAllowValidation(t *testing.T) {
+	ok := Service{Image: "x", Ports: []int{1}, EgressAllow: []string{"api.openai.com", "pypi.org"}}
+	if err := ok.validate("svc"); err != nil {
+		t.Errorf("a plain allow-list should be valid: %v", err)
+	}
+
+	both := Service{Image: "x", Ports: []int{1}, Egress: "deny", EgressAllow: []string{"a.com"}}
+	if both.validate("svc") == nil {
+		t.Error("egress deny + egress_allow together was accepted; it denies the allowed hosts")
+	}
+
+	blank := Service{Image: "x", Ports: []int{1}, EgressAllow: []string{"a.com", "  "}}
+	if blank.validate("svc") == nil {
+		t.Error("a blank egress_allow host was accepted; it is a hole in the list")
+	}
+}

@@ -192,10 +192,20 @@ type Service struct {
 	// masquerade disabled, a cluster does it with a NetworkPolicy, and a backend that
 	// cannot do it at all must refuse rather than quietly leave the service open.
 	//
-	// It is not a domain allow-list. Docker has no primitive for that and doing it
-	// properly needs a filtering proxy in the data path - a component with a lifecycle,
-	// not a flag. Claiming it with anything less would be a control that does not control.
+	// For a domain allow-list rather than all-or-nothing, use EgressAllow.
 	Egress string `json:"egress,omitempty"`
+
+	// EgressAllow turns egress into an allow-list: the service reaches only these hosts and
+	// nothing else. Each entry is a host or host:port and matches the host and its subdomains,
+	// so "openai.com" permits api.openai.com. It is enforced by a filtering proxy sbx runs in
+	// the data path - the direct route off the host is denied exactly as `egress: "deny"`
+	// denies it, and the proxy is the one way out, so the list is enforced, not advisory.
+	//
+	// This is the component-with-a-lifecycle the Egress note calls for. Setting it implies deny
+	// for everything unlisted, so it is not combined with egress: "deny" (which would deny the
+	// allowed hosts too). An agent box that may reach an LLM API and its package registry, and
+	// nothing else, is the case this exists for.
+	EgressAllow []string `json:"egress_allow,omitempty"`
 
 	// CPU and Memory cap what one service may take, passed to the runtime verbatim:
 	// CPU is cores ("0.5", "2"), Memory is a size ("512m", "2g").
@@ -269,6 +279,19 @@ func (s Service) validate(name string) error {
 	default:
 		return fmt.Errorf("service %q: egress %q is not valid - the only value is %q",
 			name, s.Egress, EgressDeny)
+	}
+
+	if len(s.EgressAllow) > 0 {
+		if s.Egress == EgressDeny {
+			return fmt.Errorf("service %q: egress_allow and egress %q together deny even the "+
+				"allowed hosts - use one, not both", name, EgressDeny)
+		}
+
+		for _, h := range s.EgressAllow {
+			if strings.TrimSpace(h) == "" {
+				return fmt.Errorf("service %q: egress_allow has a blank host", name)
+			}
+		}
 	}
 
 	return nil
