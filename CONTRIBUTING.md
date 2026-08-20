@@ -24,6 +24,7 @@ CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a
 | unit + docker-backed | a docker daemon | `go test ./...` |
 | the daemon, end to end | docker | `./scripts/e2e.sh 3` |
 | snapshot and fork | docker | `./scripts/fork-e2e.sh` |
+| data safety under interruption | docker | `./scripts/interrupt-e2e.sh` |
 | crash recovery | docker | `./scripts/recovery.sh` |
 | every documented use case | docker | `./scripts/usecases-e2e.sh` |
 | shell, workflows, docs, pins | - | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |

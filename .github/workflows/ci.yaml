@@ -263,6 +263,11 @@ jobs:
       - run: go build -o sbx .
       - name: seed, snapshot, fork twice, and prove the forks are independent
         run: ./scripts/fork-e2e.sh
+      - name: data safety when a volume copy is killed mid-write
+        # Kills fork/rm and the copy container itself at the worst moment, and asserts the
+        # read-only source never moves and no half-copied fork is served as whole. The tier
+        # above fork-e2e: not "does the copy replace correctly" but "what if it is cut in half".
+        run: ./scripts/interrupt-e2e.sh 3
 
   # The daemon dying is the one failure nobody schedules. This kills it and asserts a running
   # sandbox is untouched, that a restarted daemon re-adopts sandboxes from container labels,
