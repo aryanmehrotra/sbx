@@ -1,8 +1,9 @@
 # Use cases
 
-> **Short version:** seven shapes this fits - branches, agents, CI, a shared link, a browser,
-> seed-and-fan-out, a cluster - and the ones it does not. The commands are in the
-> [README](../README.md#install--use); this is the *why* and the numbers.
+> **Short version:** eleven shapes this fits - branches, agents, CI, a shared link, a browser,
+> seed-and-fan-out, a cluster, a deployed sandbox, a box for your own commands, a test fixture,
+> and a parked-and-resumed process. The commands are in the
+> [README](../README.md#install); this is the *why* and the numbers.
 
 ---
 
