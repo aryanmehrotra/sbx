@@ -1,11 +1,19 @@
-# Endurance, not a PR gate. A leak that only shows over time cannot block a push without making
-# every push slow, so it runs on a schedule and on demand instead - long enough to accumulate the
-# connections that make a per-connection leak visible, short enough to finish inside a nightly.
+# Endurance, tied to what it protects, not a clock. A leak that only shows over time should not
+# block a PR (it would make every push slow), and should not burn a runner nightly on a repo that
+# did not change - so it runs when code lands on main and when a release is cut, plus on demand.
+# Path-filtered: a docs-only push does not spend ten minutes proving the daemon still does not leak.
 name: soak
 
 on:
-  schedule:
-    - cron: '0 3 * * *' # nightly, 03:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - go.mod
+      - scripts/soak.sh
+      - .github/workflows/soak.yaml
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       seconds:

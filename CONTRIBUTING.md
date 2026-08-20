@@ -26,7 +26,7 @@ CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a
 | snapshot and fork | docker | `./scripts/fork-e2e.sh` |
 | data safety under interruption | docker | `./scripts/interrupt-e2e.sh` |
 | crash recovery | docker | `./scripts/recovery.sh` |
-| endurance / leaks (nightly) | docker + a running `sbx serve` | `./scripts/soak.sh` |
+| endurance / leaks (on main push & release) | docker + a running `sbx serve` | `./scripts/soak.sh` |
 | every documented use case | docker | `./scripts/usecases-e2e.sh` |
 | shell, workflows, docs, pins | - | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |
 
