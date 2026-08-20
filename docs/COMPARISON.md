@@ -324,10 +324,12 @@ Still open, honestly:
   is one `pg_dump` can't use. The `○` is a choice — but a real difference for anyone who wants
   `Sandbox.create()`.
 - **SSH and VNC.** `exec -t` is a PTY; neither of the other two is there.
-- **Memory restore.** `sbx checkpoint` / `resume` now save and restore a running process's
-  memory (CRIU) — but only on a Linux host with docker `--experimental`, refused on macOS and not
-  verified end-to-end in this repo. `sbx snapshot`/`fork` stay filesystem-only, so a *fork* still
-  starts cold. Genuinely less than E2B here, which restores RAM cross-platform and shipped.
+- **Memory restore.** `sbx checkpoint` / `resume` save and restore a running process's memory
+  (CRIU), **proven end to end** on a Linux podman runtime — a redis with no on-disk persistence
+  keeps a memory-only key across a freeze/resume. It needs Linux (refused on macOS) and a podman
+  runtime, because docker's own checkpoint restore is broken. `sbx snapshot`/`fork` stay
+  filesystem-only, so a *fork* still starts cold. Still less reach than E2B, which restores RAM
+  cross-platform and shipped — but no longer a flat gap.
 
 ## Where sbx now has an answer — and where to still use something else
 

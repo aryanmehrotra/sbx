@@ -37,6 +37,10 @@ spec's `exports` (the postgres template gives `DATABASE_HOST` and `DATABASE_PORT
     sbx logs <task> postgres --tail 50
     sbx rm <task>                         # when the task is done. This deletes its data.
 
+    sbx with <task> --template postgres -- <cmd>   # one-shot: create, run <cmd> with env set,
+                                                   # then ALWAYS rm - even if <cmd> fails. Its
+                                                   # exit code becomes sbx's. For a scoped test run.
+
 Rules:
 - One sandbox per task or branch, named after it. Do not reuse another task's.
 - `sbx rm` only the sandbox you created. Somebody else's may be in use.

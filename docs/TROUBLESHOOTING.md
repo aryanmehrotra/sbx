@@ -281,6 +281,21 @@ is not the one it started talking to.
 
 ---
 
+## `sbx checkpoint` works but `sbx resume` fails
+
+Almost always: you are on **docker**, whose checkpoint/restore is unmaintained. The dump
+succeeds and the restore dies - `bind-mount /proc/0/ns/net -> …: no such file or directory`, or
+`content … already exists`. These are docker/containerd bugs, not CRIU's: `criu check` passes on
+the same host.
+
+**Use a podman runtime.** Podman's CRIU integration restores reliably, and sbx routes through it
+automatically when podman is the runtime - point `DOCKER_HOST` at podman's socket
+(`unix:///run/podman/podman.sock`) and both `sbx serve` and the CLI will use it. On macOS
+checkpoint is refused outright, because CRIU needs a Linux host. Filesystem save-and-restore
+(`sbx snapshot` / `fork`) works on either runtime.
+
+---
+
 ## Removing sbx
 
 Nothing here is hidden, and all of it is reversible.

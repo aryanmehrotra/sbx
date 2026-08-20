@@ -324,17 +324,55 @@ reason, rather than presenting an empty directory that looks like a missing repo
 
 ---
 
-## Where to use something else
+## 10 · A fixture that lives exactly as long as a test
 
-| If you need | Use |
-|---|---|
-| An agent running genuinely untrusted code | E2B, Vercel Sandbox, Modal - Firecracker microVMs |
-| An agent's REPL resumed mid-thought | E2B - it snapshots RAM; this restores disk only |
-| A URL per pull request, for reviewers | Uffizzi, Okteto, Northflank |
-| Only ephemeral test fixtures | Testcontainers - ephemeral is right there |
-| HTTP-only, already on Knative | Knative - mature, and this is not |
+**The problem.** A test needs a real Postgres, and a `create`/`env`/`rm` script leaks the sandbox
+the moment the test panics or the runner is killed - the exact failure Testcontainers exists to
+prevent.
 
-→ [COMPARISON.md](COMPARISON.md) for the full table, sourced to vendor documentation.
+```sh
+sbx with test-db --template postgres -- go test ./...
+```
+
+`sbx with` creates the sandbox, waits until it serves, runs the command with the sandbox's env
+exported, and **always removes it afterwards** - on success, on a failing test, or on an
+interrupt. The command's own exit status becomes sbx's, so CI gates on it unchanged. `--keep`
+leaves it for inspection after a failure. This is the opposite lifecycle from a branch sandbox: a
+test fixture that survives the test is a leak, not a saving.
+
+---
+
+## 11 · Parking a process and resuming it where it was
+
+**The problem.** A wake starts a service cold against a warm disk - Postgres replays its WAL, a
+REPL loses its variables, a cache comes up empty. Sometimes you want the *process* back, not just
+its data.
+
+```sh
+sbx checkpoint agent-42 mid-thought    # freeze memory + processes
+sbx resume     agent-42 mid-thought    # bring them back exactly as they were
+```
+
+`sbx checkpoint` CRIU-dumps every running service's memory and freezes it; `sbx resume` restores
+it. This needs a Linux host and is proven on a **podman** runtime, whose CRIU restore is reliable
+where docker's is broken; it is refused with a reason on macOS. Filesystem-only save-and-fan-out
+is [use case 6](#6--one-seeded-database-many-agents); this is the memory one.
+
+---
+
+## Where sbx now has an answer, and where to still use something else
+
+Several of these used to be flat "use something else" rows; some now have an sbx answer, each as
+proven as the note says. → [COMPARISON.md](COMPARISON.md#where-sbx-now-has-an-answer--and-where-to-still-use-something-else)
+for the full breakdown, sourced to vendor documentation.
+
+| If you need | sbx | still use the incumbent when |
+|---|---|---|
+| To run untrusted code | `--isolation gvisor\|kata` (a microVM), opt-in | you want it by default and proven — E2B, Vercel Sandbox, Modal (Firecracker) |
+| An agent's REPL resumed mid-thought | `sbx checkpoint` / `resume` — CRIU memory restore, proven on a Linux podman runtime | you're on macOS, or want it cross-platform — E2B |
+| Ephemeral test fixtures | `sbx with <sandbox> -- <cmd>` — created, run, always removed | you want in-process, language-native fixtures — Testcontainers |
+| A URL per pull request | the [`pr-preview`](../examples/pr-preview/) recipe — idle previews sleep to 0 B | a managed control plane — Uffizzi, Okteto, Northflank |
+| HTTP-only, already on Knative | — | Knative: mature, and this is not |
 
 **Honest limits.** A container shares the host kernel; `--isolation gvisor|kata` is
 declarable and refused when the runtime is absent, but operating a hardened cluster is not
