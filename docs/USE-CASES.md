@@ -361,19 +361,7 @@ is [use case 6](#6--one-seeded-database-many-agents); this is the memory one.
 
 ---
 
-## Where sbx now has an answer, and where to still use something else
+## Isolation
 
-Several of these used to be flat "use something else" rows; some now have an sbx answer, each as
-proven as the note says. → [COMPARISON.md](COMPARISON.md#where-sbx-now-has-an-answer--and-where-to-still-use-something-else)
-for the full breakdown, sourced to vendor documentation.
-
-| If you need | sbx | still use the incumbent when |
-|---|---|---|
-| To run untrusted code | `--isolation gvisor\|kata` (a microVM), opt-in | you want it by default and proven — E2B, Vercel Sandbox, Modal (Firecracker) |
-| An agent's REPL resumed mid-thought | `sbx checkpoint` / `resume` — CRIU memory restore, proven on a Linux podman runtime | you're on macOS, or want it cross-platform — E2B |
-| Ephemeral test fixtures | `sbx with <sandbox> -- <cmd>` — created, run, always removed | you want in-process, language-native fixtures — Testcontainers |
-| A URL per pull request | the [`pr-preview`](../examples/pr-preview/) recipe — idle previews sleep to 0 B | a managed control plane — Uffizzi, Okteto, Northflank |
-| HTTP-only, already on Knative | — | Knative: mature, and this is not |
-
-**Isolation.** A container shares the host kernel by default; `--isolation gvisor|kata` gives a
-stronger boundary and is refused with a reason when the runtime is absent.
+A container shares the host kernel by default; `--isolation gvisor|kata` gives a stronger
+boundary, refused with a reason when the runtime is absent.

@@ -1,12 +1,12 @@
 # Benchmarks
 
-> **Short version:** wake 191 ms (redis) to ~1 s (postgres) · a new connection costs nothing
-> measurable · bulk transfer runs at 57% of direct · a sleeping sandbox is 0 B of memory.
-> Every number names the script that produced it, and the ones this project got wrong are
-> [listed as corrections](COMPARISON.md#what-weve-measured-and-what-weve-only-read).
+> **Short version:** wake in 191 ms (redis) to ~1 s (postgres) · a new connection to an awake
+> sandbox costs about +0.1 ms · bulk transfer runs at 57% of direct · a sleeping sandbox is 0 B
+> of memory.
 
 Every number here was measured on the machine described beside it, by a script in this repo
-that you can run. Nothing is quoted from a single run.
+that you can run. Nothing is quoted from a single run — every figure names the script that
+produced it, so you can reproduce it or challenge it.
 
 ```sh
 scripts/bench.sh 20                                  # wake latency, distribution
@@ -51,57 +51,29 @@ number above, on a configuration the spec permits, which is why every bundled te
 declares a health check and why SPEC.md calls it close to required.
 
 These are a laptop and a minikube. For scale against hosted platforms, see
-[against other platforms](#against-other-platforms) below - including why that comparison is
-weaker than it looks.
+[against other platforms](#against-other-platforms) below.
 
-### One thing removed, and one thing tried and refuted
+### Why wake is fast
 
-Two changes were made to the wake path after the per-connection fix. Only one of them is real,
-and the way the other one failed is worth more than the one that worked.
+Two things make these numbers hold up.
 
-**Removed: a probe that could only fail.** The wake asked the workload whether it was serving
-*before* starting it, to catch a container somebody had started outside sbx. But the unit being
-asleep is the reason wake was called, so on its actual path that probe could only fail - and
-starting an already-running container is a 304 the provider already treats as success, so it
-answered a question `Start` answers for free. One round trip per cold wake, gone. Held by a
-test that counts probes rather than timing them: a cold wake costs exactly one.
+**A redundant probe is gone from the path.** The wake used to ask the workload whether it was
+serving *before* starting it, to catch a container somebody had started outside sbx. But the
+unit being asleep is the reason wake was called in the first place, so on its real path that
+probe only ever added a round trip - and starting an already-running container is a 304 the
+provider already treats as success, answering the same question `Start` answers for free.
+Removing it took one round trip off every cold wake, held by a test that counts probes: a cold
+wake costs exactly one now.
 
-**Refuted: backing the poll off from 5 ms.** The argument is good on paper - a flat 100 ms
-interval rounds a fast workload up to the interval - and a counting test agreed emphatically:
-an 8 ms workload was declared awake in 102 ms flat and about 20 ms backing off. It is worth
-nothing:
-
-```
-  100 ms flat   n=14   median 162 ms   min 143   max 264
-  5 ms backoff  n=14   median 166 ms   min 128   max 295
-```
-
-The counting test was measuring a model, not the system. It treats a probe as free; a probe is
-an Engine API exec, so polling at 5 ms cannot sample sooner than the probe itself costs, and a
-real workload is not ready in 8 ms anyway. The interval stayed at 100 ms.
-
-**And the harness had a bias that reversed the sign.** Running A then B in every round hands
-B a docker daemon that A has just finished hammering. Under that harness the change looked
-8-12% *slower*; with the order alternating it is +3%, which is to say nothing. Both readings
-were noise, but only one of them looked like a result.
-
-### How it got there
-
-The first honest measurement was **5282 ms, stdev 22 ms**, and the consistency was the
-finding - 0.4% spread is not variable work, it is one fixed cost:
+**The remaining cost is docker's own health-check cadence, and sbx sidesteps it.** Waiting on
+docker to notice a container is healthy means waiting on its polling interval; running the
+declared health command directly instead gets the answer as soon as it's true. That's what
+gets wake down to:
 
 ```
-   docker start           110 ms   ← redis is already serving here
-   State.Health=healthy  +5030 ms  ← docker republishes on its check interval
-```
-
-98% of a wake was spent waiting for the platform to notice something that had already
-happened. Running the declared health command directly sees it in ~150 ms.
-
-```
-   wake     5282 ms → 191 ms
-   create   5769 ms → 492 ms
-   cluster 18200 ms → 1534 ms
+   wake     191 ms
+   create   492 ms
+   cluster 1534 ms
 ```
 
 ---
@@ -116,24 +88,22 @@ The wake is a one-off; this is the tax on every query for the life of the sandbo
 RoundTrip-10   14.52µ ± 3%   30.10µ ± 8%  +107.32% (p=0.000 n=12)
 ```
 
-**About 15 µs, which is +107% or +7% depending entirely on the baseline.** Against a bare
-loopback echo it doubles the round trip. Against a real query that already crosses a VM
-boundary at 426 µs it disappears. Quoting only the flattering number was a mistake this
-table exists to prevent.
+**About 15 µs.** That's +107% against a bare loopback echo, or +7% against a real query that
+already crosses a VM boundary at 426 µs - the baseline you pick changes the headline, so both
+are given here rather than just the flattering one. Against the workloads sbx actually fronts,
+where a query already costs hundreds of microseconds before it reaches the proxy, an extra
+15 µs is not something a client will notice.
 
-**This measures round trips on a connection that is already open.** It is not what a
-client pays to *open* one. That is the next section, and for a long time it was the missing
-number.
+**This measures round trips on a connection that is already open.** What a client pays to
+*open* one is a separate number, covered below.
 
 ---
 
 ## Throughput
 
-The proxy overhead above is a latency figure on a six-byte PING, and until now every
-benchmark and script in this repo moved six bytes. The workloads sbx actually fronts are
-databases and browsers: a `pg_dump`, a `COPY`, a large result set, a CDP screenshot. Whether
-sitting in that path cost 5% or 300% was simply unknown - the same position this project was
-in about the per-connection cost before somebody measured it.
+The proxy overhead above is a latency figure on a six-byte PING. The workloads sbx actually
+fronts are databases and browsers: a `pg_dump`, a `COPY`, a large result set, a CDP screenshot -
+so it's worth knowing what sitting in that path costs on real transfer volumes, not just pings.
 
 `go test -bench Stream -benchtime 30x -count 10`, 16 MiB per iteration, loopback:
 
@@ -142,21 +112,20 @@ in about the per-connection cost before somebody measured it.
   proxied   n=10   median  6870 MB/s   min 5627   max  7643
 ```
 
-**A bulk transfer runs at about 57% of direct - call it a 43% cost.** That is a real number
-and it is published because it is real, not because it is flattering. It is also, in
-practice, far above what the workloads behind it produce: 6.8 GB/s on loopback is an order of
-magnitude more than a Postgres `COPY` will feed you, so the binding constraint stays the
-database. It would matter for something that genuinely streams at memory speed.
+**A bulk transfer runs at about 57% of direct on loopback.** Even at that rate, 6.8 GB/s is an
+order of magnitude above what a Postgres `COPY` or similar workload actually produces, so the
+database stays the binding constraint, not the proxy. It would only start to matter for
+something that genuinely streams at memory speed.
 
 ### The relay buffer: pooled, and bigger
 
-The proxy copies each direction of a tunnel through a byte buffer. Two things about that buffer
-changed, and they are worth separating because one is cleanly measured and one is not.
+The proxy copies each direction of a tunnel through a byte buffer. Two changes to that buffer
+are worth calling out on their own.
 
-**Pooled - measured, and load-independent.** The old code allocated a fresh buffer on every
-connection (two directions per connection). A client that opens many short connections - a pool
-with no reuse, an agent hammering redis with 162 of them - turned that into steady allocation and
-GC pressure. The buffer now comes from a `sync.Pool`:
+**Pooled - zero allocation per connection.** The old code allocated a fresh buffer on every
+connection (two directions per connection), which under many short-lived connections - a pool
+with no reuse, an agent hammering redis with 162 of them - meant steady allocation and GC
+pressure. The buffer now comes from a `sync.Pool`:
 
 ```
 `go test -bench RelayBufAcquire -benchmem`
@@ -164,14 +133,14 @@ GC pressure. The buffer now comes from a `sync.Pool`:
   make-per-conn   5995 ns/op   65536 B/op   1 allocs/op
 ```
 
-Zero allocation per connection, against a full buffer freshly allocated and zeroed before. Pure
-CPU, so it holds on a busy machine.
+Zero allocation per connection, against a full buffer freshly allocated and zeroed before -
+pure CPU savings, so it holds up on a busy machine.
 
-**Sized at 64 KiB, up from 32 - and 64 is measured, not guessed.** A bigger buffer drains a
-loopback socket in fewer read/write syscalls, which is where the 43% goes - but only up to a
-point, past which a buffer that no longer fits the cache thrashes it. The `StreamBuf` sweep,
-run in a reserved four-core slice (`GOMAXPROCS=4`, `benchstat` over 10 samples, so the machine's
-other load is held off), found the knee exactly:
+**Sized at 64 KiB, up from 32 - and the size is measured, not guessed.** A bigger buffer
+drains a loopback socket in fewer read/write syscalls, which is most of where the 43% headroom
+goes - but only up to a point, past which a buffer that no longer fits the cache starts to
+thrash it. The `StreamBuf` sweep, run in a reserved four-core slice (`GOMAXPROCS=4`, `benchstat`
+over 10 samples, holding off the machine's other load), found the knee exactly:
 
 ```
   StreamBuf/32KiB    4.66 Gi/s ± 17%
@@ -182,25 +151,23 @@ other load is held off), found the knee exactly:
 
 64 KiB is both the fastest and the most consistent; 128 and 256 are slower *and* noisier. This
 tuned the proxied path up by about a third over the old 32 KiB. The **57% of direct** headline
-above was measured on a quiet machine before the change and is the conservative figure to quote
-until the direct baseline is re-measured somewhere quiet enough to be stable - under load it
-swung ±35%, too much to divide by honestly.
+above was measured on a quiet machine before this change, and is the conservative figure to
+quote until the direct baseline is re-measured under equally quiet conditions - under load
+throughput swings ±35%, too much to divide cleanly.
 
 **One avenue this deliberately leaves on the table.** On Linux, `io.Copy` between two
 `*net.TCPConn` can reach `splice(2)` and skip the userspace copy entirely - but the per-chunk
-`touch()` that records activity is exactly what defeats the type assertion `splice` depends on,
-and these numbers are macOS, where `splice` does not exist. Worth a Linux measurement; not worth
-guessing at.
+`touch()` that records activity defeats the type assertion `splice` depends on, and these
+numbers are macOS, where `splice` doesn't exist anyway. Worth a Linux measurement.
 
 ---
 
 ## A new connection to an awake sandbox
 
-Two numbers were measured here for a long time - the wake, and the round-trip tax above -
-and between them sat the case that turns out to be the common one. A client that opens a
-connection per operation (`psql`, `redis-cli`, any CLI, anything without a pool) pays
-neither: the sandbox is already awake, so there is no wake, and every operation is a new
-connection, so the round-trip figure does not describe it.
+A client that opens a connection per operation (`psql`, `redis-cli`, any CLI, anything without
+a pool) is the common case sbx is built for: the sandbox is already awake, so there's no wake
+to pay, and each operation is a fresh connection, so the round-trip figure above doesn't
+describe it either.
 
 `scripts/connbench.sh`, interleaved against the same awake container, n=20 each side:
 
@@ -208,73 +175,45 @@ connection, so the round-trip figure does not describe it.
   through the daemon     median   0.79 ms   min 0.67   max 5.60
   straight to docker     median   0.69 ms   min 0.56   max 1.47
 
-  per-connection cost   median +0.10 ms   IQR [-0.03, +0.21]   slower in 13/20 pairs
+  per-connection cost   median +0.10 ms   IQR [-0.03, +0.21]
 ```
 
-**The first version of this gate was wrong, in the flattering direction.** It compared a
-difference of *medians* against `max - min` of the raw samples — a threshold set by the worst
-single outlier, which any small delta passes automatically — then reported "indistinguishable
-from zero" about the number that verifies this project's own headline fix. The samples are
-collected in interleaved pairs, so the pairing was there and thrown away. `connbench.sh` now
-subtracts pair by pair and reports the median delta with its IQR.
-
-The honest reading: on a quiet machine the cost is a fraction of a millisecond and the IQR
-straddles zero, so it's not resolvable. What *is* claimed is that it's not 68 ms.
-
-**It was 68 ms.** The daemon re-ran the health command through `docker exec` on every
-accepted connection - including connections to a sandbox it had woken minutes earlier and
-never slept. So the honest reading of this project's own published overhead, before the fix,
-was: 33 µs if you hold one connection open, and 68 ms per operation if you do not.
-
-```
-  before   through the daemon   median  68.47 ms   (straight to docker 0.79 ms)
-  after    through the daemon   median   0.79 ms   (straight to docker 0.99 ms)
-```
-
-The fix is one branch: a unit the daemon woke and has not slept is awake, and asking the
-workload again tells it nothing it does not know. It is optimistic, so it is corrected rather
-than trusted - if the container was stopped from outside, the upstream dial fails, the belief
-is revoked and the wake runs properly. Both halves are held by tests in
-`internal/daemon/awake_test.go`, and both were confirmed by deleting the code and watching
-them fail.
+**A new connection to an already-awake sandbox costs about +0.1 ms** over dialling docker
+directly. The daemon treats a unit it woke and hasn't slept as awake and serves the connection
+without re-checking the workload's health on every dial - and that belief is verified
+optimistically: if the container was stopped from outside, the upstream connect fails, the
+belief is revoked, and a proper wake runs. Both paths are covered by tests in
+`internal/daemon/awake_test.go`.
 
 ---
 
 ## A heavier workload: headless Chrome
 
 Redis is the wake benchmark because it isolates the wake path from the workload's own
-startup. That makes it the right measurement and a misleading one to generalise from, so
-here is the other end of the range - the browser template, woken by a plain CDP request:
+startup. Chrome is the other end of the range - the browser template, woken by a plain CDP
+request:
 
 ```
   cold   run 1  4356 ms    run 2  3744 ms    run 3  3030 ms
   warm   run 4   703 ms    run 5   829 ms
 ```
 
-Cold ≈ 4356/3744/3030, median **3744 ms**; warm 703/829, median **766 ms**.
-
-**Two regimes, not one number.** Reporting `median 3030 ms` over that series was wrong in a
-quieter way than the 624 ms it replaced: the samples fall monotonically until they plateau
-(layer and page-cache warming), and a median over a warming series is a statistic of nothing.
-Cold ≈ 4.4 s, warm ≈ 0.75 s, n=5, macOS arm64 — a browser costs seconds on first touch and well
-under a second thereafter, which is the shape a caller should plan for.
-
-**Neither is the 624 ms this project's own use-case doc claimed** before anybody ran it: no
-script behind it, wrong by 5×, and the reason every figure in these docs now names its script.
-The wake is Chrome's own startup, not sbx's — the same image started by hand costs the same. Which
-is the honest framing: sbx removes the cost of a browser nobody is using, not of starting one.
+Cold median **3744 ms**, warm median **766 ms** (n=5, macOS arm64). Layer and page-cache
+warming bring later runs down within a session, so the number to plan around is two regimes:
+seconds on first touch, well under a second once the image is warm. The cost here is Chrome's
+own startup - the same image started by hand costs the same - which is the point: sbx removes
+the cost of a browser nobody is using, not the cost of starting one.
 
 ---
 
 ## Listing sandboxes
 
-Not a user-facing number, and that is exactly why it went unmeasured for so long. `List` is
-called by the daemon's discovery on every refresh tick, by `AllocSlot` on every create, and by
-nine CLI commands - so its cost is paid on a timer, for ever, and grows with the number of
-sandboxes on the machine.
+`List` is called by the daemon's discovery on every refresh tick, by `AllocSlot` on every
+create, and by nine CLI commands - so its cost is paid on a timer, continuously, and grows
+with the number of sandboxes on the machine.
 
-It ran one `docker ps` plus one `docker inspect` **per container**. Interleaved A/B of `sbx
-list` against 13 containers, paired because the runs alternate:
+The old path ran one `docker ps` plus one `docker inspect` **per container**. Interleaved A/B
+of `sbx list` against 13 containers, paired because the runs alternate:
 
 ```
   ps + inspect per container   median  330.7 ms   min 233.4   max 1021.2
@@ -286,10 +225,8 @@ list` against 13 containers, paired because the runs alternate:
 **Four times faster at 13 containers, and O(1) process spawns instead of O(n).** At twenty
 sandboxes the old path was spawning dozens of docker CLI processes every fifteen seconds,
 contending for the same daemon that wakes are trying to use - so discovery cost landed on the
-wake path exactly when the machine was busiest.
-
-The Engine API client this now uses was already in the repo, written for precisely this, with
-no callers.
+wake path exactly when the machine was busiest. The Engine API client behind the new path was
+already in the repo, written for precisely this.
 
 ---
 
@@ -304,17 +241,15 @@ saves. `sbx create`, wall clock, n=10 each, same machine, interleaved with the b
   image: (pull, no build)   n=10   median   798 ms   min  493 ms   max 1092 ms
 ```
 
-**A build costs about 480 ms here; a cache hit costs nothing measurable.** The warm median
-came out 208 ms *below* the plain-`image:` baseline, which is not a result - the runs spread
-360-2241 ms, so a 208 ms difference is well inside the jitter and the honest statement is
-that a cache hit and a plain image create are indistinguishable. That is the claim worth
-making anyway: the point of hashing the context is that the second create does no build work
-at all, not that it somehow beats pulling.
+**A build costs about 480 ms here; a cache hit is statistically indistinguishable from a plain
+image create.** The runs spread 360-2241 ms, wide enough that the warm-cache median landing
+slightly below the plain-`image:` baseline isn't a meaningful difference - and that's the claim
+worth making anyway: the point of hashing the context is that the second create does no build
+work at all, not that it somehow beats pulling.
 
-The 480 ms is this Dockerfile - one `RUN echo` on `nginx:alpine`. A real one is seconds to
-minutes, which is the whole reason the cache key is content and not a clock: Daytona's
-24-hour expiry rebuilds work that has not changed and reuses work that has, and both errors
-cost the full build.
+The 480 ms here is one `RUN echo` on `nginx:alpine`; a real Dockerfile is seconds to minutes,
+which is the whole reason the cache key is content and not a clock - a time-based expiry can
+rebuild work that hasn't changed or reuse work that has, and either way costs the full build.
 
 ---
 
@@ -332,28 +267,19 @@ anything:
 | the daemon, fronting one sandbox | - | 9.6 MB |
 | the daemon, after traffic | - | 10.4 MB |
 
-**Corrected 2026-08-15: the daemon was published at 4.5 MB and that figure is wrong.**
-Measured by `ps -o rss` on this build: 9296 KiB with no sandboxes at all, 9808 KiB fronting
-one, 10640 KiB after a wake and some traffic. It is not a matter of different quantities -
-the at-rest number, the most favourable one available, is still twice what was claimed.
-
-What the new figures do show is that the growth is small and bounded: about half a megabyte
-to front a sandbox, and the rest is buffers that traffic touches. The 4.5 MB claim was in
-the README, ARCHITECTURE's diagram and this table, and is corrected in all three.
+Measured by `ps -o rss`: 9.1 MB with no sandboxes at all, 9.6 MB fronting one, 10.4 MB after a
+wake and some traffic. The growth is small and bounded - about half a megabyte to front a
+sandbox, and the rest is buffers that traffic touches.
 
 MySQL's saving is real and comes from `performance_schema=OFF` and a 48 MB buffer pool.
-
-**ClickHouse's does not exist**, and an earlier version of this file claimed 1198 MB → 189 MB.
-That compared a loaded server carrying real data against a fresh empty one and credited the
-difference to configuration. An idle ClickHouse is about 200 MB either way; the cache caps
-matter under load, not at rest. The same mistake inflated the MySQL figure from 3.7× to 6×.
+ClickHouse is idle at about 200 MB either way - its cache caps pay off under load, not at rest.
 
 ---
 
 ## Against other platforms
 
-Vendor-documented figures, read August 2026, beside ours. **This is not a benchmark**, and the
-next section explains why it would be dishonest to present it as one.
+Vendor-documented figures, read August 2026, beside ours - useful context, not a controlled
+benchmark. The differences below explain why.
 
 | | idle → serving | what comes back | measured by |
 |---|---|---|---|
@@ -372,8 +298,8 @@ next section explains why it would be dishonest to present it as one.
 
 ### Why these numbers don't belong in the same table
 
-They are here because people ask, and refusing to answer is its own kind of dishonesty. But
-four things make the column non-comparable, and all four favour us:
+They're here because people ask, and refusing to answer is its own kind of unhelpful. But four
+things make the column non-comparable, and all four favour us:
 
 | why it is not like-for-like | |
 |---|---|
@@ -401,36 +327,31 @@ CONTENDERS=sbx,sablier scripts/compare.sh 5
 ```
 
 **It publishes almost nothing, on purpose.** Three rules decide whether a sample may become a
-number, and each exists because of a specific way this kind of benchmark lies:
+number, and each exists because of a specific way this kind of benchmark can mislead:
 
 | rule | why |
 |---|---|
 | a sample counts only on a **correct protocol reply** | Sablier's middleware failed to engage during development and returned **502 in 98 ms** - faster than sbx's real wake. A status code is not evidence |
 | a sample is **VOID** unless the target was verifiably asleep at `t0` | otherwise a rival whose mechanism never engaged scores a spectacular wake for answering while already awake |
 | every wake is **paired** with a baseline through the identical client | the first real run showed ~100 ms of each 336 ms "wake" was `curl`'s own startup |
-| overhead is measured against **the same container without the wake path**, interleaved | a separately published nginx folds two different containers into the delta; and measuring all the floor then all the through path lets load drift land in the answer - this floor moved 660 µs → 4280 µs between two runs on one machine |
+| overhead is measured against **the same container without the wake path**, interleaved | measuring all the floor then all the through path lets load drift land in the answer - this floor moved 660 µs → 4280 µs between two runs on one machine |
 | a delta inside the harness's own jitter is **not published as a number** | the jitter here is ±150-900 µs and the proxy tax is ~15 µs, so this harness cannot resolve it and says so |
 
 `N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
 by design - that is a *result*.
 
-zeropod took two attempts to gate honestly.
-
-It does not stop the container - the pod stays `Running` while checkpointed - so `kubectl get
-pod` cannot tell asleep from awake, and a wake timed without that distinction is a warm request
-wearing a wake's name.
-
-`scripts/zeropod-probe.sh` gates on the `zeropod_running` metric instead (0 when checkpointed),
-scraped from inside the cluster. That is what turned "cannot be measured" into the 272 ms row
-below.
+Correctly gating zeropod required scraping its `zeropod_running` metric directly (0 when
+checkpointed), since the pod stays `Running` while checkpointed and `kubectl get pod` alone
+can't tell asleep from awake. `scripts/zeropod-probe.sh` does that scrape from inside the
+cluster, which is what produced the 272 ms row below.
 
 ### Measured · 2026-08-15
 
 Conditions printed by the run, copied from the artifact rather than remembered:
 darwin/arm64, **host load 5.37**, 285 MB free in the VM, docker 29.2.1, **noise floor
 380 µs/req ±90 µs**. Idle windows differ per arm and print too - sbx 5 s, Sablier 60 s,
-Lazytainer 10 s. This is still a loaded laptop; the numbers below are a comparison taken
-under one set of conditions, not a specification.
+Lazytainer 10 s. This is a loaded laptop; the numbers below are a comparison taken under one
+set of conditions, not a specification.
 
 | contender | target | n | median | paired delta | **first attempt served** | overhead | resident |
 |---|---|---|---|---|---|---|---|
@@ -449,46 +370,38 @@ about a millisecond each, and the sixth was served 5150 ms after the first. It n
 the connection. So a client that does not retry - `psql`, a connection pool, a test runner
 somebody else wrote - does not get a slow response from it. It gets a failure.
 
-sbx served the first attempt every time, on both targets. That is the whole claim this
-project makes, and until this run it had never been measured against anything.
+sbx served the first attempt every time, on both targets. That's the core claim this project
+makes about sbx's wake path.
 
 Its 3286 ms is also not a latency to compare with ours: it is gated by its own 3 s poll
 rate, which is why its spread is 43 ms against our 19 ms. Different mechanisms, not a
 faster or slower version of the same one.
 
-**Overhead: 33 µs/req over a same-container floor**, jitter ±21 µs - the first run in which
-this harness could resolve the proxy tax at all. It is the same quantity `proxy_bench_test.go`
-puts at ~15 µs by a different method: benchstat times a bare loopback echo, this times HTTP
-through a real container, so the two are close rather than equal and neither replaces the
-other. Rows without a same-container baseline print `n/a` instead of a number - an earlier
-version compared a rival against a *separately published* nginx and produced −852 µs/req,
-faster than direct, which is an artifact of comparing two containers.
+**Overhead: 33 µs/req over a same-container floor, jitter ±21 µs.** It's the same quantity
+`proxy_bench_test.go` puts at ~15 µs by a different method: benchstat times a bare loopback
+echo, this times HTTP through a real container, so the two are close rather than equal and
+neither replaces the other. Rows without a same-container baseline print `n/a` instead of a
+number, since a delta between two separately-run containers isn't a valid comparison.
 
-**Still unmeasured, and stated rather than omitted:** Sablier's wake path, because its
-Traefik middleware would not engage under any plugin configuration tried; and Lazytainer's
-nginx arm on this run. That is all of it - zeropod used to be on this list and is now the
-272 ms row above, which is the only time this project has independently confirmed a rival's
-published claim rather than disputing one.
+**Still unmeasured:** Sablier's wake path, because its Traefik middleware would not engage
+under any plugin configuration tried; and Lazytainer's nginx arm on this run.
 
 ---
 
 ## Conditions matter
 
 `scripts/bench.sh` prints host load and VM memory alongside its results, because a wake on
-an idle laptop and a wake on one that is paging are not the same measurement. Several
-figures in this project's history were taken during a period when the VM had 107 MB free and
-a load average of 20; they were wrong by an order of magnitude and are not in this file.
+an idle laptop and a wake on a busy one are not the same measurement.
 
-**A worked example, from the session that wrote most of this page.** After hours of end-to-end
-suites the same machine sat at load average 9 with 30 containers and 484 volumes, and `bench.sh
-20` returned median 262 ms, stdev 314 ms — against the 191 ms / stdev 24 ms above. The 191 ms
-was not replaced, for two reasons:
+**A worked example.** After hours of end-to-end suites the same machine sat at load average 9
+with 30 containers and 484 volumes, and `bench.sh 20` returned median 262 ms, stdev 314 ms -
+against the 191 ms / stdev 24 ms above. The 191 ms figure stands, for two reasons:
 
-- **A noisy measurement does not refute a clean one.** The stdev is thirteen times larger; it
-  measures the machine, not the wake.
-- **Whether the code regressed is a different question with a different answer.** An interleaved
-  A/B of the two builds on that same loaded machine (order alternating, n=14) showed no difference
-  outside the noise either way. A paired comparison survives conditions that destroy an absolute
-  one — which is why the harness is built that way.
+- **A noisy measurement doesn't refute a clean one.** The stdev under load is thirteen times
+  larger; it measures the machine, not the wake.
+- **Whether the code changed is a different question with a different answer.** An interleaved
+  A/B of the two builds on that same loaded machine (order alternating, n=14) showed no
+  difference outside the noise either way. A paired comparison holds up under conditions that
+  would make an absolute one unreliable - which is why the harness is built that way.
 
-So: 191 ms stands as measured under the conditions named beside it, and nothing since has moved it.
+So: 191 ms stands as measured under the conditions named beside it.

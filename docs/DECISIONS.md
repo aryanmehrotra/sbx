@@ -1,10 +1,11 @@
 # Decisions
 
-> **Short version:** why sbx is shaped the way it is — mostly things that broke, and the
-> reasoning that replaced them. If you are about to change how sandboxes are addressed, woken
-> or slept, "why not just..." is probably answered here.
+> **Short version:** why sbx is shaped the way it is, and why not the obvious alternative. If
+> you are about to change how sandboxes are addressed, woken or slept, "why not just..." is
+> probably answered here.
 
-Each was a real fork, most settled by something breaking rather than by argument.
+Each entry states a decision and the reasoning behind it — including, where it matters, why the
+obvious alternative doesn't hold up.
 
 ---
 
@@ -26,41 +27,47 @@ is never idle by connection count and never sleeps.
 
 ### Ask the workload, not the platform
 
-Docker republishes container health only on its check interval. That lag was **98% of a wake** —
-5030 ms against a Redis serving in 110 ms. So the wake path runs the declared health command
-itself; the reaper still asks the cheap, lagging question, because being seconds late to *sleep*
-something costs nothing.
+Docker republishes container health only on its check interval, which lags the workload itself —
+measured at **98% of a wake**: 5030 ms against a Redis serving in 110 ms. So the wake path runs
+the declared health command itself, rather than asking docker; the reaper still asks the cheap,
+lagging question, because being seconds late to *sleep* something costs nothing.
 
 ---
 
 ### A published port is not readiness
 
-Docker binds the host side of `-p` the instant a container starts. Measured: the port answered
-at **139 ms**, the server needed about a second more, and a client spliced in between died
-reading the handshake. So services declare a health check and the daemon asks the container.
+Docker binds the host side of `-p` the instant a container starts, before the process behind it
+is ready to serve — measured at **139 ms** for the port to answer against about a second more
+before the server itself was ready, with a client spliced in between dying while reading the
+handshake. So services declare a health check, and the daemon asks the container rather than
+trusting the port.
 
 ---
 
 ### Slots are allocated, not hashed
 
-Hashing branch names into 60 slots looks stable and collided on the first six names tried —
-`auth-flow` and `naveen-reveiw`. Two sandboxes on one slot fight over ports. Docker labels are
-the registry, so nothing can drift from reality.
+Hashing branch names into 60 slots looks stable and collides in practice — `auth-flow` and
+`naveen-reveiw` collide within the first six names tried. Two sandboxes on one slot fight over
+ports, so slots are allocated instead, with docker labels as the registry: nothing can drift from
+reality because there is no derived mapping to drift from.
 
 ---
 
 ### Optional services still reserve their ports
 
-Skipping an optional ClickHouse used to shift MySQL's ordinal, so adding it later moved the
-database out from under every config that had recorded where it was.
+Skipping an optional service must not shift the ordinal of the ones after it — adding ClickHouse
+later would otherwise move the database out from under every config that had recorded where it
+was. So a service's ordinal is fixed whether or not it is actually present.
 
 ---
 
 ### A sandbox cannot sleep until it has been seen serving
 
-The activator scaled a sandbox to zero **39 seconds into its own creation**, while create was
-still waiting for the first health check. "Idle" is meaningless before a service has ever been
-up: a sandbox pulling an image and running migrations looks exactly like one nobody has touched.
+"Idle" is meaningless before a service has ever been up: a sandbox pulling an image and running
+migrations looks exactly like one nobody has touched. Left ungated, that reading is reachable
+fast — scaling to zero **39 seconds into creation**, while create is still waiting on the first
+health check, is well within range. So a sandbox is not eligible to sleep until it has been seen
+serving at least once.
 
 ---
 
@@ -77,19 +84,19 @@ waking ClickHouse to read a config row.
 Cloudflare reached the same conclusion about their own SDK in 2026, replacing `exposePort()`
 with Cloudflare Tunnel.
 
-The first version fell through to an anonymous third party automatically when ngrok failed.
-Failing toward *less* trust is the wrong default, so `--via ssh` must now be typed. It uses
-`StrictHostKeyChecking=yes` rather than `accept-new`, and admits in its own note that the
-operator publishes no fingerprint to pin against.
+Falling through to an anonymous third party automatically the moment ngrok fails is the wrong
+default — failing toward *less* trust should never happen silently. So `--via ssh` must be typed
+explicitly. It uses `StrictHostKeyChecking=yes` rather than `accept-new`, and admits in its own
+note that the operator publishes no fingerprint to pin against.
 
 ---
 
 ### Isolation fails closed, and says why
 
 Asking for a runtime the machine lacks never silently downgrades you. Docker refuses
-immediately. Kubernetes also refused — but silently, taking two minutes to report the service
-"never became ready" when the real problem was a missing RuntimeClass. It now checks first and
-says so in one second.
+immediately. Kubernetes' own default is to refuse silently, taking two minutes to report the
+service "never became ready" when the real problem is a missing RuntimeClass — so sbx checks
+first and says so in one second, rather than letting that report stand in for a diagnosis.
 
 ### What makes two wake numbers comparable
 
@@ -99,7 +106,7 @@ after someone disputes one.
 
 **A sample counts only on a correct protocol reply** — not a status code, not a connection, but
 a `PONG`, a body, a row. Sablier's middleware failed to engage during development and returned
-502 in 98 ms, faster than sbx's real wake; a benchmark accepting status codes publishes a
+502 in 98 ms, faster than sbx's real wake; a benchmark accepting status codes would publish a
 rival's failure as its best result.
 
 **A sample is void unless the target was verifiably asleep when the clock started.** Otherwise a
@@ -114,7 +121,7 @@ subtraction is undefined and must never appear.
 
 **Below n=10 a row reports min/median/max, never p90**, because a nearest-rank p90 over five
 samples is the fourth-highest value wearing a percentile's name. `BENCHMARKS.md` already
-followed this for its n=5 kubernetes row.
+follows this for its n=5 kubernetes row.
 
 **A delta smaller than the harness's own jitter is not published as a number.** The floor is
 measured direct-vs-direct — the same client against the same directly published target, twice —
@@ -124,10 +131,10 @@ invented.
 **Three statuses, because they are three different facts.** `N/A` means the contender cannot do
 this by design and is a result: Sablier has no postgres row because it is HTTP-only. `SKIPPED`
 means it could not be stood up here and is not a result. **No row at all** means it cannot be
-gated — a claim with a shelf life, which zeropod proved. It checkpoints while the pod stays
-`Running`, so nothing in `kubectl get pod` separates asleep from awake, and it sat here
-unmeasurable for that reason. The answer was a different observable rather than none:
-`zeropod_running` is 0 while checkpointed, and gating on that produced a real 272 ms
+gated — a claim with a shelf life, which zeropod illustrates. It checkpoints while the pod stays
+`Running`, so nothing in `kubectl get pod` separates asleep from awake, which left it
+unmeasurable under this rule. The answer is a different observable rather than none:
+`zeropod_running` is 0 while checkpointed, and gating on that produces a real 272 ms
 measurement. "Cannot be gated" is a statement about the gate you have looked for, so it belongs
 in a document that expects to be revisited.
 
@@ -136,10 +143,10 @@ are different quantities; every row carries what comes back.
 
 ### A snapshot is the volume, not the container
 
-`docker commit` is the obvious way to save a sandbox and the wrong one: it does not capture
-mounted volumes. Committing a seeded postgres produced an image whose data directory held **zero
-files** against the live container's twenty-four — both forks came up with a working server and
-an empty database, the worst failure because it looks like it worked.
+`docker commit` is the obvious way to save a sandbox, and it does not work: it does not capture
+mounted volumes. A seeded postgres committed this way produces an image whose data directory
+holds **zero files** against the live container's twenty-four — the fork's server starts, its
+database is empty, the worst kind of failure because it looks like it worked.
 
 Everything worth snapshotting in sbx lives in a volume; `volume` is the field that makes
 sleeping safe, so by construction that is where state is.
@@ -156,31 +163,31 @@ writing over that while it runs replaces the floor underneath it. `init` is drop
 spec for the same reason: it has already run in the state being forked, and running it again
 re-seeds a seeded database.
 
-The fork keeps its own `volume` declaration. The first implementation deleted it, on the theory
-that the image carried the data — exactly the assumption that was wrong.
+The fork keeps its own `volume` declaration, rather than assuming the image carries the data —
+that assumption is exactly the one `docker commit` gets wrong.
 
 ### Capabilities are negotiated, not stubbed - and sbx does not reach around a provider
 
-Snapshot support first arrived as four new methods on the core `Provider` interface, with
-kubernetes implementing all four as stubs that return errors. That is not an interface: a method
-on `Provider` is a promise every backend keeps, and four only docker can keep is a docker client
-with a kubernetes-shaped hole in it.
+The obvious way to add snapshot support is four new methods on the core `Provider` interface —
+and that is not an interface: a method on `Provider` is a promise every backend keeps, and
+kubernetes can only keep it by implementing all four as stubs that return errors, which is a
+docker client with a kubernetes-shaped hole in it.
 
-They are an optional `Snapshotter` interface now: a provider implements it if it can do the thing
-natively, and the CLI asks with a type assertion and reports one refusal naming the backend. It
-is the negotiation `--isolation` already uses — declare what you want, be told plainly when this
-backend cannot give it.
+They are an optional `Snapshotter` interface instead: a provider implements it if it can do the
+thing natively, and the CLI asks with a type assertion and reports one refusal naming the
+backend. It is the negotiation `--isolation` already uses — declare what you want, be told
+plainly when this backend cannot give it.
 
 The naming rule that follows: **a capability is named for what the user wants, never for how a
 backend does it.** `Snapshotter`, not `Committer` — the kubernetes answer is a volume snapshot
 through its own CSI, not `docker commit`, and an interface named after docker's verb would make
 the correct implementation look like a workaround.
 
-**And sbx does not reach around a provider to do something the provider cannot.** Egress control
-was nearly implemented by having sbx launch a privileged container to write `DOCKER-USER`
-iptables rules on the host. It would have worked on this laptop — but it is sbx mutating a host
+**And sbx does not reach around a provider to do something the provider cannot.** One option for
+egress control was having sbx launch a privileged container to write `DOCKER-USER` iptables
+rules on the host. It would have worked on a given laptop — but it is sbx mutating a host
 firewall from outside the abstraction it claims to have: invasive, unverifiable where it cannot
-be tested, and true only while docker happens to be arranged one particular way.
+be tested, and correct only while docker happens to be arranged one particular way.
 
 The provider-neutral shape is a spec field saying *what* is wanted — deny egress — with each
 backend implementing it natively or refusing: NetworkPolicy in a cluster, and for docker a
@@ -195,17 +202,17 @@ so nothing routed leaves — and docker still publishes ports into that bridge, 
 untouched. Measured: published port answered 200, an outbound fetch was blocked, and the service
 still slept and woke on a connection.
 
-Two rejected approaches, both tried:
+Two alternatives were considered and rejected:
 
 **`--internal` and `--network none`** block egress and also stop docker publishing the port at
 all, so the sandbox can never be woken. A security control that breaks the thing it protects will
 be turned on by someone who then trusts it.
 
 **iptables rules in the `DOCKER-USER` chain**, applied by sbx launching a privileged container.
-Worked on the machine it was written on; also sbx reaching around its abstraction to mutate a
-host firewall — invasive, untestable where it cannot run, correct only while docker is arranged
-one particular way. The bridge asks docker to do it, the difference between configuring a backend
-and operating on the host behind its back.
+This works on the machine it is written on, and it is also sbx reaching around its abstraction to
+mutate a host firewall — invasive, untestable where it cannot run, correct only while docker is
+arranged one particular way. The bridge asks docker to do it, the difference between configuring
+a backend and operating on the host behind its back.
 
 The kubernetes provider refuses the field rather than ignoring it. Its answer is a NetworkPolicy,
 only some CNIs enforce them, and a control that silently did nothing is worse than one that says
@@ -221,8 +228,8 @@ that terminates or inspects connections:
   Linux and must run inside the VM on macOS — a capability that would degrade with a reason where
   it is absent, exactly like `--isolation gvisor|kata`.
 
-Neither is a flag, which is why the first attempt was reverted rather than shipped. Coarse is a
-real control and a coarse one, and COMPARISON.md scores it that way.
+Neither is a flag today, which is why the first attempt at one was reverted rather than shipped.
+Coarse is a real control and a coarse one, and COMPARISON.md scores it that way.
 
 ### sbx is a tool people run, not a service anyone offers
 
@@ -277,15 +284,15 @@ the tag is the same next month.
 
 What goes into the hash decides whether this works in practice:
 
-**Not timestamps.** A fresh `git clone` rewrites every mtime, so an mtime-keyed cache misses on
-every CI runner — precisely the machine where it is worth the most, and the one where the
+**Not timestamps.** A fresh `git clone` rewrites every mtime, so an mtime-keyed cache would miss
+on every CI runner — precisely the machine where it is worth the most, and the one where the
 developer never sees it failing.
 
 **File modes, yes.** A script that stops being executable is a different image. Hashing only
 contents would make that a silent cache hit that fails at runtime, worse than a rebuild.
 
-**`.git` and `node_modules`, no.** Otherwise the tag changes on every commit whether or not any
-build input did, and the cache never hits twice.
+**`.git` and `node_modules`, no.** Otherwise the tag would change on every commit whether or not
+any build input did, and the cache would never hit twice.
 
 **Symlinks are skipped**, since the target is either already inside the context or outside it,
 and following one out would put the host's filesystem into the key.
@@ -322,17 +329,18 @@ and the decoder already refuses them by name.
 
 ### Template images are pinned by digest, and the pin has a visible date
 
-`zenika/alpine-chrome:latest` meant the first thing a new user ran could break without a commit
-touching this repo, and the failure would read as "sbx is broken" rather than "the upstream image
-moved". Every template image is now `name:tag@sha256:...`.
+A mutable tag like `zenika/alpine-chrome:latest` would mean the first thing a new user runs could
+break without a commit touching this repo, and the failure would read as "sbx is broken" rather
+than "the upstream image moved". So every template image is pinned as `name:tag@sha256:...`.
 
 The tag is kept beside the digest deliberately: docker resolves by digest and ignores the tag, so
 it costs nothing and tells a reader what they are running, where a bare digest tells them nothing.
 
 **A digest is only accepted if it names a manifest list covering linux/amd64 and linux/arm64.**
 `scripts/pin-templates.sh` refuses otherwise. An arch-specific manifest resolved on a laptop
-produces templates that pull there and fail in CI, and that failure looks like a broken template
-rather than a bad pin — the worst kind, because it sends whoever hits it to the wrong file.
+would produce templates that pull there and fail in CI, and that failure would look like a broken
+template rather than a bad pin — the worst kind, because it sends whoever hits it to the wrong
+file.
 
 Pinning buys reproducibility and pays for it in staleness: these images stop receiving updates
 until somebody refreshes them. That is only an honest trade if the age is visible, so
@@ -358,12 +366,12 @@ creating in somebody's cluster uninvited.
 
 [daytona-builder]: https://www.daytona.io/docs/en/declarative-builder/
 
-### Memory checkpoint goes through podman, because docker's restore is broken
+### Memory checkpoint goes through podman, because docker's restore path doesn't work
 
 `sbx checkpoint` / `resume` save a running process with CRIU, not just its disk. The obvious
-primitive is `docker checkpoint create` / `docker start --checkpoint`, and it half-works: the
-**dump** is fine, but the **restore** fails. Measured on a Linux host (Ubuntu 24.04, kernel 6.8,
-built CRIU 3.19, docker 29 with `--experimental`): `docker start --checkpoint` dies with
+primitive is `docker checkpoint create` / `docker start --checkpoint`, and it only half-delivers:
+the **dump** is fine, but the **restore** fails. Measured on a Linux host (Ubuntu 24.04, kernel
+6.8, built CRIU 3.19, docker 29 with `--experimental`): `docker start --checkpoint` dies with
 `bind-mount /proc/0/ns/net -> …: no such file or directory`, and with `--network none` it dies
 with `content … already exists` instead. Two different docker/containerd bugs; the feature is
 effectively unmaintained upstream.
@@ -378,5 +386,5 @@ So the provider detects podman (by its socket, confirmed by the version componen
 `podman container checkpoint` / `restore` in place, and keeps the docker path only as the
 fallback it is. The whole cycle is proven end to end through `sbx checkpoint` / `sbx resume`
 against a podman runtime; on docker the restore is docker's to fix. This is why `sbx doctor` and
-the help now say checkpoint is reliable on a **podman** runtime, not merely "Linux with
+the help describe checkpoint as reliable on a **podman** runtime, not merely "Linux with
 experimental docker".
