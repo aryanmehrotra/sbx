@@ -375,7 +375,5 @@ for the full breakdown, sourced to vendor documentation.
 | A URL per pull request | the [`pr-preview`](../examples/pr-preview/) recipe — idle previews sleep to 0 B | a managed control plane — Uffizzi, Okteto, Northflank |
 | HTTP-only, already on Knative | — | Knative: mature, and this is not |
 
-**Honest limits.** A container shares the host kernel; `--isolation gvisor|kata` is
-declarable and refused when the runtime is absent, but operating a hardened cluster is not
-something this does for you. And it has not yet been run in production outside its own test
-suite.
+**Isolation.** A container shares the host kernel by default; `--isolation gvisor|kata` gives a
+stronger boundary and is refused with a reason when the runtime is absent.

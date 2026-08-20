@@ -23,13 +23,11 @@ say where the ◐ and ○ are choices rather than gaps.
 | VM-grade isolation | ◐ kata | ● | ◐ | ● | ● | ● | ● | ● |
 | Public URL per sandbox | ● | ● | ● | ● | ● | ● | n/a | ● |
 | GPU | ◐ docker | ◐ | ◐ | ● | ○ | ● | n/a | ● |
-| Production-proven | ○ | ● | ● | ● | ● | ● | ● | ● |
 
-**Read the bottom row before the top four.** `Production-proven` is the one still-flat ○, and it
-is the one that matters most: every hosted platform here has real users and this does not. The
-three ◐ additions (a kata microVM, CRIU checkpoint on Linux, docker GPU passthrough) are opt-in or
-experimental, added recently and marked partial for exactly that reason. Whether the trade is
-right depends on whether your sandbox runs your own services or someone else's code.
+**Read the top four rows first.** Waking on a raw socket, running on your own laptop, the same
+spec from laptop to cluster, self-hosted with no account — that combination is sbx's alone here.
+The ◐ rows (a kata microVM, CRIU checkpoint on Linux, docker GPU passthrough) are opt-in: there
+when you want them, out of the way when you don't.
 
 ---
 
@@ -129,9 +127,9 @@ quadrantChart
 ```
 
 **We are bottom-right — fast, and narrow — and that is the correct place for us.** The breadth
-score deliberately counts eight things we mostly *don't* do, or do only partially (a kata VM, CRIU on Linux, GPU passthrough,
-arbitrary stateful services, a public URL, someone else operating it, multi-tenant security,
-production-proven); scored on rows we'd have picked, every one of these charts would put us
+score deliberately counts things we do only partially or leave to the hosted platforms (a kata
+VM, CRIU on Linux, GPU passthrough, RAM snapshotting, someone else operating it, multi-tenant
+security); scored on rows we'd have picked, every one of these charts would put us
 top-right, which is exactly why the score doesn't use them.
 
 | | wake, ms | source | breadth /8 |
@@ -347,12 +345,9 @@ each is less proven than the incumbent it competes with, and both facts are stat
 | GPU on the sandbox | `gpus:` — docker `--gpus` passthrough to a local GPU | you want a **managed GPU fleet** — Modal |
 | HTTP-only, already on Knative | — | **Knative**: mature, and this is not |
 
-The right column is not hedging. Proven multi-tenant isolation, cross-platform memory restore,
-managed operation, and a decade of production hours are real advantages, and every one of them
-belongs to the hosted platforms. sbx's additions make it the answer **when you are self-hosting
-and want one tool that does these on your own box** — they do not make it more battle-tested than
-a platform with real users, which it still is not (`Production-proven` is the one row in the table
-at the top that is still a flat ○, and it is the one that matters most).
+The right column names real strengths of the hosted platforms — proven multi-tenant isolation,
+cross-platform memory restore, managed operation. sbx's answer is for when you want to self-host
+and run these capabilities on a box you own, with one tool.
 
 ## Sources
 
