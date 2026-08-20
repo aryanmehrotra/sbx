@@ -178,6 +178,31 @@
     border-radius:8px;padding:7px 14px;letter-spacing:.01em;transition:color .18s,border-color .18s}
   .platforms span:hover{color:#fff;border-color:var(--border)}
   .platforms span b{color:#d8d8d8;font-weight:500}
+
+  /* ── sand scene (folds 1–2) ─────────────────────────────────── */
+  .scene{position:relative}
+  .scene-pin{position:relative;min-height:100svh;overflow:hidden}
+  #sand{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;display:block}
+  .scene-layer{position:relative;z-index:2}
+  .scene-reveal{padding-top:6px}
+  /* when GSAP drives it: pin the layers on top of each other and let the timeline cross-fade */
+  html.gsap .scene-pin{height:100svh}
+  html.gsap .scene-layer{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;padding:88px 28px 40px;will-change:opacity,transform}
+  html.gsap .scene-hero{padding-top:64px}
+  html.gsap .scene-reveal{opacity:0}
+  html.gsap .scene-reveal .showcase{padding-top:0}
+  /* a faint warm glow rising from the sand, behind the grains */
+  .scene-pin::before{content:"";position:absolute;left:0;right:0;bottom:0;height:280px;z-index:0;pointer-events:none;
+    background:radial-gradient(120% 100% at 50% 118%, rgba(214,196,158,.16), transparent 62%)}
+  .reveal-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:1.5px;text-transform:uppercase;
+    color:#7a7060;margin-bottom:20px;text-align:center}
+  .scroll-cue{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);z-index:3;width:22px;height:34px;
+    border:1px solid rgba(230,214,180,.35);border-radius:12px;display:grid;place-items:start center;padding-top:6px;pointer-events:none}
+  .scroll-cue span{width:3px;height:7px;border-radius:2px;background:rgba(230,214,180,.7);animation:cue 1.6s ease-in-out infinite}
+  @keyframes cue{0%{opacity:0;transform:translateY(0)}30%{opacity:1}80%{opacity:0;transform:translateY(9px)}100%{opacity:0}}
+  html.gsap .scroll-cue{transition:opacity .3s}
+  @media (prefers-reduced-motion:reduce){.scroll-cue{display:none}}
 </style>
 </head>
 <body style="background:#000;color:#fff">
@@ -198,7 +223,10 @@
     <button class="burger appear appear--scale" type="button" aria-controls="site-nav" aria-expanded="false" aria-label="Open menu" style="--d:.34s"><span></span><span></span><span></span></button>
   </header>
 
-  <main class="hero" id="top">
+  <div class="scene" id="scene">
+   <div class="scene-pin">
+    <canvas id="sand" aria-hidden="true"></canvas>
+    <main class="hero scene-layer scene-hero" id="top">
     <span class="badge appear appear--pop" style="--d:.22s">
       <svg viewBox="0 0 24 24" fill="white"><path d="M12 2.6C12.55 2.6 12.88 3.15 13.08 4.7c.62 4.7 1.52 5.6 6.22 6.22 1.55.2 2.1.53 2.1 1.08s-.55.88-2.1 1.08c-4.7.62-5.6 1.52-6.22 6.22-.2 1.55-.53 2.1-1.08 2.1s-.88-.55-1.08-2.1c-.62-4.7-1.52-5.6-6.22-6.22C3.15 12.88 2.6 12.55 2.6 12s.55-.88 2.1-1.08c4.7-.62 5.6-1.52 6.22-6.22C11.12 3.15 11.45 2.6 12 2.6Z"/></svg>
       Infrastructure for AI agents
@@ -215,9 +243,11 @@
     <div class="badges appear appear--soft" style="--d:1.2s">
       <span>self-hosted</span><span>no SDK</span><span>docker · kubernetes</span><span>zero deps</span><span>MIT</span>
     </div>
-  </main>
+    </main>
 
-  <section class="showcase appear appear--soft" id="how" style="--d:1.0s;animation-duration:1.2s">
+    <div class="scene-layer scene-reveal" id="how">
+     <div class="reveal-eyebrow" aria-hidden="true">the whole loop, one terminal</div>
+     <section class="showcase">
     <div class="term">
       <div class="tb"><i class="tdot r"></i><i class="tdot y"></i><i class="tdot g"></i><span class="tt">my-branch — sbx</span></div>
 <pre><span class="p">$ sbx create my-branch --template postgres</span>
@@ -228,7 +258,11 @@
 <span class="p">$ sbx ui --connect https://sbx.example.dev</span> <span class="curs"></span>
 </pre>
     </div>
-  </section>
+     </section>
+    </div>
+   </div>
+   <div class="scroll-cue" aria-hidden="true"><span></span></div>
+  </div>
 
   <section>
     <div class="wrap">
@@ -336,6 +370,85 @@
     document.addEventListener('keydown',function(e){ if(e.key==='Escape') setOpen(false); });
     mq.addEventListener('change',function(e){ if(e.matches) setOpen(false); });
     window.copyCmd=function(b){ navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(function(){ var o=b.textContent; b.textContent='Copied ✓'; setTimeout(function(){b.textContent=o;},1400); }); };
+  })();
+  </script>
+
+  <!-- GSAP for the pinned fold-1 → fold-2 transition -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script>
+  (function(){
+    var reduce = matchMedia('(prefers-reduced-motion:reduce)').matches;
+    var c = document.getElementById('sand');
+    if(!c){ return; }
+    var ctx = c.getContext('2d'), DPR = Math.min(2, window.devicePixelRatio||1);
+    var W=0, H=0, colW=3, cols=0, heap=null, grains=[], maxH=0;
+
+    function seed(){
+      for(var x=0;x<cols;x++){
+        var t=(x-cols/2)/(cols*0.5);
+        heap[x] = 70 + 74*Math.exp(-t*t*2.2) + Math.random()*6;   // a soft central dune
+      }
+    }
+    function resize(){
+      var r=c.getBoundingClientRect(); W=r.width; H=r.height;
+      c.width=Math.round(W*DPR); c.height=Math.round(H*DPR); ctx.setTransform(DPR,0,0,DPR,0,0);
+      maxH = H*0.42;
+      var n=Math.max(1,Math.ceil(W/colW));
+      if(!heap || heap.length!==n){ heap=new Float32Array(n); cols=n; seed(); } else { cols=n; }
+    }
+    function spawn(k){ for(var i=0;i<k;i++){ grains.push({x:Math.random()*W, y:-8-Math.random()*50, vy:0.8+Math.random()*1.4}); } }
+    function settle(col){
+      var l = col>0 ? heap[col-1] : 1e9, rr = col<cols-1 ? heap[col+1] : 1e9;   // angle of repose: roll to a lower neighbour
+      if(heap[col]-Math.min(l,rr) > colW*1.9){ if(l<rr) heap[col-1]+=1; else heap[col+1]+=1; }
+      else if(heap[col] < maxH){ heap[col]+=1; }
+    }
+    function draw(){
+      ctx.clearRect(0,0,W,H);
+      var grd=ctx.createLinearGradient(0,H-maxH-40,0,H);
+      grd.addColorStop(0,'rgba(206,188,150,0)');
+      grd.addColorStop(0.45,'rgba(210,192,154,0.34)');
+      grd.addColorStop(1,'rgba(226,206,166,0.72)');
+      ctx.beginPath(); ctx.moveTo(0,H);
+      for(var x=0;x<cols;x++){ ctx.lineTo(x*colW, H-heap[x]); }
+      ctx.lineTo(W,H); ctx.closePath(); ctx.fillStyle=grd; ctx.fill();
+      ctx.fillStyle='rgba(240,228,196,0.8)';                        // grainy lit crest
+      for(var x2=0;x2<cols;x2++){ if(Math.random()<0.16) ctx.fillRect(x2*colW, H-heap[x2]-1, 1.6, 1.8); }
+      ctx.fillStyle='rgba(238,226,198,0.95)';                       // falling grains, faint streak
+      for(var i=0;i<grains.length;i++){ var g=grains[i]; ctx.fillRect(g.x, g.y, 1.7, 3.4); }
+    }
+    function step(){
+      spawn(3);
+      for(var i=grains.length-1;i>=0;i--){
+        var g=grains[i]; g.vy+=0.05; g.y+=g.vy;
+        var col=Math.floor(g.x/colW); if(col<0)col=0; if(col>=cols)col=cols-1;
+        if(g.y >= H-heap[col]){ settle(col); grains.splice(i,1); }
+      }
+      if(grains.length>440) grains.splice(0, grains.length-440);
+      draw();
+      requestAnimationFrame(step);
+    }
+
+    var G = window.gsap, ST = window.ScrollTrigger;
+    if(G && ST && !reduce){
+      document.documentElement.classList.add('gsap');
+      G.registerPlugin(ST);
+      requestAnimationFrame(function(){
+        resize();
+        G.timeline({scrollTrigger:{trigger:'#scene', start:'top top', end:'+=140%', scrub:0.6,
+            pin:'.scene-pin', anticipatePin:1}})
+          .to('.scroll-cue', {opacity:0, duration:0.12}, 0)
+          .to('.scene-hero', {opacity:0, y:-46, filter:'blur(7px)', ease:'power2.in', duration:0.5}, 0.05)
+          .fromTo('.scene-reveal', {opacity:0, y:34}, {opacity:1, y:0, ease:'power2.out', duration:0.5}, 0.48);
+        ST.refresh();
+      });
+    } else {
+      resize();   // no pin: layers stack normally, sand still fills the section
+    }
+    window.addEventListener('resize', function(){ resize(); if(ST) ST.refresh(); });
+
+    if(reduce){ resize(); draw(); }               // a static heap, no motion
+    else { requestAnimationFrame(step); }
   })();
   </script>
 </body>
