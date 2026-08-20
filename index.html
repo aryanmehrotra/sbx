@@ -30,15 +30,20 @@
     background:radial-gradient(120% 80% at 50% -10%, rgba(255,255,255,.05), transparent 55%)}
 
   /* header */
-  .header{position:sticky;top:0;z-index:50;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
-    padding:18px 40px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);background:rgba(0,0,0,.35)}
+  /* a floating island nav — the top edge of the screen stays open above and beside it, so the sand reads as falling from the top */
+  .header{position:fixed;top:15px;left:50%;transform:translateX(-50%);z-index:50;
+    display:flex;align-items:center;gap:22px;max-width:calc(100% - 26px);
+    padding:9px 12px 9px 21px;border-radius:16px;
+    background:rgba(19,17,14,.88);backdrop-filter:blur(20px) saturate(1.1);-webkit-backdrop-filter:blur(20px) saturate(1.1);
+    border:1px solid rgba(255,255,255,.12);
+    box-shadow:0 16px 44px -16px rgba(0,0,0,.78), inset 0 1px 0 rgba(255,255,255,.06)}
   .logo{display:inline-flex;align-items:center;gap:9px;justify-self:start;font-size:16px;font-weight:600;letter-spacing:-.03em}
   .logo svg{width:22px;height:22px} .logo-suffix{font-weight:400}
-  #site-nav{display:flex;align-items:center;gap:30px;justify-self:center}
-  .navlink{color:#8f8f8f;font-size:14px;font-weight:400;letter-spacing:-.01em;transition:color .18s;position:relative;padding:4px 0}
+  #site-nav{display:flex;align-items:center;gap:25px;justify-self:center}
+  .navlink{color:#aeaaa2;font-size:14px;font-weight:400;letter-spacing:-.01em;transition:color .18s;position:relative;padding:4px 0}
   .navlink:hover{color:#fff}
   .navlink .ext{opacity:.55;font-size:11px;vertical-align:1px}
-  .ver{margin-left:8px;padding:2px 7px;border:1px solid var(--soft);border-radius:5px;color:#8f8f8f;
+  .ver{margin-left:8px;padding:2px 7px;border:1px solid rgba(255,255,255,.16);border-radius:5px;color:#9a958d;
     font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:0}
   .header-cta{justify-self:end}
   .burger{display:none;width:40px;height:40px;border-radius:8px;border:1px solid var(--border);background:rgba(10,10,10,.6);
@@ -87,6 +92,55 @@
   .term pre{margin:0;padding:22px 24px;font-family:var(--mono);font-size:13.5px;line-height:2;overflow-x:auto;text-align:left;color:#e6e6e6}
   .term pre .p{color:#fff}.term pre .c{color:#5a5a5a}.term pre .o{color:#9a9a9a}.term pre .k{color:#cfe0ff}
   .curs{display:inline-block;width:8px;height:15px;background:#fff;vertical-align:-2px;animation:blink 1.1s step-end infinite}
+
+  /* fold-2 · a Claude agent working inside its sandbox */
+  .chat{width:100%;max-width:600px;margin:0 auto;text-align:left;border-radius:18px;overflow:hidden;position:relative;
+    border:1px solid var(--border);background:rgba(15,14,13,.72);backdrop-filter:blur(16px) saturate(1.1);-webkit-backdrop-filter:blur(16px) saturate(1.1);
+    box-shadow:0 50px 120px -45px #000, 0 0 60px -34px rgba(233,184,146,.4), inset 0 1px 0 rgba(255,255,255,.05)}
+  .chat-tb{display:flex;align-items:center;gap:9px;padding:14px 17px;border-bottom:1px solid rgba(255,255,255,.06)}
+  .chat-tb .spark{width:16px;height:16px;color:#e9b892;flex:0 0 auto}
+  .chat-tb .ct{font-size:13.5px;color:#dcdcdc;font-weight:500}
+  .chat-tb .cmodel{margin-left:auto;font-family:var(--mono);font-size:11px;color:#7d7d7d;
+    border:1px solid var(--soft);border-radius:6px;padding:3px 9px;letter-spacing:.02em}
+  .chat-body{padding:19px 19px 21px;display:flex;flex-direction:column;gap:15px}
+  .msg{display:flex;gap:12px;align-items:flex-start;font-size:14px;line-height:1.6}
+  .msg .who{flex:0 0 auto;width:27px;height:27px;border-radius:8px;display:grid;place-items:center;font-size:11.5px;font-weight:600}
+  .msg.you .who{background:rgba(255,255,255,.08);color:#d0d0d0}
+  .msg.ai .who{background:linear-gradient(135deg,#d98b5f,#e9b892)}
+  .msg.ai .who svg{width:15px;height:15px;color:#1c1307}
+  .msg .body{color:#d4d4d4;padding-top:3px}
+  .msg.you .body{color:#efefef}
+  .msg .body em{font-family:var(--serif);font-style:italic;color:#e9b892;font-size:1.08em;letter-spacing:-.01em}
+  .msg code{font-family:var(--mono);font-size:.9em;color:#e6c9a8;background:rgba(233,184,146,.09);padding:1px 5px;border-radius:5px}
+  .tool{margin:12px 0 5px;border:1px solid rgba(255,255,255,.08);border-radius:11px;overflow:hidden;background:rgba(0,0,0,.36)}
+  .tool-h{display:flex;align-items:center;gap:8px;padding:9px 13px;border-bottom:1px solid rgba(255,255,255,.05);
+    font-family:var(--mono);font-size:11.5px;color:#8f8f8f;letter-spacing:.01em}
+  .tool-h svg{width:13px;height:13px;color:#8f8f8f;flex:0 0 auto}
+  .tool pre{margin:0;padding:13px 15px;font-family:var(--mono);font-size:12.5px;line-height:1.9;color:#e6e6e6;overflow-x:auto}
+  .tool pre .p{color:#fff}.tool pre .c{color:#5a5a5a}
+  .tool-res{display:flex;align-items:center;gap:9px;padding:10px 15px;border-top:1px solid rgba(255,255,255,.05);
+    font-family:var(--mono);font-size:12px;color:#93bd93;background:rgba(74,222,128,.055)}
+  .tool-res .ok{color:#4ade80;font-weight:700}
+  .tool-res b{color:#cdebcd;font-weight:500}
+  .caret{display:inline-block;width:7px;height:14px;background:#e9b892;vertical-align:-2px;margin-left:2px;border-radius:1px;animation:blink 1.1s step-end infinite}
+
+  /* chat playback — the conversation reveals itself once the window lands, so you watch the agent work */
+  .chat .r{opacity:0;transition:opacity .5s ease}
+  .chat .rt{transform:translateY(8px);transition:opacity .55s ease, transform .55s ease}
+  .chat.play .r,.chat.play .rt{opacity:1}
+  .chat.play .rt{transform:none}
+  .chat.play .d0{transition-delay:.12s}
+  .chat.play .d1{transition-delay:.5s}
+  .chat.play .d2{transition-delay:1.0s}
+  .chat.play .d3{transition-delay:1.3s}
+  .chat.play .d4{transition-delay:1.55s}
+  .chat.play .d5{transition-delay:1.8s}
+  .chat.play .d6{transition-delay:2.25s}
+  .chat.play .d7{transition-delay:2.65s}
+  .chat .body > .r + .r, .chat .body > .rt + .rt{margin-top:2px}
+  .chat .tool + .rt{margin-top:6px}
+  .chat .caret{opacity:0;animation:none}
+  .chat.play .caret{animation:blink 1.1s step-end infinite;animation-delay:2.75s;animation-fill-mode:backwards}
   @keyframes blink{50%{opacity:0}}
 
   /* sections */
@@ -142,7 +196,7 @@
     .appear,h1 em{opacity:1;transform:none;filter:none}}
 
   @media (max-width:900px){
-    .header{grid-template-columns:1fr auto auto;gap:8px;padding:14px 18px}
+    .header{gap:14px;padding:8px 10px 8px 18px}
     .burger{display:grid} .header-cta.btn{display:none}
     #site-nav{position:fixed;inset:0;z-index:45;flex-direction:column;justify-content:center;gap:12px;padding:96px 22px 32px;
       opacity:0;visibility:hidden;pointer-events:none;transition:opacity .28s;background:rgba(6,6,8,.6);backdrop-filter:blur(24px)}
@@ -203,6 +257,50 @@
   @keyframes cue{0%{opacity:0;transform:translateY(0)}30%{opacity:1}80%{opacity:0;transform:translateY(9px)}100%{opacity:0}}
   html.gsap .scroll-cue{transition:opacity .3s}
   @media (prefers-reduced-motion:reduce){.scroll-cue{display:none}}
+
+  /* ── desert hero: warm sand ground, dark content (rest of the site stays dark) ── */
+  .scene-pin{background:
+    radial-gradient(150% 88% at 50% 16%, rgba(255,253,246,.5), transparent 62%),
+    linear-gradient(180deg,#eae5d8 0%,#e3ddcb 30%,#dacdb4 52%,#cfb996 76%,#c7af8a 100%)}
+  .scene-pin::before{content:none}
+  .scene-hero h1{color:#241c0e}
+  .scene-hero h1 em{color:#7a5c2e}
+  .scene-hero .lede{color:#4a3d27}
+  .scene-hero .badge{background:rgba(255,255,255,.16);backdrop-filter:blur(12px) saturate(1.1);-webkit-backdrop-filter:blur(12px) saturate(1.1);border:1px solid rgba(40,30,15,.24);color:#2a2013;box-shadow:inset 0 1px 0 rgba(255,255,255,.45)}
+  .scene-hero .badge svg{fill:#7a5a2e;filter:none}
+  .scene-hero .btn-solid{background:linear-gradient(180deg,#2c2317,#191309);color:#f3ecdb;border:1px solid #120d06;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+  .scene-hero .btn-solid:hover{background:linear-gradient(180deg,#372c1c,#211910);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 12px 28px -14px rgba(0,0,0,.55)}
+  .scene-hero .btn-ghost{color:#241c0e;border:1px solid rgba(40,30,15,.42);background:rgba(255,255,255,.22)}
+  .scene-hero .btn-ghost::after{display:none}
+  .scene-hero .btn-ghost:hover{color:#120d06;border-color:rgba(40,30,15,.7);box-shadow:none;background:rgba(255,255,255,.38)}
+  .scene-hero .badges span{color:#5c4e34;border-color:rgba(40,30,15,.26)}
+  .scene-hero .badges span:hover{color:#241b0c;border-color:rgba(40,30,15,.5)}
+  .reveal-eyebrow{color:#6a5836}
+  .scroll-cue{border-color:rgba(40,30,15,.42)}
+  .scroll-cue span{background:rgba(40,30,15,.72)}
+  /* bridge the desert down into the dark sections below */
+  .scene-bridge{height:210px;background:linear-gradient(180deg,#ad946e 0%,#6f6046 30%,#000 100%)}
+
+  /* ── fold-2 use-case gallery: window pins left, cards sweep across the right ── */
+  html.gsap .scene-reveal{display:block;padding:0}
+  html.gsap .reveal-window{position:absolute;top:50%;left:50%;width:min(600px,92vw);z-index:3;
+    display:flex;flex-direction:column;align-items:center}
+  .usecase-panel{display:none}
+  html.gsap .usecase-panel{display:block;position:absolute;top:0;bottom:0;left:43vw;right:0;overflow:hidden;z-index:2;
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 7%,#000 92%,transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 7%,#000 92%,transparent)}
+  .usecase-track{position:absolute;top:50%;left:0;transform:translateY(-50%);display:flex;align-items:center;gap:22px;padding-left:8px;will-change:transform}
+  .uc{flex:0 0 288px;box-sizing:border-box;min-height:236px;background:rgba(16,15,14,.82);
+    border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:22px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    box-shadow:0 34px 74px -34px #000, inset 0 1px 0 rgba(255,255,255,.05);display:flex;flex-direction:column;gap:13px}
+  .uc-ic{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#d98b5f,#e9b892);display:grid;place-items:center;flex:0 0 auto}
+  .uc-ic svg{width:20px;height:20px;color:#1c1307}
+  .uc h3{font-size:16px;font-weight:600;color:#f1ece3;margin:0;letter-spacing:-.01em}
+  .uc p{font-size:13px;line-height:1.55;color:#b4b0a8;margin:0;flex:1}
+  .uc code{align-self:flex-start;max-width:100%;font-family:var(--mono);font-size:11px;color:#e6c9a8;
+    background:rgba(233,184,146,.1);border:1px solid rgba(233,184,146,.14);padding:6px 10px;border-radius:8px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  @media (max-width:820px){ html.gsap .usecase-panel{display:none} html.gsap .reveal-window{width:min(600px,92vw)} }
 </style>
 </head>
 <body style="background:#000;color:#fff">
@@ -246,23 +344,55 @@
     </main>
 
     <div class="scene-layer scene-reveal" id="how">
-     <div class="reveal-eyebrow" aria-hidden="true">the whole loop, one terminal</div>
+     <div class="reveal-window">
+     <div class="reveal-eyebrow" aria-hidden="true">an agent, working inside its own sandbox</div>
      <section class="showcase">
-    <div class="term">
-      <div class="tb"><i class="tdot r"></i><i class="tdot y"></i><i class="tdot g"></i><span class="tt">my-branch — sbx</span></div>
-<pre><span class="p">$ sbx create my-branch --template postgres</span>
-<span class="p">$ eval "$(sbx env my-branch)"</span>
-<span class="p">$ psql -U app -d app</span>   <span class="c"># &#8592; this wakes it</span>
-<span class="k">app=#</span> <span class="o">served in ~1s. no start command. no compose.</span>
-<span class="c"># deployed to a VM or cluster? drive it all from the CLI:</span>
-<span class="p">$ sbx ui --connect https://sbx.example.dev</span> <span class="curs"></span>
-</pre>
+    <div class="chat">
+      <div class="chat-tb">
+        <svg class="spark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.6C12.55 2.6 12.88 3.15 13.08 4.7c.62 4.7 1.52 5.6 6.22 6.22 1.55.2 2.1.53 2.1 1.08s-.55.88-2.1 1.08c-4.7.62-5.6 1.52-6.22 6.22-.2 1.55-.53 2.1-1.08 2.1s-.88-.55-1.08-2.1c-.62-4.7-1.52-5.6-6.22-6.22C3.15 12.88 2.6 12.55 2.6 12s.55-.88 2.1-1.08c4.7-.62 5.6-1.52 6.22-6.22C11.12 3.15 11.45 2.6 12 2.6Z"/></svg>
+        <span class="ct">Claude</span>
+        <span class="cmodel">agent · sbx</span>
+      </div>
+      <div class="chat-body">
+        <div class="msg you r rt d0">
+          <div class="who">You</div>
+          <div class="body">Refactor the <em>auth middleware</em>, then make sure the whole suite still passes.</div>
+        </div>
+        <div class="msg ai">
+          <div class="who r rt d1"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.6C12.55 2.6 12.88 3.15 13.08 4.7c.62 4.7 1.52 5.6 6.22 6.22 1.55.2 2.1.53 2.1 1.08s-.55.88-2.1 1.08c-4.7.62-5.6 1.52-6.22 6.22-.2 1.55-.53 2.1-1.08 2.1s-.88-.55-1.08-2.1c-.62-4.7-1.52-5.6-6.22-6.22C3.15 12.88 2.6 12.55 2.6 12s.55-.88 2.1-1.08c4.7-.62 5.6-1.52 6.22-6.22C11.12 3.15 11.45 2.6 12 2.6Z"/></svg></div>
+          <div class="body">
+            <div class="r rt d1">I'll work inside the sandbox — it has the Go toolchain and the repo mounted at <code>/work</code>, <em>isolated</em> from your machine.</div>
+            <div class="tool r rt d2">
+              <div class="tool-h"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>sbx · pr-4711</div>
+<pre><span class="p r d3">sbx create pr-4711 --spec sandbox.json</span>  <span class="c r d3"># golang:1.26, repo at /work</span>
+<span class="p r d4">sbx exec pr-4711 dev go build ./...</span>
+<span class="p r d5">sbx exec pr-4711 dev go test ./...</span>  <span class="c r d5"># ← wakes the box</span></pre>
+              <div class="tool-res r rt d6"><span class="ok">✓</span> <b>ok</b> · 91 tests, 0 failures · nothing on the host touched</div>
+            </div>
+            <div class="r rt d7">Built and tested inside the box — my code runs on <code>/work</code>, fully isolated, and sleeps to <em>0&nbsp;B</em> when I step away.<span class="caret"></span></div>
+          </div>
+        </div>
+      </div>
     </div>
      </section>
+     </div><!-- /.reveal-window -->
+
+     <div class="usecase-panel" aria-hidden="true">
+      <div class="usecase-track">
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 8.2v7.6M8.2 6.9l7.6 1M18 10.2c0 4-3.2 4.6-11.8 5.6"/></svg></div><h3>Snapshot &amp; fork</h3><p>Seed a database once, then fork it a hundred times — the migration runs a single time.</p><code>sbx snapshot · sbx fork</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="14 3 14 9 20 9"/></svg></div><h3>Checkpoint &amp; resume</h3><p>Park a box mid-run — memory and processes — and bring it back exactly where it left off.</p><code>sbx checkpoint · sbx resume</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V5z"/></svg></div><h3>Locked-down egress</h3><p>Let the agent reach only the APIs you allow — enforced by a proxy, with no route around it.</p><code>egress_allow: ["api.openai.com"]</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"/><polyline points="2 15.5 12 22 22 15.5"/></svg></div><h3>Stronger isolation</h3><p>Run untrusted code in a userspace kernel or a microVM — not just a shared-kernel container.</p><code>--isolation gvisor · kata</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><h3>Wakes on a socket</h3><p>Any TCP connection wakes it; a few idle minutes sleep it back to 0 B. No SDK, no wrapper.</p><code>psql · go test · curl</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6M10 2v6l-5.2 9.2A2 2 0 0 0 6.5 20h11a2 2 0 0 0 1.7-2.8L14 8V2"/></svg></div><h3>One-shot fixture</h3><p>A sandbox that lives exactly as long as a test — always torn down, even when it fails.</p><code>sbx with test-db -- go test</code></article>
+      </div>
+     </div>
     </div>
    </div>
    <div class="scroll-cue" aria-hidden="true"><span></span></div>
   </div>
+
+  <div class="scene-bridge" aria-hidden="true"></div>
 
   <section>
     <div class="wrap">
@@ -382,13 +512,18 @@
     var c = document.getElementById('sand');
     if(!c){ return; }
     var ctx = c.getContext('2d'), DPR = Math.min(2, window.devicePixelRatio||1);
-    var W=0, H=0, colW=3, cols=0, heap=null, grains=[], maxH=0;
+    var W=0, H=0, colW=3, cols=0, heap=null, grains=[], maxH=0, emitters=[];
 
     function seed(){
       for(var x=0;x<cols;x++){
         var t=(x-cols/2)/(cols*0.5);
-        heap[x] = 70 + 74*Math.exp(-t*t*2.2) + Math.random()*6;   // a soft central dune
+        heap[x] = 62 + 58*Math.exp(-t*t*2.0) + Math.random()*5;   // a soft resting bed
       }
+    }
+    // sand pours only from a few fixed spouts, set in from the left and right edges
+    function makeEmitters(){
+      var fr=[0.12,0.26,0.74,0.88];
+      emitters=[]; for(var i=0;i<fr.length;i++){ emitters.push({x:fr[i]*W, sway:0, sv:0.02+Math.random()*0.02}); }
     }
     function resize(){
       var r=c.getBoundingClientRect(); W=r.width; H=r.height;
@@ -396,8 +531,20 @@
       maxH = H*0.42;
       var n=Math.max(1,Math.ceil(W/colW));
       if(!heap || heap.length!==n){ heap=new Float32Array(n); cols=n; seed(); } else { cols=n; }
+      makeEmitters();
     }
-    function spawn(k){ for(var i=0;i<k;i++){ grains.push({x:Math.random()*W, y:-8-Math.random()*50, vy:0.8+Math.random()*1.4}); } }
+    // a thin, drifting stream from each spout — not a curtain across the whole width
+    function emit(){
+      for(var e=0;e<emitters.length;e++){
+        var em=emitters[e];
+        em.sway += em.sv; var off=Math.sin(em.sway)*10;                // the spout wanders gently
+        if(Math.random()<0.85){
+          grains.push({x:em.x+off+(Math.random()-0.5)*9, y:-6-Math.random()*30,
+                       vy:0.45+Math.random()*0.55, drift:(Math.random()-0.5)*0.16,
+                       s:0.8+Math.random()*1.2, a:0.4+Math.random()*0.32});
+        }
+      }
+    }
     function settle(col){
       var l = col>0 ? heap[col-1] : 1e9, rr = col<cols-1 ? heap[col+1] : 1e9;   // angle of repose: roll to a lower neighbour
       if(heap[col]-Math.min(l,rr) > colW*1.9){ if(l<rr) heap[col-1]+=1; else heap[col+1]+=1; }
@@ -405,26 +552,41 @@
     }
     function draw(){
       ctx.clearRect(0,0,W,H);
-      var grd=ctx.createLinearGradient(0,H-maxH-40,0,H);
-      grd.addColorStop(0,'rgba(206,188,150,0)');
-      grd.addColorStop(0.45,'rgba(210,192,154,0.34)');
-      grd.addColorStop(1,'rgba(226,206,166,0.72)');
+      var grd=ctx.createLinearGradient(0,H-maxH-30,0,H);
+      grd.addColorStop(0,   'rgba(214,192,152,0)');      // transparent at the crest — blends into the hazy sky
+      grd.addColorStop(0.34,'rgba(211,187,144,0.42)');   // sunlit dune shoulder
+      grd.addColorStop(0.66,'rgba(184,157,113,0.5)');    // dune body
+      grd.addColorStop(1,   'rgba(154,128,90,0.58)');    // soft shadowed base — light, like the reference
       ctx.beginPath(); ctx.moveTo(0,H);
       for(var x=0;x<cols;x++){ ctx.lineTo(x*colW, H-heap[x]); }
       ctx.lineTo(W,H); ctx.closePath(); ctx.fillStyle=grd; ctx.fill();
-      ctx.fillStyle='rgba(240,228,196,0.8)';                        // grainy lit crest
-      for(var x2=0;x2<cols;x2++){ if(Math.random()<0.16) ctx.fillRect(x2*colW, H-heap[x2]-1, 1.6, 1.8); }
-      ctx.fillStyle='rgba(238,226,198,0.95)';                       // falling grains, faint streak
-      for(var i=0;i<grains.length;i++){ var g=grains[i]; ctx.fillRect(g.x, g.y, 1.7, 3.4); }
+
+      // fine falling sand — small, soft, warm motes, each its own size and opacity
+      ctx.fillStyle='rgb(150,123,84)';
+      for(var i=0;i<grains.length;i++){ var g=grains[i]; ctx.globalAlpha=g.a; ctx.fillRect(g.x, g.y, g.s, g.s*1.3); }
+      ctx.globalAlpha=1;
+
+      // a soft lit dusting catching the dune's shoulder
+      ctx.fillStyle='rgba(238,226,196,0.45)';
+      for(var x2=0;x2<cols;x2++){ if(Math.random()<0.05) ctx.fillRect(x2*colW, H-heap[x2]-1, 1.3, 1.3); }
+
+      // erase the canvas toward the very bottom so the sand dissolves into the ground gradient — no hard edge
+      ctx.globalCompositeOperation='destination-out';
+      var er=ctx.createLinearGradient(0,H-150,0,H);
+      er.addColorStop(0,'rgba(0,0,0,0)');
+      er.addColorStop(0.65,'rgba(0,0,0,0.5)');
+      er.addColorStop(1,'rgba(0,0,0,1)');
+      ctx.fillStyle=er; ctx.fillRect(0,H-150,W,150);
+      ctx.globalCompositeOperation='source-over';
     }
     function step(){
-      spawn(3);
+      emit();
       for(var i=grains.length-1;i>=0;i--){
-        var g=grains[i]; g.vy+=0.05; g.y+=g.vy;
+        var g=grains[i]; g.vy+=0.028; g.y+=g.vy; g.x+=g.drift;
         var col=Math.floor(g.x/colW); if(col<0)col=0; if(col>=cols)col=cols-1;
         if(g.y >= H-heap[col]){ settle(col); grains.splice(i,1); }
       }
-      if(grains.length>440) grains.splice(0, grains.length-440);
+      if(grains.length>360) grains.splice(0, grains.length-360);
       draw();
       requestAnimationFrame(step);
     }
@@ -435,11 +597,33 @@
       G.registerPlugin(ST);
       requestAnimationFrame(function(){
         resize();
-        G.timeline({scrollTrigger:{trigger:'#scene', start:'top top', end:'+=140%', scrub:0.6,
-            pin:'.scene-pin', anticipatePin:1}})
-          .to('.scroll-cue', {opacity:0, duration:0.12}, 0)
-          .to('.scene-hero', {opacity:0, y:-46, filter:'blur(7px)', ease:'power2.in', duration:0.5}, 0.05)
-          .fromTo('.scene-reveal', {opacity:0, y:34}, {opacity:1, y:0, ease:'power2.out', duration:0.5}, 0.48);
+        G.set('.reveal-window', {xPercent:-50, yPercent:-50});
+        var track = document.querySelector('.usecase-track');
+        var panel = document.querySelector('.usecase-panel');
+        var pw = panel ? panel.clientWidth : 0;
+        var tw = track ? track.scrollWidth : 0;
+        var galleryOn = tw > 0 && pw > 40 && tw > pw;
+        if(galleryOn) G.set(track, {x: pw});                    // cards begin just off the right edge of the panel
+        var winLeftX = -window.innerWidth*0.24;                 // where the window settles on the left
+        var chatEl = document.querySelector('.chat');
+        var tl = G.timeline({scrollTrigger:{trigger:'#scene', start:'top top',
+            end: galleryOn ? '+=320%' : '+=140%', scrub:0.6, pin:'.scene-pin', anticipatePin:1,
+            onUpdate:function(self){                             // play the conversation once the window has landed
+              if(self.progress > 0.27){ if(chatEl) chatEl.classList.add('play'); }
+              else if(self.progress < 0.2){ if(chatEl) chatEl.classList.remove('play'); }
+            }}});
+        // 1 · zoom into the scene — the hero flies past the camera...
+        tl.to('.scroll-cue', {opacity:0, duration:0.1}, 0)
+          .to('.scene-hero', {scale:2.5, opacity:0, filter:'blur(8px)', ease:'power2.in', duration:0.7}, 0)
+          .to('#sand', {scale:1.18, ease:'power2.in', duration:0.7}, 0)
+          // ...revealing the agent window nested at the centre, now filling the view
+          .fromTo('.scene-reveal', {scale:0.32, opacity:0}, {scale:1, opacity:1, ease:'power1.inOut', duration:0.82}, 0.08);
+        if(galleryOn){
+          // 2 · the window settles to the left...
+          tl.to('.reveal-window', {x: winLeftX, scale:0.82, ease:'power2.inOut', duration:0.5}, 0.95)
+          // 3 · ...and the use-case cards sweep across the right
+            .to(track, {x: -(tw - pw), ease:'none', duration:1.9}, 1.15);
+        }
         ST.refresh();
       });
     } else {
