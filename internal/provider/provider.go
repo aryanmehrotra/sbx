@@ -38,6 +38,7 @@ const (
 
 	labelEgressAllow   = "sbx.egress.allow"   // comma-joined egress allow-list, when set
 	labelEgressGateway = "sbx.egress.gateway" // the bridge gateway its egress filter listens on
+	labelIdle          = "sbx.idle"           // per-service idle override, when set
 
 	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
 	// names rather than risking a silently rejected manifest.
@@ -92,6 +93,10 @@ type Unit struct {
 	// runs a filtering proxy for it on the gateway. Both empty when there is no allow-list.
 	EgressAllow   []string
 	EgressGateway string
+
+	// Idle is a per-service idle override ("never", "0", or a duration), empty for the global
+	// default. It lets the daemon keep a box awake while an agent works inside it with no traffic.
+	Idle string
 }
 
 // EgressProxyPort is where a sandbox's egress filter listens on its no-NAT bridge gateway. The

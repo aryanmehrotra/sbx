@@ -221,6 +221,14 @@ type Service struct {
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
 
+	// Idle overrides how long this service may go without traffic before the daemon sleeps it,
+	// for the one case the byte-through-the-proxy signal misses: an agent doing work INSIDE the
+	// box - a long exec, a compute loop, waiting on an API - sends nothing through sbx, so the
+	// default idle timer would sleep the container and kill the work. "never" (or "0") keeps it
+	// awake until it is explicitly slept or removed; a duration ("30m") sets a longer window.
+	// Empty uses the daemon's global --idle.
+	Idle string `json:"idle,omitempty"`
+
 	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.
@@ -294,8 +302,18 @@ func (s Service) validate(name string) error {
 		}
 	}
 
+	if s.Idle != "" && !s.IdleNever() {
+		if _, err := time.ParseDuration(s.Idle); err != nil {
+			return fmt.Errorf("service %q: idle %q is not \"never\", \"0\", or a duration "+
+				"like \"30m\": %w", name, s.Idle, err)
+		}
+	}
+
 	return nil
 }
+
+// IdleNever reports whether this service asked never to be auto-slept.
+func (s Service) IdleNever() bool { return s.Idle == "never" || s.Idle == "0" }
 
 // EgressDeny is the only egress value, because "allow" is the absence of the field.
 const EgressDeny = "deny"

@@ -330,6 +330,7 @@ func (d *daemon) discover(ctx context.Context) {
 		}
 
 		u := newUnit(f.Sandbox, f.Service, f.Ref, f.Instance, f.Ref, legs, f.Running)
+		u.keepAwake, u.idle = idlePolicy(f.Idle)
 
 		uctx, ucancel := context.WithCancel(ctx)
 
@@ -438,11 +439,20 @@ func (d *daemon) reap(ctx context.Context) {
 	d.mu.Unlock()
 
 	for _, u := range units {
-		if !u.isAwake() || !u.sleepable(ctx, d.provider) || u.idleFor() < d.idle {
+		if u.keepAwake {
+			continue // an agent may be working inside it with no traffic through the proxy
+		}
+
+		window := d.idle
+		if u.idle > 0 {
+			window = u.idle
+		}
+
+		if !u.isAwake() || !u.sleepable(ctx, d.provider) || u.idleFor() < window {
 			continue
 		}
 
-		u.sleep(ctx, d.provider, d.idle)
+		u.sleep(ctx, d.provider, window)
 	}
 }
 

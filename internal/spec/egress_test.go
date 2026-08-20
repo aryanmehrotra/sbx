@@ -72,3 +72,15 @@ func TestEgressAllowValidation(t *testing.T) {
 		t.Error("a blank egress_allow host was accepted; it is a hole in the list")
 	}
 }
+
+func TestIdleValidation(t *testing.T) {
+	for _, ok := range []string{"", "never", "0", "30m", "2h"} {
+		if err := (Service{Image: "x", Ports: []int{1}, Idle: ok}).validate("s"); err != nil {
+			t.Errorf("idle %q should be valid: %v", ok, err)
+		}
+	}
+
+	if (Service{Image: "x", Ports: []int{1}, Idle: "soon"}).validate("s") == nil {
+		t.Error("idle \"soon\" was accepted; it is neither never, 0, nor a duration")
+	}
+}

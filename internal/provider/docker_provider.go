@@ -319,6 +319,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--gpus", svc.GPUs)
 	}
 
+	if svc.Idle != "" {
+		args = append(args, "--label", labelIdle+"="+svc.Idle)
+	}
+
 	// An allow-list gets the no-NAT bridge too - direct egress denied - plus a filtering proxy
 	// on the gateway as its one way out. HTTP(S)_PROXY points ordinary clients at it; a client
 	// that ignores the proxy and dials out directly has no route, so the allow-list holds.
@@ -979,6 +983,7 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 			Running:       c.State == "running",
 			Index:         (pairs[0].Public - publicBase) % blockSize,
 			EgressGateway: c.Labels[labelEgressGateway],
+			Idle:          c.Labels[labelIdle],
 		}
 
 		if a := c.Labels[labelEgressAllow]; a != "" {

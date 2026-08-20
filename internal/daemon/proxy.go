@@ -42,6 +42,12 @@ type unit struct {
 	awake  bool
 	waking sync.Mutex // serialises wake so a burst of connections starts the workload once
 
+	// keepAwake and idle are the per-service override of the global idle window: keepAwake
+	// means never auto-sleep (an agent working inside a box sends nothing through the proxy),
+	// and idle > 0 is a longer window than the daemon's default. See spec.Service.Idle.
+	keepAwake bool
+	idle      time.Duration
+
 	// served records that this unit has been seen serving at least once.
 	//
 	// Until then it is not eligible to sleep, because "idle" is meaningless before a
@@ -55,6 +61,25 @@ type unit struct {
 type leg struct {
 	Listen   int               // bound locally by the daemon
 	Upstream provider.Endpoint // dialled once the workload is serving
+}
+
+// idlePolicy turns a service's idle override into a keep-awake flag and a window. "" uses the
+// global default; "never" or "0" never auto-sleeps; a duration is a longer window. The value was
+// validated at spec load, so a parse error here just falls back to the global.
+func idlePolicy(s string) (keepAwake bool, idle time.Duration) {
+	switch s {
+	case "":
+		return false, 0
+	case "never", "0":
+		return true, 0
+	}
+
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return false, 0
+	}
+
+	return false, d
 }
 
 func newUnit(sandbox, service, ref, instance, name string, legs []leg, running bool) *unit {
