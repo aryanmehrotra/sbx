@@ -92,6 +92,8 @@ script that already knows a port.
 | `depends_on` | | Services that must be healthy before this one is created |
 | `optional` | | Not created unless `--optional` - but still reserves its ports |
 | `egress` | | `"deny"` - no routed egress. It can still be reached, and can still talk to its own sandbox |
+| `egress_allow` | | Reach only these hosts (host or `host:port`, matching subdomains): `["api.openai.com"]`. Everything else is denied, enforced by a filtering proxy |
+| `idle` | | Override the idle timer for this service: `"never"` (keep awake while an agent works inside), `"0"`, or a duration like `"30m"` |
 | `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
 | `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
@@ -298,13 +300,38 @@ The obvious alternatives were tried and do not work: `--internal` and `--network
 block egress **and** stop docker publishing the port, producing a sandbox that can never be
 woken. → [DECISIONS.md](DECISIONS.md)
 
-It is **not a domain allow-list**. Docker has no primitive for that; doing it properly needs a
-filtering proxy in the data path, a component with a lifecycle rather than a flag. DNS still
-resolves - docker's resolver sits on the bridge and needs no route out.
+For a **domain allow-list** rather than all-or-nothing, use `egress_allow` (below) - the
+filtering proxy this once said would be needed, now built. DNS still resolves under plain `deny` -
+docker's resolver sits on the bridge and needs no route out.
 
 The kubernetes provider **refuses** a service that declares it rather than starting one with
 egress open: the cluster answer is a NetworkPolicy, only some CNIs enforce them, and a
 security control that silently did nothing is worse than one that says no.
+
+### `egress_allow` is a domain allow-list
+
+```json
+{ "image": "python:3.12", "ports": [8000], "egress_allow": ["api.openai.com", "pypi.org"] }
+```
+
+The service reaches only the listed hosts and nothing else - an agent box that may call an LLM API
+and its package registry, and no other address. Each entry matches the host and its subdomains, so
+`openai.com` permits `api.openai.com`. It is the no-NAT bridge of `egress: "deny"` plus a filtering
+proxy sbx runs on the bridge gateway: `HTTP_PROXY`/`HTTPS_PROXY` point every client at it, and a
+client that ignores the proxy and dials out directly has no route at all, so the list is enforced,
+not advisory. It is not combined with `egress: "deny"`, which would deny the allowed hosts too.
+
+### `idle` keeps a box awake while it works
+
+```json
+{ "image": "ubuntu:24.04", "ports": [7777], "idle": "never" }
+```
+
+sbx sleeps a service after the idle window with no traffic through its port. An agent doing work
+*inside* the box - a long command, a compute loop, waiting on an API - sends nothing through sbx,
+so the default timer would sleep the container and end the work. `"never"` (or `"0"`) keeps it
+awake until you sleep or remove it; a duration like `"30m"` sets a longer window. The box still
+wakes on a connection like everything else - this only changes when it goes back to sleep.
 
 ### `optional` still reserves its ports
 
