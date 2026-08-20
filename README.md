@@ -7,31 +7,35 @@
 [![dependencies](https://img.shields.io/badge/dependencies-0-3fb950)](go.mod)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+<img src="docs/hero.svg" width="900" alt="sbx - a real Postgres, Redis or browser for every branch or agent, that costs 0 B of RAM while idle and wakes when a client connects. A diagram shows four sandboxes on one laptop: main is serving, and feature-x, agent-4711 and review-99 are asleep at 0 B until a psql connection wakes one.">
+
 **Give every branch, task or AI agent its own real Postgres, Redis or browser — one that costs
-nothing while idle and wakes the instant anything connects.**
+nothing while idle, and comes back the instant something needs it.**
 
 `0 B of RAM when idle · wakes in ~191 ms · one static binary, zero dependencies`
 
-Run twenty branch databases on your laptop and pay for none of them. Your tools connect exactly
-as they would to any database — `psql`, a connection pool, your test runner, Playwright — with
-no SDK and nothing to install. Switch branches and the ones you're not using drop to **0 B**;
-the next query wakes them.
+## The connection is the wake-up call — and it never gets refused
 
-**One binary in place of Docker Desktop + a `docker-compose` stack per branch + a cleanup cron +
-a shared staging database everyone steps on.**
+Point `psql`, a connection pool, Playwright or your test runner at a sleeping sandbox and it
+**just connects.** sbx catches that first connection and holds it open while the container starts,
+then hands over the live socket — the client waits a beat and gets a real answer, and never sees a
+refused port. **The client's own socket is the wake signal:** no SDK call, no `sbx start`, no
+readiness loop in your code. The connection itself is the start command, and it succeeds on the
+first attempt — on any protocol that speaks TCP.
 
-```mermaid
-flowchart LR
-    subgraph L["your laptop · one static binary"]
-      direction TB
-      A["main<br/>● serving"]
-      B["feature-x<br/>○ 0 B asleep"]
-      C["agent-4711<br/>○ 0 B asleep"]
-      D["review-99<br/>○ 0 B asleep"]
-    end
-    client["psql · test runner<br/>Playwright · a pool"] ==>|"opens a socket"| B
-    B ==>|"wakes in ~191 ms"| B2["feature-x<br/>● serving"]
-```
+That last part is the piece a hand-rolled `docker start` wrapper can't give you. Everything else
+here is built around it: sandboxes that drop to **0 B** when nobody's using them, and come back the
+moment anyone does.
+
+## Who it's for
+
+- **Teams running many branches at once** — twenty branch databases on one laptop, and you pay RAM
+  for only the one you're looking at. Switch branches and the rest drop to 0 B. No more everyone
+  sharing one staging database and stepping on each other's migrations.
+- **A fleet of AI agents that each need a real database** — hand every agent its own Postgres that
+  dies with the task, woken by its clients (`psql`, a pool, a test runner — none of which can call
+  an SDK) just by connecting. Keeping every agent's stack alive isn't affordable; a shared database
+  is where the flaky, hard-to-reproduce bugs come from.
 
 <img src="docs/demo.svg" width="900" alt="A terminal running sbx: a branch sandbox is created from the web-stack template, its addresses are exported as shell variables and as JSON, a cache is added mid-task, a seeded database is snapshotted and forked, the sandbox sleeps to zero, and a plain redis-cli ping wakes it and is served.">
 
@@ -43,10 +47,10 @@ flowchart LR
 sbx serve --idle 5m &                          # once per machine, not per sandbox
 sbx create my-branch --template postgres       # ~492 ms once the image is local
 eval "$(sbx env my-branch)"                    # DATABASE_HOST/PORT are now set
-psql -U app -d app                             # this wakes it
+psql -U app -d app                             # this wakes it — the call blocks, it doesn't refuse
 ```
 
-There is no `sbx start` and no `sbx stop`. **Opening a socket is the whole signal**, so `psql`, a
+There is no `sbx start` and no `sbx stop`. Opening a socket is the whole signal, so `psql`, a
 connection pool, Playwright and your test runner all wake it without knowing sbx exists.
 
 ---
@@ -56,35 +60,35 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 **Everyday**
 | | |
 |---|---|
-| **Run 20 branch databases on your laptop** | the ones you're not looking at cost 0 B — no RAM, no bill |
-| **Use your tools unchanged** | anything that opens a socket connects — no SDK, no client library |
-| **Keep one file per repo** | `sandbox.json` says what a branch needs; `sbx init` writes it → [SPEC](docs/SPEC.md) |
-| **Spin one up with nothing on disk** | `--template postgres`, `redis`, `browser`, and more, pinned by digest |
+| **Run twenty branch databases on one laptop** | so the ones you're not looking at cost 0 B — no RAM, no bill |
+| **Point your existing tools at it, unchanged** | so anything that opens a socket connects — no SDK, no client library to add |
+| **Keep one file per repo** | `sandbox.json` says what a branch needs, so a teammate's `sbx create` matches yours → [SPEC](docs/SPEC.md) |
+| **Spin one up with nothing on disk** | `--template postgres`, `browser`, `nginx`, `web-stack` (Postgres + Redis), or `analytics` — so you're never blocked writing a spec first |
 
 **For AI agents**
 | | |
 |---|---|
-| **Give every agent a workspace that dies with the task** | shell commands are the whole integration; `--shell json` to parse |
-| **Add a service mid-task** | `sbx add task cache --image redis:7-alpine` — no spec edit first |
-| **Hand each agent its own copy of a seeded database** | `sbx snapshot` once, then `sbx fork` as many as you want — a write in one is invisible to the others |
-| **Park an agent mid-thought and resume it** | `sbx checkpoint` / `sbx resume` — memory and processes, not just disk |
-| **Run one for a single test, cleaned up after** | `sbx with test-db --template postgres -- go test ./...` — always torn down, even on failure |
+| **Give every agent its own workspace** | so one agent's writes can never corrupt another's — `--shell json` when a script is reading, not you |
+| **Add a service mid-task** | `sbx add task cache --image redis:7-alpine` — so an agent that finds it needs a cache doesn't stop to edit a spec |
+| **Hand each agent its own copy of a seeded database** | `sbx snapshot` once, `sbx fork` as many as you want — so a write in one is invisible to the rest |
+| **Park an agent mid-thought and bring it back** | `sbx checkpoint` / `sbx resume` — memory and processes, not just disk |
+| **Run one for a single test, gone after** | `sbx with test-db --template postgres -- go test ./...` — so it's always torn down, even on failure |
 
 **Scale it up**
 | | |
 |---|---|
-| **Cap what a sandbox can use** | `cpu`, `memory`, `gpus` per service — twenty on a laptop stay polite |
-| **Build your own image** | `build:` instead of `image:`, cached by content hash |
-| **Take it to a cluster** | the same spec, `--provider kubernetes` — `sbx doctor` says what a host supports |
-| **Deploy anywhere and drive it from here** | `sbx pack` + `sbx connect` turn a one-port platform back into local ports |
+| **Keep twenty sandboxes polite on one laptop** | `cpu`, `memory`, `gpus` per service, so one runaway agent can't starve the rest |
+| **Build your own image** | `build:` instead of `image:`, cached by content hash — so a second create does no rebuild work |
+| **Take the same spec to a cluster** | `--provider kubernetes`, so what worked on your laptop is what runs in CI |
+| **Deploy anywhere and still drive it from your terminal** | `sbx pack` + `sbx connect` turn a one-port platform back into local ports |
 
 **See and drive the fleet**
 | | |
 |---|---|
-| **Watch every sandbox live** | `sbx ui` — cpu and memory against each service's ceiling, and where it's been |
-| **Drive a deployment from your terminal** | `sbx ui --connect <url>` — wake, sleep, limit, remove, logs, and `f` to port-forward here |
-| **Read it from a script** | `--json` on `list`, `doctor`, `history`, `env` → [AGENTS](docs/AGENTS.md) |
-| **Know who changed what** | `sbx history` records every change and wake, secrets redacted |
+| **Watch every sandbox live** | `sbx ui` — cpu and memory against each service's own ceiling, and where it's been |
+| **Drive a deployment from your laptop's terminal** | `sbx ui --connect <url>` — wake, sleep, limit, remove, tail logs, `f` to port-forward here |
+| **Read it from a script instead of a screen** | `--json` on `list`, `doctor`, `history`, `env` → [AGENTS](docs/AGENTS.md) |
+| **Know who changed what, and when** | `sbx history` records every change and every wake, secrets redacted |
 
 ---
 
@@ -100,11 +104,11 @@ Terminal or Windows Terminal.
 
 ## Speed
 
-Every number is measured by a script in this repo, on an Apple M4 (16 GB).
-→ [BENCHMARKS.md](docs/BENCHMARKS.md) for conditions, distributions and how to re-run each.
+Every number below is measured by a script in this repo, on an Apple M4 (16 GB) —
+→ [BENCHMARKS.md](docs/BENCHMARKS.md) has the conditions and how to re-run each one.
 
-**Idle costs nothing.** A sleeping sandbox is 0 B of RAM and the volume it already had — so
-twenty of them on one laptop is twenty disks, not twenty running databases.
+**Idle costs nothing**, so twenty sandboxes on one laptop is twenty disks, not twenty running
+databases:
 
 ```mermaid
 xychart-beta
@@ -115,7 +119,7 @@ xychart-beta
 ```
 
 **Waking is a fraction of a second**, and mostly it's the workload's own startup — a browser is
-slow because Chrome is slow to start, not because of sbx.
+slow because Chrome is slow to start, not because of sbx:
 
 ```mermaid
 xychart-beta
@@ -125,11 +129,11 @@ xychart-beta
     bar [191, 766, 931, 1534, 3744]
 ```
 
-**Once awake, you won't feel it.** A query on an open connection costs **+15 µs** — lost in the
-noise of a real query that already crosses a VM boundary at 426 µs. Opening a new connection adds
-**+0.1 ms**, inside the run-to-run spread. A bulk transfer moves at **6.9 GB/s** on loopback,
-which is an order of magnitude more than a Postgres `COPY` will ever feed you — so the database
-stays the bottleneck, never sbx.
+**Once it's awake, you won't feel it.** A query on an already-open connection costs **+15 µs** —
+lost in the noise of a real query, which already crosses a VM boundary at 426 µs. Opening a *new*
+connection adds **+0.1 ms**, inside the normal run-to-run spread. A bulk transfer moves at **6.8
+GB/s** on loopback — an order of magnitude more than a Postgres `COPY` will ever feed it — so the
+database stays the bottleneck a query hits, never sbx.
 
 ---
 
@@ -180,6 +184,7 @@ sbx selftest     # create, sleep to zero, wake on a socket, data intact — ~9 s
 | `sbx doctor` | what this machine can do |
 | `sbx list` · `sbx ui` | what exists and what's awake · the same, live, with cpu and memory |
 | `sbx history` · `sbx templates` | what happened and who did it · the built-in specs |
+| `sbx pack` · `sbx connect` | package a sandbox for a one-port platform · turn it back into local ports |
 | `sbx serve` | **the daemon** — owns the ports, does all waking and sleeping; one per machine |
 
 Every sandbox command takes `--provider docker|kubernetes`, `--namespace`,
