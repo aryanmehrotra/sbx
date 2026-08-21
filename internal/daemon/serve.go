@@ -318,6 +318,8 @@ func (d *daemon) discover(ctx context.Context) {
 		d.mu.Unlock()
 
 		if known {
+			d.correctAwake(f)
+
 			continue
 		}
 
@@ -379,6 +381,50 @@ func (d *daemon) discover(ctx context.Context) {
 	// A sandbox with an egress allow-list gets a filtering proxy on its bridge gateway,
 	// started here and torn down when the sandbox goes. Off the wake path.
 	d.reconcileEgress(found)
+}
+
+// correctAwake revokes a belief the provider contradicts.
+//
+// wake() returns immediately for a unit it thinks is already up, and that optimism is
+// deliberate - the alternative is a probe on every connection to a service that is almost
+// always running. For the unit a connection addressed it is also self-correcting: the dial
+// straight afterwards fails, and handle() revokes and wakes properly.
+//
+// A dependency has no such correction. It is woken so that something else can reach it over
+// the sandbox network, so nothing dials it from here, and a container stopped out of band -
+// by `docker stop`, by a crash, by a docker daemon restart - would stay believed-awake
+// indefinitely while being absent from the network's DNS. That is exactly the failure
+// dependency-ordered wake exists to prevent, arrived at from the other side.
+//
+// One direction only. Marking a unit awake is wake()'s job, done under the lock that
+// serialises it against sleep; a discovery tick asserting it from the side would make the
+// word mean nothing. And a wake in flight is left alone: TryLock rather than Lock, because
+// this runs on the discovery goroutine and must not wait behind a container start.
+func (d *daemon) correctAwake(f provider.Unit) {
+	if f.Running {
+		return
+	}
+
+	d.mu.Lock()
+	u := d.units[f.Ref]
+	d.mu.Unlock()
+
+	if u == nil || !u.isAwake() {
+		return
+	}
+
+	if !u.waking.TryLock() {
+		return // a wake is in progress; its own bookkeeping is the truth
+	}
+	defer u.waking.Unlock()
+
+	// Re-checked under the lock: a wake may have finished between the test above and here.
+	if !u.isAwake() {
+		return
+	}
+
+	u.setAwake(false)
+	logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; will be started on demand")
 }
 
 // peersOf resolves service names to units within one sandbox.
