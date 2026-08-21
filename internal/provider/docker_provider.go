@@ -319,6 +319,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--gpus", svc.GPUs)
 	}
 
+	if len(svc.DependsOn) > 0 {
+		args = append(args, "--label", labelDependsOn+"="+strings.Join(svc.DependsOn, ","))
+	}
+
 	if svc.Idle != "" {
 		args = append(args, "--label", labelIdle+"="+svc.Idle)
 	}
@@ -988,6 +992,10 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 
 		if a := c.Labels[labelEgressAllow]; a != "" {
 			u.EgressAllow = strings.Split(a, ",")
+		}
+
+		if dep := c.Labels[labelDependsOn]; dep != "" {
+			u.DependsOn = strings.Split(dep, ",")
 		}
 
 		for _, pr := range pairs {

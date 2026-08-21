@@ -89,7 +89,7 @@ script that already knows a port.
 | `mounts` | | Host directories bound read-write, `host: /container`. Your disk, visible to both - a source tree, a dump, fixtures a test run leaves behind. Docker only; a cluster refuses, because a hostPath is a node's disk rather than yours |
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
 | `init` | | Commands run **once**, after the service first reports healthy |
-| `depends_on` | | Services that must be healthy before this one is created |
+| `depends_on` | | Services that must be serving before this one starts - at creation, and on every wake |
 | `optional` | | Not created unless `--optional` - but still reserves its ports |
 | `egress` | | `"deny"` - no routed egress. It can still be reached, and can still talk to its own sandbox |
 | `egress_allow` | | Reach only these hosts (host or `host:port`, matching subdomains): `["api.openai.com"]`. Everything else is denied, enforced by a filtering proxy |
@@ -185,7 +185,7 @@ anything under a second becomes one. Zero is not passed through: to the API serv
 "use my default", which is ten, so a spec asking for a faster probe would have quietly got a
 slower one.
 
-### `depends_on` orders creation, and nothing else
+### `depends_on` orders creation, and waking
 
 ```json
 { "api":      { "build": { "context": "." }, "ports": [3000], "depends_on": ["postgres"] },
@@ -195,14 +195,21 @@ slower one.
 Without it, services are created alphabetically - so `api` comes up before `postgres`, and an
 app that dials its database at boot fails for a reason nowhere in the file.
 
-Two things it deliberately does **not** do:
+**It also orders wakes.** A connection to `api` wakes `postgres` first and waits for it, then
+starts `api`. Independent siblings wake in parallel, so a layer costs its slowest member
+rather than the sum, and a cycle is broken rather than followed.
+
+This used to be excluded, on the reasoning that a service needing another at runtime should
+just retry. That does not survive a sleeping peer: a stopped container is not slow to answer,
+it is **absent from the network's DNS**, so the dial fails with `no such host` and there is
+nothing to retry towards. On a fourteen-service sandbox, six services died that way within a
+minute of their datastores being slept.
+
+**Declaring nothing costs nothing.** A service with no `depends_on` takes exactly the path it
+always took - which is every single-service sandbox, and the whole of the wake numbers above.
 
 **It does not change ports.** Ordinals stay alphabetical, so adding `depends_on` never moves an
 existing sandbox's addresses - a worse bug than the race it fixes.
-
-**It does not order wakes.** The daemon wakes what is connected to; after a sleep there is no
-"startup" for an ordering rule to attach to. A service that needs another at runtime should
-retry - which is what waking looks like from inside anyway.
 
 A dependency on a service the spec does not declare is refused, rather than silently never
 applying. So is a cycle.

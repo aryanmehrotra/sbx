@@ -32,6 +32,16 @@ type unit struct {
 	name     string // for logs
 	legs     []leg
 
+	// dependsOn names the services in this sandbox that must be serving before this one is
+	// started, read from the sbx.dependsOn label. Empty for anything that declared nothing,
+	// which is every single-service sandbox and the whole of the published wake numbers.
+	dependsOn []string
+
+	// peers resolves those names to units. The daemon owns the registry, so the resolver is
+	// handed in rather than the unit reaching for a global - which also lets a test build a
+	// dependency graph without a daemon loop running.
+	peers func(sandbox string, services []string) []*unit
+
 	// lastByte is the only activity signal. Connection counting is not enough: a Go
 	// service's pool holds idle connections open indefinitely, so a unit fronted by a
 	// running service would never sleep. Bytes are what "in use" actually means.
@@ -99,6 +109,80 @@ func newUnit(sandbox, service, ref, instance, name string, legs []leg, running b
 }
 
 func (u *unit) touch() { u.lastByte.Store(time.Now().UnixNano()) }
+
+// wakeDeps brings this unit's declared dependencies up, concurrently, before it starts.
+//
+// Concurrent because siblings are independent by definition - config and discoverer both
+// needing mysql does not make them need each other - so the cost of a layer is its slowest
+// member rather than its sum. Recursion walks the chain, and the visited set both dedupes a
+// diamond and stops a cycle: two services declaring each other is a spec written by hand, and
+// a daemon that hangs holding the connection open is a worse answer than starting both.
+func (u *unit) wakeDeps(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+	if len(u.dependsOn) == 0 || u.peers == nil {
+		return nil
+	}
+
+	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), map[string]bool{u.name: true})
+}
+
+// wakeAll wakes a set of units in parallel and waits for all of them.
+//
+// A failure is returned but does not cancel the siblings: they are already starting, and
+// stopping halfway would leave the sandbox in a state nobody asked for.
+func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen map[string]bool) error {
+	var (
+		mu    sync.Mutex
+		wg    sync.WaitGroup
+		first error
+		next  []*unit
+	)
+
+	for _, d := range us {
+		if seen[d.name] {
+			continue
+		}
+
+		seen[d.name] = true
+		next = append(next, d)
+	}
+
+	for _, d := range next {
+		wg.Add(1)
+
+		go func(d *unit) {
+			defer wg.Done()
+
+			// Its own dependencies first, sharing the visited set so a diamond is woken once.
+			if d.peers != nil && len(d.dependsOn) > 0 {
+				mu.Lock()
+				deeper := d.peers(d.sandbox, d.dependsOn)
+				mu.Unlock()
+
+				if err := wakeAll(ctx, p, readyTimeout, deeper, seen); err != nil {
+					mu.Lock()
+					if first == nil {
+						first = err
+					}
+					mu.Unlock()
+
+					return
+				}
+			}
+
+			if err := d.wakeSelf(ctx, p, readyTimeout); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+				}
+				mu.Unlock()
+			}
+		}(d)
+	}
+
+	wg.Wait()
+
+	return first
+}
 
 // sleepable reports whether the idle clock should count for this unit yet.
 //
@@ -264,7 +348,19 @@ func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
 
 // wake starts the workload if needed and blocks until it reports serving. The caller's
 // first query pays this; nothing else ever does.
+// wake brings this unit up, and whatever it declared it needs, before returning.
+//
+// Split from wakeSelf so that waking a dependency cannot recurse back through the dependency
+// walk: wakeAll calls wakeSelf directly, having already handled that unit's own chain.
 func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+	if err := u.wakeDeps(ctx, p, readyTimeout); err != nil {
+		return err
+	}
+
+	return u.wakeSelf(ctx, p, readyTimeout)
+}
+
+func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
 	// A unit the daemon woke and has not slept is awake, and the daemon is the only thing
 	// that sleeps one. Asking the workload again costs a `docker exec` - measured at 68 ms
 	// median per connection against 0.8 ms straight to docker - and it was being paid on

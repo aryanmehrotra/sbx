@@ -331,6 +331,8 @@ func (d *daemon) discover(ctx context.Context) {
 
 		u := newUnit(f.Sandbox, f.Service, f.Ref, f.Instance, f.Ref, legs, f.Running)
 		u.keepAwake, u.idle = idlePolicy(f.Idle)
+		u.dependsOn = f.DependsOn
+		u.peers = d.peersOf
 
 		uctx, ucancel := context.WithCancel(ctx)
 
@@ -377,6 +379,31 @@ func (d *daemon) discover(ctx context.Context) {
 	// A sandbox with an egress allow-list gets a filtering proxy on its bridge gateway,
 	// started here and torn down when the sandbox goes. Off the wake path.
 	d.reconcileEgress(found)
+}
+
+// peersOf resolves service names to units within one sandbox.
+//
+// Within one, deliberately: a service name is unique inside a sandbox and nowhere else, so
+// resolving across them would wake a stranger's database because it is also called mysql.
+// A name that resolves to nothing is skipped rather than erroring - a dependency on a service
+// that is optional, or not created, should not make the sandbox unwakeable.
+func (d *daemon) peersOf(sandbox string, services []string) []*unit {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	out := make([]*unit, 0, len(services))
+
+	for _, want := range services {
+		for _, u := range d.units {
+			if u.sandbox == sandbox && u.service == want {
+				out = append(out, u)
+
+				break
+			}
+		}
+	}
+
+	return out
 }
 
 // forget drops a unit so the next discovery tick can rebuild it.

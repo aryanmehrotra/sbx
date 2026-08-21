@@ -168,13 +168,23 @@ type Service struct {
 	// Not on every start: a woken container already has whatever this created.
 	Init []string `json:"init,omitempty"`
 
-	// DependsOn names services that must be healthy before this one is created.
+	// DependsOn names services that must be serving before this one starts - at creation,
+	// and again on every wake.
 	//
-	// Only creation order. It deliberately does not affect which port a service gets:
-	// ordinals stay alphabetical, so adding a dependency never moves an existing
-	// sandbox's addresses. And it says nothing about wake order - the daemon wakes what
-	// is connected to, and a service that needs another at runtime should retry, because
-	// after a sleep there is no "startup" for an ordering rule to attach to.
+	// It deliberately does not affect which port a service gets: ordinals stay alphabetical,
+	// so adding a dependency never moves an existing sandbox's addresses.
+	//
+	// Wake order used to be excluded from this, on the reasoning that a service needing
+	// another at runtime should retry. That reasoning does not survive contact with a
+	// sleeping peer: a stopped container is not slow to answer, it is absent from the
+	// network's DNS, so the dial fails with `no such host` and there is nothing to retry
+	// towards. Measured on a fourteen-service sandbox, six services died that way within a
+	// minute of their datastores being slept.
+	//
+	// So a wake now walks this first, in parallel across independent siblings, and a cycle
+	// is broken rather than followed. Declaring nothing costs nothing: a service with no
+	// dependencies takes exactly the path it always took, which is what keeps the published
+	// wake numbers true for a single-service sandbox.
 	DependsOn []string `json:"depends_on,omitempty"`
 
 	// Optional keeps a heavy service out of the default sandbox. A branch that never
