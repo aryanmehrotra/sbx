@@ -146,6 +146,13 @@ func detail(r history.Record) string {
 		}
 	}
 
+	// Who did it, when it was not the daemon. Printed only for a person, because saying
+	// "by daemon" on every one of thousands of automatic lines would bury the handful that
+	// somebody actually did.
+	if r.Actor != "" && r.Actor != "daemon" {
+		fmt.Fprintf(&b, "   by %s", r.Actor)
+	}
+
 	if r.Failed {
 		b.WriteString("   failed")
 

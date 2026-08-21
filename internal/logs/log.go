@@ -106,7 +106,21 @@ type entry struct {
 	// every existing line is byte-identical, and neither is ever rendered on a terminal.
 	Event      string `json:"event,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
+
+	// Actor is who caused it: the daemon acting on its own, or a person at `sbx ui` or the
+	// CLI. Same vocabulary either way — a service slept on idle and a service slept by a
+	// keypress both say "slept" — so without this the record cannot answer the first
+	// question anyone asks of it, which is whether anybody did this on purpose.
+	Actor string `json:"actor,omitempty"`
 }
+
+// Who caused an event. Kept to three because the useful question is only ever whether a
+// person did it, and if so from where.
+const (
+	ActorDaemon = "daemon" // the daemon acting on its own: idle sleep, wake on connect
+	ActorUI     = "ui"     // a keypress in `sbx ui`
+	ActorCLI    = "cli"    // an explicit command
+)
 
 // Entry is one log line, handed to whatever registered with Observe.
 //
@@ -121,6 +135,7 @@ type Entry struct {
 	Message    string
 	Event      string
 	DurationMs int64
+	Actor      string
 }
 
 // Observe registers a function called for every line, after it is written.
@@ -206,20 +221,51 @@ func (l *Logger) Align(width int) {
 }
 
 func (l *Logger) Log(lvl Level, sandbox, service, msg string) {
-	l.event(lvl, sandbox, service, "", 0, msg)
+	l.event(lvl, ActorDaemon, sandbox, service, "", 0, msg)
 }
 
 // Event logs the same line and tags it for a machine reading the JSON stream.
 func (l *Logger) Event(lvl Level, sandbox, service, event string, ms int64, format string, a ...any) {
-	l.event(lvl, sandbox, service, event, ms, fmt.Sprintf(format, a...))
+	l.event(lvl, ActorDaemon, sandbox, service, event, ms, fmt.Sprintf(format, a...))
 }
 
-func (l *Logger) event(lvl Level, sandbox, service, event string, ms int64, msg string) {
+// ActorEvent is Event for something a person did.
+//
+// Separate from Event rather than a fourth positional argument to it, because every existing
+// caller is the daemon and rewriting thirty call sites to say so would be a worse change than
+// this one.
+func (l *Logger) ActorEvent(lvl Level, actor, sandbox, service, event string, ms int64, format string, a ...any) {
+	l.event(lvl, actor, sandbox, service, event, ms, fmt.Sprintf(format, a...))
+}
+
+// SetLevel raises or lowers the printing threshold and returns what it was.
+//
+// Observers are unaffected: they fire before the threshold is consulted, so a dashboard that
+// silences the terminal it is drawing on still records everything it does.
+//
+// It returns the old level rather than being paired with a getter so that a caller restoring
+// it cannot restore the wrong one - putting back LevelInfo would quietly undo a --debug the
+// user asked for.
+func (l *Logger) SetLevel(lvl Level) Level {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	was := l.level
+	l.level = lvl
+
+	return was
+}
+
+// LevelSilent is above every real level, so nothing is printed at all. For the dashboard,
+// which draws on the terminal the logger would otherwise write to.
+const LevelSilent = LevelFatal + 1
+
+func (l *Logger) event(lvl Level, actor, sandbox, service, event string, ms int64, msg string) {
 	defer l.notify(Entry{
 		Level:   lvl.String(),
 		Time:    time.Now(),
 		Sandbox: sandbox, Service: service,
-		Message: msg, Event: event, DurationMs: ms,
+		Message: msg, Event: event, DurationMs: ms, Actor: actor,
 	})
 
 	if lvl < l.level {
@@ -241,6 +287,7 @@ func (l *Logger) event(lvl Level, sandbox, service, event string, ms int64, msg 
 			SbxVersion: Version,
 			Event:      event,
 			DurationMs: ms,
+			Actor:      actor,
 		})
 		if err != nil {
 			return

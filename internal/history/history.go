@@ -41,6 +41,11 @@ type Record struct {
 	Event      string `json:"event,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
 
+	// Actor is who caused the event: daemon, ui, cli. Empty on old records, which is why
+	// readers treat empty as the daemon rather than as unknown — everything written before
+	// this field existed was the daemon, because nothing else emitted events at all.
+	Actor string `json:"actor,omitempty"`
+
 	Message string `json:"message,omitempty"`
 	Failed  bool   `json:"failed,omitempty"`
 	Error   string `json:"error,omitempty"`

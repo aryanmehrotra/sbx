@@ -148,3 +148,26 @@ func TestDaysAreHeadings(t *testing.T) {
 		}
 	}
 }
+
+// A person's action has to be legible as one. The daemon and the dashboard both say "slept",
+// so without the actor on the line an audit log answers "what happened" and not "who did it"
+// - and the reader goes looking for a bug in the reaper.
+func TestDetailNamesTheActorWhenNotTheDaemon(t *testing.T) {
+	got := detail(history.Record{Kind: "event", Event: "slept", Actor: "ui"})
+
+	if !strings.Contains(got, "by ui") {
+		t.Errorf("detail = %q, want it to mention \"by ui\"", got)
+	}
+}
+
+// The daemon is the overwhelming majority of lines. Naming it on every one would bury the
+// handful somebody actually did, which is the only thing this field is read for.
+func TestDetailStaysQuietForTheDaemon(t *testing.T) {
+	for _, actor := range []string{"", "daemon"} {
+		got := detail(history.Record{Kind: "event", Event: "slept", Actor: actor})
+
+		if strings.Contains(got, "by ") {
+			t.Errorf("actor %q: detail = %q, want no actor mentioned", actor, got)
+		}
+	}
+}

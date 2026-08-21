@@ -18,6 +18,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
+	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/tui"
 	"github.com/aryanmehrotra/sbx/internal/update"
@@ -58,6 +59,13 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 		return err
 	}
 	defer screen.Close()
+
+	// The dashboard owns this terminal, so a log line written to it lands in the middle of
+	// the drawing. Raising the threshold silences the writing without silencing the record:
+	// observers fire before the level check, so what the dashboard does still reaches the
+	// journal. Restored on the way out for whatever runs after it.
+	was := logs.Default.SetLevel(logs.LevelSilent)
+	defer logs.Default.SetLevel(was)
 
 	// Asks GitHub at most once a day, in the background, and only ever affects the *next*
 	// run. Nothing here waits for it.
@@ -758,10 +766,19 @@ func (d *dash) sleep(ctx context.Context, r row) {
 	}
 
 	if err := d.opt.Provider.Stop(ctx, r.Ref); err != nil {
+		logs.Default.ActorEvent(logs.LevelError, logs.ActorUI, r.Sandbox, r.Service,
+			"sleepFailed", 0, "could not sleep: %v", err)
 		d.say("could not sleep %s/%s: %v", r.Sandbox, r.Service, err)
 
 		return
 	}
+
+	// Recorded, not just shown. The dashboard's own status line is gone on the next
+	// keypress, and a service stopped by a person is indistinguishable afterwards from one
+	// the reaper slept on idle - which sent an afternoon into looking for a bug in the
+	// reaper that was really this keystroke.
+	logs.Default.ActorEvent(logs.LevelInfo, logs.ActorUI, r.Sandbox, r.Service,
+		"slept", 0, "slept from the dashboard")
 
 	d.say("%s/%s asleep", r.Sandbox, r.Service)
 
@@ -774,10 +791,17 @@ func (d *dash) remove(ctx context.Context, r row) {
 	}
 
 	if err := d.opt.Provider.Remove(ctx, r.Sandbox); err != nil {
+		logs.Default.ActorEvent(logs.LevelError, logs.ActorUI, r.Sandbox, "",
+			"removeFailed", 0, "could not remove: %v", err)
 		d.say("could not remove %s: %v", r.Sandbox, err)
 
 		return
 	}
+
+	// The one destructive thing the dashboard can do, and until now the one that left no
+	// trace at all: this deletes the sandbox's volumes, and there is no undo.
+	logs.Default.ActorEvent(logs.LevelNotice, logs.ActorUI, r.Sandbox, "",
+		"removed", 0, "removed from the dashboard")
 
 	d.say("removed %s", r.Sandbox)
 

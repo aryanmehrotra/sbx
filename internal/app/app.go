@@ -167,6 +167,7 @@ func Main(ver string, examples embed.FS, argv []string) int {
 			Time: e.Time, Kind: "event",
 			Sandbox: e.Sandbox, Service: e.Service,
 			Event: e.Event, DurationMs: e.DurationMs, Message: e.Message,
+			Actor:  e.Actor,
 			Failed: e.Level == "ERROR",
 		})
 	})
