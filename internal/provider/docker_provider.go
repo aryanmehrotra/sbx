@@ -336,6 +336,31 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 			return err
 		}
 
+		// The filter is a listener the daemon opens ON that gateway, and the daemon runs
+		// wherever you are - which on a VM-backed docker is not where the bridge is. Colima
+		// and Docker Desktop put the bridge inside the Linux VM, so 172.x.0.1 exists there
+		// and not on this machine, and the bind fails with "can't assign requested address".
+		//
+		// Left to the daemon this is a warning every refresh tick and a sandbox that was
+		// reported created: the service comes up, reports healthy, and has no egress at all -
+		// not to the allowed hosts either. Fails closed, which is the safe direction and the
+		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
+		// refused up front for the same reason, and this is the same shape.
+		probe, lerr := net.Listen("tcp", net.JoinHostPort(gw, "0"))
+		if lerr != nil {
+			return fmt.Errorf(
+				"declares egress_allow, and the filtering proxy that enforces it cannot be "+
+					"started: the sandbox's gateway %s is not an address this machine can "+
+					"bind (%v).\n"+
+					"That is what a VM-backed docker looks like - colima and Docker Desktop "+
+					"keep the bridge inside the VM, while `sbx serve` runs out here. Use "+
+					"`egress: \"deny\"` for no egress at all, which needs no proxy, or run "+
+					"the daemon on a host whose docker is native.",
+				gw, lerr)
+		}
+
+		_ = probe.Close()
+
 		proxy := "http://" + net.JoinHostPort(gw, strconv.Itoa(EgressProxyPort))
 		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			args = append(args, "-e", k+"="+proxy)
@@ -348,6 +373,20 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 
 	if svc.Egress == spec.EgressDeny || len(svc.EgressAllow) > 0 {
 		args = append(args, "--network", egressNetwork(sandbox))
+
+		// The service's own name, on the network, as well as the container's.
+		//
+		// Everything a spec says addresses a service by its short name - `depends_on: ["db"]`,
+		// `sbx logs x db`, the key in `services` - but docker's embedded DNS only knows the
+		// container, which is `sbx-<sandbox>-<service>`. So a spec that declares `depends_on`
+		// and then configures the dependent with `db:6379` gets `no such host`: the dependency
+		// is woken, correctly, and still cannot be reached. Measured: `db` answers NXDOMAIN on
+		// the sandbox network while `sbx-deplab-db` resolves.
+		//
+		// That error is indistinguishable from the one dependency-ordered wake exists to
+		// prevent, which is what makes it expensive to diagnose. An alias costs nothing and
+		// makes the spec's own vocabulary work on the wire.
+		args = append(args, "--network-alias", service)
 	}
 
 	for i := range eps {
