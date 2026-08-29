@@ -511,9 +511,42 @@ func (d *daemon) reap(ctx context.Context) {
 	}
 	d.mu.Unlock()
 
+	// What an awake service still needs, so the reaper does not take it away.
+	//
+	// A dependency is used over the sandbox's own network, which the daemon is not on: the
+	// dependent dials it directly, so not one of those bytes reaches a proxy leg and the
+	// dependency's idle clock runs out while it is in constant use. Sleeping it removes its
+	// name from the network's DNS and the dependent dies on `no such host` - the same failure
+	// dependency-ordered wake exists to prevent, arriving from the other side. Measured on a
+	// two-service sandbox: a continuously-served `app` lost four dials to `db` every fifteen
+	// seconds, indefinitely, while `sbx list` still called db awake.
+	//
+	// A stack therefore sleeps from the top down: dependents idle out first, and their
+	// datastores become eligible on a later tick. That is a tick or two slower than sleeping
+	// everything at once and it is the only order that is ever correct.
+	//
+	// A depends_on cycle leaves both members awake. wakeAll breaks a cycle rather than hanging;
+	// here the conservative direction is the other one, because holding memory is recoverable
+	// and cutting a live dependency is not.
+	needed := make(map[string]bool, len(units))
+
+	for _, u := range units {
+		if !u.isAwake() {
+			continue
+		}
+
+		for _, dep := range u.dependsOn {
+			needed[u.sandbox+"\x00"+dep] = true
+		}
+	}
+
 	for _, u := range units {
 		if u.keepAwake {
 			continue // an agent may be working inside it with no traffic through the proxy
+		}
+
+		if needed[u.sandbox+"\x00"+u.service] {
+			continue
 		}
 
 		window := d.idle
