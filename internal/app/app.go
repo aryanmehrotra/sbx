@@ -673,12 +673,26 @@ func dispatch(cmd string, args []string) error {
 	case "url":
 		fs := newFlagSet("url")
 		via := fs.String("via", "", "cloudflared | ngrok | ssh; detected if unset")
+
+		// Default rewrite, because the measured common case is a dev server that refuses the
+		// tunnel's hostname - vite answers 403 - and previewing one is what `sbx url` is for.
+		// `pass` is for a service that needs its public name: absolute links, OAuth callbacks,
+		// a cookie domain.
+		hostHeader := fs.String("host-header", "rewrite",
+			"rewrite: the service is sent Host: 127.0.0.1:<port> | pass: it is sent the public hostname")
+
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional, rest := splitPositional(args, 2)
 		_ = fs.Parse(rest)
 
 		if len(positional) < 2 {
-			return fmt.Errorf("usage: sbx url <sandbox> <service> [--via cloudflared|ngrok|ssh]")
+			return fmt.Errorf(
+				"usage: sbx url <sandbox> <service> [--via cloudflared|ngrok|ssh] " +
+					"[--host-header rewrite|pass]")
+		}
+
+		if *hostHeader != "rewrite" && *hostHeader != "pass" {
+			return fmt.Errorf("--host-header is rewrite or pass, not %q", *hostHeader)
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
@@ -696,7 +710,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return tunnel.Open(ctx, positional[0]+"/"+positional[1], port, *via)
+		return tunnel.Open(ctx, positional[0]+"/"+positional[1], port, *via, *hostHeader == "rewrite")
 
 	case "templates":
 		for _, t := range TemplateNames() {

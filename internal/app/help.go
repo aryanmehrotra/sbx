@@ -172,9 +172,12 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"SBX_CONNECT_TOKEN=... sbx connect db=https://db.example.dev cache=https://cache.example.dev",
 	},
 	"url": {
-		"sbx url <sandbox> <service> [--via cloudflared|ngrok|ssh]",
+		"sbx url <sandbox> <service> [--via cloudflared|ngrok|ssh] [--host-header rewrite|pass]",
 		"A public link to a service, which wakes it when somebody opens it. For sharing a\n" +
-			"branch preview with someone who cannot reach your laptop.",
+			"branch preview with someone who cannot reach your laptop.\n" +
+			"The service is sent Host: 127.0.0.1:<port>, because a dev server that checks the\n" +
+			"header refuses the tunnel's own hostname - vite answers 403. --host-header pass\n" +
+			"sends the public hostname instead, for a service that needs its real name.",
 		"sbx url feature-x nginx",
 	},
 	"list": {

@@ -32,8 +32,16 @@ import (
 type tunnelBackend struct {
 	name string
 	bin  string
-	// args builds the command line for a local port.
-	args func(port int) []string
+	// args builds the command line for a local port. rewriteHost asks the backend to send the
+	// origin `Host: 127.0.0.1:<port>` instead of the public tunnel hostname; a backend that
+	// cannot is passed it anyway and ignores it, and says so through hostRewrite.
+	args func(port int, rewriteHost bool) []string
+
+	// hostRewrite reports whether this backend can rewrite the Host header at all. Measured,
+	// not assumed: cloudflared has --http-host-header, and ngrok removed its --host-header
+	// flag in v3 in favour of a traffic-policy file. A backend that cannot do it says so
+	// rather than accepting the request and quietly not honouring it.
+	hostRewrite bool
 	// url finds the public address in the tool's own output.
 	url *regexp.Regexp
 	// notURL are hostnames the pattern matches that are never the tunnel — a
@@ -60,10 +68,37 @@ type tunnelBackend struct {
 func tunnelBackends() []tunnelBackend {
 	return []tunnelBackend{
 		{
-			name: "cloudflared",
-			bin:  "cloudflared",
-			args: func(p int) []string {
-				return []string{"tunnel", "--no-autoupdate", "--url", "http://localhost:" + strconv.Itoa(p)}
+			name:        "cloudflared",
+			bin:         "cloudflared",
+			hostRewrite: true,
+			args: func(p int, rewriteHost bool) []string {
+				a := []string{
+					"tunnel", "--no-autoupdate",
+
+					// cloudflared's own metrics listener otherwise takes the first free port
+					// of 20241-20245, and sbx hands out 20000-21199 (publicBase + slot*20,
+					// 60 slots) - so 20241-20245 is slot 12. Measured: with nothing on those
+					// ports, cloudflared binds 20241 and the daemon can no longer listen on
+					// it. `sbx url` would be taking a port out from under the daemon it
+					// depends on, and only when slot 12 happened to be unallocated - an
+					// intermittent bind failure with no visible cause. :0 is an ephemeral
+					// port, which is outside the range by construction.
+					"--metrics", "127.0.0.1:0",
+
+					"--url", "http://localhost:" + strconv.Itoa(p),
+				}
+
+				if rewriteHost {
+					// Without this the origin sees `Host: <name>.trycloudflare.com`, and
+					// every dev server that checks the header refuses it - measured against
+					// vite, which answers 403 "Blocked request. This host is not allowed."
+					// Same class in webpack-dev-server, Rails and Django. Sharing a branch
+					// preview is what `sbx url` is for, so the header it sends should be the
+					// one the thing being previewed will accept.
+					a = append(a, "--http-host-header", "127.0.0.1:"+strconv.Itoa(p))
+				}
+
+				return a
 			},
 			// api.trycloudflare.com is cloudflared's OWN control plane, and it
 			// logs a call to it BEFORE printing the tunnel hostname. Matching the
@@ -77,7 +112,12 @@ func tunnelBackends() []tunnelBackend {
 		{
 			name: "ngrok",
 			bin:  "ngrok",
-			args: func(p int) []string {
+			// ngrok v3 removed --host-header; the equivalent is a traffic-policy file, which
+			// is a file to write and clean up rather than a flag. Left unsupported and
+			// declared, so `sbx url --host-header rewrite --via ngrok` says it cannot rather
+			// than accepting the flag and passing the public hostname through anyway.
+			hostRewrite: false,
+			args: func(p int, _ bool) []string {
 				return []string{"http", strconv.Itoa(p), "--log", "stdout", "--log-format", "logfmt"}
 			},
 			url:  regexp.MustCompile(`url=(https://[^\s]+\.ngrok[^\s]*)`),
@@ -93,7 +133,10 @@ func tunnelBackends() []tunnelBackend {
 			name:     "ssh",
 			bin:      "ssh",
 			explicit: true,
-			args: func(p int) []string {
+			// -R forwards a TCP port. There is no HTTP layer here to rewrite a header in;
+			// localhost.run's own front end sets the Host, and nothing on this side can.
+			hostRewrite: false,
+			args: func(p int, _ bool) []string {
 				return []string{
 					// Not accept-new. Trusting whatever answers on first contact is the
 					// thing pinning exists to prevent, and doing it inside a fallback means
@@ -158,14 +201,24 @@ func pickTunnels(preferred string) ([]tunnelBackend, error) {
 //
 // A port, not a sandbox. This package has no idea what a sandbox is, which is why it can be
 // read on its own and why nothing here has to change when the thing behind the port does.
-func Open(ctx context.Context, label string, port int, preferred string) error {
+func Open(ctx context.Context, label string, port int, preferred string, rewriteHost bool) error {
 	backends, err := pickTunnels(preferred)
 	if err != nil {
 		return err
 	}
 
+	// Asking a named backend for something it cannot do is an error, not a downgrade. The
+	// alternative - accept the flag and send the public hostname anyway - is the failure shape
+	// this project keeps finding: reported success, reached nothing.
+	if rewriteHost && preferred != "" && !backends[0].hostRewrite {
+		return fmt.Errorf(
+			"%s cannot rewrite the Host header (only cloudflared can); "+
+				"pass --host-header pass to send the tunnel's own hostname to the service",
+			preferred)
+	}
+
 	for i, b := range backends {
-		err := runTunnel(ctx, b, label, port)
+		err := runTunnel(ctx, b, label, port, rewriteHost)
 		if err == nil || ctx.Err() != nil {
 			return nil
 		}
@@ -182,14 +235,25 @@ func Open(ctx context.Context, label string, port int, preferred string) error {
 	return nil
 }
 
-func runTunnel(ctx context.Context, b tunnelBackend, label string, port int) error {
+func runTunnel(ctx context.Context, b tunnelBackend, label string, port int, rewriteHost bool) error {
 	fmt.Printf("sbx url · %s · via %s · wake port %d\n", label, b.name, port)
 
 	if b.note != "" {
 		fmt.Printf("  note: %s\n", b.note)
 	}
 
-	cmd := exec.CommandContext(ctx, b.bin, b.args(port)...)
+	// Said out loud either way, because it is the one thing about this link that can change
+	// what the service on the other end does with a request.
+	switch {
+	case rewriteHost && b.hostRewrite:
+		fmt.Printf("  the service is sent Host: 127.0.0.1:%d, so a dev server that checks the\n"+
+			"        header serves it. --host-header pass sends the public hostname instead\n", port)
+	case rewriteHost:
+		fmt.Printf("  %s cannot rewrite Host, so the service is sent the public hostname -\n"+
+			"        a dev server that checks the header (vite, Rails, Django) will refuse it\n", b.name)
+	}
+
+	cmd := exec.CommandContext(ctx, b.bin, b.args(port, rewriteHost && b.hostRewrite)...)
 
 	// Tunnels announce themselves on whichever stream they feel like; merge and scan both.
 	stdout, err := cmd.StdoutPipe()

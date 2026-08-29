@@ -48,7 +48,7 @@ func TestNoBackendAutoAcceptsHostKeys(t *testing.T) {
 			continue
 		}
 
-		args := strings.Join(b.args(12345), " ")
+		args := strings.Join(b.args(12345, false), " ")
 
 		if strings.Contains(args, "accept-new") {
 			t.Errorf("backend %q still auto-accepts host keys: %s", b.name, args)
@@ -124,5 +124,60 @@ func TestCloudflaredControlPlaneIsNotTheTunnelURL(t *testing.T) {
 
 	if want := "https://operators-authors-opponent-exchanges.trycloudflare.com"; got != want {
 		t.Errorf("picked %q, want %q", got, want)
+	}
+}
+
+// cloudflared's metrics listener takes the first free port of 20241-20245, and sbx hands out
+// 20000-21199 - so the default lands inside slot 12 and the daemon can no longer bind it.
+// Measured before the fix: cloudflared LISTEN on 127.0.0.1:20241, and net.Listen on it failed
+// with "address already in use". Pinned here because the collision is invisible until the day
+// slot 12 is the one being allocated.
+func TestCloudflaredDoesNotBindInsideTheSandboxPortRange(t *testing.T) {
+	for _, b := range tunnelBackends() {
+		if b.name != "cloudflared" {
+			continue
+		}
+
+		args := strings.Join(b.args(20060, true), " ")
+
+		if !strings.Contains(args, "--metrics 127.0.0.1:0") {
+			t.Errorf("cloudflared is started without --metrics 127.0.0.1:0, so its metrics "+
+				"server can take a port sbx allocates (20000-21199): %s", args)
+		}
+	}
+}
+
+// The Host a dev server is sent decides whether it serves the page at all. Measured against a
+// real vite: the tunnel hostname answers 403 "Blocked request", 127.0.0.1:<port> answers 200.
+func TestHostHeaderRewriteIsAskedForOnlyWhereItWorks(t *testing.T) {
+	for _, b := range tunnelBackends() {
+		with := strings.Join(b.args(20060, true), " ")
+		without := strings.Join(b.args(20060, false), " ")
+
+		switch b.name {
+		case "cloudflared":
+			if !b.hostRewrite {
+				t.Error("cloudflared has --http-host-header; hostRewrite says otherwise")
+			}
+
+			if !strings.Contains(with, "--http-host-header 127.0.0.1:20060") {
+				t.Errorf("no host rewrite where one was asked for: %s", with)
+			}
+
+			if strings.Contains(without, "--http-host-header") {
+				t.Errorf("host rewritten where it was not asked for: %s", without)
+			}
+		default:
+			// A backend that cannot rewrite must not change its command line when asked to,
+			// so the honest message is the only thing that happens.
+			if b.hostRewrite {
+				t.Errorf("backend %q claims it can rewrite Host; only cloudflared can", b.name)
+			}
+
+			if with != without {
+				t.Errorf("backend %q changed its arguments for a rewrite it cannot do:\n"+
+					" with: %s\n without: %s", b.name, with, without)
+			}
+		}
 	}
 }
