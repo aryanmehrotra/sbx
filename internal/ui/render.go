@@ -185,6 +185,13 @@ func title(m model, cols int) string {
 		right += " · " + m.provider
 	}
 
+	// Ahead of the update notice, because one is news and the other means the addresses on this
+	// screen do not answer. A service can read AWAKE, hold 567 MB and refuse every connection,
+	// and until this line said so the only clue was the browser's.
+	if m.noDaemon {
+		right = fmt.Sprintf("%sno sbx serve%s · %s", yellow, reset, right)
+	}
+
 	if m.update != "" {
 		right = fmt.Sprintf("%s%s available%s · %s", yellow, m.update, reset, right)
 	}

@@ -1078,6 +1078,24 @@ func List(ctx context.Context, p provider.Provider, asJSON bool) error {
 		fmt.Printf("%-20s %-14s %-9s %s\n", u.Sandbox, u.Service, state, joinEndpoints(u.Client))
 	}
 
+	// The ADDRESS column is a promise only the daemon can keep.
+	//
+	// Those are the daemon's ports, not docker's - docker publishes a backing port and `sbx
+	// serve` owns the public one - so with no daemon every address in the table refuses, while
+	// the table still says awake and prints them. A running container and a reachable service
+	// are different facts, and the listing showed only the first.
+	//
+	// Reported as a live case: `sbx ui` showed mlflow AWAKE on 127.0.0.1:20020, using 567 MB,
+	// and the browser said "refused to connect". Both were true. Nothing said why.
+	if !isLocal(units[0]) {
+		return nil
+	}
+
+	if _, running := daemon.Running(); !running {
+		fmt.Printf("\nno `sbx serve` is running, so nothing accepts on the addresses above -\n" +
+			"a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &\n")
+	}
+
 	return nil
 }
 

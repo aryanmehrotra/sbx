@@ -298,6 +298,13 @@ type model struct {
 	update  string
 	version string
 
+	// noDaemon is set where this dashboard is showing local sandboxes and no `sbx serve` owns
+	// their ports. Worth the space on the top line because every ADDRESS on the screen is the
+	// daemon's, not docker's: without one, a service shown AWAKE and holding 567 MB still
+	// refuses every connection. Reported exactly that way - the dashboard said awake, the
+	// browser said "refused to connect", and both were right.
+	noDaemon bool
+
 	// remote is set when the dashboard is reading a deployment over sbx connect rather than this
 	// machine. It changes a couple of user-facing things - the footer offers `f forward`, wake
 	// asks the endpoint rather than dialling - and nothing about the layout.

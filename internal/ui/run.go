@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/daemon"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -74,8 +75,14 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 	d := &dash{
 		opt:    opt,
 		remote: opt.Remote,
-		model:  model{version: opt.Version, update: update.Available(opt.Version), remote: opt.Remote},
-		prev:   map[string]provider.Usage{},
+		model: model{
+			version: opt.Version, update: update.Available(opt.Version), remote: opt.Remote,
+
+			// Only for a local fleet. A deployment reached over `--connect` is fronted by the
+			// sbx running over there, and this machine's daemon says nothing about it.
+			noDaemon: !opt.Remote && !daemonRunning(),
+		},
+		prev: map[string]provider.Usage{},
 
 		limitsSeen: map[string]time.Time{},
 	}
@@ -1171,7 +1178,26 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 		fmt.Fprintf(out, "%-20s %-14s %-8s %s\n", r.Sandbox, r.Service, state, r.Address)
 	}
 
+	// The same warning the dashboard's title carries, for the same reason: the ADDRESS column
+	// above is the daemon's ports, so with none running every one of them refuses while the
+	// STATE column still says awake.
+	if !opt.Remote && !daemonRunning() {
+		fmt.Fprintln(out, "\nno `sbx serve` is running, so nothing accepts on the addresses above -")
+		fmt.Fprintln(out, "a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &")
+	}
+
 	fmt.Fprintln(out, "\nthis is not a terminal, so the live dashboard is not available here")
 
 	return nil
+}
+
+// daemonRunning reports whether a local `sbx serve` owns the ports this dashboard is printing.
+//
+// pid-verified rather than a file's existence: a stale record from a daemon that died with its
+// terminal would otherwise say the addresses are being fronted when nothing is listening, which
+// is the exact confusion this line exists to remove.
+func daemonRunning() bool {
+	_, ok := daemon.Running()
+
+	return ok
 }
