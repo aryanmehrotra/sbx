@@ -54,17 +54,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # The whole push is the unit being tested, not its last commit, so the base of the
+          # comparison can be any distance back. Shallow enough to miss it and the diff fails.
+          fetch-depth: 0
       - id: filter
         run: |
-          # Anything other than a push with a parent - a PR, a schedule, a manual run - is
-          # treated as "code changed", because the cheap check is only safe when there is
-          # exactly one commit to compare against.
+          # Anything other than a push - a PR, a schedule, a manual run - is treated as
+          # "code changed", because there is no range to compare.
           if [ "${{ github.event_name }}" != "push" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
-          changed=$(git diff --name-only HEAD^ HEAD 2>/dev/null || echo unknown)
+          # Everything the push contained, not just its tip.
+          #
+          # This compared HEAD^..HEAD, which is only the same question when a push carries one
+          # commit. A push of five commits ending in a docs commit reported "documentation
+          # only" and skipped every Docker suite - so the four commits of Go in front of it
+          # went to main having been linted and never tested, under a green tick. Caught on
+          # exactly such a push; the comment here used to say the cheap check was safe with
+          # one commit to compare against, and nothing checked that there was one.
+          base="${{ github.event.before }}"
+
+          # A branch's first push has no before, and a force-push can name a commit that is no
+          # longer reachable. Both mean the range is unknown, which is not the same as empty.
+          case "$base" in
+            ''|0000000000000000000000000000000000000000)
+              echo "code=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          changed=$(git diff --name-only "$base" HEAD 2>/dev/null || echo unknown)
 
           if [ "$changed" = "unknown" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
