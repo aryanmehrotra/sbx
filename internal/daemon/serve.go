@@ -495,7 +495,11 @@ func legsOf(u provider.Unit) []leg {
 
 	legs := make([]leg, 0, n)
 	for i := range n {
-		legs = append(legs, leg{Listen: u.Listen[i], Upstream: u.Upstream[i]})
+		// Resolved here, once, rather than on every connection through it.
+		lg := leg{Listen: u.Listen[i], Upstream: u.Upstream[i]}
+		lg.resolve()
+
+		legs = append(legs, lg)
 	}
 
 	return legs

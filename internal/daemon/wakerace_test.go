@@ -4,8 +4,11 @@ import (
 	"context"
 	"io"
 	"log"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // A branching dependency graph must not kill the daemon.
@@ -159,5 +162,81 @@ func TestAUnitWokenAsADependencyGetsAFreshIdleClock(t *testing.T) {
 	if db.idleFor() > time.Minute {
 		t.Errorf("a freshly woken dependency reports %v idle, so the reaper may sleep it before "+
 			"the service that needed it has finished starting", db.idleFor().Round(time.Second))
+	}
+}
+
+// A literal upstream is pinned; a name is not.
+//
+// Caching a resolved name would be a bug rather than an optimisation - the answer to a lookup
+// is allowed to change, and a cluster Service is the case where it does. Only an address that
+// cannot move is kept, and everything else falls back to the dialler that looks it up.
+func TestOnlyALiteralUpstreamIsResolvedOnce(t *testing.T) {
+	for _, tc := range []struct {
+		host   string
+		pinned bool
+	}{
+		{"127.0.0.1", true},
+		{"10.4.2.9", true},
+		{"::1", true},
+		{"db.sbx.svc.cluster.local", false},
+		{"localhost", false},
+		{"", false},
+	} {
+		l := leg{Listen: 20060, Upstream: provider.Endpoint{Host: tc.host, Port: 5432}}
+		l.resolve()
+
+		if got := l.addr != nil; got != tc.pinned {
+			t.Errorf("upstream %q pinned=%v, want %v", tc.host, got, tc.pinned)
+		}
+
+		if l.addr != nil && l.addr.Port != 5432 {
+			t.Errorf("upstream %q resolved to port %d, want 5432", tc.host, l.addr.Port)
+		}
+	}
+}
+
+// The dial has to reach the workload either way, so both paths are exercised against a real
+// listener - the fast one, and the fallback a name takes.
+func TestBothDialPathsReachTheUpstream(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			_, _ = c.Write([]byte("ok"))
+			_ = c.Close()
+		}
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	for _, tc := range []struct{ name, host string }{
+		{"resolved literal", "127.0.0.1"},
+		{"name, looked up per dial", "localhost"},
+	} {
+		l := leg{Listen: 1, Upstream: provider.Endpoint{Host: tc.host, Port: port}}
+		l.resolve()
+
+		c, err := l.dial()
+		if err != nil {
+			t.Errorf("%s: dial: %v", tc.name, err)
+
+			continue
+		}
+
+		buf := make([]byte, 2)
+		if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "ok" {
+			t.Errorf("%s: read %q, %v", tc.name, buf, err)
+		}
+
+		_ = c.Close()
 	}
 }
