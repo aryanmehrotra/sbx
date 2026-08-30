@@ -114,6 +114,20 @@ process's memory, **proven end to end on a Linux podman runtime**: a redis key s
 survives a freeze/resume. It needs Linux (refused on macOS) and a podman runtime, because docker's
 own checkpoint/restore is broken; `sbx snapshot`/`fork` stay filesystem-only for now.
 
+## What sbx does not have
+
+Written down because a comparison page that only lists wins is an advertisement.
+
+| | state |
+|---|---|
+| An editor story | **none.** No `sbx code`, no `devcontainer.json` import. Every dev-environment product has one |
+| Memory restore | filesystem only; processes cold-start. zeropod and E2B both keep RAM |
+| `egress_allow` on a VM-backed docker | refused with a reason - the filtering proxy binds a gateway that lives inside the VM |
+| Kubernetes in a sandbox | impossible: k3s and DinD need a privileged container and the spec has no way to ask |
+| A waiting page | `sbx url` gives a spinner; Sablier ships a themed one |
+| Windows | WSL2 only - sbx cannot dial a Windows named pipe |
+| A half-close on `sbx connect` | fixed in v0.8.0; it silently truncated the reply before |
+
 ## The closest prior art
 
 Not the hosted platforms — the self-hosted projects that solve the same problem, and the ones
@@ -173,6 +187,69 @@ file, and the same binary on a laptop and in a cluster.** zeropod goes deeper on
 but needs a cluster; Lazytainer is protocol-agnostic but routes your traffic through it; Sablier
 covers HTTP and is the one most people already run. Each is worth reading before this one.
 
+
+## Dev environments, and the editor sbx does not have
+
+This page had nothing about editors, which is a gap in it rather than in the field: the
+dev-environment products are what most people reach for when they want "a machine per branch",
+and sbx overlaps them without competing on the thing they sell.
+
+| | sbx | Codespaces | Coder | Ona (Gitpod) | DevPod | code-server |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Sleeps on its own | ● | ● 30 min | ● 1 h | ● 30 min | ● 5–10 min | ◐ opt-in flag |
+| Self-hosted | ● | ○ | ● AGPL | ◐ BYOC, SaaS control plane | ● | ● |
+| Editor integration | ○ **none** | ● | ● | ● | ● | ● |
+| Reads `devcontainer.json` | ○ | ◐ partial | ● | ● | ● | n/a |
+| Traffic to a port counts as activity | ● | ○ **explicitly not** | ○ | ○ **explicitly not** | ○ | ○ |
+| Wakes a stopped environment on a connection | ● | ○ | ○ | ○ | ○ | ○ |
+| What "idle" means | bytes through the proxy | keyboard and terminal I/O | an active session | editor or SSH attached | a timer | a heartbeat file |
+
+**The row that matters is the third one, and sbx loses it.** There is no `sbx code`, no
+`devcontainer.json` import, nothing. Every product above ships an editor story and sbx ships
+none, and no amount of the rows below makes up for that if an editor is what somebody wants.
+
+**The row below it is the one nobody else has.** Codespaces and Ona both say in their own docs
+that traffic to a forwarded port does *not* count as activity — an environment can be serving
+requests and still be judged idle. sbx measures bytes through the proxy, so a sandbox being used
+is a sandbox that is awake, whatever is using it.
+
+### Nothing sleeps while an editor is attached — including sbx
+
+Checked across Codespaces, Coder, Ona, DevPod, code-server, Google Cloud Workstations and Replit:
+every one treats a live editor connection as the reason **not** to sleep. None of them sleep
+underneath an attached editor, and neither does sbx.
+
+That is not an oversight in any of them. VS Code's `PersistentProtocol` sends a keepalive every
+**5 seconds** unconditionally, with a 20-second dead-connection timeout, and code-server touches
+a heartbeat file every minute on top of that — so an attached editor is, by construction, never
+idle. Measured here against code-server with a browser tab open and nobody typing: **927–956 B/s
+sustained**, against **3136 B/s** while typing. Those are 3.3× apart, and *reading code on screen
+produces the idle rate* — so no byte-rate threshold separates "someone is working" from "a tab is
+open", and one that slept an abandoned tab would sleep somebody mid-thought.
+
+The technique that would solve it properly does not transfer either. zeropod checkpoints with
+CRIU and **dropped** `--tcp-established` in 2025 in favour of skipping in-flight connections,
+because CRIU cannot restore a TCP socket across a network hop — which is exactly what an editor
+session is. Its docs warn off long-lived connections outright.
+
+So "sleep while the editor stays attached" is unclaimed by everyone, for a reason, and this page
+does not claim it either.
+
+### What integration would actually look like
+
+The mechanism decides this, not preference. Of VS Code's three remote modes:
+
+- **Remote-SSH** is a plain inbound TCP dial, so it wakes a sandbox through the mechanism sbx
+  already has, with nothing new built. `code --remote ssh-remote+host /path` is documented.
+- **Attach to Container** goes through the **Docker socket**, not the container's network — so it
+  never opens a connection sbx could wake on. An earlier draft of this work proposed it as the
+  integration; the mechanism says otherwise.
+- **Remote-Tunnels** needs a `code tunnel` process already running inside, holding an outbound
+  connection. There is nothing to intercept.
+
+Which leaves two honest options: an SSH service in the spec, which works today, and reading
+`devcontainer.json` so an existing repo needs no second file. DevPod is the closest precedent for
+the second — a backend-agnostic client built on the same spec.
 ## Same spec, two runtimes — and not the same capabilities
 
 "Same spec local + cluster" is a ● doing a lot of work. The spec really is one file and the
