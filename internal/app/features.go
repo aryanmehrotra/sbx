@@ -61,3 +61,11 @@ func init() {
 		Summary:   "`sbx init --from-devcontainer` - a spec from the .devcontainer a repo already has",
 	})
 }
+
+func init() {
+	features.Register(features.Feature{
+		Name:      "waiting-page",
+		Stability: features.Preview,
+		Summary:   "a browser opening a sleeping `sbx url` gets a page saying so, instead of a spinner",
+	})
+}

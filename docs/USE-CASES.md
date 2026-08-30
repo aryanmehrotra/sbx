@@ -496,3 +496,35 @@ per connection would have slept it at minute one.
 **What it does not cover:** a box with no allow-list, or one calling out over a protocol that is
 not HTTP. There sbx still sees nothing, and `idle: "never"` remains the answer.
 → [SPEC.md](SPEC.md#egress_allow-is-a-domain-allow-list)
+
+---
+
+## 15 · A link you send someone, for a sandbox that is asleep
+
+`sbx url` gives a branch preview a public address, and the sandbox behind it sleeps like
+everything else. The first person to open the link is the one who wakes it.
+
+```sh
+SBX_FEATURES=waiting-page sbx serve --idle 5m &
+sbx url my-branch web
+```
+
+sbx holds a cold connection rather than refusing it, which is right for every client with a
+library behind it — the request just takes a moment longer and then works. A browser is the
+exception: a held connection is a white screen, nothing on it says the machine is busy, and the
+reasonable conclusion is that the link is broken. The reflex is to reload, which opens a second
+connection to a service that is already starting.
+
+With the gate on, a wait longer than a second gets a page that names what is starting and reloads
+itself. Measured against a sandbox with a four-second start: **503 with the page at 1.00s, then
+200 in 1.5ms on the reload.**
+
+**What it does not do:** it never delays the wake, it never speaks for a wake that is quick, and
+it only answers something that is actually an HTTP request — a postgres startup packet, a redis
+`PING`, a TLS handshake are carried through untouched, with whatever was read while deciding
+replayed to the service first.
+
+**Why it is behind a gate:** the default is still to hold, because holding is what makes sbx
+invisible to everything that is not a browser. This is a deliberate exception to that, so it is
+one you turn on.
+→ [SPEC.md](SPEC.md#idle-keeps-a-box-awake-while-it-works)

@@ -350,6 +350,19 @@ func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn,
 
 	u.touch()
 
+	// Held by default, which is the whole design: the client waits and its request is served,
+	// and nothing on the other end has to know sbx exists. A browser is the one caller that
+	// reads a held connection as a broken link, so when the gate is on and the wait runs long
+	// enough to be worth explaining, an HTTP request gets a page saying what is happening.
+	// Anything that is not HTTP, and any wake fast enough not to need it, is untouched.
+	if pre, served := u.maybeWaitingPage(ctx, p, client, readyTimeout); served {
+		return
+	} else if len(pre) > 0 {
+		// Whatever was read while deciding is replayed first, or the service receives a
+		// request with its verb missing.
+		client = &prefixConn{Conn: client, pre: pre}
+	}
+
 	if err := u.wake(ctx, p, readyTimeout); err != nil {
 		// Hanging up is the honest failure. A caller that gets a closed connection retries
 		// or reports; one that gets a silently empty stream does neither.
