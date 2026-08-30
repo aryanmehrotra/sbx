@@ -1,3 +1,5 @@
+//go:build darwin || freebsd || netbsd || openbsd || dragonfly || linux
+
 package tui
 
 import (

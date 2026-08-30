@@ -29,6 +29,7 @@ CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a
 | endurance / leaks (on main push & release) | docker + a running `sbx serve` | `./scripts/soak.sh` |
 | every documented use case | docker | `./scripts/usecases-e2e.sh` |
 | the suite on Linux, on a Mac | docker + sbx | `./scripts/linux-tests.sh` |
+| every platform builds and vets | - | `./scripts/platforms.sh` |
 | shell, workflows, docs, pins | - | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |
 
 `-short` skips the tests that start real containers. They cost about a minute, which is worth
@@ -36,6 +37,11 @@ it in CI and not worth it on every local run.
 
 `scripts/usecases-e2e.sh` takes a filter: `./scripts/usecases-e2e.sh build` runs only cases
 whose name contains "build".
+
+`scripts/platforms.sh` builds and vets all eight supported GOOS/GOARCH pairs. Vet as well as
+build, because vet type-checks `_test.go` files and build does not - which is how the Windows gap
+was found: the production code compiled there and the test suite did not, so nobody on Windows
+could have run it.
 
 `scripts/linux-tests.sh` runs vet and the race suite inside this worktree's own sbx sandbox, on
 linux/arm64. sbx is written on a Mac and shipped for Linux, and the two differ where it matters:

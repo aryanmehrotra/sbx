@@ -168,19 +168,12 @@ jobs:
       # One runner, seven compiles. As a matrix this was seven runners doing thirty seconds
       # of work each, most of which was starting a runner. The compiler cache is shared here,
       # so it is also faster in wall clock.
-      - name: cross-compile every published target
-        run: |
-          fail=0
-          for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 \
-                   windows/amd64 windows/arm64 freebsd/amd64; do
-            os="${t%/*}"; arch="${t#*/}"
-            if CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o /dev/null .; then
-              echo "  ok   $t"
-            else
-              echo "  FAIL $t"; fail=1
-            fi
-          done
-          exit "$fail"
+      # Builds every package rather than just the main one, and vets as well as builds.
+      # Vet type-checks _test.go files and build does not, which is how a real gap survived
+      # this step: the production code compiled for windows and the TEST suite did not, so
+      # nobody on windows could run it, and a step that only built `.` saw nothing wrong.
+      - name: cross-compile and vet every published target
+        run: bash scripts/platforms.sh
 
   # The shell that runs on a developer's machine is not the shell in CI. macOS ships bash
   # 3.2 from 2007 and every script here has to work on it: both empty-array bugs in this
