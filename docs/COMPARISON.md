@@ -188,6 +188,50 @@ but needs a cluster; Lazytainer is protocol-agnostic but routes your traffic thr
 covers HTTP and is the one most people already run. Each is worth reading before this one.
 
 
+
+## What the alternatives cost, for one developer
+
+One environment of roughly 2 vCPU and 4 GB, used eight hours a day, twenty days a month — 160
+hours. Rates read from each vendor's own pricing page on 2026-08-30; the monthly figures are
+**computed from those rates**, not quoted, because almost nobody publishes a worked example.
+
+| | monthly, 160 h | what drives it |
+|---|---:|---|
+| **sbx** | **$0** | your own machine; 0 B while asleep |
+| zeropod · Sablier · Lazytainer · KubeElasti | **$0** | Apache-2.0 / AGPL-3.0 / MIT / MIT |
+| Coder Community | **$0** + your infra | Premium is *contact-us*, no figure published |
+| Northflank | ~$12 | $0.01667/vCPU-h + $0.00833/GB-h |
+| GitHub Codespaces (Pro) | ~$13 | 180 core-h/month free, then $0.09/core-h |
+| Daytona | ~$27 | $200 credit covers roughly the first 1,200 h |
+| GitHub Codespaces (org) | ~$31 | **organisations get no free quota at all** |
+| Modal | ~$31 | after the $30/month Starter credit |
+| Vercel Sandbox | ~$34 | plus $0.08/GB-month for snapshots while stopped |
+| Cloudflare Containers | ~$39 | $5 base; CPU billed on *active* use since Nov 2025 |
+| Ona (was Gitpod) | ~$40 | *approximate* — OCU rate is published only for a 4 vCPU box |
+| Replit Reserved VM | $50 flat | **no sleep discount — the same at 8 h/day or 24/7** |
+| E2B | ~$177 | usage is only ~$27; Pro at $150/month is required for sessions over an hour |
+| Google Cloud Workstations | ~$183 | **$146 of that is control plane, billed whether or not anything runs** |
+
+Two rows are worth reading twice.
+
+**Google Cloud Workstations bills $0.20/hour per cluster continuously** — $146 a month before a
+single workstation starts. That is a fixed charge with no sleep discount, on a product sold for
+exactly this job. **Replit's Reserved VM** is the same shape more honestly named: $50 flat,
+identical whether you use it one hour a day or all of them.
+
+**Cloudflare moved toward this model rather than away from it.** Since 21 November 2025 its
+container CPU is billed on active use rather than provisioned time, which is the same bet sbx
+makes — an idle sandbox should cost nothing. Memory and disk are still billed on allocation, so a
+sleeping container is cheap there rather than free.
+
+**What the money buys, and this page should say it plainly:** somebody else's machine, somebody
+else running it, and an editor that already works. sbx is free because it is your laptop and your
+cluster — that is the whole trade, and for a team that already owns both, the hosted bill is for
+convenience rather than capability. For a team that owns neither, it is not.
+
+Computed rather than quoted, and worth checking before anyone acts on it: Ona's rate for this
+size, and the VM and disk portion of the Workstations figure. Coder Premium, E2B Enterprise and
+Daytona Enterprise publish no price at all.
 ## Dev environments, and the editor sbx does not have
 
 This page had nothing about editors, which is a gap in it rather than in the field: the
