@@ -384,6 +384,12 @@ func (d *daemon) addUsage(ctx context.Context, out []fleetService) {
 type fronted struct {
 	name string
 	port int
+
+	// host is where the traffic actually goes. Loopback for the original case - sbx in a
+	// container beside the workload - and a real address for the one that made this a field:
+	// a managed platform whose database sits at a private IP the container can route to and
+	// you cannot. Fronting it turns "reachable only from inside" into a local port.
+	host string
 }
 
 // frontInstance identifies this process, so a tunnel does not survive the container being
@@ -472,7 +478,7 @@ func (d *daemon) connectHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Dialling the daemon's own wake port rather than the workload: a sleeping sandbox wakes
 	// here exactly as it would for a local client, because it is the same listener.
-	up, err := dialUpstream(port)
+	up, err := dialUpstream(d.frontHost(port), port)
 	if err != nil {
 		logs.Default.Info("connect: upstream refused", "sandbox", u.sandbox, "service", u.service)
 
@@ -494,8 +500,12 @@ func (d *daemon) connectHandler(w http.ResponseWriter, r *http.Request) {
 // is refused, and the first connection through a tunnel is usually somebody finding out whether
 // it works at all. Doing it here rather than in a shell also means it works on any base image:
 // waiting for a port in POSIX sh needs tools a minimal image does not have.
-func dialUpstream(port int) (net.Conn, error) {
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+func dialUpstream(host string, port int) (net.Conn, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	deadline := time.Now().Add(upstreamWait)
 
 	for {
@@ -633,4 +643,17 @@ func loopbackOnly(addr string) bool {
 	ip := net.ParseIP(host)
 
 	return host == "localhost" || (ip != nil && ip.IsLoopback())
+}
+
+// frontHost is where a fronted port's traffic goes, or "" for a port this daemon discovered
+// (which is always its own wake listener on loopback).
+func (d *daemon) frontHost(port int) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if f, ok := d.fronted[port]; ok {
+		return f.host
+	}
+
+	return ""
 }

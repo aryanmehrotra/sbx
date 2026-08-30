@@ -35,6 +35,20 @@ threat model is not "untrusted users share one daemon".**
   service in that deployment - the services' own credentials still apply, but sbx does not
   check them. That is the same posture as an SSH key on a dev box, and it is why the control
   plane (`create`, `rm`, `exec`) is deliberately *not* reachable over it.
+- **`--front host:port` makes the deployment a bridgehead, and that is a bigger claim than
+  the rest of this list.** A bare `--front 5432` can only reach a process on the daemon's own
+  loopback - something in its container, which you put there. Naming a host lets it reach
+  anything it can *route* to: the platform's database on a private address, a peer service, a
+  neighbouring subnet. That is the point of it, and it is also the cost. The token no longer
+  gates "the services in this deployment"; it gates "everything this container's network
+  position can reach on the ports you listed", and the two are only the same thing when the
+  list is loopback.
+
+  So: front the ports you actually need, not a convenient range, and treat
+  `SBX_CONNECT_TOKEN` on a host-fronting deployment as you would a VPN credential rather than
+  a service password. sbx will not stop you fronting a whole private network - it cannot know
+  which addresses you meant - which is exactly why the decision is written in the deployment's
+  own environment, where a reviewer can see it, rather than inferred at run time.
 - **A container shares the host kernel.** `--isolation gvisor|kata` asks for a stronger
   boundary and is *refused with a reason* where the runtime is absent rather than silently
   downgraded. If you are running code you did not write, use one of those or use a tool built

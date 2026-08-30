@@ -144,7 +144,7 @@ func Serve(args []string) error {
 	// and no container runtime. There is nothing to discover and nothing to wake - the
 	// platform woke the container - so these ports skip the provider entirely and are the
 	// only thing the tunnel will carry.
-	front := fs.String("front", envOr("SBX_FRONT", ""), "carry these local ports over the connect endpoint, e.g. 5432 or db=5432,cache=6379")
+	front := fs.String("front", envOr("SBX_FRONT", ""), "carry these ports over the connect endpoint: 5432, db=5432,cache=6379, or db=10.0.4.7:3306 for a host this container can route to")
 	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
 	_ = fs.Parse(args)
 
@@ -580,7 +580,11 @@ func (d *daemon) reap(ctx context.Context) {
 	}
 }
 
-// parseFront reads --front: "5432", "5432,6379", or "db=5432,cache=6379".
+// parseFront reads --front: "5432", "5432,6379", "db=5432,cache=6379", or "db=10.0.4.7:3306".
+//
+// A bare port is loopback beside this process. A host:port is somewhere this container can
+// route to and the caller cannot - the platform-managed database on a private address is the
+// case that motivated it. See SECURITY.md: naming a host widens what the connect token gates.
 //
 // A name is optional and only ever cosmetic - it is what the fleet listing calls the port, so
 // that somebody running two of these can tell them apart. The port is the part that matters,
@@ -604,6 +608,17 @@ func parseFront(spec string) (map[int]fronted, error) {
 			name, portText = "", part
 		}
 
+		// Either a bare port, which is loopback beside this process, or host:port, which is
+		// somewhere else this container can route to. The second form is what makes this
+		// useful on a managed platform: its database is at a private address the container
+		// reaches and you do not, so `db=10.0.4.7:3306` turns "only from inside" into a
+		// local port. IPv6 needs brackets, which is what SplitHostPort expects anyway.
+		host, portText := "", strings.TrimSpace(portText)
+
+		if h, p, err := net.SplitHostPort(portText); err == nil {
+			host, portText = h, p
+		}
+
 		port, err := strconv.Atoi(strings.TrimSpace(portText))
 		if err != nil || port < 1 || port > 65535 {
 			return nil, fmt.Errorf("--front %q: %q is not a port", spec, portText)
@@ -613,8 +628,26 @@ func parseFront(spec string) (map[int]fronted, error) {
 			name = "port-" + portText
 		}
 
-		out[port] = fronted{name: name, port: port}
+		// Keyed by port, so two entries on the same port are one entry - and if they name
+		// different hosts, that is a spec that cannot mean both. Refuse rather than let the
+		// map order decide which database you connect to.
+		if prev, clash := out[port]; clash && prev.host != host {
+			return nil, fmt.Errorf("--front %q: port %d is given twice, for %q and %q - "+
+				"a local port can only carry one of them", spec, port,
+				hostOr(prev.host), hostOr(host))
+		}
+
+		out[port] = fronted{name: name, port: port, host: host}
 	}
 
 	return out, nil
+}
+
+// hostOr names a front target in an error, where empty means loopback.
+func hostOr(h string) string {
+	if h == "" {
+		return "127.0.0.1"
+	}
+
+	return h
 }

@@ -254,6 +254,29 @@ not guessed - beside `sbx serve --connect-addr --front`, and the tunnel is a Web
 an L7 proxy strips anything more exotic. `connect` binds `127.0.0.1` only, on the same port
 numbers the deployment uses, so the `sbx env` block from over there is already correct here.
 
+**`--front` also reaches what the container can route to, not only its own loopback.** A bare
+`--front 5432` hands out a process in the same container — something you put there. Naming a host
+hands out something you could not otherwise reach at all:
+
+```sh
+sbx serve --connect-addr=":$PORT" --behind-proxy --front db=10.0.4.7:3306
+```
+
+That address is a real one: a managed platform's MySQL, on a private network its containers route
+to and your laptop does not. Its credential never leaves the platform's secret manager, and there
+is no public endpoint — so `mysql`, `pg_dump`, a migration tool or a GUI client simply cannot be
+pointed at it. Fronting it gives you `127.0.0.1:3306`, over the one HTTPS port the platform
+already gave you, with no VPN and no client to install. One deployment can front a whole
+environment: `db=10.0.4.7:3306,cache=10.0.4.8:6379`.
+
+⚠️ **This makes that deployment a bridgehead**, and it is a wider claim than the rest of this
+page. The token stops gating "the services in this deployment" and starts gating "everything this
+container's network position can reach, on the ports you listed". Front the ports you need, and
+treat the token like a VPN credential. → [SECURITY.md](../SECURITY.md)
+
+Reachability is not credentials, either: it gives you a TCP path, not a password. Where the
+platform generated one and will not return it, the path alone does not get you in.
+
 Four things are worth knowing before you rely on it:
 
 - **One deployment per service.** A property of the platform, not a limitation here:

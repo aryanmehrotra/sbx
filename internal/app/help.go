@@ -200,7 +200,10 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"--connect-addr serves the endpoint `sbx connect` dials, over one HTTP port -\n" +
 			"which is all most platforms route. --front NAME=PORT offers a port that is not a\n" +
 			"sandbox at all, so sbx can sit beside a workload in the same container and hand\n" +
-			"that workload out; --behind-proxy is for when the platform terminates the TLS.\n" +
+			"that workload out. NAME=HOST:PORT fronts something this container can route to\n" +
+			"and you cannot - a managed database on a private address - which widens what the\n" +
+			"token gates, so front the ports you need and read SECURITY.md.\n" +
+			"--behind-proxy is for when the platform terminates the TLS.\n" +
 			"SBX_CONNECT_TOKEN must be set for any of it - it is the only thing standing\n" +
 			"between the endpoint and whoever finds its URL.",
 		"sbx serve --idle 5m &",
