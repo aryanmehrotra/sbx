@@ -171,6 +171,35 @@ says "$typo" "does not have" "a typo in SBX_FEATURES is reported" "a typo was si
 nossh="$(SBX_FEATURES=ssh "$SBX" ssh "$TAG-w" 2>&1)"
 says "$nossh" "nginx" "a sandbox with no SSH says what it has instead" "the no-SSH error is unhelpful"
 
+case_ "devcontainer: a spec from the file a repo already has"
+
+mkdir -p "$WORK/dc/.devcontainer"
+cat > "$WORK/dc/.devcontainer/devcontainer.json" <<'DCJSON'
+{
+  // comments and a trailing comma are legal here and encoding/json refuses both
+  "name": "Payments API",
+  "image": "nginx:alpine",
+  "forwardPorts": [8080, "5432"],
+  "postCreateCommand": "true",
+  "features": { "ghcr.io/devcontainers/features/node:1": {} },
+}
+DCJSON
+
+dcout="$(SBX_FEATURES=devcontainer "$SBX" init --from-devcontainer "$WORK/dc" 2>/dev/null)"
+says "$dcout" '"payments-api"' "the display name becomes a service name" "the service name is wrong"
+says "$dcout" "5432" "a string port is read as a number" "a string port was dropped"
+
+printf '%s\n' "$dcout" > "$WORK/dc/sandbox.json"
+if "$SBX" validate "$WORK/dc/sandbox.json" >/dev/null 2>&1; then
+  ok "what it produced is a spec validate accepts"
+else
+  bad "the translated spec does not validate"
+fi
+
+# What it cannot carry it has to name, or somebody debugs a missing tool for an afternoon.
+dcnotes="$(SBX_FEATURES=devcontainer "$SBX" init --from-devcontainer "$WORK/dc" 2>&1 >/dev/null)"
+says "$dcnotes" "Feature" "it says which Features it dropped" "a dropped Feature was not reported"
+
 case_ "checkpoint and resume: the process, not just the disk"
 
 if [ "$(uname -s)" != "Linux" ]; then

@@ -53,3 +53,11 @@ func showFeatures(w io.Writer) {
 			len(unknown), strings.Join(unknown, ", "))
 	}
 }
+
+func init() {
+	features.Register(features.Feature{
+		Name:      "devcontainer",
+		Stability: features.Preview,
+		Summary:   "`sbx init --from-devcontainer` - a spec from the .devcontainer a repo already has",
+	})
+}

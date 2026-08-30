@@ -789,8 +789,17 @@ func dispatch(cmd string, args []string) error {
 	case "init":
 		fs := newFlagSet("init")
 		tmpl := fs.String("template", "postgres", "which built-in to start from: "+strings.Join(TemplateNames(), ", "))
+		fromDC := fs.String("from-devcontainer", "", "translate a devcontainer.json into a spec (path or directory)")
 		yes := fs.Bool("yes", false, "take every default and ask nothing")
 		_ = fs.Parse(args)
+
+		if *fromDC != "" {
+			if !features.Enabled("devcontainer") {
+				return features.Refuse("devcontainer")
+			}
+
+			return cli.InitFromDevcontainer(*fromDC, os.Stdout, os.Stderr)
+		}
 
 		// Guided at a terminal; unchanged in a pipeline.
 		//

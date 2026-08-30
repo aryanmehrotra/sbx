@@ -1,6 +1,6 @@
 # Use cases
 
-> **Short version:** twelve shapes this fits - branches, agents, CI, a shared link, a browser,
+> **Short version:** thirteen shapes this fits - branches, agents, CI, a shared link, a browser,
 > seed-and-fan-out, a cluster, a deployed sandbox, a box for your own commands, a test fixture,
 > and a parked-and-resumed process. The commands are in the
 > [README](../README.md#install); this is the *why* and the numbers.
@@ -416,3 +416,40 @@ the window and the sandbox sleeps on its own idle timer, with the database besid
 
 **It is behind a gate.** `sbx ssh` is preview: `SBX_FEATURES=ssh`. The command is small and the
 contract may still move — `sbx features` lists what a build gates and what is on.
+
+---
+
+## 13 · A repo that already has a devcontainer
+
+**The problem.** The repository has `.devcontainer/devcontainer.json`. It already says what image
+to run, what ports to publish, what to mount and what to do once it is up. Being asked to write
+all of that again in a second file, in a different shape, is the reason most people stop reading
+at the install line.
+
+```sh
+SBX_FEATURES=devcontainer sbx init --from-devcontainer . > sandbox.json
+```
+
+It reads the file where the spec allows it to live — `.devcontainer/devcontainer.json`,
+`.devcontainer.json`, or the bare name — comments and trailing commas included, because
+devcontainer.json is JSON-with-comments and VS Code's own templates ship with them.
+
+What comes across: the image or the build, `forwardPorts` **and** the legacy `appPort` (a repo
+untouched for three years is exactly the one being imported), `containerEnv` and `remoteEnv`, the
+workspace folder as a mount, and the three run-once lifecycle hooks in the order the spec fixes
+them — `onCreate`, then `updateContent`, then `postCreate`. Getting that order wrong runs a build
+before the thing it builds has been fetched.
+
+**What does not come across is printed, on stderr, so the redirect above still writes a clean
+file.** Features are not installed. `postStartCommand` and `postAttachCommand` have no equivalent
+— `init` runs once. `remoteUser` belongs to `sbx ssh --user`, not the spec. A `dockerComposeFile`
+is refused outright rather than guessed at: compose describes several services and how they
+connect, which is what `sandbox.json` is for, so importing one service out of it would mean
+picking which one somebody meant.
+
+**Then add the rest.** A devcontainer describes one container; a sandbox describes what a branch
+needs. The import gives you the first service — the database and the cache go beside it, and now
+they sleep when nobody is using them.
+
+**It is behind a gate.** `SBX_FEATURES=devcontainer`. The translation is lossy by nature and the
+list of what it drops will move as it learns more; `sbx features` shows what a build gates.
