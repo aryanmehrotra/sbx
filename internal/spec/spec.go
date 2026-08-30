@@ -243,6 +243,25 @@ type Service struct {
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.
 	GPUs string `json:"gpus,omitempty"`
+
+	// CapAdd grants Linux capabilities the container would not otherwise have, by their
+	// docker names without the CAP_ prefix: ["SYS_PTRACE"], ["CHECKPOINT_RESTORE"].
+	//
+	// It exists because some workloads genuinely cannot run without one and the failure is
+	// unreadable without it. CRIU - which is what a memory checkpoint is made of - reports
+	// "CRIU needs to have the CAP_SYS_ADMIN or the CAP_CHECKPOINT_RESTORE capability", and a
+	// debugger inside a sandbox fails on ptrace with a permission error that names nothing.
+	// Neither is a bug in sbx and neither can be worked around from inside the container.
+	//
+	// A list of named capabilities rather than a `privileged` flag, deliberately. Privileged
+	// is not "a few more permissions": it disables seccomp and AppArmor, grants every
+	// capability, and exposes the host's devices - which is a container that can reconfigure
+	// the machine it is on. A spec asking for CHECKPOINT_RESTORE says what it needs and gets
+	// only that, and a reviewer reading the committed file can see the difference.
+	//
+	// Not validated against a list of known names. Docker rejects an unknown capability at
+	// create with a better message than this could paraphrase, and the set differs by kernel.
+	CapAdd []string `json:"cap_add,omitempty"`
 }
 
 func (s Service) validate(name string) error {

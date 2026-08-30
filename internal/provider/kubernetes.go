@@ -194,6 +194,22 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 			"for configuration", service)
 	}
 
+	// Refused for the same reason as the rest: a cluster CAN express this - it is
+	// securityContext.capabilities.add - but whether the pod is then allowed to run is decided
+	// by admission, by a Pod Security Standard or an OPA policy that sbx cannot see. On a
+	// `restricted` namespace the pod is rejected at admission; on a `baseline` one some of
+	// these are refused and others are not. Quietly emitting the field would produce either a
+	// pod that never schedules with an error naming a policy rather than the spec, or a
+	// capability granted on a shared cluster because a laptop's spec asked for it.
+	if len(svc.CapAdd) > 0 {
+		return fmt.Errorf("service %q declares cap_add, which the kubernetes provider does not "+
+			"implement: whether a pod may hold a capability is decided by the namespace's Pod "+
+			"Security admission, not by the manifest, so this would either be rejected at "+
+			"admission with an error naming a policy instead of your spec, or granted on a "+
+			"shared cluster because a laptop asked for it. Set it in the cluster's own "+
+			"securityContext, deliberately", service)
+	}
+
 	name := kubeName(sandbox, service)
 
 	if _, err := k.kc("", "get", "deployment", name); err == nil {

@@ -315,6 +315,12 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--memory", svc.Memory)
 	}
 
+	for _, c := range svc.CapAdd {
+		if c = strings.TrimSpace(c); c != "" {
+			args = append(args, "--cap-add", c)
+		}
+	}
+
 	if svc.GPUs != "" {
 		args = append(args, "--gpus", svc.GPUs)
 	}

@@ -96,6 +96,7 @@ script that already knows a port.
 | `idle` | | Override the idle timer for this service: `"never"` (keep awake while an agent works inside), `"0"`, or a duration like `"30m"` |
 | `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
 | `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
+| `cap_add` | | Linux capabilities to grant, named without the `CAP_` prefix: `["SYS_PTRACE"]`. A list rather than a `privileged` flag, which is a different thing entirely. Docker only; a cluster refuses |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
 
 ### `image` or `build` - exactly one
@@ -358,6 +359,46 @@ sleeps on its ordinary timer. Measured: an allow-listed box calling out every fi
 awake through twelve consecutive 30-second idle windows, while a plain service beside it in the
 same sandbox slept on schedule. Two allow-listed services in one sandbox do keep each other awake;
 if that matters, put them in different sandboxes.
+
+### `cap_add` grants a capability, and is not `privileged`
+
+```json
+{ "image": "golang:1.26", "ports": [7777], "cap_add": ["SYS_PTRACE"] }
+```
+
+Some workloads cannot run without a Linux capability, and say so in a way that names nothing you
+can act on. A debugger inside a sandbox fails on `ptrace` with a bare permission error. CRIU -
+which a memory checkpoint is made of - says:
+
+```
+CRIU needs to have the CAP_SYS_ADMIN or the CAP_CHECKPOINT_RESTORE capability
+```
+
+Neither is a bug in sbx, and neither can be fixed from inside the container. Name the capability
+(without the `CAP_` prefix) and it is granted.
+
+**A list, not a flag.** `privileged` is not "a few more permissions": it turns off seccomp and
+AppArmor, grants every capability, and hands over the host's devices - a container that can
+reconfigure the machine it runs on. A spec asking for `SYS_PTRACE` says what it needs and gets
+that; a reviewer reading the committed file can see the difference. sbx does not offer
+`privileged`, and this is why.
+
+**What it does not reach.** Docker's default seccomp profile is separate from capabilities and
+still applies. CRIU with `CAP_SYS_ADMIN` gets past its own capability check and then fails on a
+filtered `mount`:
+
+```
+Fail to mount tmfps to /tmp/.criu.move_mount_set_group...: Permission denied
+```
+
+Getting further needs `seccomp=unconfined`, which is most of the way to privileged, so it is not
+offered. Run CRIU on the host - `sbx checkpoint` drives it there, through podman - rather than
+inside a sandbox.
+
+The kubernetes provider **refuses** `cap_add` rather than emitting a `securityContext`: whether a
+pod may hold a capability is decided by the namespace's Pod Security admission, not by the
+manifest. Emitting it would either be rejected at admission with an error naming a policy instead
+of your spec, or grant a capability on a shared cluster because a laptop's file asked for it.
 
 ### `idle` keeps a box awake while it works
 
