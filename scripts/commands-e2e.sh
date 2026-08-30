@@ -151,6 +151,26 @@ says "$u2" "rewrite or pass" "an unknown --host-header value is refused" "a bad 
 u3="$("$SBX" url "$TAG-w" nginx --via nosuchtunnel 2>&1)"
 says "$u3" "not installed" "an unknown --via backend is refused" "an unknown --via was accepted"
 
+case_ "features: a gate is off until it is asked for"
+
+feat="$("$SBX" features 2>&1)"
+says "$feat" "ssh" "features lists what this build gates" "features listed nothing"
+says "$feat" "off" "and a preview feature is off by default" "a preview feature was on by default"
+
+# The refusal has to carry the exact thing to type, or the reader goes looking for a variable
+# name the message already knows.
+gated="$("$SBX" ssh "$TAG-w" 2>&1)"
+says "$gated" "SBX_FEATURES=ssh" "a gated command says how to turn itself on" "the refusal does not say how"
+
+# A name that is not a feature does nothing, and doing nothing quietly reads as the feature
+# being broken rather than the name being wrong.
+typo="$(SBX_FEATURES=shh "$SBX" features 2>&1)"
+says "$typo" "does not have" "a typo in SBX_FEATURES is reported" "a typo was silently ignored"
+
+# On, and against a sandbox with no SSH port: it must say what the sandbox does have.
+nossh="$(SBX_FEATURES=ssh "$SBX" ssh "$TAG-w" 2>&1)"
+says "$nossh" "nginx" "a sandbox with no SSH says what it has instead" "the no-SSH error is unhelpful"
+
 case_ "checkpoint and resume: the process, not just the disk"
 
 if [ "$(uname -s)" != "Linux" ]; then

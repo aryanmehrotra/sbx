@@ -1,6 +1,6 @@
 # Use cases
 
-> **Short version:** eleven shapes this fits - branches, agents, CI, a shared link, a browser,
+> **Short version:** twelve shapes this fits - branches, agents, CI, a shared link, a browser,
 > seed-and-fan-out, a cluster, a deployed sandbox, a box for your own commands, a test fixture,
 > and a parked-and-resumed process. The commands are in the
 > [README](../README.md#install); this is the *why* and the numbers.
@@ -365,3 +365,54 @@ is [use case 6](#6--one-seeded-database-many-agents); this is the memory one.
 
 A container shares the host kernel by default; `--isolation gvisor|kata` gives a stronger
 boundary, refused with a reason when the runtime is absent.
+
+---
+
+## 12 · An editor in the sandbox, without a second machine to pay for
+
+**The problem.** The work is in the sandbox — the code, the database it talks to, the tools that
+match CI — and the editor is on a laptop that has none of it. The usual answer is a hosted dev
+environment: a second machine, running whether or not anybody is typing, billed for the hours
+nobody was.
+
+`sbx ssh` reaches the sandbox you already have, from the editor you already use.
+
+```json
+{
+  "version": 1,
+  "services": {
+    "dev": {
+      "image": "lscr.io/linuxserver/openssh-server:latest",
+      "ports": [2222],
+      "mounts": { ".": "/work" },
+      "env": { "USER_NAME": "dev", "PASSWORD_ACCESS": "true", "USER_PASSWORD": "..." }
+    },
+    "postgres": { "image": "postgres:16-alpine", "ports": [5432], "health": "pg_isready -U postgres" }
+  }
+}
+```
+
+```sh
+SBX_FEATURES=ssh sbx ssh feature-x --user dev
+  ssh -p 20060 dev@127.0.0.1
+  code --remote ssh-remote+dev@127.0.0.1:20060 /work
+```
+
+**Why this works at all is the interesting part.** An SSH connection is an ordinary inbound TCP
+dial, which is the one thing sbx already wakes on — so the editor needs no plugin, the daemon
+needs no editor-specific path, and JetBrains Gateway, `scp` and `rsync` work for the same reason.
+Measured: a sandbox asleep at 0 B, `ssh-keyscan` against it, **awake and through the SSH handshake
+in 0.255 s.**
+
+The two other VS Code remote modes cannot do this, and it is worth knowing why before reaching
+for one. *Attach to Container* talks to the docker socket and never opens a connection to the
+container's network — nothing is dialled, so nothing wakes. *Remote-Tunnels* needs a `code tunnel`
+process already running inside, which means the sandbox is already up.
+
+**What it does not do.** It does not sleep while the editor is attached. Nothing does — VS Code's
+protocol pings every five seconds unconditionally, so an attached editor is never idle, and CRIU
+cannot restore a TCP socket across a network hop, which is why zeropod dropped the attempt. Close
+the window and the sandbox sleeps on its own idle timer, with the database beside it.
+
+**It is behind a gate.** `sbx ssh` is preview: `SBX_FEATURES=ssh`. The command is small and the
+contract may still move — `sbx features` lists what a build gates and what is on.

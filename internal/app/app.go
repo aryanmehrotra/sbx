@@ -39,6 +39,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/cli"
 	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -720,6 +721,56 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		return tunnel.Open(ctx, positional[0]+"/"+positional[1], port, *via, asked)
+
+	case "features":
+		showFeatures(os.Stdout)
+
+		return nil
+
+	case "ssh":
+		if !features.Enabled("ssh") {
+			return features.Refuse("ssh")
+		}
+
+		fs := newFlagSet("ssh")
+		templateName := fs.String("template", "", "use a built-in template as the spec")
+		specPath := fs.String("spec", defaultSpec, "the spec to read the service.s ports from")
+		folder := fs.String("folder", "/work", "the folder an editor should open")
+		// The image decides this, not sbx: a rootless sshd has its own user and root cannot log
+		// in at all. Defaulted rather than guessed, and one flag away when the image differs.
+		user := fs.String("user", "root", "the ssh user the image accepts")
+		kind, socket, ns, isolation := backendFlags(fs)
+		positional, rest := splitPositional(args, 2)
+		_ = fs.Parse(rest)
+
+		if len(positional) < 1 {
+			return fmt.Errorf("usage: sbx ssh <sandbox> [service] [--folder /work]")
+		}
+
+		p, _, err := resolve(*kind, *socket, *ns, *isolation)
+		if err != nil {
+			return err
+		}
+
+		path, err := specFor(fs, positional[0], *templateName, *specPath)
+		if err != nil {
+			return err
+		}
+
+		sp, err := spec.LoadSpec(path)
+		if err != nil {
+			return err
+		}
+
+		service := ""
+		if len(positional) > 1 {
+			service = positional[1]
+		}
+
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+
+		return cli.SSH(ctx, p, sp, positional[0], service, *user, *folder, os.Stdout)
 
 	case "templates":
 		for _, t := range TemplateNames() {
