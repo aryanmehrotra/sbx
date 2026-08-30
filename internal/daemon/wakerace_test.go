@@ -176,8 +176,12 @@ func TestOnlyALiteralUpstreamIsResolvedOnce(t *testing.T) {
 		pinned bool
 	}{
 		{"127.0.0.1", true},
-		{"10.4.2.9", true},
+		{"127.0.0.53", true},
 		{"::1", true},
+		// A literal, but a hop away: a full accept backlog there drops the SYN and the kernel
+		// retries for minutes, which is not something to do without a timeout.
+		{"10.4.2.9", false},
+		{"192.168.1.10", false},
 		{"db.sbx.svc.cluster.local", false},
 		{"localhost", false},
 		{"", false},
@@ -186,7 +190,7 @@ func TestOnlyALiteralUpstreamIsResolvedOnce(t *testing.T) {
 		l.resolve()
 
 		if got := l.addr != nil; got != tc.pinned {
-			t.Errorf("upstream %q pinned=%v, want %v", tc.host, got, tc.pinned)
+			t.Errorf("upstream %q pinned=%v, want %v (only loopback takes the untimed dial)", tc.host, got, tc.pinned)
 		}
 
 		if l.addr != nil && l.addr.Port != 5432 {
@@ -238,5 +242,49 @@ func TestBothDialPathsReachTheUpstream(t *testing.T) {
 		}
 
 		_ = c.Close()
+	}
+}
+
+// A dependency that is ALREADY awake must have its clock stamped too.
+//
+// This is the case the first version of the fix missed, and it is the common one: in a running
+// stack the datastore is up, so wakeSelf returns at the isAwake() fast path before reaching the
+// stamp on the cold path. Meanwhile the reaper builds its protected set from units that are
+// already awake - and the dependent is not awake yet, it is still starting - so for the length
+// of that start the dependency is in neither the set nor a fresh window.
+//
+// A db last used 4m58s ago under a 5m window, and an app that takes twenty seconds to come up,
+// is slept underneath the wake that asked for it.
+func TestAnAlreadyAwakeDependencyIsAlsoStamped(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	p := &countingProvider{}
+	p.serving.Store(true)
+
+	db := newUnit("s", "db", "db", "i-db", "s/db", nil, true) // already awake
+	db.mu.Lock()
+	db.served = true
+	db.mu.Unlock()
+	db.lastByte.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	app := newUnit("s", "app", "app", "i-app", "s/app", nil, false)
+	app.dependsOn = []string{"db"}
+
+	d := &daemon{provider: p, units: map[string]*unit{db.name: db, app.name: app}}
+	app.peers = d.peersOf
+
+	if err := app.wake(context.Background(), p, 5*time.Second); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+
+	if db.idleFor() > time.Minute {
+		t.Errorf("an already-awake dependency still reports %v idle after being walked to, so "+
+			"the reaper may sleep it while the service that needs it is still starting",
+			db.idleFor().Round(time.Second))
+	}
+
+	// It must not have been restarted to achieve that - it was already up.
+	if p.starts.Load() != 1 {
+		t.Errorf("started %d containers, want 1 (app only; db was already awake)", p.starts.Load())
 	}
 }

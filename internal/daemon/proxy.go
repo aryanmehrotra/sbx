@@ -93,7 +93,19 @@ type leg struct {
 // dialler and only a literal is pinned.
 func (l *leg) resolve() {
 	ip := net.ParseIP(l.Upstream.Host)
-	if ip == nil {
+
+	// Loopback, not merely a literal.
+	//
+	// The fast path drops the dial timeout, and the argument for that is specific to loopback:
+	// there is no network in front of it, so connect() either completes or returns
+	// ECONNREFUSED. It does not hold one hop further out - a listener whose accept backlog is
+	// full drops the SYN silently, and the kernel then retries for tcp_syn_retries, which is
+	// minutes. An unbounded dial there would be worse than the allocations it saves, and an
+	// agent opening hundreds of short connections is exactly the workload that fills a backlog.
+	//
+	// Every address the docker provider emits is 127.0.0.1, so this gives up nothing today and
+	// keeps a future provider that publishes on a LAN address on the bounded path.
+	if ip == nil || !ip.IsLoopback() {
 		return
 	}
 
@@ -457,6 +469,20 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 	// Optimistic, and corrected rather than trusted: if the container died underneath us the
 	// dial in handle() fails, and that is where this belief gets revoked and retried.
 	if u.isAwake() {
+		// Being needed counts, even when nothing had to be started.
+		//
+		// This is the common case for a dependency in a running stack, and stamping only the
+		// cold path below left it uncovered: the dependency is already up, so this returns
+		// here, and the reaper's `needed` set is built from units that are ALREADY awake - so
+		// while the dependent is still starting it is in neither. A db last used 4m58s ago,
+		// with a 5m window and an app that takes twenty seconds to report serving, is slept
+		// underneath the wake that asked for it, and the app comes up to `no such host`.
+		//
+		// It cannot hold anything awake that should sleep: the only callers are handle(),
+		// which has already touched for the byte it is about to relay, and a dependency walk,
+		// which is somebody genuinely needing this unit right now.
+		u.touch()
+
 		return nil
 	}
 

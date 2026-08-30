@@ -1219,7 +1219,17 @@ func (d *dockerProvider) EgressPreflight(_ context.Context, sandbox string) erro
 		return err
 	}
 
-	return bindable(gw)
+	if err := bindable(gw); err != nil {
+		// Put the network back. Asking the question needed it to exist, and a refusal that
+		// leaves one behind leaves one nothing can collect: no container was created, so
+		// Remove finds no units for this sandbox and declines, and `sbx rm` cannot reach it.
+		// The refusal is supposed to cost nothing.
+		_, _ = d.docker("network", "rm", egressNetwork(sandbox))
+
+		return err
+	}
+
+	return nil
 }
 
 // bindable reports whether this machine can open a listener on the sandbox's bridge gateway,

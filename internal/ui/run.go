@@ -231,6 +231,10 @@ func (d *dash) refresh(ctx context.Context) {
 		host, _ = h.Host(ctx)
 	}
 
+	// Asked before the lock: it reads a file and signals a pid, and the comment below promises
+	// this region is arithmetic only.
+	noDaemon := warnNoDaemon(d.remote, rows, daemonRunning())
+
 	// Everything below is arithmetic and assignment, so the lock is held for microseconds.
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -265,7 +269,7 @@ func (d *dash) refresh(ctx context.Context) {
 	// claiming everything was fine while every address on it had started refusing, which is the
 	// exact failure the line was added to catch. The inverse was as bad: start a daemon and the
 	// warning never cleared.
-	d.model.noDaemon = warnNoDaemon(d.remote, rows, daemonRunning())
+	d.model.noDaemon = noDaemon
 
 	if d.model.selected >= len(rows) {
 		d.model.selected = max(0, len(rows)-1)
@@ -1191,12 +1195,17 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 	// STATE column still says awake.
 	// stderr, like cli.List: stdout is the table somebody pipes, and a note written after it
 	// races a reader that has already stopped - which cost the process a SIGPIPE.
+	// Both remaining lines go out before anything else touches the filesystem, because a
+	// syscall between two stdout writes is what SIGPIPEs a `sbx ui | grep -q` that has already
+	// matched and gone. cli.List's fix moved the warning off stdout; this one still had a
+	// stdout write after daemonRunning()'s file read and kill(0), which is the same race by
+	// the other door.
+	fmt.Fprintln(out, "\nthis is not a terminal, so the live dashboard is not available here")
+
 	if warnNoDaemon(opt.Remote, rows, daemonRunning()) {
 		fmt.Fprintln(os.Stderr, "\nno `sbx serve` is running, so nothing accepts on the addresses above -")
 		fmt.Fprintln(os.Stderr, "a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &")
 	}
-
-	fmt.Fprintln(out, "\nthis is not a terminal, so the live dashboard is not available here")
 
 	return nil
 }
