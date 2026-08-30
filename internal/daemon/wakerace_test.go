@@ -288,3 +288,31 @@ func TestAnAlreadyAwakeDependencyIsAlsoStamped(t *testing.T) {
 		t.Errorf("started %d containers, want 1 (app only; db was already awake)", p.starts.Load())
 	}
 }
+
+// A leg whose port cannot be listened on is refused, not bound.
+//
+// Port 0 is the value that fails by succeeding: net.Listen reads it as "any free port", so the
+// daemon would take a random one, log that it is listening, and front the service somewhere
+// nothing will ever dial - while `sbx env` hands out 0. It cannot come from sbx, which
+// allocates from a fixed block, only from a corrupted or hand-edited sbx.ports label.
+//
+// ParsePorts deliberately lets such a label through: one it refuses makes the container
+// invisible to `sbx list` AND `sbx rm`, which is a sandbox nobody can clean up. So the refusal
+// belongs here, at the point where acting on the value would be silent.
+func TestALegWithAnUnusablePortIsRefusedRatherThanBound(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	for _, port := range []int{0, -1, 65536, 1 << 20} {
+		u := newUnit("s", "svc", "ref", "inst", "s/svc", nil, true)
+
+		err := u.serve(context.Background(), alwaysServing{}, leg{
+			Listen:   port,
+			Upstream: provider.Endpoint{Host: "127.0.0.1", Port: 30060},
+		}, time.Second)
+
+		if err == nil {
+			t.Errorf("port %d was accepted; the daemon would bind something arbitrary and "+
+				"report it as listening", port)
+		}
+	}
+}

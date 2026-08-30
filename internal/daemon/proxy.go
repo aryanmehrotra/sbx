@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -295,6 +296,20 @@ func (u *unit) idleFor() time.Duration {
 
 // serve accepts on one port for the lifetime of ctx.
 func (u *unit) serve(ctx context.Context, p provider.Provider, l leg, readyTimeout time.Duration) error {
+	// Port 0 is the one value that fails by succeeding. net.Listen treats it as "give me any
+	// free port", so a leg carrying it would bind a random one, log that it is listening, and
+	// front the service at an address nothing will ever dial - while `sbx env` hands out 0.
+	//
+	// It cannot come from sbx, which allocates from a fixed block, only from a ports label that
+	// was corrupted or hand-edited. ParsePorts deliberately does not reject those: a label it
+	// refuses makes the container invisible to `sbx list` AND to `sbx rm`, which is a sandbox
+	// nobody can clean up. So the value is allowed through discovery, stays visible and
+	// removable, and is refused here - at the one place where acting on it would be silent.
+	if l.Listen < 1 || l.Listen > 65535 {
+		return fmt.Errorf("%s: port %d cannot be listened on - its sbx.ports label is wrong; "+
+			"the sandbox is still listed and can be removed", u.name, l.Listen)
+	}
+
 	ln, err := net.Listen("tcp", listenAddr(l.Listen))
 	if err != nil {
 		return err
