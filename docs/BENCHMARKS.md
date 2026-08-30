@@ -85,10 +85,10 @@ The wake is a one-off; this is the tax on every query for the life of the sandbo
 ```
              │ direct      │ proxied     │
              │ sec/op      │ sec/op      vs base
-RoundTrip-10   14.52µ ± 3%   30.10µ ± 8%  +107.32% (p=0.000 n=12)
+RoundTrip-10   12.52µ        26.78µ       +113.8%  (median of 5, 2026-08-31)
 ```
 
-**About 15 µs.** That's +107% against a bare loopback echo, or +7% against a real query that
+**About 14 µs.** That's +114% against a bare loopback echo, or +7% against a real query that
 already crosses a VM boundary at 426 µs - the baseline you pick changes the headline, so both
 are given here rather than just the flattering one. Against the workloads sbx actually fronts,
 where a query already costs hundreds of microseconds before it reaches the proxy, an extra
@@ -108,11 +108,11 @@ so it's worth knowing what sitting in that path costs on real transfer volumes, 
 `go test -bench Stream -benchtime 30x -count 10`, 16 MiB per iteration, loopback:
 
 ```
-  direct    n=10   median 12136 MB/s   min 6678   max 12451
-  proxied   n=10   median  6870 MB/s   min 5627   max  7643
+  direct    n=5    median 12418 MB/s
+  proxied   n=5    median  7011 MB/s          (2026-08-31)
 ```
 
-**A bulk transfer runs at about 57% of direct on loopback.** Even at that rate, 6.8 GB/s is an
+**A bulk transfer runs at about 56% of direct on loopback.** Even at that rate, 7.0 GB/s is an
 order of magnitude above what a Postgres `COPY` or similar workload actually produces, so the
 database stays the binding constraint, not the proxy. It would only start to matter for
 something that genuinely streams at memory speed.
@@ -210,6 +210,74 @@ without re-checking the workload's health on every dial - and that belief is ver
 optimistically: if the container was stopped from outside, the upstream connect fails, the
 belief is revoked, and a proper wake runs. Both paths are covered by tests in
 `internal/daemon/awake_test.go`.
+
+---
+
+## Opening a connection, measured in-process
+
+The figure above is a docker-backed one and includes everything. This is the same question asked
+of the proxy alone, on loopback, with no container in the path — `BenchmarkConnDirect` against
+`BenchmarkConnProxied`, one dial, one exchange, one close per iteration:
+
+```
+  ConnDirect     58.23 µs
+  ConnProxied   111.00 µs        +52.8 µs   (+90.6%, median of 5, 2026-08-31)
+```
+
+**About 53 µs to open one.** It is the number to watch when the dial path changes, because the
+round-trip benchmarks hold one socket open for the whole run and amortise this to nothing — which
+is exactly backwards for the clients sbx is built for. `psql`, `redis-cli` and any CLI without a
+pool pay it on every operation.
+
+### This benchmark could not run past 16,384 iterations, and said "connection reset by peer"
+
+Worth recording, because the failure named nothing useful and the cause was not in sbx.
+
+`connChurn` closes its client sockets with a zero linger — RST rather than FIN — precisely so
+they do not pile up in TIME_WAIT and exhaust the ephemeral range. The **daemon's upstream**
+socket had the same problem and was missed: the daemon is the active closer there, so it takes
+the TIME_WAIT, one per proxied connection, held for 2·MSL.
+
+macOS has **16,384 ephemeral ports** (49152–65535). At ~113 µs per iteration the daemon opens
+roughly 8,700 upstream sockets a second, so the range was gone in under two seconds:
+
+```
+  10,000 iterations   ok
+  20,000 iterations   FAIL   read: connection reset by peer
+                             16,367 sockets in TIME_WAIT   <- the whole range
+```
+
+The echo server now answers the daemon's FIN with an RST, which aborts the connection instead of
+moving it to TIME_WAIT. **100,000 iterations pass with 5–8 sockets in TIME_WAIT.** The benchmark
+measures the daemon again rather than the kernel's port table.
+
+It is a test-only change. The same ceiling is real for any TCP proxy under that much connection
+churn, and it is a property of the platform's port range rather than of sbx.
+
+---
+
+## What this release's features cost
+
+Each of these sits in a hot path, so the question is what it charges when it is doing nothing.
+
+```
+  egress filter, per 32 KiB chunk
+    without the activity stamp     1.84 ns     0 allocs
+    with it                        4.17 ns     0 allocs        +2.33 ns
+
+  feature gate check
+    SBX_FEATURES set              97.04 ns     2 allocs
+    SBX_FEATURES unset            34.20 ns     1 alloc
+```
+
+**The egress stamp is 2.3 ns per 32 KiB and allocates nothing.** It is what lets a box that only
+calls out count as busy; the alternative was `idle: "never"`, which holds that box's memory for
+the sandbox's whole life. The gate check is off the data path entirely — it runs when a command
+starts, not per connection.
+
+The waiting page has no steady-state cost to measure: it is off unless
+`SBX_FEATURES=waiting-page`, and even then it does nothing until a wake has already run longer
+than a second.
 
 ---
 

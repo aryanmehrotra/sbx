@@ -77,6 +77,26 @@ func echoServer(tb testing.TB) net.Listener {
 			}
 
 			go func(c net.Conn) {
+				// Close with a zero linger, so this end answers the daemon's FIN with an
+				// RST rather than its own FIN.
+				//
+				// connChurn already does this on the client socket, for the reason its
+				// comment gives: without it the ephemeral range is exhausted and the
+				// benchmark measures the exhaustion. The daemon's UPSTREAM socket has the
+				// same problem and was missed. The daemon is the active closer there, so it
+				// is the side that lands in TIME_WAIT - one socket per proxied connection,
+				// held for 2·MSL. macOS has 16,384 ephemeral ports (49152-65535), and
+				// BenchmarkConnProxied opens roughly 8,700 upstream sockets a second, so it
+				// saturated the whole range in under two seconds: passing at 10,000
+				// iterations, failing at 20,000, with 16,367 sockets in TIME_WAIT and a
+				// bare "connection reset by peer" as the only clue.
+				//
+				// An RST arriving while the closer is in FIN_WAIT_2 aborts the connection
+				// instead of moving it to TIME_WAIT, which is what keeps the range free.
+				if t, ok := c.(*net.TCPConn); ok {
+					_ = t.SetLinger(0)
+				}
+
 				defer c.Close()
 				_, _ = io.Copy(c, c)
 			}(c)

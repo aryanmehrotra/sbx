@@ -23,7 +23,7 @@ say where the ◐ and ○ are choices rather than gaps.
 | Public URL per sandbox | ● | ● | ● | ● | ● | ● | n/a | ● |
 | GPU | ◐ docker | ◐ | ◐ | ● | ○ | ● | n/a | ● |
 
-Re-verified 2026-08-30, and two cells moved. Fly's raw-socket wake is conditional: HTTP goes
+Re-verified 2026-08-31, and two cells moved. Fly's raw-socket wake is conditional: HTTP goes
 through Fly Proxy freely, but raw TCP needs a dedicated IPv4 and is unreliable on a shared one -
 so ◐, not ●. And Daytona's open-source core has been unmaintained since June 2026 with development
 moved to a private codebase, which makes "self-hosted" true of the repo and not of the product.
@@ -120,13 +120,17 @@ Written down because a comparison page that only lists wins is an advertisement.
 
 | | state |
 |---|---|
-| An editor story | **none.** No `sbx code`, no `devcontainer.json` import. Every dev-environment product has one |
-| Memory restore | filesystem only; processes cold-start. zeropod and E2B both keep RAM |
-| `egress_allow` on a VM-backed docker | refused with a reason - the filtering proxy binds a gateway that lives inside the VM |
-| Kubernetes in a sandbox | impossible: k3s and DinD need a privileged container and the spec has no way to ask |
-| A waiting page | `sbx url` gives a spinner; Sablier ships a themed one |
-| Windows | WSL2 only - sbx cannot dial a Windows named pipe |
-| A half-close on `sbx connect` | fixed in v0.8.0; it silently truncated the reply before |
+| A hosted web IDE | **none, and not planned.** `sbx ssh` (Preview gate) reaches a sandbox with VS Code Remote-SSH over the wake path that already exists, and `sbx init --from-devcontainer` reads the `devcontainer.json` a repo already has - but there is no browser editor, and every dev-environment product ships one |
+| Memory restore | **podman on Linux only**, via `sbx checkpoint` / `sbx resume`. On docker the restore is docker's own bug, not sbx's. Everywhere else it is filesystem snapshots and a cold start |
+| Kubernetes in a sandbox | still no. `cap_add` now lets a spec ask for named capabilities, which was the missing mechanism - but k3s and DinD want `seccomp=unconfined` or full `privileged`, and sbx offers neither. Measured: CRIU clears its capability check with `CAP_SYS_ADMIN` and then fails on a `mount` the default seccomp profile filters |
+| Windows | WSL2 only - sbx cannot dial a Windows named pipe. The **test suite** did not compile there either until v0.8.0, which CI now catches |
+| A pooled upstream | the daemon dials a fresh upstream socket per client connection. Fine for the clients sbx fronts; it is the ceiling under extreme churn |
+
+Three rows left this table in v0.8.0, and are listed here rather than quietly deleted:
+**`egress_allow` on a VM-backed docker** (the filter now runs as a container on the bridge, so it
+works on every Mac instead of being refused), **a waiting page** (shipped behind
+`SBX_FEATURES=waiting-page`; it was a spinner before, and Sablier's is the one it was measured
+against), and **a half-close on `sbx connect`** (it silently truncated the reply before).
 
 ## The closest prior art
 
@@ -232,7 +236,7 @@ convenience rather than capability. For a team that owns neither, it is not.
 Computed rather than quoted, and worth checking before anyone acts on it: Ona's rate for this
 size, and the VM and disk portion of the Workstations figure. Coder Premium, E2B Enterprise and
 Daytona Enterprise publish no price at all.
-## Dev environments, and the editor sbx does not have
+## Dev environments, and the editor story sbx half has
 
 This page had nothing about editors, which is a gap in it rather than in the field: the
 dev-environment products are what most people reach for when they want "a machine per branch",
@@ -242,15 +246,21 @@ and sbx overlaps them without competing on the thing they sell.
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | Sleeps on its own | ● | ● 30 min | ● 1 h | ● 30 min | ● 5–10 min | ◐ opt-in flag |
 | Self-hosted | ● | ○ | ● AGPL | ◐ BYOC, SaaS control plane | ● | ● |
-| Editor integration | ○ **none** | ● | ● | ● | ● | ● |
-| Reads `devcontainer.json` | ○ | ◐ partial | ● | ● | ● | n/a |
+| Editor integration | ◐ Remote-SSH | ● | ● | ● | ● | ● |
+| Reads `devcontainer.json` | ◐ import, lossy | ◐ partial | ● | ● | ● | n/a |
 | Traffic to a port counts as activity | ● | ○ **explicitly not** | ○ | ○ **explicitly not** | ○ | ○ |
 | Wakes a stopped environment on a connection | ● | ○ | ○ | ○ | ○ | ○ |
 | What "idle" means | bytes through the proxy | keyboard and terminal I/O | an active session | editor or SSH attached | a timer | a heartbeat file |
 
-**The row that matters is the third one, and sbx loses it.** There is no `sbx code`, no
-`devcontainer.json` import, nothing. Every product above ships an editor story and sbx ships
-none, and no amount of the rows below makes up for that if an editor is what somebody wants.
+**The row that matters is the third one, and sbx still only half-wins it.** `sbx ssh` prints the
+address and the `code --remote ssh-remote+...` line, so VS Code, Cursor and JetBrains Gateway all
+attach over the wake path that already exists — the SSH connection *is* the thing that wakes the
+sandbox, which is why it needed no new mechanism. `sbx init --from-devcontainer` translates the
+`devcontainer.json` a repo already has, and prints what it dropped on stderr rather than pretending
+the translation was complete. Both are behind Preview gates.
+
+What is still missing is the thing those products actually sell: **a browser IDE and a managed
+machine to run it on.** If that is what somebody wants, none of the rows below make up for it.
 
 **The row below it is the one nobody else has.** Codespaces and Ona both say in their own docs
 that traffic to a forwarded port does *not* count as activity — an environment can be serving
