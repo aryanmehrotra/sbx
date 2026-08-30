@@ -11,10 +11,10 @@ say where the ◐ and ○ are choices rather than gaps.
 
 | | sbx | E2B | Daytona | Modal | Cloudflare | Fly | Neon | Northflank |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Wakes on a raw socket | ● | ○ | ○ | ○ | ○ | ● | ◐ pg only | ○ |
+| Wakes on a raw socket | ● | ○ | ○ | ○ | ○ | ◐ ded. IPv4 | ◐ pg only | ○ |
 | Runs on your laptop | ● | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
 | Same spec local + cluster | ● | ○ | ○ | ○ | ○ | ○ | ○ | ◐ |
-| Self-hosted, no account | ● | ○ | ◐ OSS core | ○ | ○ | ○ | ○ | ◐ BYOC |
+| Self-hosted, no account | ● | ○ | ◐ OSS core, stale | ○ | ○ | ○ | ○ | ◐ BYOC |
 | Arbitrary stateful services | ● | ◐ | ● | ◐ | ◐ | ● | ○ pg | ● |
 | Multiple services, one spec | ● | ○ | ○ | ○ | ○ | ◐ | ○ | ● |
 | Zero cost at rest | ● | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ○ |
@@ -22,6 +22,17 @@ say where the ◐ and ○ are choices rather than gaps.
 | VM-grade isolation | ◐ kata | ● | ◐ | ● | ● | ● | ● | ● |
 | Public URL per sandbox | ● | ● | ● | ● | ● | ● | n/a | ● |
 | GPU | ◐ docker | ◐ | ◐ | ● | ○ | ● | n/a | ● |
+
+Re-verified 2026-08-30, and two cells moved. Fly's raw-socket wake is conditional: HTTP goes
+through Fly Proxy freely, but raw TCP needs a dedicated IPv4 and is unreliable on a shared one -
+so ◐, not ●. And Daytona's open-source core has been unmaintained since June 2026 with development
+moved to a private codebase, which makes "self-hosted" true of the repo and not of the product.
+
+Worth knowing about the two nearest: Cloudflare sleeps a sandbox after 10 idle minutes and its
+filesystem is ephemeral - a restart comes back from the image, and persistence is an opt-in R2
+backup rather than a mounted volume - while E2B's pause genuinely preserves memory and running
+processes. Neon is the only one on this page that wakes on an unmodified client connection like
+sbx does, and only for Postgres.
 
 **Read the top four rows first.** Waking on a raw socket, running on your own laptop, the same
 spec from laptop to cluster, self-hosted with no account — that combination is sbx's alone here.
@@ -67,7 +78,7 @@ back**, because that decides who is allowed to be the client.
 | Modal | SDK call | only your own code | ✗ hosted |
 | Vercel Sandbox | SDK call | only your own code | ✗ hosted |
 | Cloudflare Sandbox SDK | SDK call over RPC | only your own code | ✗ hosted |
-| Fly Machines | a request through Fly Proxy | anything, incl. TCP services | ✗ their proxy |
+| Fly Machines | a request through Fly Proxy | HTTP freely; raw TCP needs a dedicated IPv4 | ✗ their proxy |
 | Knative | an HTTP request through the activator | HTTP/gRPC/WebSocket only | ✓ needs a cluster |
 | Neon | a Postgres connection | Postgres clients only | ✗ hosted |
 
