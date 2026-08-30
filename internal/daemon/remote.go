@@ -123,7 +123,7 @@ func (r *Remote) List(ctx context.Context, sandbox string) ([]provider.Unit, err
 		go func() {
 			defer wg.Done()
 
-			svc, err := fetchFleet(ctx, s.base, s.token, true)
+			svc, _, err := fetchFleet(ctx, s.base, s.token, true)
 			results[i] = result{src: s, svc: svc, err: err}
 		}()
 	}

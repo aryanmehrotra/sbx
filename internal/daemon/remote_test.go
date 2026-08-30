@@ -202,7 +202,7 @@ func TestConnectDoesNotPayForTheDashboardsSampling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	services, err := fetchFleet(context.Background(), base, testToken, false)
+	services, _, err := fetchFleet(context.Background(), base, testToken, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestConnectDoesNotPayForTheDashboardsSampling(t *testing.T) {
 		}
 	}
 
-	if _, err := fetchFleet(context.Background(), base, testToken, true); err != nil {
+	if _, _, err := fetchFleet(context.Background(), base, testToken, true); err != nil {
 		t.Fatal(err)
 	}
 

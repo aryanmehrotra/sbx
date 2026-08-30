@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,6 +55,12 @@ type source struct {
 	token string
 	shift int
 	found int // services it was fronting, before --sandbox took any of them away
+
+	// halfClose is whether this deployment understands the half-close signal, from its own
+	// fleet response. False against anything older than v0.8.0, which is when the client must
+	// not send one - an old sbx would write the empty frame upstream as a no-op and never pass
+	// the EOF on, turning a truncated reply into a wait.
+	halfClose bool
 }
 
 // placed is one remote service and the deployment it came from.
@@ -411,7 +418,9 @@ func fetchAll(ctx context.Context, sources []*source) ([][]fleetService, error) 
 		go func(i int, s *source) {
 			defer wg.Done()
 
-			out[i], errs[i] = fetchFleet(ctx, s.base, s.token, false)
+			var hc bool
+			out[i], hc, errs[i] = fetchFleet(ctx, s.base, s.token, false)
+			s.halfClose = hc
 		}(i, s)
 	}
 
@@ -446,7 +455,7 @@ var fleetClient = &http.Client{Timeout: 60 * time.Second}
 // stats asks the deployment to sample what each service is using, which costs it a round trip
 // per running container. `sbx connect` does not want that - it wants a port map, once - so it
 // passes false and the reply is exactly what it always was.
-func fetchFleet(ctx context.Context, base *url.URL, token string, stats bool) ([]fleetService, error) {
+func fetchFleet(ctx context.Context, base *url.URL, token string, stats bool) ([]fleetService, bool, error) {
 	url := base.String() + "/v1/fleet"
 	if stats {
 		url += "?stats=1"
@@ -454,35 +463,39 @@ func fetchFleet(ctx context.Context, base *url.URL, token string, stats bool) ([
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := fleetClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("could not reach %s: %w", base.Redacted(), err)
+		return nil, false, fmt.Errorf("could not reach %s: %w", base.Redacted(), err)
 	}
 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("%s rejected the token", base.Redacted())
+		return nil, false, fmt.Errorf("%s rejected the token", base.Redacted())
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %s asking what it is fronting", base.Redacted(), resp.Status)
+		return nil, false, fmt.Errorf("%s answered %s asking what it is fronting", base.Redacted(), resp.Status)
 	}
 
 	var body struct {
 		Services []fleetService `json:"services"`
+
+		// Whether this deployment understands a half-close signal. Absent - so false - on any
+		// sbx older than v0.8.0, which is exactly when the client must not send one.
+		HalfClose bool `json:"halfClose"`
 	}
 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxFleetBody)).Decode(&body); err != nil {
-		return nil, fmt.Errorf("could not read what %s is fronting: %w", base.Redacted(), err)
+		return nil, false, fmt.Errorf("could not read what %s is fronting: %w", base.Redacted(), err)
 	}
 
-	return body.Services, nil
+	return body.Services, body.HalfClose, nil
 }
 
 func chooseServices(all []fleetService, only []string) []fleetService {
@@ -671,7 +684,7 @@ func tunnelOne(ctx context.Context, local net.Conn, b boundPort, base *url.URL, 
 
 	defer func() { _ = ws.close() }()
 
-	relayClient(ws, local)
+	relayClient(ws, local, b.src.halfClose)
 
 	return nil
 }
@@ -739,7 +752,7 @@ func dialConnect(ctx context.Context, base *url.URL, token string, port int, ins
 }
 
 // relayClient is relay's mirror: local TCP in, server frames out.
-func relayClient(ws *wsConn, local net.Conn) {
+func relayClient(ws *wsConn, local net.Conn, halfClose bool) {
 	done := make(chan struct{})
 
 	var once sync.Once
@@ -758,37 +771,85 @@ func relayClient(ws *wsConn, local net.Conn) {
 
 	wg.Add(2)
 
+	// Both directions have to finish before the tunnel goes: the client half-closing does not
+	// mean the answer has arrived. Whichever ends second closes it. See halfCloseFrameLen.
+	var halves atomic.Int32
+
+	finish := func() {
+		if halves.Add(1) == 2 {
+			stop()
+		}
+	}
+
+	// local -> deployment
 	go func() {
 		defer wg.Done()
-		defer stop()
 
 		buf := make([]byte, relayChunk)
 
 		for {
 			n, err := local.Read(buf)
 			if n > 0 {
-				if err := ws.write(opBinary, buf[:n]); err != nil {
+				if werr := ws.write(opBinary, buf[:n]); werr != nil {
+					stop()
+
 					return
 				}
 			}
 
 			if err != nil {
+				// The local client shut down its write side and is waiting for the answer -
+				// `nc -N`, an HTTP client sending Connection: close, an io.Copy pipeline. Pass
+				// that on so the workload sees EOF, and leave the other direction running.
+				//
+				// Only where the deployment said it understands it. An older one would write
+				// the empty frame upstream as a no-op and never deliver the EOF, so the reply
+				// would wait instead of arriving - the old behaviour, tearing the tunnel down,
+				// is the better of the two against one of those.
+				if errors.Is(err, io.EOF) && halfClose {
+					_ = ws.write(opBinary, nil)
+					finish()
+
+					return
+				}
+
+				stop()
+
 				return
 			}
 		}
 	}()
 
+	// deployment -> local
 	go func() {
 		defer wg.Done()
-		defer stop()
 
 		for {
 			payload, err := ws.readServerFrame()
 			if err != nil {
+				stop()
+
+				return
+			}
+
+			// The workload's write side finished. Pass the EOF on rather than closing the
+			// socket, so a client still sending its request is not cut off mid-write.
+			if len(payload) == 0 {
+				if t, ok := local.(*net.TCPConn); ok {
+					_ = t.CloseWrite()
+					finish()
+
+					return
+				}
+
+				stop()
+
 				return
 			}
 
 			if _, err := local.Write(payload); err != nil {
+				stop()
+
 				return
 			}
 		}

@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -48,6 +49,24 @@ const (
 
 	// relayChunk is how much is read from the sandbox at a time.
 	relayChunk = 32 << 10
+
+	// halfClose is the wire signal for "my write side is finished", carried as a zero-length
+	// binary frame.
+	//
+	// TCP has a half-close and a WebSocket does not: its close is bidirectional, so a client
+	// doing write, shutdown(SHUT_WR), read - nc -N, an HTTP client sending Connection: close,
+	// a Go io.Copy pipeline - had its reply truncated to nothing and reported as a clean EOF.
+	//
+	// A zero-length binary frame is free to mean this: both relays only ever write a frame when
+	// they read more than zero bytes, so one has never been sent by the data path. It needs no
+	// new opcode, which matters because an L7 proxy in the middle understands ordinary binary
+	// frames and may not understand a reserved one.
+	//
+	// Old peers stay correct in both directions. One that receives it writes zero bytes
+	// upstream, which is a no-op, and carries on exactly as before; one that never sends it is
+	// handled by the error path that was always there. The client asks first anyway - the fleet
+	// response advertises support - so it is never sent to a deployment that would ignore it.
+	halfCloseFrameLen = 0
 
 	// upstreamWait is how long a connection will wait for a workload that is still starting.
 	// A database opening its data directory takes seconds; a port that is wrong takes forever,
@@ -275,7 +294,9 @@ func (d *daemon) fleetHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"services": out})
+	// halfClose tells a client it may signal a half-close on this tunnel. A deployment without
+	// it would ignore the frame, so the client keeps the old behaviour against one.
+	_ = json.NewEncoder(w).Encode(map[string]any{"services": out, "halfClose": true})
 }
 
 // addUsage fills in what each service is using and what it is allowed, where this provider can
@@ -516,18 +537,45 @@ func relay(ws *wsConn, up net.Conn) {
 
 	wg.Add(2)
 
+	// Both directions have to finish before the tunnel goes, because either may end while the
+	// other still has the answer to deliver. Whichever ends second closes it.
+	var halves atomic.Int32
+
+	finish := func() {
+		if halves.Add(1) == 2 {
+			stop()
+		}
+	}
+
 	// client -> sandbox
 	go func() {
 		defer wg.Done()
-		defer stop()
 
 		for {
 			payload, err := ws.readFrame()
 			if err != nil {
+				stop() // the tunnel itself ended; there is no other half to wait for
+
+				return
+			}
+
+			// The client's write side finished. See halfClose.
+			if len(payload) == 0 {
+				if t, ok := up.(*net.TCPConn); ok {
+					_ = t.CloseWrite()
+					finish()
+
+					return
+				}
+
+				stop() // nothing to half-close, so this is the end
+
 				return
 			}
 
 			if _, err := up.Write(payload); err != nil {
+				stop()
+
 				return
 			}
 		}
@@ -536,19 +584,32 @@ func relay(ws *wsConn, up net.Conn) {
 	// sandbox -> client
 	go func() {
 		defer wg.Done()
-		defer stop()
 
 		buf := make([]byte, relayChunk)
 
 		for {
 			n, err := up.Read(buf)
 			if n > 0 {
-				if err := ws.write(opBinary, buf[:n]); err != nil {
+				if werr := ws.write(opBinary, buf[:n]); werr != nil {
+					stop()
+
 					return
 				}
 			}
 
 			if err != nil {
+				// The workload closed cleanly: pass that on as a half-close so the client's
+				// reader sees EOF, rather than killing a direction that may still be carrying
+				// the request.
+				if errors.Is(err, io.EOF) {
+					_ = ws.write(opBinary, nil)
+					finish()
+
+					return
+				}
+
+				stop()
+
 				return
 			}
 		}

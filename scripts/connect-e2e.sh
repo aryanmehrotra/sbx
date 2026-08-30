@@ -84,6 +84,23 @@ func main() {
 		_, _ = io.ReadFull(c, got)
 		fmt.Println(string(got))
 
+	case "halfclose": // write, shut the write side, then read - what nc -N and io.Copy do
+		c, err := net.Dial("tcp", "127.0.0.1:"+os.Args[2])
+		if err != nil {
+			fmt.Println("ERR", err)
+			os.Exit(1)
+		}
+		defer c.Close()
+		if _, err := c.Write([]byte("hello")); err != nil {
+			fmt.Println("ERR", err)
+			os.Exit(1)
+		}
+		if t, ok := c.(*net.TCPConn); ok {
+			_ = t.CloseWrite()
+		}
+		got, _ := io.ReadAll(c)
+		fmt.Println(string(got))
+
 	case "bulk": // more than one relay chunk, so the frame loop is exercised, not just a ping
 		want, _ := strconv.Atoi(os.Args[3])
 		c, err := net.Dial("tcp", "127.0.0.1:"+os.Args[2])
@@ -194,21 +211,21 @@ big="$("$WORK/helper" bulk "$LOCAL_PORT" 200000 2>&1)"
   && ok "a payload larger than one relay chunk survives whole" \
   || bad "large payload came back as $big, want 200005"
 
+
+# A half-close: write, shut the write side, read the answer. `nc -N`, an HTTP client sending
+# Connection: close, a Go io.Copy pipeline all do it, and the workload often cannot know the
+# request is finished until it sees EOF.
+#
+# It did not survive this tunnel. Both relays tore the whole thing down when their read side
+# ended, because a WebSocket close is bidirectional and the wire had no way to say "my write
+# side is finished" - so the reply came back EMPTY, with a nil error, which is the worst way for
+# it to fail. A zero-length binary frame carries that signal now.
+hc="$("$WORK/helper" halfclose "$LOCAL_PORT" 2>&1)"
+[ "$hc" = "ECHO:hello" ] \
+  && ok "a half-close reaches the workload and the reply still comes back" \
+  || bad "half-close through the tunnel returned '$hc', want ECHO:hello"
+
 echo
 echo "───────────────────────────────────────────────────────────"
 echo "  $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
-
-# A half-close is deliberately not asserted here, and the reason is worth writing down.
-#
-# `write; shutdown(SHUT_WR); read` is an ordinary client shape - `nc -N`, an HTTP client sending
-# Connection: close, a Go io.Copy pipeline - and it does not survive this tunnel. Measured
-# against the echo workload: direct returns "ECHO:hello"; through `sbx connect` it returns ""
-# with a nil error, the reply truncated to nothing and reported as a clean EOF.
-#
-# It is not a one-line bug. Both relays tear the whole tunnel down when their read side ends,
-# because the wire has no way to say "my write side is finished" - a WebSocket close is
-# bidirectional, and this protocol carries no half-close signal. Fixing it means a wire change on
-# the one surface reachable from off the machine, plus version negotiation against deployments
-# already running an older sbx. That is a feature, not a patch, so it is recorded rather than
-# half-done: see docs/release-notes/v0.8.0.md.
