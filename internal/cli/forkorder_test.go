@@ -1,16 +1,22 @@
 package cli
 
-// Fork restores a snapshot's volume over a service that Create just started, and the order
-// is the whole correctness argument.
+// A fork lays the snapshot's data down BEFORE anything can run on it, and that order is the
+// whole correctness argument.
 //
-// Create starts every service to health-check it. For a database that means it initialised
-// an empty data directory and is now serving from it. Copying the snapshot over that while
-// it runs is replacing the floor underneath a live process - and DECISIONS.md already
-// records what this class of bug looks like here: a fork that came up with a healthy server
-// and an empty database, which is the worst shape of failure because it looks like it worked.
+// It used to be the other way round: Create started every service to health-check it, so a
+// database initialised an empty data directory and served from it, and only then was the
+// snapshot copied over the top. Between those two steps the fork existed, was healthy, and had
+// the wrong data - and `kill -9` anywhere in that window left it that way. scripts/interrupt-
+// e2e.sh states the invariant as "a fork that ends up present is either correct or cleanly
+// gone", and it failed intermittently, in CI and locally, on two different rounds.
 //
-// scripts/fork-e2e.sh proves the end result against real docker, but it would not localise
-// an ordering regression and it does not run under `go test`.
+// Filling the volumes first closes it from both sides. Interrupted during the copy, no sandbox
+// exists yet. Interrupted during Create, every service that exists already has the snapshot's
+// data under it.
+//
+// The end-to-end proof is scripts/interrupt-e2e.sh against real docker, which kills the CLI
+// mid-operation; these localise a regression in the copy step itself, which that script would
+// only report as a wrong answer somewhere.
 
 import (
 	"context"
@@ -21,27 +27,29 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// recorder is a Provider and a Snapshotter that writes down what it was asked to do.
+// recorder is a Snapshotter that writes down what it was asked to do.
 type recorder struct {
 	provider.Provider
 
 	calls   []string
-	stopErr error
+	copyErr error
 }
 
 func (r *recorder) Name() string { return "recorder" }
 
+// Kept so that a Stop reaching this code would be recorded rather than silently ignored. The
+// restore no longer takes a Provider at all, so this should never fire - see the test below.
 func (r *recorder) Stop(_ context.Context, ref string) error {
-	if r.stopErr != nil {
-		return r.stopErr
-	}
-
 	r.calls = append(r.calls, "stop "+ref)
 
 	return nil
 }
 
 func (r *recorder) CopyVolume(_ context.Context, src, dst string) error {
+	if r.copyErr != nil {
+		return r.copyErr
+	}
+
 	r.calls = append(r.calls, "copy "+src+" -> "+dst)
 
 	return nil
@@ -54,93 +62,80 @@ func (r *recorder) VolumeFor(sandbox, service string) string {
 func (r *recorder) Commit(context.Context, string, string) error     { return nil }
 func (r *recorder) Images(context.Context, string) ([]string, error) { return nil, nil }
 
-// The invariant: for every service whose data is restored, the stop of that service appears
-// before the copy into it.
-func TestRestoreStopsEachServiceBeforeWritingOverIt(t *testing.T) {
+// Every snapshotted service's data is written to the name its service will be created with,
+// and nothing is stopped - because at this point nothing has been started.
+func TestRestoreWritesEveryVolumeAndStopsNothing(t *testing.T) {
 	r := &recorder{}
-
-	units := []provider.Unit{
-		{Service: "postgres", Ref: "sbx-fork-postgres"},
-		{Service: "redis", Ref: "sbx-fork-redis"},
-	}
 
 	refs := []SnapshotRef{
 		{Service: "postgres", Volume: "sbx-snapvol-golden-postgres"},
 		{Service: "redis", Volume: "sbx-snapvol-golden-redis"},
 	}
 
-	if err := restoreVolumes(context.Background(), r, r, "fork", units, refs); err != nil {
+	if err := restoreVolumes(context.Background(), r, "fork", refs); err != nil {
 		t.Fatalf("restoreVolumes: %v", err)
 	}
 
 	for _, svc := range []string{"postgres", "redis"} {
-		stop := indexOf(r.calls, "stop sbx-fork-"+svc)
-		copyc := indexOf(r.calls, "copy sbx-snapvol-golden-"+svc+" -> sbx-fork-"+svc)
-
-		if stop < 0 {
-			t.Errorf("%s was never stopped before its data was replaced", svc)
-			continue
+		want := "copy sbx-snapvol-golden-" + svc + " -> sbx-fork-" + svc
+		if indexOf(r.calls, want) < 0 {
+			t.Errorf("%s's data was never restored\n  sequence: %v", svc, r.calls)
 		}
+	}
 
-		if copyc < 0 {
-			t.Errorf("%s's data was never restored", svc)
-			continue
-		}
-
-		if stop > copyc {
-			t.Errorf("%s: copied at %d but stopped at %d - the snapshot was written over a "+
-				"running service\n  sequence: %v", svc, copyc, stop, r.calls)
+	for _, c := range r.calls {
+		if strings.HasPrefix(c, "stop") {
+			t.Errorf("something was stopped during a restore that runs before anything is "+
+				"created: %q", c)
 		}
 	}
 }
 
-// A service the snapshot knows nothing about is left exactly as Create made it - not
-// stopped, not overwritten. A fork that stopped services it had no data for would hand back
-// a sandbox with half of it down.
-func TestRestoreLeavesUnsnapshottedServicesAlone(t *testing.T) {
+// A snapshot entry with no volume behind it is skipped rather than copied from nothing.
+//
+// Reachable in practice: `sbx gc --snapshots --force` collects a snapshot's image and its
+// volume as two separate artifacts, so an interrupted sweep leaves an image that SnapshotsOf
+// still resolves with no volume behind it.
+func TestRestoreSkipsASnapshotWithNoVolume(t *testing.T) {
 	r := &recorder{}
 
-	units := []provider.Unit{
-		{Service: "postgres", Ref: "sbx-fork-postgres"},
-		{Service: "chrome", Ref: "sbx-fork-chrome"},
+	refs := []SnapshotRef{
+		{Service: "postgres", Volume: "sbx-snapvol-golden-postgres"},
+		{Service: "chrome", Volume: ""},
 	}
 
-	refs := []SnapshotRef{{Service: "postgres", Volume: "sbx-snapvol-golden-postgres"}}
-
-	if err := restoreVolumes(context.Background(), r, r, "fork", units, refs); err != nil {
+	if err := restoreVolumes(context.Background(), r, "fork", refs); err != nil {
 		t.Fatalf("restoreVolumes: %v", err)
 	}
 
 	for _, c := range r.calls {
 		if strings.Contains(c, "chrome") {
-			t.Errorf("touched a service with no snapshotted data: %q", c)
+			t.Errorf("copied from a snapshot with no volume: %q", c)
 		}
 	}
 }
 
-// If the stop fails, the copy must not happen anyway. Carrying on would write over a running
-// data directory, which is the exact failure the ordering exists to prevent.
-func TestRestoreDoesNotCopyWhenTheStopFailed(t *testing.T) {
-	r := &recorder{stopErr: errors.New("container is wedged")}
+// A failed copy stops the fork rather than letting Create run on top of half-written data.
+// Carrying on is how a sandbox comes up healthy with data that is neither the snapshot's nor
+// a fresh one's.
+func TestRestoreFailsTheForkWhenACopyFails(t *testing.T) {
+	r := &recorder{copyErr: errors.New("no space left on device")}
 
-	units := []provider.Unit{{Service: "postgres", Ref: "sbx-fork-postgres"}}
 	refs := []SnapshotRef{{Service: "postgres", Volume: "sbx-snapvol-golden-postgres"}}
 
-	err := restoreVolumes(context.Background(), r, r, "fork", units, refs)
+	err := restoreVolumes(context.Background(), r, "fork", refs)
 	if err == nil {
-		t.Fatal("a failed stop was ignored")
+		t.Fatal("a failed copy was ignored, so Create would run on top of it")
 	}
 
-	for _, c := range r.calls {
-		if strings.HasPrefix(c, "copy") {
-			t.Errorf("copied after a failed stop: %q", c)
-		}
+	if !strings.Contains(err.Error(), "postgres") {
+		t.Errorf("the error does not say which service failed: %v", err)
 	}
 }
 
-func indexOf(xs []string, want string) int {
-	for i, x := range xs {
-		if x == want {
+func indexOf(calls []string, want string) int {
+	for i, c := range calls {
+		if c == want {
 			return i
 		}
 	}

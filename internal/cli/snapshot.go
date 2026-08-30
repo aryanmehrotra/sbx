@@ -226,19 +226,29 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 
 	fmt.Printf("  spec     %s\n", forked)
 
+	// The data goes in before anything can run on it.
+	//
+	// This used to be the other way round - Create, then restore - and the order was the whole
+	// of the bug. Create starts every service to health-check it, so between that and the
+	// restore there was a window where the fork EXISTED, its database was up, and it was
+	// serving the empty data directory it had just initialised for itself. Kill `sbx fork`
+	// anywhere in that window and what is left is a healthy server with the wrong data, which
+	// is the one outcome a fork must never produce: interrupt-e2e states the invariant as "a
+	// fork that ends up present is either correct or cleanly gone", and this failed it
+	// intermittently, in CI and locally, on two different rounds.
+	//
+	// Filling the volumes first closes both halves of it. Interrupted here, no sandbox exists
+	// yet and the volumes are orphans that `sbx gc` collects - cleanly gone. Interrupted
+	// inside Create, every service that exists is already sitting on the snapshot's data -
+	// correct. There is no ordering left in which a running service has data that is neither.
+	//
+	// It also retires the hazard the old comment was about: nothing is running while the copy
+	// happens, so there is no floor to replace underneath a live process, and no Stop to do.
+	if err := restoreVolumes(ctx, snap, sandbox, refs); err != nil {
+		return err
+	}
+
 	if err := Create(ctx, p, forked, sandbox, withOptional, iso); err != nil {
-		return err
-	}
-
-	// Restore after creation, and with the service stopped. Create starts each service to
-	// health-check it, which for a database means it initialised an empty data directory;
-	// writing over that while it is running would be replacing the floor underneath it.
-	units, err := p.List(ctx, sandbox)
-	if err != nil {
-		return err
-	}
-
-	if err := restoreVolumes(ctx, p, snap, sandbox, units, refs); err != nil {
 		return err
 	}
 
@@ -248,41 +258,30 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 	return nil
 }
 
-// restoreVolumes copies each snapshotted volume over the freshly created service's own.
+// restoreVolumes lays the snapshot's data down under the names the services are about to be
+// created with.
 //
-// Separated from Fork for one reason: the order here is the correctness argument, and it is
-// the only part of a fork that can silently produce a healthy server with the wrong data.
-// Create has just started every service to health-check it, so a database is running and
-// serving from a data directory it initialised itself. Copying over that while it runs is
-// replacing the floor underneath a live process.
+// It runs BEFORE Create, which is the correctness argument and the whole reason it is its own
+// function. Nothing is running yet, so there is no service to stop, no live data directory to
+// overwrite, and - the part that matters - no window in which a fork exists and serves data
+// that is not the snapshot's. See the comment at the call site.
 //
-// So: stop, then copy, per service - never copy first, and never copy into a service that is
-// still up. Anything not present in the snapshot is left exactly as Create made it.
-func restoreVolumes(ctx context.Context, p provider.Provider, snap provider.Snapshotter,
-	sandbox string, units []provider.Unit, refs []SnapshotRef,
+// Docker creates a named volume on first mount, so the destination does not have to exist. A
+// service in the spec that the snapshot has nothing for is simply not written to, and starts
+// as any fresh service would.
+func restoreVolumes(ctx context.Context, snap provider.Snapshotter,
+	sandbox string, refs []SnapshotRef,
 ) error {
-	for _, u := range units {
-		var from string
-
-		for _, r := range refs {
-			if r.Service == u.Service {
-				from = r.Volume
-			}
-		}
-
-		if from == "" {
+	for _, r := range refs {
+		if r.Volume == "" {
 			continue
 		}
 
-		if err := p.Stop(ctx, u.Ref); err != nil {
-			return fmt.Errorf("stopping %s before restoring its data: %w", u.Service, err)
+		if err := snap.CopyVolume(ctx, r.Volume, snap.VolumeFor(sandbox, r.Service)); err != nil {
+			return fmt.Errorf("restoring %s's data: %w", r.Service, err)
 		}
 
-		if err := snap.CopyVolume(ctx, from, snap.VolumeFor(sandbox, u.Service)); err != nil {
-			return fmt.Errorf("restoring %s's data: %w", u.Service, err)
-		}
-
-		fmt.Printf("  %-12s restored from %s\n", u.Service, from)
+		fmt.Printf("  %-12s restored from %s\n", r.Service, r.Volume)
 	}
 
 	return nil
