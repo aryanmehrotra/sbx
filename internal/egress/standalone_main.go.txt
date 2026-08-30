@@ -1,0 +1,60 @@
+package main
+
+// Generated build context: this file is compiled beside a verbatim copy of sbx's own
+// internal/egress/filter.go, with only its package clause rewritten. The filter that runs in the
+// container is therefore the filter the test suite covers, not a second implementation of the
+// same idea that can drift from it.
+
+import (
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"sync/atomic"
+	"time"
+)
+
+func main() {
+	var (
+		allow  = flag.String("allow", "", "comma-separated hosts this sandbox may reach")
+		listen = flag.String("listen", ":20999", "proxy address")
+		stat   = flag.String("stat", ":20998", "address serving the last-activity timestamp")
+	)
+
+	flag.Parse()
+
+	var last atomic.Int64
+
+	last.Store(time.Now().UnixNano())
+
+	f := New(strings.Split(*allow, ","))
+	f.OnActivity = func() { last.Store(time.Now().UnixNano()) }
+
+	// The daemon runs on the host and cannot see into the sandbox's bridge, so it cannot observe
+	// this filter's traffic the way it observes its own. It scrapes this instead, once a refresh
+	// tick, and stamps the sandbox's units when the number has moved. A tick is seconds and an
+	// idle window is minutes, so the lag is far inside the decision it feeds.
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/last", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, "%d\n", last.Load())
+		})
+
+		s := &http.Server{Addr: *stat, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		if err := s.ListenAndServe(); err != nil {
+			fmt.Fprintln(os.Stderr, "stat listener:", err)
+		}
+	}()
+
+	// No ReadHeaderTimeout on the proxy itself: a CONNECT tunnel is hijacked and held open for
+	// as long as the conversation lasts, and a timeout here would cut a streaming response.
+	s := &http.Server{Addr: *listen, Handler: f}
+
+	fmt.Fprintf(os.Stderr, "sbx egress filter on %s, allowing: %s\n", *listen, *allow)
+
+	if err := s.ListenAndServe(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

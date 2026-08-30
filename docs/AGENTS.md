@@ -72,6 +72,62 @@ sandbox name, and a sandbox holds several services. In `sbx ui`, `v` shows that 
 
 ---
 
+## When you are the workload, not the client
+
+Everything above assumes the sandbox holds a service and you are outside it, dialling in. The
+other shape is a box **you work inside** — you edit files, compile, and call an API — and nothing
+ever dials you.
+
+That shape breaks the rule the rest of sbx runs on. Idleness is measured on bytes through a
+service's port, and you send none of them: reading a file is invisible, a compile is invisible.
+On that measure your box looks idle from the moment you start working, and the window closes
+mid-task.
+
+**One of the things you do is visible.** Declare an allow-list and your calls out go through a
+proxy sbx runs, so they count as activity:
+
+```json
+{
+  "version": 1,
+  "services": {
+    "agent": {
+      "image": "python:3.12",
+      "ports": [7777],
+      "egress_allow": ["api.anthropic.com", "pypi.org", "github.com"],
+      "idle": "10m"
+    }
+  }
+}
+```
+
+The box reaches those three hosts and nothing else — there is no route around the proxy, so the
+list is enforced rather than advisory — and it stays awake while it is calling them, then sleeps
+ten minutes after you stop.
+
+| you want | write |
+|---|---|
+| reach only these hosts, and stay awake while calling them | `"egress_allow": [...]` |
+| no egress at all | `"egress": "deny"` |
+| a longer window | `"idle": "30m"` |
+| never sleep, whatever happens | `"idle": "never"` |
+
+Reach for `idle: "never"` **only** when there is no allow-list to use, or when the work does not
+go over HTTP. It holds the box's memory for as long as the sandbox exists, which is the cost
+sleeping was for. The stamp reaches services on the same sandbox bridge that declared an
+allow-list of their own; a plain database beside your box still sleeps on its own timer.
+
+## Some commands are behind a gate
+
+`sbx features` lists what this build gates and what is currently on. A gated command tells you how
+to turn itself on rather than pretending not to exist, and there is deliberately no `all`.
+
+```sh
+sbx features
+SBX_FEATURES=ssh sbx ssh <task>
+```
+
+---
+
 ## Recipes
 
 **Try a migration without touching anything shared**

@@ -79,13 +79,14 @@ func Reachable(port int) bool {
 // the wake path is to run the real one, not a copy of its logic.
 func New(p provider.Provider, idle, ready, refresh time.Duration) *daemon {
 	return &daemon{
-		provider: p,
-		idle:     idle,
-		ready:    ready,
-		refresh:  refresh,
-		units:    map[string]*unit{},
-		stop:     map[string]context.CancelFunc{},
-		egress:   map[string]*egressProxy{},
+		provider:   p,
+		idle:       idle,
+		ready:      ready,
+		refresh:    refresh,
+		units:      map[string]*unit{},
+		stop:       map[string]context.CancelFunc{},
+		egress:     map[string]*egressProxy{},
+		egressSeen: map[string]int64{},
 	}
 }
 
@@ -109,6 +110,12 @@ type daemon struct {
 	units  map[string]*unit              // ref -> unit
 	stop   map[string]context.CancelFunc // ref -> listener cancel
 	egress map[string]*egressProxy       // bridge gateway -> running egress filter
+
+	// egressSeen is the last activity timestamp read from each container filter, so a reading
+	// that has not moved does not stamp the sandbox awake. Without it every tick would look
+	// like traffic and nothing with a filter would ever sleep - the same bug this feature
+	// exists to fix, running the other way.
+	egressSeen map[string]int64
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -201,6 +208,7 @@ func Serve(args []string) error {
 		units:      map[string]*unit{},
 		stop:       map[string]context.CancelFunc{},
 		egress:     map[string]*egressProxy{},
+		egressSeen: map[string]int64{},
 	}
 
 	var connectSrv *http.Server
@@ -382,6 +390,11 @@ func (d *daemon) discover(ctx context.Context) {
 	// A sandbox with an egress allow-list gets a filtering proxy on its bridge gateway,
 	// started here and torn down when the sandbox goes. Off the wake path.
 	d.reconcileEgress(found)
+
+	// Where that gateway is inside a VM, the filter is a container instead and its traffic is
+	// invisible from here - so ask it, once a tick, when it last carried a permitted byte, and
+	// stamp the sandbox if the answer moved. Same signal, fetched rather than observed.
+	d.scrapeEgress(ctx, found)
 }
 
 // correctAwake revokes a belief the provider contradicts.

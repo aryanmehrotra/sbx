@@ -1,4 +1,4 @@
-package daemon
+package egress
 
 import (
 	"io"
@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +25,7 @@ func TestForwardStampsActivity(t *testing.T) {
 
 	var n atomic.Int64
 
-	f := NewEgressFilter([]string{host})
+	f := New([]string{host})
 	f.OnActivity = func() { n.Add(1) }
 
 	proxy := httptest.NewServer(f)
@@ -58,7 +57,7 @@ func TestForwardStampsActivity(t *testing.T) {
 func TestForwardDeniedStampsNothing(t *testing.T) {
 	var n atomic.Int64
 
-	f := NewEgressFilter([]string{"allowed.example"})
+	f := New([]string{"allowed.example"})
 	f.OnActivity = func() { n.Add(1) }
 
 	rec := httptest.NewRecorder()
@@ -106,7 +105,7 @@ func TestTunnelStampsActivityAsBytesMove(t *testing.T) {
 
 	var n atomic.Int64
 
-	f := NewEgressFilter([]string{"127.0.0.1"})
+	f := New([]string{"127.0.0.1"})
 	f.OnActivity = func() { n.Add(1) }
 
 	proxy := httptest.NewServer(f)
@@ -155,7 +154,7 @@ func TestFilterWithoutHookIsUnchanged(t *testing.T) {
 
 	host := strings.TrimPrefix(upstream.URL, "http://")
 
-	f := NewEgressFilter([]string{host}) // no OnActivity: every existing caller
+	f := New([]string{host}) // no OnActivity: every existing caller
 	proxy := httptest.NewServer(f)
 
 	defer proxy.Close()
@@ -171,51 +170,5 @@ func TestFilterWithoutHookIsUnchanged(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "ok" {
 		t.Fatalf("body = %q; a nil hook must not change what the filter carries", body)
-	}
-}
-
-func TestDueThrottlesToOneWalkASecond(t *testing.T) {
-	p := &egressProxy{}
-	now := time.Now().UnixNano()
-
-	if !p.due(now) {
-		t.Fatal("the first stamp must go through")
-	}
-
-	if p.due(now + int64(100*time.Millisecond)) {
-		t.Fatal("a second stamp 100ms later must be skipped: a download would otherwise take " +
-			"the daemon lock once per chunk")
-	}
-
-	if !p.due(now + int64(2*time.Second)) {
-		t.Fatal("a stamp two seconds later must go through")
-	}
-}
-
-func TestDueIsRaceFreeAndAdmitsOne(t *testing.T) {
-	p := &egressProxy{}
-	now := time.Now().UnixNano()
-
-	var (
-		wg     sync.WaitGroup
-		passed atomic.Int64
-	)
-
-	for range 64 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			if p.due(now) {
-				passed.Add(1)
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	if got := passed.Load(); got != 1 {
-		t.Fatalf("%d of 64 concurrent stamps passed, want exactly 1", got)
 	}
 }

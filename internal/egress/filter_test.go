@@ -1,4 +1,4 @@
-package daemon
+package egress
 
 import (
 	"bufio"
@@ -12,7 +12,7 @@ import (
 )
 
 func TestEgressPermits(t *testing.T) {
-	f := NewEgressFilter([]string{"openai.com", "PyPI.org:443", "10.0.0.5", " "})
+	f := New([]string{"openai.com", "PyPI.org:443", "10.0.0.5", " "})
 
 	cases := []struct {
 		host string
@@ -40,7 +40,7 @@ func TestEgressPermits(t *testing.T) {
 
 // A denied CONNECT must get 403 and NO socket to the target - the proxy refuses before dialling.
 func TestEgressDeniedConnectIsRefused(t *testing.T) {
-	proxy := httptest.NewServer(NewEgressFilter([]string{"openai.com"}))
+	proxy := httptest.NewServer(New([]string{"openai.com"}))
 	defer proxy.Close()
 
 	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
@@ -79,7 +79,7 @@ func TestEgressAllowedConnectTunnels(t *testing.T) {
 		_, _ = io.Copy(c, c) // echo
 	}()
 
-	proxy := httptest.NewServer(NewEgressFilter([]string{"127.0.0.1"}))
+	proxy := httptest.NewServer(New([]string{"127.0.0.1"}))
 	defer proxy.Close()
 
 	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
@@ -114,7 +114,7 @@ func TestEgressAllowedConnectTunnels(t *testing.T) {
 }
 
 func TestEgressDeniedPlainHTTPIsRefused(t *testing.T) {
-	proxy := httptest.NewServer(NewEgressFilter([]string{"openai.com"}))
+	proxy := httptest.NewServer(New([]string{"openai.com"}))
 	defer proxy.Close()
 
 	req, _ := http.NewRequest("GET", "http://evil.com/", nil)

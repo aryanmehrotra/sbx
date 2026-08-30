@@ -218,3 +218,28 @@ func ParsePorts(label string) ([]PortPair, error) {
 
 	return out, nil
 }
+
+// Local reports whether this docker daemon publishes ports onto the same loopback the caller is
+// on. A unix socket always does. A tcp endpoint does only when it points at this machine.
+//
+// It decides one thing: whether a container's published port is reachable from here. The egress
+// filter, when it runs as a container, publishes its activity endpoint to loopback for the daemon
+// to scrape - and against a remote dockerd that is the REMOTE machine's loopback, so the reading
+// would never arrive. Filtering still works there; only the activity signal does not.
+func (e dockerEndpoint) Local() bool {
+	if e.Network == "unix" {
+		return true
+	}
+
+	host, _, err := net.SplitHostPort(e.Address)
+	if err != nil {
+		host = e.Address
+	}
+
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1", "[::1]", "":
+		return true
+	}
+
+	return net.ParseIP(host).IsLoopback()
+}

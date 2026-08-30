@@ -1,4 +1,4 @@
-package daemon
+package egress
 
 import (
 	"net"
@@ -33,7 +33,7 @@ func TestARealContainerCallingOutStampsActivity(t *testing.T) {
 
 	var n atomic.Int64
 
-	f := NewEgressFilter([]string{"example.com"})
+	f := New([]string{"example.com"})
 	f.OnActivity = func() { n.Add(1) }
 
 	// 0.0.0.0, not loopback: the client is in a container and comes in over the bridge.
@@ -85,7 +85,7 @@ func TestARefusedHostFromARealContainerStampsNothing(t *testing.T) {
 
 	var n atomic.Int64
 
-	f := NewEgressFilter([]string{"allowed.example"})
+	f := New([]string{"allowed.example"})
 	f.OnActivity = func() { n.Add(1) }
 
 	ln, err := net.Listen("tcp", "0.0.0.0:0")

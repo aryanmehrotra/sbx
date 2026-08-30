@@ -1,4 +1,4 @@
-package daemon
+package egress
 
 import (
 	"io"
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// EgressFilter is the data-path component a real egress allow-list needs - the one SPEC.md and
+// Filter is the data-path component a real egress allow-list needs - the one SPEC.md and
 // the spec's Egress field call for by name ("a filtering proxy in the data path, a component
 // with a lifecycle, not a flag"). A service with an allow-list sits on the same no-NAT bridge
 // that `egress: "deny"` uses, so it has no route off the host on its own; this proxy, reachable
@@ -18,7 +18,7 @@ import (
 //
 // It answers CONNECT (the tunnel every HTTPS client opens) and plain HTTP. A host that is not on
 // the list gets 403 and no connection; the proxy never opens a socket to it.
-type EgressFilter struct {
+type Filter struct {
 	// OnActivity is called when a permitted request is carried, or nil.
 	//
 	// This is the idle signal for a box that nothing dials. sbx measures idleness on bytes
@@ -37,10 +37,10 @@ type EgressFilter struct {
 	allow []string
 }
 
-// NewEgressFilter builds a filter from allow entries, each a host or host:port (the port is
+// New builds a filter from allow entries, each a host or host:port (the port is
 // ignored - the list matches on host). Blank and malformed entries are dropped.
-func NewEgressFilter(allow []string) *EgressFilter {
-	f := &EgressFilter{}
+func New(allow []string) *Filter {
+	f := &Filter{}
 
 	for _, a := range allow {
 		a = strings.ToLower(strings.TrimSpace(a))
@@ -58,7 +58,7 @@ func NewEgressFilter(allow []string) *EgressFilter {
 
 // Permits reports whether host (bare or host:port) is on the allow-list, matching the host
 // itself and any subdomain of a listed one.
-func (f *EgressFilter) Permits(host string) bool {
+func (f *Filter) Permits(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
@@ -73,7 +73,7 @@ func (f *EgressFilter) Permits(host string) bool {
 	return false
 }
 
-func (f *EgressFilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *Filter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		f.tunnel(w, r)
 		return
@@ -83,7 +83,7 @@ func (f *EgressFilter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // tunnel handles CONNECT: check the host, and only then open the upstream socket and splice.
-func (f *EgressFilter) tunnel(w http.ResponseWriter, r *http.Request) {
+func (f *Filter) tunnel(w http.ResponseWriter, r *http.Request) {
 	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		host, port = r.Host, "443"
@@ -126,7 +126,7 @@ func (f *EgressFilter) tunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 // forward handles a plain (non-CONNECT) HTTP request: check the host, then relay it.
-func (f *EgressFilter) forward(w http.ResponseWriter, r *http.Request) {
+func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 	if !f.Permits(r.Host) {
 		http.Error(w, "egress not allowed: "+r.Host, http.StatusForbidden)
 		return
@@ -170,8 +170,9 @@ func (s stamp) Write(p []byte) (int, error) {
 }
 
 // active wraps w to report activity, or returns it untouched when nothing is listening - which
-// is every filter built by a test or by NewEgressFilter's plain constructor.
-func (f *EgressFilter) active(w io.Writer) io.Writer {
+// is every filter built by a test, and every one built for a gateway whose units this process
+// does not own.
+func (f *Filter) active(w io.Writer) io.Writer {
 	if f.OnActivity == nil {
 		return w
 	}
@@ -181,7 +182,7 @@ func (f *EgressFilter) active(w io.Writer) io.Writer {
 
 // note stamps once for a request that carried no bytes at all: a 204, an empty body, a CONNECT
 // that was opened and dropped. It still says the box is doing something.
-func (f *EgressFilter) note() {
+func (f *Filter) note() {
 	if f.OnActivity != nil {
 		f.OnActivity()
 	}

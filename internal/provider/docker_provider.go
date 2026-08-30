@@ -346,11 +346,23 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		// not to the allowed hosts either. Fails closed, which is the safe direction and the
 		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
 		// refused up front for the same reason, and this is the same shape.
+		// Where the daemon can hold that address it does, and the filter is a listener in the
+		// daemon - fewer moving parts, and it already knows which units are awake. Where it
+		// cannot, the same filter runs as a container on the bridge instead, which is on the
+		// right side of the VM boundary by construction. Either way the workload has no route
+		// out of its own, so the proxy is the only door.
+		proxyHost, stat := gw, ""
+
 		if err := bindable(gw); err != nil {
-			return err
+			addr, cerr := d.ensureFilterContainer(sandbox, svc.EgressAllow)
+			if cerr != nil {
+				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", err, cerr)
+			}
+
+			proxyHost, stat = filterAlias, addr
 		}
 
-		proxy := "http://" + net.JoinHostPort(gw, strconv.Itoa(EgressProxyPort))
+		proxy := "http://" + net.JoinHostPort(proxyHost, strconv.Itoa(EgressProxyPort))
 		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			args = append(args, "-e", k+"="+proxy)
 		}
@@ -358,6 +370,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args,
 			"--label", labelEgressAllow+"="+strings.Join(svc.EgressAllow, ","),
 			"--label", labelEgressGateway+"="+gw)
+
+		if stat != "" {
+			args = append(args, "--label", labelEgressStat+"="+stat)
+		}
 	}
 
 	if svc.Egress == spec.EgressDeny || len(svc.EgressAllow) > 0 {
@@ -1016,6 +1032,7 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 			Index:         (pairs[0].Public - publicBase) % blockSize,
 			EgressGateway: c.Labels[labelEgressGateway],
 			Idle:          c.Labels[labelIdle],
+			EgressStat:    c.Labels[labelEgressStat],
 		}
 
 		if a := c.Labels[labelEgressAllow]; a != "" {
@@ -1069,6 +1086,11 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 			fmt.Printf("  removed volume %s\n", volumeName(sandbox, u.Service))
 		}
 	}
+
+	// Before the network: the filter sits on it, and docker will not remove a network that
+	// still has a container attached. A filter that outlived its sandbox would be a container
+	// nothing owns, holding a published port, which is the failure sandboxes exist to avoid.
+	d.removeFilterContainer(sandbox)
 
 	// After the containers: docker refuses to remove a network still in use. A sandbox that
 	// never declared egress deny has none, and the failure is ignored - this is cleanup, and
@@ -1205,10 +1227,15 @@ func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]U
 	return out, nil
 }
 
-// EgressPreflight reports whether the filtering proxy an allow-list needs could be bound here.
+// EgressPreflight reports whether the filtering proxy an allow-list needs can be run here at all.
 //
 // It creates the sandbox's egress network to ask, because the gateway address does not exist
 // until the network does - and that network is created for this sandbox anyway a moment later.
+//
+// Two ways to run the filter, and only the second can fail here. The daemon binds the bridge
+// gateway where it holds that address; where it does not - a VM-backed docker, which is every
+// Mac - the same filter runs as a container on the bridge, which needs nothing of this machine.
+// So the refusal that used to be the whole answer now applies only where neither works.
 func (d *dockerProvider) EgressPreflight(_ context.Context, sandbox string) error {
 	if err := d.ensureEgressNetwork(sandbox); err != nil {
 		return err
@@ -1219,14 +1246,21 @@ func (d *dockerProvider) EgressPreflight(_ context.Context, sandbox string) erro
 		return err
 	}
 
-	if err := bindable(gw); err != nil {
-		// Put the network back. Asking the question needed it to exist, and a refusal that
-		// leaves one behind leaves one nothing can collect: no container was created, so
-		// Remove finds no units for this sandbox and declines, and `sbx rm` cannot reach it.
-		// The refusal is supposed to cost nothing.
+	// The container filter needs a docker that can run one, which is any docker at all. Nothing
+	// left to refuse: the bind is no longer the only way to enforce a list.
+	if err := bindable(gw); err == nil {
+		return nil
+	}
+
+	if _, err := d.docker("version", "--format", "{{.Server.Version}}"); err != nil {
+		// Put the network back, for the same reason the old refusal did.
 		_, _ = d.docker("network", "rm", egressNetwork(sandbox))
 
-		return err
+		return fmt.Errorf(
+			"declares egress_allow, and the filtering proxy that enforces it cannot be "+
+				"started: this machine cannot bind the sandbox's gateway %s, and the "+
+				"fallback - running the filter as a container on the bridge - needs a "+
+				"docker that answers, which this one does not (%v)", gw, err)
 	}
 
 	return nil

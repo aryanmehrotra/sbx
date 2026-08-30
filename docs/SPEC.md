@@ -328,6 +328,20 @@ proxy sbx runs on the bridge gateway: `HTTP_PROXY`/`HTTPS_PROXY` point every cli
 client that ignores the proxy and dials out directly has no route at all, so the list is enforced,
 not advisory. It is not combined with `egress: "deny"`, which would deny the allowed hosts too.
 
+**Where the filter runs.** Two arrangements, chosen for you. Where `sbx serve` can bind the
+sandbox's bridge gateway - a native Linux docker - the filter is a listener inside the daemon.
+Where it cannot, which is every VM-backed docker (colima, Docker Desktop, rootless, and so every
+Mac), the same filter runs as a small container on that bridge instead. It is built once per
+machine from sbx's own source, so the two are the same code and cannot drift apart.
+
+That container is dual-homed: on the sandbox's no-NAT bridge, where the workload can reach it, and
+on an ordinary bridge, where it can reach the internet. The workload still has no route out of its
+own, so a client that ignores `HTTP_PROXY` and dials a host directly gets nowhere - measured, on a
+Mac: an allowed host returns its page, a host off the list gets `403 Forbidden` from the filter,
+and the same fetch with the proxy variables unset times out with no route at all.
+
+`egress_allow` was refused outright on those platforms before. It is not any more.
+
 The traffic through that proxy also counts as activity. A box running an agent takes no inbound
 connection - it reads files, compiles, and calls an API - so on the bytes sbx measures it looks
 idle from the moment it starts working, and the only setting that kept it alive was `idle: "never"`,
@@ -336,6 +350,14 @@ through code sbx already owns, so they are counted: it stays awake while it is c
 sleeps on the ordinary timer once it stops. Stamped on bytes rather than on connections, so a
 streaming response keeps it awake for as long as tokens are arriving, and throttled to one stamp a
 second, which is far finer than an idle window measured in minutes.
+
+**What the stamp reaches.** A sandbox has one bridge and so one filter, and there is nothing in an
+HTTP CONNECT that says which container opened it - so the stamp marks every service on that bridge
+**that declared an allow-list of its own**. A service with no `egress_allow` is not on it and
+sleeps on its ordinary timer. Measured: an allow-listed box calling out every five seconds stayed
+awake through twelve consecutive 30-second idle windows, while a plain service beside it in the
+same sandbox slept on schedule. Two allow-listed services in one sandbox do keep each other awake;
+if that matters, put them in different sandboxes.
 
 ### `idle` keeps a box awake while it works
 
@@ -351,6 +373,9 @@ wakes on a connection like everything else - this only changes when it goes back
 
 A box with `egress_allow` needs this less. Its calls out are counted as activity, so it stays awake
 while it is working and sleeps when it stops - which is what `"never"` cannot do.
+
+The stamp reaches every service on the sandbox's bridge that declared an allow-list of its own; a
+service without one sleeps on its ordinary timer regardless.
 
 ### `optional` still reserves its ports
 

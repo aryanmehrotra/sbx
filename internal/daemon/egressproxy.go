@@ -10,11 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// egressProxy is one running EgressFilter: the listener on a sandbox's bridge gateway and the
+// egressProxy is one running egress.Filter: the listener on a sandbox's bridge gateway and the
 // allow-list it was started with, so a changed list can be spotted and the proxy restarted.
 type egressProxy struct {
 	allow string
@@ -45,6 +46,14 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 
 	for _, u := range found {
 		if len(u.EgressAllow) == 0 || u.EgressGateway == "" {
+			continue
+		}
+
+		// A container already holds this gateway's filter, because this machine could not.
+		// Binding it here would fail every tick and log a warning for a sandbox that is in
+		// fact correctly filtered - and on the one machine where the bind DID succeed, it
+		// would put a second filter in front of the first.
+		if u.EgressStat != "" {
 			continue
 		}
 
@@ -88,7 +97,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 			continue
 		}
 
-		filter := NewEgressFilter(lists[gw])
+		filter := egress.New(lists[gw])
 		filter.OnActivity = func() { d.touchEgress(gw) }
 		srv := &http.Server{Handler: filter}
 		go func() { _ = srv.Serve(ln) }()
@@ -122,11 +131,21 @@ func (d *daemon) touchEgress(gw string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	p, ok := d.egress[gw]
-	if !ok || !p.due(time.Now().UnixNano()) {
+	// The throttle belongs to the in-process filter, which calls this once per copied chunk.
+	// A gateway with no proxy here is one whose filter is a CONTAINER: its activity arrives by
+	// scrape, already at most once a refresh tick, and looking for a throttle that was never
+	// created would drop the stamp entirely. That is not hypothetical - it is what this did,
+	// and a box calling out every five seconds slept anyway, because the lookup failed before
+	// the walk was ever reached.
+	if p, ok := d.egress[gw]; ok && !p.due(time.Now().UnixNano()) {
 		return
 	}
 
+	d.stampGateway(gw)
+}
+
+// stampGateway marks every unit behind a gateway as active. Callers hold d.mu.
+func (d *daemon) stampGateway(gw string) {
 	for _, u := range d.units {
 		if u.egressGateway == gw {
 			u.touch()

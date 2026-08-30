@@ -1,4 +1,4 @@
-package daemon
+package egress
 
 import (
 	"io"
@@ -10,7 +10,7 @@ import (
 // asking before shipping it. Measured against the same copy with no hook attached.
 
 func BenchmarkEgressCopyWithoutStamp(b *testing.B) {
-	f := NewEgressFilter([]string{"x"})
+	f := New([]string{"x"})
 	buf := make([]byte, 32*1024)
 
 	w := f.active(io.Discard)
@@ -27,7 +27,7 @@ func BenchmarkEgressCopyWithoutStamp(b *testing.B) {
 func BenchmarkEgressCopyWithStamp(b *testing.B) {
 	var n atomic.Int64
 
-	f := NewEgressFilter([]string{"x"})
+	f := New([]string{"x"})
 	f.OnActivity = func() { n.Add(1) }
 
 	buf := make([]byte, 32*1024)
@@ -40,17 +40,5 @@ func BenchmarkEgressCopyWithStamp(b *testing.B) {
 
 	for b.Loop() {
 		_, _ = w.Write(buf)
-	}
-}
-
-// And the throttled walk itself, which is what the stamp defers to at most once a second.
-func BenchmarkEgressDueThrottled(b *testing.B) {
-	p := &egressProxy{}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for b.Loop() {
-		_ = p.due(1)
 	}
 }

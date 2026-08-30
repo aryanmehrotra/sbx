@@ -38,6 +38,7 @@ const (
 
 	labelEgressAllow   = "sbx.egress.allow"   // comma-joined egress allow-list, when set
 	labelEgressGateway = "sbx.egress.gateway" // the bridge gateway its egress filter listens on
+	labelEgressStat    = "sbx.egress.stat"    // loopback address of a container filter's activity endpoint
 	labelIdle          = "sbx.idle"           // per-service idle override, when set
 	labelDependsOn     = "sbx.dependsOn"      // comma-joined depends_on, so wake can follow it
 
@@ -94,6 +95,12 @@ type Unit struct {
 	// runs a filtering proxy for it on the gateway. Both empty when there is no allow-list.
 	EgressAllow   []string
 	EgressGateway string
+
+	// EgressStat is the loopback address of a container filter's activity endpoint, or "".
+	//
+	// Set only where the filter runs as a container - the daemon cannot see into the sandbox's
+	// bridge there, so it scrapes this instead of watching its own listener.
+	EgressStat string
 
 	// DependsOn is what this service declared it needs. Carried to the daemon so that waking
 	// it wakes those too: a stopped container is absent from the network's DNS, so a service

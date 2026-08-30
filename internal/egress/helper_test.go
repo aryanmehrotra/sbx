@@ -1,4 +1,4 @@
-package daemon
+package egress
 
 import (
 	"net/http"
