@@ -393,10 +393,40 @@ func healthWillNeverPass(ctx context.Context, p provider.Provider, ref, command 
 		detail = shellReason(err.Error())
 	}
 
+	// A container that has not started yet fails every exec, and none of those failures say
+	// anything about the image. Waiting is precisely what fixes them, which makes them the
+	// opposite of what this function looks for - so they are excluded before anything else.
+	//
+	// This is what kubernetes does on a normal create: sbx probes as soon as the Deployment
+	// exists, the pod is still scheduling, and the apiserver answers `container not found
+	// ("app")`. That contains "not found", which the check below used to match - so `sbx
+	// create --provider kubernetes` reported "the health command cannot run in this image"
+	// and told the reader to go and check whether the tool was installed. Measured against
+	// nginx:alpine: wget is at /usr/bin/wget and the exact command exits 0 a moment later.
+	// A wrong diagnosis that sends somebody to fix the wrong thing is worse than no
+	// diagnosis, and this one rejected a spec that was correct.
+	for _, transient := range []string{
+		"container not found",          // kubernetes, pod not started
+		"unable to upgrade connection", // kubernetes, exec before the container is up
+		"ContainerCreating",
+		"PodInitializing",
+		"is not running",    // docker
+		"No such container", // docker, between create and start
+	} {
+		if strings.Contains(text, transient) {
+			return "", false
+		}
+	}
+
 	switch {
-	case strings.Contains(text, "exit status 127"), strings.Contains(text, "not found"):
+	// The exit status is the authoritative signal and comes from the shell itself: 127 is
+	// "not found", 126 is "found but not executable", and neither improves with time.
+	case strings.Contains(text, "exit status 127"), strings.Contains(text, "exit status 126"):
 		return detail, true
-	case strings.Contains(text, "exit status 126"), strings.Contains(text, "Permission denied"):
+
+	// The shell's own wording, kept narrow. A shell says `sh: wget: not found`, with the
+	// colon - which is what distinguishes it from a runtime talking about a container.
+	case strings.Contains(text, ": not found"), strings.Contains(text, "Permission denied"):
 		return detail, true
 	}
 
