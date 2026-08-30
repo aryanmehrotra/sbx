@@ -18,7 +18,7 @@ colima 29.2.1, cloudflared 2026.8.2.
 | `StderrPipe` dead code in the tunnel scanner (`Cmd.StderrPipe` errors when `Cmd.Stderr` is set, so the goroutine never ran) | in `tunnel.go` today |
 | 64 KB `bufio` overflow that hung `sbx url` on a long banner | `scanner.Buffer(..., 1 MB)` |
 | `sbx connect` splicing a client into a different service after a redeploy | every dial carries `ref`/instance → 409 |
-| L7 proxies stripping ALPN and refusing CONNECT | WebSocket transport, proven through a real reverse proxy and live on zopcloud |
+| L7 proxies stripping ALPN and refusing CONNECT | WebSocket transport, proven through a real reverse proxy and live on a managed platform |
 
 **One transcript scare that was not a bug:** "a payload larger than one relay chunk →
 ConnectionResetError". It was sbx's own 405 on a GET-only route, reproduced identically
