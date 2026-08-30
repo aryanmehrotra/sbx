@@ -328,6 +328,15 @@ proxy sbx runs on the bridge gateway: `HTTP_PROXY`/`HTTPS_PROXY` point every cli
 client that ignores the proxy and dials out directly has no route at all, so the list is enforced,
 not advisory. It is not combined with `egress: "deny"`, which would deny the allowed hosts too.
 
+The traffic through that proxy also counts as activity. A box running an agent takes no inbound
+connection - it reads files, compiles, and calls an API - so on the bytes sbx measures it looks
+idle from the moment it starts working, and the only setting that kept it alive was `idle: "never"`,
+which holds its memory for as long as the sandbox exists. An allow-listed box's API calls leave
+through code sbx already owns, so they are counted: it stays awake while it is calling out, and
+sleeps on the ordinary timer once it stops. Stamped on bytes rather than on connections, so a
+streaming response keeps it awake for as long as tokens are arriving, and throttled to one stamp a
+second, which is far finer than an idle window measured in minutes.
+
 ### `idle` keeps a box awake while it works
 
 ```json
@@ -339,6 +348,9 @@ sbx sleeps a service after the idle window with no traffic through its port. An 
 so the default timer would sleep the container and end the work. `"never"` (or `"0"`) keeps it
 awake until you sleep or remove it; a duration like `"30m"` sets a longer window. The box still
 wakes on a connection like everything else - this only changes when it goes back to sleep.
+
+A box with `egress_allow` needs this less. Its calls out are counted as activity, so it stays awake
+while it is working and sleeps when it stops - which is what `"never"` cannot do.
 
 ### `optional` still reserves its ports
 

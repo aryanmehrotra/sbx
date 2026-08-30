@@ -6,3 +6,4 @@ dist/
 
 # Built by `cd console && go build -o console .`
 console/console
+.sbx-linux-tests.json

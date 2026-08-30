@@ -453,3 +453,46 @@ they sleep when nobody is using them.
 
 **It is behind a gate.** `SBX_FEATURES=devcontainer`. The translation is lossy by nature and the
 list of what it drops will move as it learns more; `sbx features` shows what a build gates.
+
+---
+
+## 14 · An agent box that only ever calls out
+
+The box in case 2 has a client: `psql`, a test runner, a pool. This one has none. An agent works
+*inside* it — reads files, edits them, compiles, calls a model API — and nothing ever dials it.
+
+sbx measures idleness on bytes through a service's port, so a box like that looks idle from the
+moment it starts working. The window closes mid-task and the container stops. The only setting
+that avoided it was `idle: "never"`, which is not a fix — it holds the box's memory for as long
+as the sandbox exists, which is the cost sbx was built to avoid.
+
+An allow-list changes that, because it puts sbx back in the path:
+
+```json
+{
+  "version": 1,
+  "services": {
+    "agent": {
+      "image": "python:3.12",
+      "ports": [7777],
+      "egress_allow": ["api.anthropic.com", "pypi.org", "github.com"],
+      "idle": "10m"
+    }
+  }
+}
+```
+
+The agent reaches those three hosts and nothing else — and **every call it makes counts as
+activity**. A box that is working stays awake. A box whose agent finished sleeps ten minutes
+later, on the ordinary timer, and drops to 0 B like everything else.
+
+**Why this matters:** the outbound call is the one thing an agent does that sbx can see. Reading
+a file is invisible, a compile is invisible, but reaching a model API goes through a proxy sbx
+already runs to enforce the allow-list — so counting it costs nothing new. It is stamped on bytes
+rather than on connections, which is the same rule sbx measures inbound traffic by: a streaming
+response that takes four minutes to arrive keeps the box awake for four minutes, where a stamp
+per connection would have slept it at minute one.
+
+**What it does not cover:** a box with no allow-list, or one calling out over a protocol that is
+not HTTP. There sbx still sees nothing, and `idle: "never"` remains the answer.
+→ [SPEC.md](SPEC.md#egress_allow-is-a-domain-allow-list)

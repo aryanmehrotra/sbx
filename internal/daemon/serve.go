@@ -334,6 +334,7 @@ func (d *daemon) discover(ctx context.Context) {
 		u := newUnit(f.Sandbox, f.Service, f.Ref, f.Instance, f.Ref, legs, f.Running)
 		u.keepAwake, u.idle = idlePolicy(f.Idle)
 		u.dependsOn = f.DependsOn
+		u.egressGateway = f.EgressGateway
 		u.peers = d.peersOf
 
 		uctx, ucancel := context.WithCancel(ctx)

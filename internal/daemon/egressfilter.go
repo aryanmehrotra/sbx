@@ -19,6 +19,18 @@ import (
 // It answers CONNECT (the tunnel every HTTPS client opens) and plain HTTP. A host that is not on
 // the list gets 403 and no connection; the proxy never opens a socket to it.
 type EgressFilter struct {
+	// OnActivity is called when a permitted request is carried, or nil.
+	//
+	// This is the idle signal for a box that nothing dials. sbx measures idleness on bytes
+	// through its proxy, and an agent working inside a sandbox sends none of them - it reads
+	// files, compiles, and calls an API. The only one of those sbx can see is the API call,
+	// and for a box with an allow-list that call comes through here.
+	//
+	// Without it the only setting that kept such a box alive was idle: "never", which holds its
+	// memory for the sandbox's whole life. With it, a box that is working stays awake and one
+	// that has stopped sleeps on the ordinary timer.
+	OnActivity func()
+
 	// allow holds lower-cased host suffixes. "openai.com" permits openai.com and any subdomain
 	// of it (api.openai.com), which is what an allow-list of a service's domain has to mean -
 	// an API's endpoints move across subdomains and a per-host list would break on the first one.
@@ -82,6 +94,8 @@ func (f *EgressFilter) tunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	f.note()
+
 	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -106,8 +120,8 @@ func (f *EgressFilter) tunnel(w http.ResponseWriter, r *http.Request) {
 	// Splice both directions; the first to finish closes both via the defers, which unblocks
 	// the other copy. No half-open leak, and nothing on the wake path.
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(f.active(upstream), client); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(f.active(client), upstream); done <- struct{}{} }()
 	<-done
 }
 
@@ -117,6 +131,8 @@ func (f *EgressFilter) forward(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "egress not allowed: "+r.Host, http.StatusForbidden)
 		return
 	}
+
+	f.note()
 
 	r.RequestURI = ""
 
@@ -134,5 +150,39 @@ func (f *EgressFilter) forward(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = io.Copy(f.active(w), resp.Body)
+}
+
+// stamp reports activity as bytes move, not just when a request opens.
+//
+// A CONNECT to a model API can stay open for minutes while tokens stream back, and stamping
+// only at admission would let the idle timer fire in the middle of one. sbx measures its own
+// idleness on bytes rather than connections for exactly that reason; this is the same rule
+// applied to the way out.
+type stamp struct {
+	w  io.Writer
+	on func()
+}
+
+func (s stamp) Write(p []byte) (int, error) {
+	s.on()
+	return s.w.Write(p)
+}
+
+// active wraps w to report activity, or returns it untouched when nothing is listening - which
+// is every filter built by a test or by NewEgressFilter's plain constructor.
+func (f *EgressFilter) active(w io.Writer) io.Writer {
+	if f.OnActivity == nil {
+		return w
+	}
+
+	return stamp{w: w, on: f.OnActivity}
+}
+
+// note stamps once for a request that carried no bytes at all: a 204, an empty body, a CONNECT
+// that was opened and dropped. It still says the box is doing something.
+func (f *EgressFilter) note() {
+	if f.OnActivity != nil {
+		f.OnActivity()
+	}
 }

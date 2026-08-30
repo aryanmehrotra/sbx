@@ -388,3 +388,42 @@ fallback it is. The whole cycle is proven end to end through `sbx checkpoint` / 
 against a podman runtime; on docker the restore is docker's to fix. This is why `sbx doctor` and
 the help describe checkpoint as reliable on a **podman** runtime, not merely "Linux with
 experimental docker".
+
+---
+
+## Traffic through the egress filter counts as activity, stamped on bytes
+
+sbx sleeps a service on the bytes through its port, which is the right measure for a database, a
+cache, or a dev server: something dials them, and if nothing has for five minutes, nothing needs
+them. It is exactly wrong for the box an agent works inside. Nothing dials that. The agent reads
+files, edits them, compiles, and calls a model API — and every one of those is invisible to a
+proxy that only sees inbound traffic. Such a box looked idle from the moment it started working,
+and the only setting that kept it alive was `idle: "never"`, which holds its memory for as long
+as the sandbox exists. That is the cost sbx exists to avoid, reintroduced by the feature meant to
+make agent boxes usable.
+
+One of those four things is not invisible. A box with `egress_allow` reaches the outside world
+through a filtering proxy sbx already runs, in sbx's own process, in the data path, on every
+request. So the call out is counted: **the filter stamps the units behind its gateway as active.**
+No new mechanism, no protocol to understand, no agreement with the workload — a box that is
+working stays awake, and one whose agent has stopped sleeps on the ordinary timer.
+
+Two details decided the shape:
+
+**Stamped on bytes, not on connections.** A CONNECT to a model API stays open for as long as
+tokens are streaming back, which is minutes. A stamp when the tunnel opened would let the idle
+window close in the middle of one. So the stamp sits in the copy loop, which is the same rule the
+inbound side is measured by — "bytes, not connections" — applied to the way out. Cost, measured:
+**+2.1 ns per 32 KiB chunk and zero allocations** against the same copy with no hook.
+
+**Throttled to one stamp a second per gateway.** Stamping walks the unit map under the daemon
+lock, the same lock the wake path takes, and a large download would otherwise take it once per
+chunk. Idle windows are minutes; a second is finer granularity than the decision can use. The CAS
+in `due` is what makes two concurrent streams cost one walk rather than two.
+
+**A refused request stamps nothing.** Otherwise a box hammering a host it may not reach could
+hold its own memory open forever without ever getting anywhere — the failure mode is a loop that
+never sleeps, so admission has to be on the permitted side of the check.
+
+What it does not cover: a box with no allow-list, and outbound traffic that is not HTTP. There
+sbx still sees nothing and `idle: "never"` is still the answer.

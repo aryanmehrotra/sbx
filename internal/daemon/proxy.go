@@ -53,6 +53,14 @@ type unit struct {
 	awake  bool
 	waking sync.Mutex // serialises wake so a burst of connections starts the workload once
 
+	// egressGateway is the bridge gateway this unit's egress filter listens on, or "".
+	//
+	// Carried so the filter can stamp activity back onto the unit. It is the missing half of
+	// the idle signal for a box nothing dials: an agent working inside one sends nothing
+	// through the proxy, so the only evidence it is busy is what it sends OUT - and for an
+	// allow-listed box that leaves through code sbx already owns.
+	egressGateway string
+
 	// keepAwake and idle are the per-service override of the global idle window: keepAwake
 	// means never auto-sleep (an agent working inside a box sends nothing through the proxy),
 	// and idle > 0 is a longer window than the daemon's default. See spec.Service.Idle.

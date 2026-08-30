@@ -73,7 +73,7 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 | **Hand each agent its own copy of a seeded database** | `sbx snapshot` once, `sbx fork` as many as you want — so a write in one is invisible to the rest |
 | **Park an agent mid-thought and bring it back** | `sbx checkpoint` / `sbx resume` — memory and processes, not just disk |
 | **Run one for a single test, gone after** | `sbx with test-db --template postgres -- go test ./...` — so it's always torn down, even on failure |
-| **Let an agent reach only the APIs you allow** | `egress_allow: ["api.openai.com"]` — the box reaches the listed hosts and nothing else, enforced by a filtering proxy; there's no route around it |
+| **Let an agent reach only the APIs you allow** | `egress_allow: ["api.openai.com"]` — the box reaches the listed hosts and nothing else, enforced by a filtering proxy; there's no route around it, and its calls out count as activity so it stays awake while it works |
 | **Keep a box awake while it works** | `idle: "never"` — an agent computing inside sends no traffic through the port, so this stops the idle timer from sleeping it mid-task |
 
 **Scale it up**

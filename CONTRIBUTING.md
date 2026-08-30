@@ -28,6 +28,7 @@ CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a
 | crash recovery | docker | `./scripts/recovery.sh` |
 | endurance / leaks (on main push & release) | docker + a running `sbx serve` | `./scripts/soak.sh` |
 | every documented use case | docker | `./scripts/usecases-e2e.sh` |
+| the suite on Linux, on a Mac | docker + sbx | `./scripts/linux-tests.sh` |
 | shell, workflows, docs, pins | - | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |
 
 `-short` skips the tests that start real containers. They cost about a minute, which is worth
@@ -35,6 +36,14 @@ it in CI and not worth it on every local run.
 
 `scripts/usecases-e2e.sh` takes a filter: `./scripts/usecases-e2e.sh build` runs only cases
 whose name contains "build".
+
+`scripts/linux-tests.sh` runs vet and the race suite inside this worktree's own sbx sandbox, on
+linux/arm64. sbx is written on a Mac and shipped for Linux, and the two differ where it matters:
+the daemon binds a bridge gateway that only exists natively on Linux, CRIU is Linux-only, and the
+container runtime is a VM here and the kernel there. It is also the shortest honest demo of the
+tool - a sandbox holding a toolchain, asleep at 0 B until the next `sbx exec` wakes it. It reads
+the sandbox name from `dw --sbx`; set `SBX_SANDBOX` when that is a shell function rather than a
+binary on PATH.
 
 ## What a change is expected to come with
 
