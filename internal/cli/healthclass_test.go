@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
@@ -78,5 +80,62 @@ func TestAHealthCommandThatSucceedsIsNotFatal(t *testing.T) {
 
 	if _, fatal := healthWillNeverPass(context.Background(), p, "ref", "true"); fatal {
 		t.Error("a health command that exited 0 was called impossible")
+	}
+}
+
+// logStub is a Provider that fails every exec and has something to say about why.
+type logStub struct {
+	provider.Provider
+
+	said string
+}
+
+func (l *logStub) Exec(context.Context, string, []string) (string, error) {
+	return "no output", errors.New("container is not running")
+}
+
+func (l *logStub) Probe(context.Context, string) (bool, bool) { return false, true }
+
+func (l *logStub) Logs(_ context.Context, _ string, _ int, _ bool, w io.Writer) error {
+	_, err := io.WriteString(w, l.said)
+
+	return err
+}
+
+// A workload that died on startup has to say so in the error that reports it.
+//
+// The health check is fine and there is nothing to check - reporting it as a health-check
+// problem names the wrong subject. Measured with k3s in a sandbox: it exited in under a second
+// with "failed to evacuate root cgroup ... read-only file system", and sbx spent the full two
+// minutes to report that the health command returned "no output". The reason was in the log the
+// whole time and it took a `docker logs` to find.
+func TestAFailedStartupReportsWhatTheWorkloadSaid(t *testing.T) {
+	const fatal = `level=fatal msg="failed to evacuate root cgroup: read-only file system"`
+
+	p := &logStub{said: fatal}
+
+	err := waitHealthy(context.Background(), p, "sbx-x-k3s", "kubectl get --raw /readyz",
+		50*time.Millisecond)
+	if err == nil {
+		t.Fatal("a workload that never came up was reported as ready")
+	}
+
+	if !strings.Contains(err.Error(), "read-only file system") {
+		t.Errorf("the error does not carry what the workload said, so the reason is only in a "+
+			"log nobody was told to read:\n%v", err)
+	}
+}
+
+// Nothing to say means nothing added - an error should not grow an empty section.
+func TestASilentWorkloadAddsNothingToTheError(t *testing.T) {
+	p := &logStub{said: "   \n  \n"}
+
+	err := waitHealthy(context.Background(), p, "sbx-x-y", "true", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+
+	if strings.Contains(err.Error(), "what it said") {
+		t.Errorf("added an empty 'what it said' section: %v", err)
 	}
 }

@@ -365,15 +365,54 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 	}
 
 	// Two minutes of nothing, so say what the check actually returned rather than only that
-	// it kept returning it.
+	// it kept returning it - and what the WORKLOAD said, which is usually the actual answer.
+	//
+	// A container that died on startup fails the health check for the whole timeout and then
+	// gets reported as a health-check problem, which is the wrong subject: the check is fine
+	// and there is nothing to check. Measured with k3s in a sandbox - it exited in under a
+	// second with "failed to evacuate root cgroup: mkdir /sys/fs/cgroup/init: read-only file
+	// system", and sbx spent two minutes to say the health command returned "no output". The
+	// reason was in the log the whole time and it took a `docker logs` to find.
+	last := lastLines(ctx, p, ref, 5)
+
 	if command != "" {
 		if out, err := p.Exec(ctx, ref, []string{"sh", "-c", command}); err != nil {
 			return fmt.Errorf("%s never became ready within %s - the health command %q still "+
-				"fails: %s", ref, timeout, command, firstLine(out))
+				"fails: %s%s", ref, timeout, command, firstLine(out), last)
 		}
 	}
 
-	return fmt.Errorf("%s never became ready within %s", ref, timeout)
+	return fmt.Errorf("%s never became ready within %s%s", ref, timeout, last)
+}
+
+// lastLines is what the workload printed, formatted for the end of an error, or "" if it said
+// nothing or could not be asked.
+//
+// Best effort on purpose: this runs on a path that is already failing, and a provider that
+// cannot produce logs should not turn one error into a different one.
+func lastLines(ctx context.Context, p provider.Provider, ref string, n int) string {
+	var b strings.Builder
+
+	if err := p.Logs(ctx, ref, n, false, &b); err != nil {
+		return ""
+	}
+
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	sb.WriteString("\n     what it said before giving up:")
+
+	for line := range strings.SplitSeq(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			sb.WriteString("\n       " + line)
+		}
+	}
+
+	return sb.String()
 }
 
 // healthWillNeverPass reports whether the health command failed in a way that waiting cannot
