@@ -346,20 +346,9 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		// not to the allowed hosts either. Fails closed, which is the safe direction and the
 		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
 		// refused up front for the same reason, and this is the same shape.
-		probe, lerr := net.Listen("tcp", net.JoinHostPort(gw, "0"))
-		if lerr != nil {
-			return fmt.Errorf(
-				"declares egress_allow, and the filtering proxy that enforces it cannot be "+
-					"started: the sandbox's gateway %s is not an address this machine can "+
-					"bind (%v).\n"+
-					"That is what a VM-backed docker looks like - colima and Docker Desktop "+
-					"keep the bridge inside the VM, while `sbx serve` runs out here. Use "+
-					"`egress: \"deny\"` for no egress at all, which needs no proxy, or run "+
-					"the daemon on a host whose docker is native.",
-				gw, lerr)
+		if err := bindable(gw); err != nil {
+			return err
 		}
-
-		_ = probe.Close()
 
 		proxy := "http://" + net.JoinHostPort(gw, strconv.Itoa(EgressProxyPort))
 		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
@@ -1214,4 +1203,54 @@ func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]U
 	wg.Wait()
 
 	return out, nil
+}
+
+// EgressPreflight reports whether the filtering proxy an allow-list needs could be bound here.
+//
+// It creates the sandbox's egress network to ask, because the gateway address does not exist
+// until the network does - and that network is created for this sandbox anyway a moment later.
+func (d *dockerProvider) EgressPreflight(_ context.Context, sandbox string) error {
+	if err := d.ensureEgressNetwork(sandbox); err != nil {
+		return err
+	}
+
+	gw, err := d.egressGateway(sandbox)
+	if err != nil {
+		return err
+	}
+
+	return bindable(gw)
+}
+
+// bindable reports whether this machine can open a listener on the sandbox's bridge gateway,
+// which is where the egress filter has to sit.
+//
+// The daemon opens that listener, and the daemon runs wherever you are - which on a VM-backed
+// docker is not where the bridge is. Colima and Docker Desktop keep it inside the Linux VM, as
+// do rootless docker (its own netns) and a remote DOCKER_HOST (another machine), so 172.x.0.1
+// exists over there and not here.
+//
+// Left to the daemon this was a warning every refresh tick against a sandbox that had been
+// reported created: the service came up healthy and had no egress at all - not even to the
+// allowed hosts. Measured from inside such a box, api.anthropic.com answered 000. It fails
+// closed, which is the safe direction and the wrong report.
+//
+// Port 0 rather than the proxy's own port, deliberately: this asks whether the ADDRESS is one
+// this machine holds, and asking about 20999 would refuse whenever the daemon legitimately
+// holds it already for a sibling service on the same gateway.
+func bindable(gw string) error {
+	probe, err := net.Listen("tcp", net.JoinHostPort(gw, "0"))
+	if err != nil {
+		return fmt.Errorf(
+			"declares egress_allow, and the filtering proxy that enforces it cannot be "+
+				"started: the sandbox's gateway %s is not an address this machine can "+
+				"bind (%v).\n"+
+				"That is what a VM-backed docker looks like - colima and Docker Desktop "+
+				"keep the bridge inside the VM, while `sbx serve` runs out here. Use "+
+				"`egress: \"deny\"` for no egress at all, which needs no proxy, or run "+
+				"the daemon on a host whose docker is native.",
+			gw, err)
+	}
+
+	return probe.Close()
 }

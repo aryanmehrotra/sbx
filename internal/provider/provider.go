@@ -623,3 +623,18 @@ func PullerFor(p Provider) (Puller, error) {
 
 	return pl, nil
 }
+
+// EgressPreflighter is a provider that can answer, before anything has been created, whether
+// an egress allow-list could actually be enforced on this machine.
+//
+// It exists because the answer is a property of the HOST, not of the spec, so `sbx validate`
+// cannot reach it and the per-service check finds out too late: services are created one at a
+// time and the first failure returns, so a spec whose third service carries the allow-list
+// left the first two running and the sandbox half-built, with a retry that fails identically.
+// Asked once up front, the refusal costs nothing and leaves nothing behind.
+//
+// Optional: a provider that does not implement it is one where this cannot be decided early,
+// and the per-service check still applies.
+type EgressPreflighter interface {
+	EgressPreflight(ctx context.Context, sandbox string) error
+}

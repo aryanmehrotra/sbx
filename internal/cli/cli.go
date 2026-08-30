@@ -61,6 +61,19 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		return err
 	}
 
+	// Asked before anything is built, because the answer is about this machine and not about
+	// the spec - so `sbx validate` cannot reach it, and the per-service check finds out too
+	// late. Services are created one at a time and the first failure returns without rolling
+	// back, so a spec whose third service carries the allow-list used to leave the first two
+	// running and the sandbox half-built, with a retry that failed in exactly the same place.
+	if wantsAllowList(sp, withOptional) {
+		if pf, ok := p.(provider.EgressPreflighter); ok {
+			if err := pf.EgressPreflight(ctx, sandbox); err != nil {
+				return err
+			}
+		}
+	}
+
 	skipped := map[string]bool{}
 
 	for _, name := range order {
@@ -1157,4 +1170,23 @@ func Remove(ctx context.Context, p provider.Provider, sandbox string) error {
 	fmt.Printf("sandbox %q destroyed\n", sandbox)
 
 	return nil
+}
+
+// wantsAllowList reports whether any service this create will actually build declares an
+// egress allow-list.
+//
+// Optional services are excluded unless they are being created, so a spec whose optional
+// service carries the allow-list is not refused on a run that never builds it.
+func wantsAllowList(sp *spec.Spec, withOptional bool) bool {
+	for _, svc := range sp.Services {
+		if svc.Optional && !withOptional {
+			continue
+		}
+
+		if len(svc.EgressAllow) > 0 {
+			return true
+		}
+	}
+
+	return false
 }

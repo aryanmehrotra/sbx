@@ -75,12 +75,10 @@ func Run(ctx context.Context, opt Options, out *os.File) error {
 	d := &dash{
 		opt:    opt,
 		remote: opt.Remote,
+		// noDaemon is deliberately not set here. refresh() runs immediately below and owns it,
+		// and deciding it in two places is how one of them ends up being the stale one.
 		model: model{
 			version: opt.Version, update: update.Available(opt.Version), remote: opt.Remote,
-
-			// Only for a local fleet. A deployment reached over `--connect` is fronted by the
-			// sbx running over there, and this machine's daemon says nothing about it.
-			noDaemon: !opt.Remote && !daemonRunning(),
 		},
 		prev: map[string]provider.Usage{},
 
@@ -258,6 +256,16 @@ func (d *dash) refresh(ctx context.Context) {
 	}
 
 	d.model.rows = rows
+
+	// Re-asked every tick, not once at startup.
+	//
+	// This is the one warning on the screen whose subject can change while the screen is open,
+	// and the dashboard is the long-lived surface - `sbx list` is a fresh process every time and
+	// cannot go stale. Computed once, a daemon that died mid-session left the title silently
+	// claiming everything was fine while every address on it had started refusing, which is the
+	// exact failure the line was added to catch. The inverse was as bad: start a daemon and the
+	// warning never cleared.
+	d.model.noDaemon = warnNoDaemon(d.remote, rows, daemonRunning())
 
 	if d.model.selected >= len(rows) {
 		d.model.selected = max(0, len(rows)-1)
@@ -1181,7 +1189,7 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 	// The same warning the dashboard's title carries, for the same reason: the ADDRESS column
 	// above is the daemon's ports, so with none running every one of them refuses while the
 	// STATE column still says awake.
-	if !opt.Remote && !daemonRunning() {
+	if warnNoDaemon(opt.Remote, rows, daemonRunning()) {
 		fmt.Fprintln(out, "\nno `sbx serve` is running, so nothing accepts on the addresses above -")
 		fmt.Fprintln(out, "a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &")
 	}
@@ -1200,4 +1208,30 @@ func daemonRunning() bool {
 	_, ok := daemon.Running()
 
 	return ok
+}
+
+// localFleet reports whether these rows are fronted by a daemon on THIS machine.
+//
+// A kubernetes fleet is not: its wake path is the in-cluster activator, and `sbx serve` here
+// says nothing about it - so warning that no local daemon is running would be false, in the
+// same way it is false for a deployment reached over `sbx connect`. cli.List() guards on the
+// same fact through isLocal(); both ui paths only checked --connect and missed this one.
+//
+// A provider hands out one kind of address for every unit it lists, so the first row answers
+// for all of them. An empty fleet has nothing to be wrong about.
+func localFleet(rows []row) bool {
+	if len(rows) == 0 {
+		return false
+	}
+
+	return strings.HasPrefix(rows[0].Address, "127.0.0.1:")
+}
+
+// warnNoDaemon is the whole decision behind the "no sbx serve" line, in one place so both the
+// dashboard and its non-terminal form answer it identically and a test can ask it directly.
+//
+// Three conditions, and each was a way of being wrong: a remote fleet is fronted by the sbx
+// over there, a cluster fleet by its activator, and a daemon that IS running needs no warning.
+func warnNoDaemon(remote bool, rows []row, daemonUp bool) bool {
+	return !remote && localFleet(rows) && !daemonUp
 }
