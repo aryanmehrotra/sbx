@@ -155,7 +155,11 @@ func BenchmarkStreamBuf(b *testing.B) {
 		relayBufPool = sync.Pool{New: func() any { x := make([]byte, relayBuf); return &x }}
 	})
 
-	for _, size := range []int{32 << 10, 64 << 10, 128 << 10, 256 << 10} {
+	// Past the knee, deliberately. The sweep used to stop at 256 KiB, which is where the curve
+	// was still climbing on an M4 - so it could not see its own optimum, and BENCHMARKS.md drew
+	// a conclusion the data did not contain. A sweep whose last point is its best point has not
+	// finished measuring.
+	for _, size := range []int{32 << 10, 64 << 10, 128 << 10, 256 << 10, 512 << 10, 1024 << 10} {
 		size := size
 		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
 			relayBuf = size

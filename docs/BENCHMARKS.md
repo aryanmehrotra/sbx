@@ -136,29 +136,55 @@ pressure. The buffer now comes from a `sync.Pool`:
 Zero allocation per connection, against a full buffer freshly allocated and zeroed before -
 pure CPU savings, so it holds up on a busy machine.
 
-**Sized at 64 KiB, up from 32 - and the size is measured, not guessed.** A bigger buffer
-drains a loopback socket in fewer read/write syscalls, which is most of where the 43% headroom
-goes - but only up to a point, past which a buffer that no longer fits the cache starts to
-thrash it. The `StreamBuf` sweep, run in a reserved four-core slice (`GOMAXPROCS=4`, `benchstat`
-over 10 samples, holding off the machine's other load), found the knee exactly:
+**Sized at 64 KiB - and the reason is memory, not throughput.** A bigger buffer drains a
+loopback socket in fewer read/write syscalls, and it keeps paying well past 64 KiB. The sweep
+used to stop at 256 KiB, which is inside the climb, so it could not see its own knee; extended
+to 1 MiB on an Apple M4 (`-count 6`, medians, MB/s):
 
 ```
-  StreamBuf/32KiB    4.66 Gi/s ± 17%
-  StreamBuf/64KiB    6.32 Gi/s ± 15%   ← +36% over 32, and the tightest
-  StreamBuf/128KiB   5.74 Gi/s ± 59%   ← slower, and wildly variable
-  StreamBuf/256KiB   4.98 Gi/s ± 17%   ← slower still
+  StreamBuf/32KiB     4440
+  StreamBuf/64KiB     4920   ← what ships
+  StreamBuf/128KiB    5150   ← +5%
+  StreamBuf/256KiB    6800   ← +38%
+  StreamBuf/512KiB    7010   ← +42%, the knee
+  StreamBuf/1024KiB   6870
 ```
 
-64 KiB is both the fastest and the most consistent; 128 and 256 are slower *and* noisier. This
-tuned the proxied path up by about a third over the old 32 KiB. The **57% of direct** headline
-above was measured on a quiet machine before this change, and is the conservative figure to
-quote until the direct baseline is re-measured under equally quiet conditions - under load
-throughput swings ±35%, too much to divide cleanly.
+An earlier version of this section reported 64 KiB as the fastest and 128/256 KiB as "slower
+and wildly variable", measured in a reserved four-core slice. That does not reproduce here
+under either condition - at `GOMAXPROCS=4` on this machine 64 KiB was the *slowest* row of the
+sweep. Treat the curve as machine-specific and re-measure before trusting it.
+
+**64 KiB ships anyway, and this is the trade.** The buffer comes from a pool holding two per
+concurrently-live connection, so its cost scales with concurrency rather than with churn.
+Measured against the daemon's own RSS, 60 concurrent streams:
+
+```
+  64 KiB    15 MiB idle → 23 MiB peak
+  256 KiB   15 MiB idle → 33 MiB peak     +10 MiB
+```
+
+`scripts/soak.sh` shows no difference between the two (16→19 MiB either way) because it drives
+connections mostly one after another - which is the measurement to distrust here, not the one
+to quote.
+
+So the larger buffer buys 38% more throughput for more than double the daemon's resident size
+under load. It is not worth it *for this tool*: at 4.9 GB/s the proxy is already an order of
+magnitude past what a Postgres `COPY` produces, so the database is the binding constraint and
+the extra bandwidth is spent on nothing, while the memory is spent on a daemon whose whole
+claim is that an idle sandbox costs nothing. A tool whose workload actually streams at memory
+speed should raise it; `relayBuf` is one constant.
 
 **One avenue this deliberately leaves on the table.** On Linux, `io.Copy` between two
 `*net.TCPConn` can reach `splice(2)` and skip the userspace copy entirely - but the per-chunk
 `touch()` that records activity defeats the type assertion `splice` depends on, and these
-numbers are macOS, where `splice` doesn't exist anyway. Worth a Linux measurement.
+numbers are macOS, where `splice` does not exist anyway. Worth a Linux measurement.
+
+The blame on `touch()` is right about the mechanism and wrong about the cost, which is worth
+knowing before anyone spends a week on it: profiled, `touch()` is 32.33 ns - `time.Now()` at
+28.45 plus an atomic store at 1.80 - which over a 16 MiB stream in 64 KiB chunks is 8.28 us of
+a 2714 us iteration, 0.31%, and it appears in zero CPU samples. It is not in the way because it
+is expensive. It is in the way because it is structural.
 
 ---
 
