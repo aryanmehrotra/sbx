@@ -105,10 +105,10 @@ own checkpoint/restore is broken; `sbx snapshot`/`fork` stay filesystem-only for
 
 ## The closest prior art
 
-Not the hosted platforms — three self-hosted Go projects that solve the same problem, and the ones
+Not the hosted platforms — the self-hosted projects that solve the same problem, and the ones
 to read before this one. Two predate it.
 
-**zeropod** · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 939★ · **measured.** A
+**zeropod** · [ctrox/zeropod](https://github.com/ctrox/zeropod) · 941★ · **measured.** A
 containerd shim: eBPF watches TCP activity, CRIU checkpoints the container to disk after idle, and
 an activator **restores on the first connection in tens to a few hundred ms** — with memory, open
 files and processes intact. Same mechanism as ours, one layer down: **272 ms median, n=4, 4/4
@@ -117,7 +117,7 @@ your container runtime — a containerd shim, CRIU and eBPF on every node, plus 
 README calls arm64 in a Linux VM on macOS "somewhat flaky", i.e. Docker Desktop on Apple Silicon.
 sbx is a userspace binary you run as yourself, with no runtime to replace.
 
-**Sablier** · [sablierapp/sablier](https://github.com/sablierapp/sablier) · 2,888★. The most
+**Sablier** · [sablierapp/sablier](https://github.com/sablierapp/sablier) · 2.9k★. The most
 popular and the most different: an API server that reverse proxies (Traefik, Caddy, Nginx, Envoy,
 APISIX, Istio) call through middleware, over five providers (docker, swarm, podman, kubernetes,
 Proxmox LXC), with a blocking strategy or a themed waiting page. **It is HTTP-only** — the wake is
@@ -126,7 +126,14 @@ Postgres wire protocol, which is the problem it declines to solve. Steady-state 
 ~1.5–2 ms/request vs our ~15 µs, because a proxy that parses is not a proxy that splices. Worth
 stealing: the waiting page — `sbx url` currently offers only a spinner.
 
-**Lazytainer** · [vmorganp/Lazytainer](https://github.com/vmorganp/Lazytainer) · 754★. Counts
+Re-checked 2026-08-30: still HTTP-only in v1.17.0. Two things have moved since — a "scale mode"
+that throttles CPU and memory instead of stopping, and Proxmox LXC as a provider. And there is
+now an unofficial [vbrandl/sablier-proxy](https://github.com/vbrandl/sablier-proxy), a generic
+TCP proxy that calls Sablier's API to start a container on any connection — a third party at 7
+stars, not part of sablierapp/sablier, so the HTTP-only verdict stands for Sablier itself. It is
+named because the gap is real enough that somebody went and filled it.
+
+**Lazytainer** · [vmorganp/Lazytainer](https://github.com/vmorganp/Lazytainer) · 758★. Counts
 packets on an interface and stops containers below a threshold (default 30). Protocol-agnostic
 like ours and closest in spirit — but containers must be labelled into a group **and have their
 traffic routed through the Lazytainer container**, so it owns your networking; a packet count
@@ -139,6 +146,16 @@ per-service readiness, no exports.
 | zeropod | ● | ○ shim + CRIU + eBPF | ○ | ○ | ● |
 | Lazytainer | ● | ◐ owns networking | ● | ○ | ○ |
 | Sablier | ○ HTTP only | ● | ● | ◐ labels | ○ |
+| KubeElasti | ○ HTTP/gRPC (unverified) | ● | ○ | ○ | ○ |
+
+**KubeElasti** · [truefoundry/KubeElasti](https://github.com/truefoundry/KubeElasti) · 268★ · the
+newest entrant, and named here so it is ruled out explicitly rather than left findable. Two modes:
+Proxy Mode intercepts and queues requests while a Deployment sits at zero replicas, Serve Mode
+gets out of the way once it is up. Kubernetes only, no laptop story, no spec file, and a cold pod
+schedule rather than a memory restore. Its docs are written in request-and-queue language
+throughout, which reads as HTTP/gRPC rather than raw TCP - **not verified**, because the page that
+would say so is missing and the README does not state it. Either reading leaves the intersection
+below unoccupied, so the claim does not rest on which one is right.
 
 **What's unoccupied is the intersection: arbitrary TCP, no runtime to replace, a committed spec
 file, and the same binary on a laptop and in a cluster.** zeropod goes deeper on memory restore
