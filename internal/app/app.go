@@ -695,6 +695,15 @@ func dispatch(cmd string, args []string) error {
 			return fmt.Errorf("--host-header is rewrite or pass, not %q", *hostHeader)
 		}
 
+		// Whether it was typed, not just what it holds. A backend that cannot rewrite refuses an
+		// explicit --host-header rewrite and carries on quietly under the default, so `sbx url x
+		// web --via ssh` still works with nothing installed - which is the whole reason the ssh
+		// backend exists.
+		asked := ""
+		if wasSet(fs, "host-header") {
+			asked = *hostHeader
+		}
+
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
 		if err != nil {
 			return err
@@ -710,7 +719,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return tunnel.Open(ctx, positional[0]+"/"+positional[1], port, *via, *hostHeader == "rewrite")
+		return tunnel.Open(ctx, positional[0]+"/"+positional[1], port, *via, asked)
 
 	case "templates":
 		for _, t := range TemplateNames() {

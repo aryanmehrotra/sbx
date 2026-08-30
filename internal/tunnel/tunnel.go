@@ -201,20 +201,19 @@ func pickTunnels(preferred string) ([]tunnelBackend, error) {
 //
 // A port, not a sandbox. This package has no idea what a sandbox is, which is why it can be
 // read on its own and why nothing here has to change when the thing behind the port does.
-func Open(ctx context.Context, label string, port int, preferred string, rewriteHost bool) error {
+// hostHeader is "" where the user said nothing, or "rewrite" / "pass" where they did. The
+// distinction is the whole point: a default is a preference and only an explicit flag is a
+// requirement, so only the second is worth refusing over.
+func Open(ctx context.Context, label string, port int, preferred, hostHeader string) error {
 	backends, err := pickTunnels(preferred)
 	if err != nil {
 		return err
 	}
 
-	// Asking a named backend for something it cannot do is an error, not a downgrade. The
-	// alternative - accept the flag and send the public hostname anyway - is the failure shape
-	// this project keeps finding: reported success, reached nothing.
-	if rewriteHost && preferred != "" && !backends[0].hostRewrite {
-		return fmt.Errorf(
-			"%s cannot rewrite the Host header (only cloudflared can); "+
-				"pass --host-header pass to send the tunnel's own hostname to the service",
-			preferred)
+	rewriteHost := hostHeader != "pass"
+
+	if err := refuseHostRewrite(backends, preferred, hostHeader); err != nil {
+		return err
 	}
 
 	for i, b := range backends {
@@ -321,4 +320,38 @@ func runTunnel(ctx context.Context, b tunnelBackend, label string, port int, rew
 	}
 
 	return nil
+}
+
+// refuseHostRewrite reports when a named backend was asked, explicitly, for a Host rewrite it
+// cannot do.
+//
+// Split out of Open because Open runs a tunnel binary, which makes the decision it was making
+// untestable without a network - and this is the branch that broke `--via ssh`, so it is the
+// branch most worth a test.
+//
+// Three conditions, all necessary:
+//
+//   - hostHeader == "rewrite" means the flag was TYPED. A default nobody asked for is a
+//     preference, and refusing to run over one takes away a working command for a header the
+//     user never mentioned. That was the bug: --host-header defaults to rewrite and ssh can
+//     never rewrite, so plain `sbx url x web --via ssh` - the form that works with nothing
+//     installed, which is the entire reason the ssh backend exists - refused to start.
+//   - preferred != "" means they named the backend. Where sbx chose it, falling to one that
+//     cannot rewrite is a downgrade to announce, not an error; runTunnel prints that line.
+//   - the backend cannot do it. Where it can, there is nothing to refuse.
+func refuseHostRewrite(backends []tunnelBackend, preferred, hostHeader string) error {
+	if hostHeader != "rewrite" || preferred == "" || len(backends) == 0 {
+		return nil
+	}
+
+	// pickTunnels returns only backends matching a named preference, so the first is the one
+	// that was asked for.
+	if backends[0].hostRewrite {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%s cannot rewrite the Host header (only cloudflared can); "+
+			"pass --host-header pass to send the tunnel's own hostname to the service",
+		preferred)
 }

@@ -181,3 +181,84 @@ func TestHostHeaderRewriteIsAskedForOnlyWhereItWorks(t *testing.T) {
 		}
 	}
 }
+
+// The default must not take a working command away.
+//
+// --host-header defaults to rewrite and ssh can never rewrite, so a check that fired on the
+// value rather than on the ASK refused to run `sbx url x web --via ssh` at all - the form that
+// works with nothing installed, which is the only reason the ssh backend is in the list. ssh
+// is explicit-only, so --via ssh is the sole way to reach it and it was broken outright.
+func TestADefaultedHostHeaderDoesNotRefuseABackendThatCannotRewrite(t *testing.T) {
+	for _, name := range []string{"ssh", "ngrok"} {
+		var chosen []tunnelBackend
+
+		for _, b := range tunnelBackends() {
+			if b.name == name {
+				chosen = append(chosen, b)
+			}
+		}
+
+		// "" is what the CLI passes when the flag was never typed.
+		if err := refuseHostRewrite(chosen, name, ""); err != nil {
+			t.Errorf("--via %s refused under a defaulted --host-header, so the command does not "+
+				"run at all: %v", name, err)
+		}
+
+		// pass is an explicit "do not rewrite", so it can never be a conflict.
+		if err := refuseHostRewrite(chosen, name, "pass"); err != nil {
+			t.Errorf("--via %s --host-header pass refused, and pass is the escape hatch: %v", name, err)
+		}
+	}
+}
+
+// Typing it is different from defaulting to it: an explicit ask for something a named backend
+// cannot do is still an error, because silently sending the public hostname is the shape this
+// project keeps finding - reported success, reached nothing.
+func TestAnExplicitHostHeaderRewriteIsRefusedWhereItCannotWork(t *testing.T) {
+	for _, name := range []string{"ssh", "ngrok"} {
+		var chosen []tunnelBackend
+
+		for _, b := range tunnelBackends() {
+			if b.name == name {
+				chosen = append(chosen, b)
+			}
+		}
+
+		err := refuseHostRewrite(chosen, name, "rewrite")
+		if err == nil {
+			t.Errorf("--via %s --host-header rewrite was accepted, and the Host would silently "+
+				"not be rewritten", name)
+
+			continue
+		}
+
+		if !strings.Contains(err.Error(), "cloudflared") {
+			t.Errorf("the refusal does not name the backend that can do it: %v", err)
+		}
+	}
+}
+
+// cloudflared can rewrite, so nothing is ever refused for it.
+func TestCloudflaredIsNeverRefusedAHostRewrite(t *testing.T) {
+	var chosen []tunnelBackend
+
+	for _, b := range tunnelBackends() {
+		if b.name == "cloudflared" {
+			chosen = append(chosen, b)
+		}
+	}
+
+	for _, h := range []string{"", "rewrite", "pass"} {
+		if err := refuseHostRewrite(chosen, "cloudflared", h); err != nil {
+			t.Errorf("cloudflared refused with --host-header %q: %v", h, err)
+		}
+	}
+}
+
+// Where sbx picked the backend rather than being told, falling to one that cannot rewrite is a
+// downgrade to announce, not an error - runTunnel prints that line.
+func TestAnUnnamedBackendIsNeverRefused(t *testing.T) {
+	if err := refuseHostRewrite(tunnelBackends(), "", "rewrite"); err != nil {
+		t.Errorf("refused a backend the user never named: %v", err)
+	}
+}
