@@ -122,14 +122,56 @@ func (u *unit) wakeDeps(ctx context.Context, p provider.Provider, readyTimeout t
 		return nil
 	}
 
-	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), map[string]bool{u.name: true})
+	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), newVisited(u.name))
+}
+
+// visited is the set of units a single wake has already claimed, shared across the whole
+// recursion so a diamond is woken once and a cycle terminates.
+//
+// It carries its own lock because the recursion BRANCHES. Siblings are woken in parallel and
+// each descends into wakeAll with the same set, so two nested calls read and write it at the
+// same moment. It was a bare map, and the only mutex in wakeAll is a fresh local one per
+// invocation - which guards `first`, and cannot guard something shared between invocations.
+// Go detects a concurrent map write and calls fatal(), which no recover can catch: the daemon
+// dies, taking every sandbox's ports with it.
+//
+// It needs a graph that branches into further dependencies to happen at all - gateway on api
+// and worker, each with a datastore - so a linear chain never showed it, and a fourteen-service
+// stack is exactly the shape that does.
+type visited struct {
+	mu sync.Mutex
+	m  map[string]bool
+}
+
+func newVisited(names ...string) *visited {
+	v := &visited{m: make(map[string]bool, len(names)+8)}
+	for _, n := range names {
+		v.m[n] = true
+	}
+
+	return v
+}
+
+// claim reports whether this call is the one that took the name, so exactly one goroutine
+// wakes a given unit however many dependents ask for it at once.
+func (v *visited) claim(name string) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.m[name] {
+		return false
+	}
+
+	v.m[name] = true
+
+	return true
 }
 
 // wakeAll wakes a set of units in parallel and waits for all of them.
 //
 // A failure is returned but does not cancel the siblings: they are already starting, and
 // stopping halfway would leave the sandbox in a state nobody asked for.
-func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen map[string]bool) error {
+func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen *visited) error {
 	var (
 		mu    sync.Mutex
 		wg    sync.WaitGroup
@@ -138,11 +180,10 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 	)
 
 	for _, d := range us {
-		if seen[d.name] {
+		if !seen.claim(d.name) {
 			continue
 		}
 
-		seen[d.name] = true
 		next = append(next, d)
 	}
 
@@ -429,6 +470,7 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 		if !declared {
 			time.Sleep(2 * time.Second)
 			u.setAwake(true)
+			u.touch()
 			logs.Default.Event(logs.LevelWarn, u.sandbox, u.service, "woke",
 				time.Since(start).Milliseconds(),
 				"woke in %dms, unverified - no health check declared",
@@ -439,6 +481,15 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 
 		if serving {
 			u.setAwake(true)
+
+			// Coming up counts as activity, or a unit woken ONLY as somebody else's dependency
+			// starts life already past the idle window: nothing dials a dependency through the
+			// proxy, so no byte ever reaches its leg. The reaper could then sleep it inside the
+			// window where its dependent is still starting - before that dependent is awake and
+			// protecting it - and the dependent would come up into a sandbox whose datastore had
+			// just been stopped. `no such host`, from the one direction still open after the
+			// reaper learned to respect depends_on.
+			u.touch()
 
 			u.mu.Lock()
 			u.served = true
