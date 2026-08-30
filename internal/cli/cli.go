@@ -1104,9 +1104,18 @@ func List(ctx context.Context, p provider.Provider, asJSON bool) error {
 		return nil
 	}
 
+	// stderr, because the table is the answer and this is a note about it.
+	//
+	// Not a style point: stdout is piped, and `sbx list | grep -q name` is how everything from
+	// a shell script to this repo's own use-case suite asks whether a sandbox exists. Asking
+	// whether a daemon is running reads a file and signals a pid, which is long enough for grep
+	// to have matched and closed the pipe - and the write that followed then took SIGPIPE and
+	// killed the process, so the pipeline exited 141 under `set -o pipefail`. The table had
+	// already been printed in full and correctly; only the exit status was wrong.
 	if _, running := daemon.Running(); !running {
-		fmt.Printf("\nno `sbx serve` is running, so nothing accepts on the addresses above -\n" +
-			"a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &\n")
+		fmt.Fprint(os.Stderr, "\nno `sbx serve` is running, so nothing accepts on the addresses "+
+			"above -\na container can be awake and still unreachable. "+
+			"Start one:  sbx serve --idle 5m &\n")
 	}
 
 	return nil

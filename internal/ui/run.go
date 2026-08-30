@@ -1189,9 +1189,11 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 	// The same warning the dashboard's title carries, for the same reason: the ADDRESS column
 	// above is the daemon's ports, so with none running every one of them refuses while the
 	// STATE column still says awake.
+	// stderr, like cli.List: stdout is the table somebody pipes, and a note written after it
+	// races a reader that has already stopped - which cost the process a SIGPIPE.
 	if warnNoDaemon(opt.Remote, rows, daemonRunning()) {
-		fmt.Fprintln(out, "\nno `sbx serve` is running, so nothing accepts on the addresses above -")
-		fmt.Fprintln(out, "a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &")
+		fmt.Fprintln(os.Stderr, "\nno `sbx serve` is running, so nothing accepts on the addresses above -")
+		fmt.Fprintln(os.Stderr, "a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &")
 	}
 
 	fmt.Fprintln(out, "\nthis is not a terminal, so the live dashboard is not available here")
