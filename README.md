@@ -205,6 +205,7 @@ Every sandbox command takes `--provider docker|kubernetes`, `--namespace`,
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | the pieces, both data paths, addressing |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | every number, and the script that produced it |
 | [COMPARISON.md](docs/COMPARISON.md) | how sbx relates to E2B, Modal, Fly, Neon, zeropod and more |
+| [ROADMAP.md](docs/ROADMAP.md) | what is next, what it costs, and what is ruled out |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | what to do about what you're seeing |
 | [console/](console/) | metrics, health and a read-only API for a running daemon |
 | [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | how the tests are arranged · the threat model |
