@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Usage is `sbx fc`'s help.
@@ -53,6 +55,22 @@ func Main(version string, args []string) error {
 		return nil
 	case "vm":
 		return vmMain(version, args[1:])
+	case "call":
+		// The far side of Remote (remote.go), run inside the helper VM. Not in Usage: it is
+		// sbx talking to itself.
+		p, err := provider.For(Firecracker, "", "")
+		if err != nil {
+			return err
+		}
+
+		err = Call(context.Background(), p, args[1:], os.Stdin, os.Stdout, os.Stderr)
+
+		var ee *provider.ExitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.Code)
+		}
+
+		return err
 	default:
 		return fmt.Errorf("unknown `sbx fc %s`\n\n%s", args[0], Usage)
 	}
