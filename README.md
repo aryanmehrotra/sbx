@@ -75,6 +75,9 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 | **Run one for a single test, gone after** | `sbx with test-db --template postgres -- go test ./...` — so it's always torn down, even on failure |
 | **Let an agent reach only the APIs you allow** | `egress_allow: ["api.openai.com"]` — the box reaches the listed hosts and nothing else, enforced by a filtering proxy; there's no route around it, and its calls out count as activity so it stays awake while it works |
 | **Keep a box awake while it works** | `idle: "never"` — an agent computing inside sends no traffic through the port, so this stops the idle timer from sleeping it mid-task |
+| **Run code written for OpenSandbox, unchanged** | `sbx serve --osb-addr 127.0.0.1:8080` speaks OpenSandbox's lifecycle and execd APIs, so its Go, Python, JS, Kotlin and C# SDKs work against your own machine — commands, streaming, sessions, files, renew, pause, network policy. Proven by running OpenSandbox's own e2e suite, not a feature table → [test/osb](test/osb/README.md) |
+| **Give an agent sandbox tools over MCP** | `claude mcp add sbx -- sbx mcp` — create, run, read and write files in a sandbox, the same 19 tools OpenSandbox's MCP server has → [AGENTS](docs/AGENTS.md) |
+| **Change what a box may reach while it runs** | `sbx egress <box> --deny '*.example.com' --allow 10.0.0.0/8` — domain, wildcard and CIDR rules, applied live without a restart |
 
 **Scale it up**
 | | |

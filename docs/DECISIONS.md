@@ -271,6 +271,16 @@ per-user tokens, roles, anything answering "who are you" rather than "is this yo
 become the thing this section rules out, and the answer is a gateway in front rather than an
 identity system inside.
 
+**Amended for the OpenSandbox API (v0.9.0).** `sbx serve --osb-addr` puts `create`, `rm` and
+`exec` behind an HTTP API, which the paragraph above said would not happen. It happened because
+the point of the API is that clients written for OpenSandbox — its five SDKs, its CLI, its MCP
+server, and the agents built on them — run against a machine you already have. What did not
+change is the line itself: the API takes **one operator key**, the same "is this yours" posture as
+the connect token, compared in constant time; there are no per-user keys, no tenants and no
+quotas, and upstream's key-to-namespace multi-tenancy is deliberately not implemented. It binds
+loopback by default and refuses any other address without `--osb-key`. A team that wants
+identities puts a gateway in front, exactly as this section already says.
+
 **"Hosted Postgres, operated for you" stays in the use-something-else table permanently.** Neon
 is the answer there and always will be — not because sbx cannot branch and scale to zero, but
 because "somebody else runs it" is the whole product, and this one is run by you.
