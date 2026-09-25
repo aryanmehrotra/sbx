@@ -975,3 +975,103 @@ func TestParseSlots(t *testing.T) {
 		t.Fatalf("parseSlots = %v, want {5,7}: junk and out-of-range numbers ignored", got)
 	}
 }
+
+// Firecracker binds the vsock device's unix socket itself, on boot and on snapshot/load, and a
+// killed VMM leaves the file behind: the next load then fails "Address in use" and the VM can
+// never be woken again. Found booting a real VM in the helper VM on a Mac.
+func TestAStaleVsockSocketIsClearedBeforeTheVMMBindsIt(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "t10", redis)
+	dir := r.p.dir(ref)
+	sock := filepath.Join(dir, fc.VsockName)
+
+	sawStale := false
+	r.p.launch = &observeLaunch{fakeLauncher: r.l, before: func() {
+		if _, err := os.Lstat(sock); err == nil {
+			sawStale = true
+		}
+	}}
+
+	for _, wake := range []func() error{
+		func() error { return r.p.Start(r.ctx, ref) }, // restore
+		func() error { // and a cold boot, after a death with no snapshot
+			_ = r.l.Kill(r.ctx, dir)
+			return r.p.Start(r.ctx, ref)
+		},
+	} {
+		if err := os.WriteFile(sock, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := wake(); err != nil {
+			t.Fatal(err)
+		}
+
+		if sawStale {
+			t.Fatal("the VMM was launched with the previous process's vsock socket still in place")
+		}
+	}
+}
+
+type observeLaunch struct {
+	*fakeLauncher
+	before func()
+}
+
+func (o *observeLaunch) Launch(ctx context.Context, s fc.LaunchSpec) (int, error) {
+	o.before()
+	return o.fakeLauncher.Launch(ctx, s)
+}
+
+func TestConsoleTailLeadsWithWhyTheGuestDied(t *testing.T) {
+	dir := t.TempDir()
+
+	lines := []string{"[0.1] booting", "sbx fc-init: mounting /dev/vdb: no such device", "[2.0] Kernel panic - not syncing: Attempted to kill init!"}
+	for range 40 {
+		lines = append(lines, "[2.1]  el0_svc+0xd0/0xd4")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, fc.ConsoleName), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&fcProvider{}).consoleTail(dir, 5)
+	if !strings.HasPrefix(got, "what the guest said:\nsbx fc-init: mounting /dev/vdb") || !strings.Contains(got, "Kernel panic") {
+		t.Fatalf("the reason is not first:\n%s", got)
+	}
+}
+
+// The daemon waits 2 s on every wake whose probe is undeclared. A VM's port is the guest's own
+// TCP stack with no proxy in front, so an accepted connection IS a listener: declared, so the
+// wake returns the moment the restored workload answers (measured: 2.27 s wakes became ~0.3 s).
+func TestProbeIsADeclaredCheckOnAVM(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "t11", redis)
+
+	if s, d := r.p.Probe(r.ctx, ref); s || d {
+		t.Fatalf("asleep: Probe = %v %v, want nothing to say", s, d)
+	}
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	var dialled string
+
+	r.p.probeDial = func(_ context.Context, addr string) (net.Conn, error) {
+		dialled = addr
+		c, _ := net.Pipe()
+
+		return c, nil
+	}
+
+	if s, d := r.p.Probe(r.ctx, ref); !s || !d || dialled != "10.231.0.2:6379" {
+		t.Fatalf("listening: Probe = %v %v via %q", s, d, dialled)
+	}
+
+	r.p.probeDial = func(context.Context, string) (net.Conn, error) { return nil, errors.New("refused") }
+
+	if s, d := r.p.Probe(r.ctx, ref); s || !d {
+		t.Fatalf("not listening yet: Probe = %v %v, want (false, true) so the caller polls", s, d)
+	}
+}

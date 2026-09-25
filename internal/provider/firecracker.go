@@ -153,6 +153,9 @@ type fcProvider struct {
 	// what else this machine is listening on.
 	portsFree func(slot int) bool
 
+	// probeDial reaches a guest port for Probe; nil is a plain TCP dial. A field for tests.
+	probeDial func(ctx context.Context, addr string) (net.Conn, error)
+
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
 }
@@ -634,6 +637,8 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		return err
 	}
 
+	clearVsock(dir)
+
 	if _, err := p.launch.Launch(ctx, fc.LaunchSpec{Binary: vm.Binary, Dir: dir, ID: vm.Instance}); err != nil {
 		return err
 	}
@@ -802,6 +807,8 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 		return err
 	}
 
+	clearVsock(dir)
+
 	if _, err := p.launch.Launch(ctx, fc.LaunchSpec{Binary: vm.Binary, Dir: dir, ID: vm.Instance}); err != nil {
 		return p.revalidate(vm, err)
 	}
@@ -855,6 +862,12 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 
 	return nil
 }
+
+// clearVsock removes the vsock device's unix socket a previous VMM left behind. Firecracker binds
+// it itself - at boot, and again on snapshot/load - and a killed process never unlinks it, so
+// without this every wake after the first fails "Address in use". The caller holds the lock and
+// has killed any VMM, so nothing is listening on it.
+func clearVsock(dir string) { _ = os.Remove(filepath.Join(dir, fc.VsockName)) }
 
 func (p *fcProvider) revalidate(vm *fcVM, cause error) error {
 	vm.SnapshotValid = true
@@ -912,9 +925,11 @@ func (p *fcProvider) Unpause(ctx context.Context, ref string) error {
 	return nil
 }
 
-// Healthy and Probe dial the guest's first port. declared is false on purpose: a spec's health
-// command runs inside the workload, which needs the guest agent, so readiness here is an accepted
-// connection - and the interface says to report that as a guess rather than dress it as a check.
+// Healthy and Probe dial the guest's first port on its tap address. That is a real check, and
+// declared says so: in a container a published port is docker-proxy, which accepts before the
+// server behind it exists, but here nothing sits in front of the guest's own TCP stack - an
+// accepted connection is a listener. Undeclared, the daemon would wait a flat 2 s on every wake
+// of a snapshot whose workload answers in milliseconds.
 func (p *fcProvider) Healthy(ctx context.Context, ref string) (bool, bool) { return p.Probe(ctx, ref) }
 
 func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
@@ -923,19 +938,25 @@ func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 		return false, false
 	}
 
-	var d net.Dialer
-
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 
-	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(vm.addr().GuestIP(), strconv.Itoa(vm.Ports[0])))
+	dial := p.probeDial
+	if dial == nil {
+		dial = func(ctx context.Context, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", addr)
+		}
+	}
+
+	c, err := dial(ctx, net.JoinHostPort(vm.addr().GuestIP(), strconv.Itoa(vm.Ports[0])))
 	if err != nil {
-		return false, false
+		return false, true
 	}
 
 	_ = c.Close()
 
-	return true, false
+	return true, true
 }
 
 // waitServing is Create's readiness: the first port accepting, or for a service with none, execd
@@ -974,7 +995,33 @@ func (p *fcProvider) consoleTail(dir string, n int) string {
 	var buf strings.Builder
 	_ = tailFile(filepath.Join(dir, fc.ConsoleName), n, &buf)
 
-	return "the guest console's last lines:\n" + buf.String()
+	out := "the guest console's last lines:\n" + buf.String()
+
+	// A PID 1 that exits is a kernel panic whose call trace fills the tail, and the reason - fc-init
+	// or execd saying why - scrolls out of it. Those lines come first, wherever they are.
+	if why := consoleReasons(filepath.Join(dir, fc.ConsoleName)); why != "" {
+		out = "what the guest said:\n" + why + out
+	}
+
+	return out
+}
+
+func consoleReasons(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+
+	var out strings.Builder
+
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.Contains(line, "sbx fc-init:") || strings.Contains(line, "sbx execd:") ||
+			strings.Contains(line, "Kernel panic") {
+			out.WriteString(line + "\n")
+		}
+	}
+
+	return out.String()
 }
 
 func (p *fcProvider) all() ([]*fcVM, error) {

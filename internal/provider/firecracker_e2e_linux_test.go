@@ -20,6 +20,8 @@ import (
 // CAP_NET_ADMIN (in practice root) and a docker engine holding or able to pull the image. It
 // downloads the pinned firecracker and kernel on first run. SBX_FC_E2E_IMAGE overrides the image
 // (default redis:7-alpine, which answers PING with +PONG, a first byte with no client library).
+// Run as a compiled test binary, set SBX_EXECD_BINARY to a real linux sbx: the agent drive is
+// otherwise built from os.Executable(), which is then the test binary, and PID 1 exits at once.
 //
 // It reports timings with t.Logf and asserts only correctness: the numbers are for reading,
 // and one run on one host is not a benchmark.
@@ -76,6 +78,21 @@ func TestFirecrackerE2E(t *testing.T) {
 		}
 
 		t.Logf("round %d: start %s, first byte %s", round, loaded, time.Since(start))
+
+		// Through execd over the vsock device, on a VM that was just restored and re-keyed: a
+		// stale token, or a Seal/Rekey secret mismatch, fails here or at the Stop below.
+		start = time.Now()
+
+		out, err := p.Exec(ctx, ref, []string{"redis-cli", "ping"})
+		if err != nil || out != "PONG" {
+			t.Fatalf("round %d exec over vsock: %q, %v\n%s", round, out, err, p.consoleTail(p.dir(ref), 30))
+		}
+
+		t.Logf("round %d: exec over vsock %s", round, time.Since(start))
+
+		if vm, _ = p.load(ref); vm.Generation != uint64(round) || vm.LiveSecret == "" || vm.LiveSecret == vm.ControlSecret {
+			t.Fatalf("round %d: generation %d, live secret rotated %v", round, vm.Generation, vm.LiveSecret != vm.ControlSecret)
+		}
 
 		start = time.Now()
 		if err := p.Stop(ctx, ref); err != nil {
