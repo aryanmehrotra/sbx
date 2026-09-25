@@ -41,6 +41,7 @@ func (s *Server) snapshot(id string) (record, bool) {
 	c.Extensions = maps.Clone(r.Extensions)
 	c.Entrypoint = slices.Clone(r.Entrypoint)
 	c.Ports = slices.Clone(r.Ports)
+	c.OwnedVolumes = slices.Clone(r.OwnedVolumes)
 
 	return c, true
 }
@@ -331,6 +332,7 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 	}
 
 	cancel := s.provisioning[id]
+	owned := slices.Clone(r.OwnedVolumes)
 	s.mu.Unlock()
 
 	if cancel != nil {
@@ -371,6 +373,9 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 			return fmt.Errorf("removing %s: %w - `sbx rm %s` shows the same error with more detail", id, err, id)
 		}
 	}
+
+	// After the container: docker will not remove a volume something still mounts.
+	s.releaseClaims(ctx, id, owned)
 
 	s.mu.Lock()
 	delete(s.recs, id)

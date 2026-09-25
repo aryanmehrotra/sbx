@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -13,7 +14,7 @@ import (
 // openSandboxAPI builds the OpenSandbox lifecycle API and binds its listener, or returns nil
 // when --osb-addr was not given. Bound here, before the daemon starts, so a port that is taken
 // is a startup error with the address in it rather than a log line after everything else is up.
-func (d *daemon) openSandboxAPI(addr, key string, scope Scope) (*osb.Server, net.Listener, error) {
+func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scope) (*osb.Server, net.Listener, error) {
 	if addr == "" {
 		return nil, nil, nil
 	}
@@ -46,6 +47,7 @@ func (d *daemon) openSandboxAPI(addr, key string, scope Scope) (*osb.Server, net
 		ReadyTimeout: d.ready + 30*time.Second,
 		Egress:       d.Egress(),
 		EgressStatus: EgressHTTPStatus,
+		HostPaths:    hostPaths,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -66,3 +68,16 @@ func (d *daemon) openSandboxAPI(addr, key string, scope Scope) (*osb.Server, net
 
 // The daemon's EgressControl is what the API's networkpolicy routes drive.
 var _ osb.EgressAPI = (*EgressControl)(nil)
+
+// splitPaths reads --osb-host-paths: comma-separated, blanks dropped.
+func splitPaths(s string) []string {
+	var out []string
+
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+
+	return out
+}

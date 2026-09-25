@@ -66,6 +66,15 @@ type record struct {
 	// PausedByAPI is a pause somebody asked for, as opposed to the daemon freezing an idle
 	// sandbox. Only this one is reported as Paused and refuses traffic.
 	PausedByAPI bool `json:"pausedByApi,omitempty"`
+
+	// SnapshotID and TemplateID say what the sandbox was created from, so a snapshot or a
+	// template still in use can refuse to be deleted from under it.
+	SnapshotID string `json:"snapshotId,omitempty"`
+	TemplateID string `json:"templateId,omitempty"`
+
+	// OwnedVolumes are pvc volumes created for this sandbox with deleteOnSandboxTermination:
+	// removed with it. Never a volume that existed before the create.
+	OwnedVolumes []string `json:"ownedVolumes,omitempty"`
 }
 
 func (r *record) transition(state, reason, message string, now time.Time) {
@@ -90,16 +99,22 @@ func (s store) save(r *record) error {
 		return fmt.Errorf("refusing to save a record with id %q", r.ID)
 	}
 
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	return writeAtomic(s.dir, r.ID, r)
+}
+
+// writeAtomic writes v as dir/id.json through a temp file and a rename, 0600. The caller has
+// already checked id against its pattern.
+func writeAtomic(dir, id string, v any) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 
-	body, err := json.MarshalIndent(r, "", "  ")
+	body, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(s.dir, r.ID+".*.tmp")
+	tmp, err := os.CreateTemp(dir, id+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -123,7 +138,7 @@ func (s store) save(r *record) error {
 		return err
 	}
 
-	return os.Rename(name, s.path(r.ID))
+	return os.Rename(name, filepath.Join(dir, id+".json"))
 }
 
 func (s store) remove(id string) error {

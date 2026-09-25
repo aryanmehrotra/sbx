@@ -231,10 +231,10 @@ func TestCreateRefusesWhatItCannotDo(t *testing.T) {
 		{"not json", "{", 400, "SANDBOX::INVALID_PARAMETER", "CreateSandboxRequest"},
 		{"no image", map[string]any{"entrypoint": []string{"x"}}, 400, "SANDBOX::INVALID_PARAMETER", "image.uri"},
 		{"short timeout", with("timeout", 30), 400, "SANDBOX::INVALID_PARAMETER", "60"},
-		{"snapshot", with("snapshotId", "snap_1"), 501, "SANDBOX::API_NOT_SUPPORTED", "v0.10.0"},
-		{"template", with("templateId", "t1"), 501, "SANDBOX::API_NOT_SUPPORTED", "v0.10.0"},
+		{"image and snapshot", with("snapshotId", "snap-000000000000"), 400, "SANDBOX::INVALID_PARAMETER", "exactly one"},
+		{"image and template", with("templateId", "tpl-000000000000"), 400, "SANDBOX::INVALID_PARAMETER", "exactly one"},
 		{"ossfs", with("volumes", []any{map[string]any{"name": "o", "ossfs": map[string]any{}}}), 400, "VOLUME::INVALID_BACKEND", "Alibaba"},
-		{"host volume", with("volumes", []any{map[string]any{"name": "h", "host": map[string]any{"path": "/x"}}}), 501, "SANDBOX::API_NOT_SUPPORTED", "volumes"},
+		{"host volume, no roots", with("volumes", []any{map[string]any{"name": "h", "host": map[string]any{"path": "/x"}, "mountPath": "/x"}}), 400, "VOLUME::HOST_PATH_NOT_ALLOWED", "--osb-host-paths"},
 		{"bad metadata", with("metadata", map[string]string{"bad key": "v"}), 400, "SANDBOX::INVALID_METADATA_LABEL", "bad key"},
 		{"reserved metadata", with("metadata", map[string]string{"opensandbox.io/x": "v"}), 400, "SANDBOX::INVALID_METADATA_LABEL", "reserved"},
 		{"unknown limit", with("resourceLimits", map[string]string{"ephemeral-storage": "1Gi"}), 400, "SANDBOX::INVALID_PARAMETER", "ephemeral-storage"},
@@ -666,30 +666,6 @@ func TestReaperRemovesExpiredSandboxesAndSaysWho(t *testing.T) {
 
 	if !found {
 		t.Fatalf("history does not say expiry removed it: %+v", recs)
-	}
-}
-
-func TestUnimplementedGroupsAnswer501WithTheRelease(t *testing.T) {
-	h := newHarness(t)
-
-	for _, r := range [][2]string{
-		{"GET", "/v1/snapshots"},
-		{"GET", "/v1/snapshots/snap_1"},
-		{"DELETE", "/v1/snapshots/snap_1"},
-		{"POST", "/v1/sandboxes/osb-000000000000/snapshots"},
-		{"GET", "/v1/templates"},
-		{"POST", "/v1/templates"},
-		{"GET", "/v1/templates/t"},
-	} {
-		resp := h.do(r[0], r[1], nil, nil)
-		if resp.StatusCode != 501 {
-			t.Errorf("%s %s = %d, want 501", r[0], r[1], resp.StatusCode)
-			continue
-		}
-
-		if e := h.errOf(resp); !strings.Contains(e.Message, "v0.10.0") {
-			t.Errorf("%s %s: %q does not name the release", r[0], r[1], e.Message)
-		}
 	}
 }
 

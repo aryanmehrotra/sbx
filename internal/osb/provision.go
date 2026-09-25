@@ -38,6 +38,15 @@ type plan struct {
 
 	// egressPolicy is the networkPolicy the sandbox starts with; nil is no filter at all.
 	egressPolicy *egress.Policy
+
+	// volumes are the caller's `volumes`, already allowed; claims are the pvc ones, which the
+	// create call makes exist before answering.
+	volumes []spec.VolumeMount
+	claims  []pvcJSON
+
+	// localImage is an image that only exists on this engine - a snapshot's commit - so a
+	// pull would ask a registry for something no registry has.
+	localImage bool
 }
 
 // create validates synchronously and provisions in the background: 202 with Pending, then
@@ -56,6 +65,14 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, status, code, msg)
 		return
 	}
+
+	owned, verr := s.ensureClaims(r.Context(), pl.claims)
+	if verr != nil {
+		writeErr(w, verr.status, verr.code, verr.msg)
+		return
+	}
+
+	pl.rec.OwnedVolumes = owned
 
 	s.mu.Lock()
 	s.recs[pl.rec.ID] = &pl.rec
@@ -108,11 +125,75 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		return plan{}, http.StatusNotImplemented, "SANDBOX::API_NOT_SUPPORTED", err.Error()
 	}
 
+	sources := 0
+	for _, set := range []bool{req.Image != nil, req.SnapshotID != "", req.TemplateID != ""} {
+		if set {
+			sources++
+		}
+	}
+
+	if sources > 1 {
+		return bad("give exactly one of image, snapshotId or templateId - they each say what " +
+			"the sandbox runs")
+	}
+
+	var from source
+
 	switch {
-	case req.SnapshotID != "":
-		return later("creating from a snapshot (snapshotId)", "v0.10.0")
 	case req.TemplateID != "":
-		return later("creating from a template (templateId)", "v0.10.0")
+		if f := templateRejects(req); f != "" {
+			return bad("%s cannot be set when creating from a template: the template fixes the "+
+				"workload (image, entrypoint, resources); only timeout, metadata, networkPolicy "+
+				"and extensions go with templateId", f)
+		}
+
+		if req.Timeout == nil {
+			return bad("timeout is required when creating from a template")
+		}
+
+		t, ok := s.tpl(req.TemplateID)
+		if !ok || t.Phase != tplSucceeded {
+			why := "does not exist - GET /v1/templates lists them"
+			if ok {
+				why = "is " + t.Phase + ", and only a Succeeded template can create sandboxes"
+				if t.Message != "" {
+					why += " (" + t.Message + ")"
+				}
+			}
+
+			return plan{}, http.StatusNotFound, "FSB::TEMPLATE_NOT_FOUND",
+				fmt.Sprintf("template %q %s", req.TemplateID, why)
+		}
+
+		req.Image = &imageSpec{URI: t.RunImage}
+		req.Entrypoint = t.Entrypoint
+		req.ResourceLimits = t.ResourceLimits
+		from = source{templateID: t.ID, snapshotID: t.SnapshotID, local: true}
+
+		if len(req.Entrypoint) == 0 {
+			req.Entrypoint = defaultRestoreEntrypoint
+		}
+	case req.SnapshotID != "":
+		sr, ok := s.snap(req.SnapshotID)
+		if !ok {
+			return plan{}, http.StatusNotFound, "SNAPSHOT::NOT_FOUND",
+				fmt.Sprintf("no snapshot %q - GET /v1/snapshots lists them", req.SnapshotID)
+		}
+
+		if sr.State != snapReady {
+			return plan{}, http.StatusConflict, "SNAPSHOT::NOT_READY",
+				fmt.Sprintf("snapshot %s is %s; only a Ready snapshot can be restored", sr.ID, sr.State)
+		}
+
+		req.Image = &imageSpec{URI: sr.Image}
+		from = source{snapshotID: sr.ID, local: true}
+
+		if len(req.Entrypoint) == 0 {
+			req.Entrypoint = defaultRestoreEntrypoint
+		}
+	}
+
+	switch {
 	case req.Extensions["poolRef"] != "":
 		return later("server-side pools (extensions.poolRef)", "v0.11.0")
 	case req.Image == nil || strings.TrimSpace(req.Image.URI) == "":
@@ -144,17 +225,9 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		return later("networkPolicy (this sbx serve has no egress control)", "a daemon with egress control")
 	}
 
-	for _, raw := range req.Volumes {
-		var v map[string]json.RawMessage
-		_ = json.Unmarshal(raw, &v)
-
-		if _, ok := v["ossfs"]; ok {
-			return plan{}, http.StatusBadRequest, "VOLUME::INVALID_BACKEND",
-				"ossfs volumes mount Alibaba OSS buckets, which sbx does not support and does " +
-					"not plan to - use a host or pvc volume"
-		}
-
-		return later("volumes", "v0.10.0")
+	mounts, claims, verr := s.parseVolumes(req.Volumes)
+	if verr != nil {
+		return plan{}, verr.status, verr.code, verr.msg
 	}
 
 	if req.Timeout != nil && *req.Timeout < 60 {
@@ -191,7 +264,8 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		}
 	}
 
-	pl := plan{onIdle: spec.OnIdleFreeze, egressPolicy: policy}
+	pl := plan{onIdle: spec.OnIdleFreeze, egressPolicy: policy, volumes: mounts, claims: claims,
+		localImage: from.local}
 
 	for k, v := range req.ResourceLimits {
 		switch k {
@@ -251,6 +325,8 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		Platform:         req.Platform,
 		Ports:            append([]int{execdPort}, extra...),
 		Token:            newToken(),
+		SnapshotID:       from.snapshotID,
+		TemplateID:       from.templateID,
 		CreatedAt:        now,
 		State:            statePending,
 		Reason:           "provisioning",
@@ -264,6 +340,12 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 	}
 
 	return pl, 0, "", ""
+}
+
+// source is where a sandbox's image came from when it was not named directly.
+type source struct {
+	snapshotID, templateID string
+	local                  bool
 }
 
 func present(raw json.RawMessage) bool {
@@ -286,7 +368,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		return
 	}
 
-	if pu, ok := s.p.(provider.Puller); ok {
+	if pu, ok := s.p.(provider.Puller); ok && !pl.localImage {
 		if err := pu.Pull(ctx, pl.rec.Image); err != nil {
 			fail("image_pull_failed", fmt.Sprintf("pulling %s: %v - check the name and that this "+
 				"machine can reach its registry (`docker pull %s`)", pl.rec.Image, err, pl.rec.Image))
@@ -356,6 +438,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		GPUs:           pl.gpus,
 		OnIdle:         pl.onIdle,
 		EgressPolicy:   pl.egressPolicy,
+		VolumeMounts:   pl.volumes,
 	}
 
 	if err := svc.Validate(service); err != nil {
