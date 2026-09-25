@@ -215,6 +215,13 @@ func New(o Options) (*Server, error) {
 
 	for _, r := range recs {
 		s.recs[r.ID] = r
+
+		// Here, synchronously, and not only in Run: the daemon binds its listeners on its first
+		// discovery, and Run is a goroutine racing it. A hold that arrived after the listener
+		// would leave a window where a connection thaws a sandbox the API still says is Paused.
+		if r.PausedByAPI {
+			s.rt.Hold(r.ID, true)
+		}
 	}
 
 	return s, nil
