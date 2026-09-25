@@ -466,6 +466,14 @@ func unsupported(svc spec.Service) error {
 		strings.Join(why, "; "))
 }
 
+// rootUser reports whether an image's USER is root: unset, or root by name or uid, with or without
+// a root group.
+func rootUser(u string) bool {
+	user, group, _ := strings.Cut(u, ":")
+
+	return (user == "" || user == "root" || user == "0") && (group == "" || group == "root" || group == "0")
+}
+
 // sizing reads cpu and memory from the spec. Firecracker takes whole vCPUs, 1 or an even
 // number, so a fractional core rounds up; the default is one vCPU and 256 MiB, which is also the
 // size of the snapshot on disk while the service sleeps.
@@ -628,6 +636,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	rfs, err := p.rootfs.Build(ctx, svc.Image)
 	if err != nil {
 		return err
+	}
+
+	if !rootUser(rfs.Config.User) {
+		return fmt.Errorf("%s runs as USER %q, and the firecracker provider runs every process in the VM "+
+			"as root: fc-init and execd do not switch users yet, and running it as root anyway would "+
+			"quietly drop the boundary the image asked for - use --provider docker, or an image whose "+
+			"USER is root", svc.Image, rfs.Config.User)
 	}
 
 	agent, err := p.agent(ctx, p.arch)

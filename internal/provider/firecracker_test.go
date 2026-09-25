@@ -1518,3 +1518,35 @@ func TestCreateWarnsWhenBridgesAreNotIsolated(t *testing.T) {
 		t.Fatalf("warned %q", warned.String())
 	}
 }
+
+// userEngine is tarEngine with an image USER.
+type userEngine struct {
+	tarEngine
+	user string
+}
+
+func (e userEngine) Inspect(ctx context.Context, img string) (fc.ImageConfig, error) {
+	c, err := e.tarEngine.Inspect(ctx, img)
+	c.User = e.user
+
+	return c, err
+}
+
+// An image that asks to run as someone other than root is refused by name: the VM would run it as
+// root, silently dropping the boundary the image asked for.
+func TestANonRootImageUserIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		user string
+		ok   bool
+	}{{"", true}, {"root", true}, {"0:0", true}, {"nginx", false}, {"1000:1000", false}, {"root:staff", false}} {
+		r := newRig(t)
+		r.p.rootfs.Engine = userEngine{user: tc.user}
+
+		eps := r.p.Endpoints("m4", "cache", 0, 0, redis.Ports)
+		err := r.p.Create(r.ctx, "m4", 0, 0, "cache", redis, eps, "", IsolationContainer)
+
+		if tc.ok != (err == nil) || (!tc.ok && !strings.Contains(err.Error(), "USER")) {
+			t.Errorf("USER %q: %v", tc.user, err)
+		}
+	}
+}

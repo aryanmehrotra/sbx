@@ -111,6 +111,7 @@ The same file, with a VM underneath. What changes:
 | `memory` | The guest's RAM, default `256m` - and the size of its snapshot on disk while it sleeps. Both fixed at creation; changing them live is refused |
 | `health` | Run inside the VM by the guest agent (execd, over vsock), through `/bin/sh -c` as docker's `CMD-SHELL` is, with a 5 s timeout; its exit status is whether the service serves. With no health command, readiness is the guest's first port accepting |
 | `egress` | Only `"deny"` (or unset, which means the same here): a VM bridge has no NAT |
+| the image's `USER` | **Refused unless root**: everything in the VM runs as root (fc-init and execd do not switch users yet), and running a non-root image as root would quietly drop the boundary it asked for |
 | `volume` | Nothing extra to do: the VM's root filesystem is already its own and persists across sleep |
 | `build`, `files`, `mounts`, `init`, `gpus`, `cap_add`, `egress_allow`, `egress_policy` | **Refused by name**, each with the reason - never silently ignored |
 There is no field for mounting an arbitrary named volume. The OpenSandbox API attaches its `volumes` (and sbx's own execd volume) in memory, after checking them against its own namespace and the operator's host allow-list; a `sandbox.json` naming `readonly_volumes` or `volume_mounts` is refused as an unknown field, because a spec that could name any volume could mount another sandbox's data.
