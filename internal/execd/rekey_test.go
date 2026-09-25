@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/execdctl"
+	"github.com/aryanmehrotra/sbx/internal/fcvsock"
 )
 
 const (
@@ -510,5 +512,92 @@ func TestControlSecretHiddenFromCommands(t *testing.T) {
 
 	if _, out := s.runEcho("t", "${"+execdctl.EnvControlSecret+":-hidden}"); out != "hidden" {
 		t.Fatalf("a command saw the control secret: %q", out)
+	}
+}
+
+// The host's whole path, short of a VM: execdctl over fcvsock's handshake, through a stand-in for
+// Firecracker's unix socket that splices to execd. Seal and re-key must survive the handshake -
+// in particular, nothing the handshake reads may eat the start of the HTTP response.
+func TestRekeyThroughFirecrackerHandshake(t *testing.T) {
+	s := newTestServer(t, Options{AccessToken: "parent", ControlSecret: bootSecret})
+	target := strings.TrimPrefix(s.ts.URL, "http://")
+
+	dir, err := os.MkdirTemp("", "fcx")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	uds := dir + "/v.sock"
+
+	ln, err := net.Listen("unix", uds)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			go func() {
+				defer c.Close()
+
+				line := make([]byte, 0, 32)
+				b := make([]byte, 1)
+
+				for {
+					if _, err := c.Read(b); err != nil {
+						return
+					}
+
+					if b[0] == '\n' {
+						break
+					}
+
+					line = append(line, b[0])
+				}
+
+				if string(line) != "CONNECT 44772" {
+					return
+				}
+
+				up, err := net.Dial("tcp", target)
+				if err != nil {
+					return
+				}
+				defer up.Close()
+
+				_, _ = io.WriteString(c, "OK 1073741825\n")
+
+				go func() { _, _ = io.Copy(up, c) }()
+
+				_, _ = io.Copy(c, up)
+			}()
+		}
+	}()
+
+	ctl := execdctl.Client{Dial: fcvsock.Dialer{UDSPath: uds, Port: 44772}.DialContext}
+	ctx := context.Background()
+
+	if err := ctl.Seal(ctx, bootSecret); err != nil {
+		t.Fatalf("seal through the handshake: %v", err)
+	}
+
+	if st, _, _ := s.do("GET", "/ping", nil); st != http.StatusServiceUnavailable {
+		t.Fatalf("/ping after seal: %d", st)
+	}
+
+	if err := ctl.Rekey(ctx, bootSecret, execdctl.Rekey{Generation: 1, AccessToken: "clone", ControlSecret: nextSecret}); err != nil {
+		t.Fatalf("re-key through the handshake: %v", err)
+	}
+
+	if st, _ := s.runEcho("clone", "hi"); st != http.StatusOK {
+		t.Fatalf("clone token after the re-key: %d", st)
 	}
 }

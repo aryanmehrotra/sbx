@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 )
 
 // vmaddrCIDLocal is VMADDR_CID_LOCAL: a connection to this VM itself, served by vsock_loopback.
@@ -58,7 +60,8 @@ func TestVsockListenerServesTheAPI(t *testing.T) {
 	}
 	defer ln.Close()
 
-	s, err := New(Options{AccessToken: "tok", OutputDir: t.TempDir()})
+	s, err := New(Options{AccessToken: "tok", OutputDir: t.TempDir(),
+		ControlSecret: "vsock-boot-secret-0123456789abcdef", ControlOverVsockOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +96,16 @@ func TestVsockListenerServesTheAPI(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /ping over vsock: %d", resp.StatusCode)
+	}
+
+	// The control endpoints answer here - connContext marked the conn as vsock - and a re-key
+	// over it takes effect.
+	ctl := execdctl.Client{Dial: func(context.Context) (net.Conn, error) { return dialVsock(vmaddrCIDLocal, port) }}
+
+	if err := ctl.Rekey(context.Background(), "vsock-boot-secret-0123456789abcdef", execdctl.Rekey{
+		Generation: 1, AccessToken: "tok2", ControlSecret: "vsock-next-secret-0123456789abcdef",
+	}); err != nil {
+		t.Fatalf("re-key over vsock: %v", err)
 	}
 
 	// Close unblocks an Accept in progress and Serve returns the clean-stop error.
