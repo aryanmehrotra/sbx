@@ -122,7 +122,8 @@ func (f *miniJupyter) channel(c *wstest.Conn, kid string, intr chan struct{}) {
 
 		var req struct {
 			Header struct {
-				MsgID string `json:"msg_id"`
+				MsgID   string `json:"msg_id"`
+				MsgType string `json:"msg_type"`
 			} `json:"header"`
 			Content struct{ Code string } `json:"content"`
 		}
@@ -134,6 +135,11 @@ func (f *miniJupyter) channel(c *wstest.Conn, kid string, intr chan struct{}) {
 				"parent_header": map[string]any{"msg_id": req.Header.MsgID}, "metadata": map[string]any{},
 			})
 			_ = c.WriteText(b)
+		}
+
+		if req.Header.MsgType == "kernel_info_request" {
+			send("shell", "kernel_info_reply", map[string]any{"status": "ok"})
+			continue
 		}
 
 		status := "ok"

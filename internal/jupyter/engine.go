@@ -382,60 +382,87 @@ func (e *Engine) Run(ctx context.Context, req RunRequest, emit func(Event)) erro
 	// A fresh websocket per execution, as upstream does. A shared one would need its reader to
 	// route every message to whichever execution is current, and a message arriving late from
 	// the previous cell would have somewhere to go wrong; a per-run socket closes that off.
-	session := newID()
-
-	dialCtx, cancelDial := context.WithTimeout(ctx, 10*time.Second)
-
 	var hdr http.Header
 	if r.token != "" {
 		hdr = http.Header{"Authorization": {"token " + r.token}}
 	}
 
-	conn, err := wsclient.Dial(dialCtx, r.channelsURL(kc.kernelID, session), wsclient.Options{Header: hdr})
+	dial := func() (*kernelSocket, error) {
+		dialCtx, cancelDial := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelDial()
 
-	cancelDial()
+		return dialKernel(dialCtx, r.channelsURL, kc.kernelID, hdr)
+	}
 
+	ks, err := dial()
 	if err != nil {
 		return fmt.Errorf("%w: connect to kernel %s of context %s: %v", ErrUnavailable, kc.kernelID, kc.ID, err)
 	}
-	defer conn.Close()
+
+	defer func() {
+		if ks != nil {
+			ks.close()
+		}
+	}()
 
 	send := func(ev Event) {
 		ev.Timestamp = time.Now().UnixMilli()
 		emit(ev)
 	}
 
+	lost := func(what string, err error) error {
+		send(Event{Type: EventError, Error: &ErrorOutput{
+			EName:  "KernelConnectionLost",
+			EValue: fmt.Sprintf("%s: %v - retry, or recreate the context", what, err),
+		}})
+
+		return nil
+	}
+
 	send(Event{Type: EventInit, Text: kc.ID})
 
-	msg := newExecuteRequest(session, req.Code)
+	// The kernel must answer on this socket before the cell is sent; a socket it never answers on
+	// is replaced rather than retried, because that is the failure seen in practice (see
+	// awaitKernel). The whole wait is bounded by kernelAnswerWait.
+	budget := time.Now().Add(kernelAnswerWait)
+
+	for {
+		err := awaitKernel(ctx, ks)
+		if err == nil {
+			break
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if time.Now().After(budget) {
+			return lost(fmt.Sprintf("the kernel did not answer within %s", kernelAnswerWait), err)
+		}
+
+		ks.close()
+
+		if ks, err = dial(); err != nil {
+			return lost("could not reconnect to the kernel", err)
+		}
+	}
+
+	msg := newExecuteRequest(ks.session, req.Code)
 
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err // unreachable: every field is a plain value
 	}
 
-	msgs := make(chan inbound, 64)
-	readErr := make(chan error, 1)
-	done := make(chan struct{})
-
-	defer close(done) // runs before conn.Close, so the reader is never left blocked on a send
-
-	go readLoop(conn, msgs, readErr, done)
-
 	start := time.Now()
 
-	if err := conn.WriteText(payload); err != nil {
-		send(Event{Type: EventError, Error: &ErrorOutput{
-			EName:  "KernelConnectionLost",
-			EValue: fmt.Sprintf("could not send the code to the kernel: %v - retry, or recreate the context", err),
-		}})
-
-		return nil
+	if err := ks.conn.WriteText(payload); err != nil {
+		return lost("could not send the code to the kernel", err)
 	}
 
 	x := execution{id: msg.Header.MsgID, send: send, start: start}
 
-	return x.pump(ctx, e, kc, msgs, readErr)
+	return x.pump(ctx, e, kc, ks.msgs, ks.readErr)
 }
 
 // resolve finds the context a request names, creating the implicit one if it names none.
@@ -729,4 +756,103 @@ func (x *execution) finishIfDone() bool {
 
 func (x *execution) complete() {
 	x.send(Event{Type: EventComplete, ExecutionTime: time.Since(x.start).Milliseconds()})
+}
+
+// Handshake timings. kernelAnswerWait bounds the whole wait before a cell is sent; a socket gets
+// kernelSocketWait to answer before it is replaced, and within that the request is re-sent every
+// kernelInfoRetry.
+var (
+	kernelAnswerWait = 10 * time.Second
+	kernelSocketWait = 2 * time.Second
+	kernelInfoRetry  = 500 * time.Millisecond
+)
+
+// kernelSocket is one kernel websocket and the goroutine reading it.
+type kernelSocket struct {
+	conn    *wsclient.Conn
+	session string
+	msgs    chan inbound
+	readErr chan error
+	done    chan struct{}
+}
+
+func dialKernel(ctx context.Context, channelsURL func(kernelID, session string) string, kernelID string, hdr http.Header) (*kernelSocket, error) {
+	session := newID()
+
+	conn, err := wsclient.Dial(ctx, channelsURL(kernelID, session), wsclient.Options{Header: hdr})
+	if err != nil {
+		return nil, err
+	}
+
+	ks := &kernelSocket{conn: conn, session: session, msgs: make(chan inbound, 64),
+		readErr: make(chan error, 1), done: make(chan struct{})}
+
+	go readLoop(conn, ks.msgs, ks.readErr, ks.done)
+
+	return ks, nil
+}
+
+// close stops the reader first, so it is never left blocked on a send, then the socket.
+func (ks *kernelSocket) close() {
+	close(ks.done)
+	_ = ks.conn.Close()
+}
+
+// awaitKernel sends kernel_info_request until the kernel answers one on this socket, discarding
+// whatever else arrives meanwhile, and gives up after kernelSocketWait.
+//
+// Why: against opensandbox/code-interpreter, about one fresh kernel socket in sixty is never
+// answered - not the first message, not a re-sent one - and a cell sent on it sat on init and
+// pings until the client gave up. A reply proves the path to the kernel is open; when none
+// comes the caller replaces the socket, which is what recovers. jupyter_client's wait_for_ready
+// handshakes the same way. Nothing is lost by discarding: no cell has been sent on this socket,
+// so nothing arriving on it can belong to one.
+func awaitKernel(ctx context.Context, ks *kernelSocket) error {
+	giveUp := time.NewTimer(kernelSocketWait)
+	defer giveUp.Stop()
+
+	retry := time.NewTicker(kernelInfoRetry)
+	defer retry.Stop()
+
+	asked := map[string]bool{}
+
+	ask := func() error {
+		req := newKernelInfoRequest(ks.session)
+
+		payload, err := json.Marshal(req)
+		if err != nil {
+			return err
+		}
+
+		asked[req.Header.MsgID] = true
+
+		if err := ks.conn.WriteText(payload); err != nil {
+			return fmt.Errorf("send kernel_info_request: %w", err)
+		}
+
+		return nil
+	}
+
+	if err := ask(); err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-ks.readErr:
+			return err
+		case <-giveUp.C:
+			return fmt.Errorf("no kernel_info_reply on this socket within %s", kernelSocketWait)
+		case <-retry.C:
+			if err := ask(); err != nil {
+				return err
+			}
+		case m := <-ks.msgs:
+			if m.Header.MsgType == "kernel_info_reply" && asked[m.ParentHeader.MsgID] {
+				return nil
+			}
+		}
+	}
 }

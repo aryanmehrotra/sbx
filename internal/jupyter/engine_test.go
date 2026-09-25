@@ -744,3 +744,52 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Fatalf("host wins = %+v", c)
 	}
 }
+
+// A real Jupyter Server can lose the first message a fresh kernel socket sends while it is still
+// setting the connection up; the execute_request then vanishes and the cell hangs on init and
+// pings forever (seen in ~1 of 60 runs against opensandbox/code-interpreter). The engine must
+// not send code until the kernel has answered on this socket.
+func TestRunSurvivesALostFirstMessage(t *testing.T) {
+	f := newFake(t)
+	f.dropFirst.Store(true)
+
+	e := f.engine(func(c *Config) { c.PingInterval = time.Hour })
+
+	evs := collect(t, e, RunRequest{Language: "python", Code: "print:hello"})
+
+	var out string
+
+	for _, ev := range evs {
+		if ev.Type == EventStdout {
+			out += ev.Text
+		}
+	}
+
+	if out != "hello\n" || evs[len(evs)-1].Type != EventComplete {
+		t.Fatalf("events %v, stdout %q: the code was lost with the socket's first message", types(evs), out)
+	}
+
+	if f.kernelInfos.Load() == 0 {
+		t.Fatal("no kernel_info_request: the engine sent code before the kernel answered")
+	}
+}
+
+// A socket the kernel never answers on is replaced, not waited on until the client gives up.
+func TestRunReplacesASocketTheKernelNeverAnswers(t *testing.T) {
+	f := newFake(t)
+	e := f.engine(func(c *Config) { c.PingInterval = time.Hour })
+	c := mustCreate(t, e, "python")
+
+	f.deadSockets.Store(1) // the next socket, the one Run opens, is dead
+
+	start := time.Now()
+	evs := collect(t, e, RunRequest{ContextID: c.ID, Code: "print:hello"})
+
+	if last := evs[len(evs)-1]; last.Type != EventComplete {
+		t.Fatalf("events %v: a dead socket was not replaced", types(evs))
+	}
+
+	if d := time.Since(start); d > kernelSocketWait+3*time.Second {
+		t.Fatalf("took %s", d)
+	}
+}

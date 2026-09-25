@@ -50,6 +50,14 @@ type fakeJupyter struct {
 	lastPath       atomic.Value // notebook path of the last session create
 	lastKernelName atomic.Value
 	running        chan string // kernel id, sent when a "sleep" starts
+
+	// dropFirst swallows the first message a new socket sends, as a real Jupyter Server can
+	// while it is still setting the connection up.
+	dropFirst atomic.Bool
+	// deadSockets is how many new sockets are never answered at all, the failure a real server
+	// shows about once in sixty sockets.
+	deadSockets atomic.Int32
+	kernelInfos atomic.Int32
 }
 
 type fakeKernel struct {
@@ -249,10 +257,22 @@ func (f *fakeJupyter) channels(c *wstest.Conn, k *fakeKernel) {
 	send("iopub", "status", "server-probe", map[string]any{"execution_state": "busy"})
 	send("iopub", "status", "server-probe", map[string]any{"execution_state": "idle"})
 
+	dropNext := f.dropFirst.Load()
+	dead := f.deadSockets.Add(-1) >= 0
+
 	for {
 		_, p, err := c.ReadMessage()
 		if err != nil {
 			return
+		}
+
+		if dropNext {
+			dropNext = false
+			continue
+		}
+
+		if dead {
+			continue
 		}
 
 		var req struct {
@@ -264,6 +284,13 @@ func (f *fakeJupyter) channels(c *wstest.Conn, k *fakeKernel) {
 			Content struct {
 				Code string `json:"code"`
 			} `json:"content"`
+		}
+
+		if json.Unmarshal(p, &req) == nil && req.Header.MsgType == "kernel_info_request" && req.Channel == "shell" {
+			f.kernelInfos.Add(1)
+			send("shell", "kernel_info_reply", req.Header.MsgID, map[string]any{"status": "ok", "protocol_version": "5.3"})
+
+			continue
 		}
 
 		if json.Unmarshal(p, &req) != nil || req.Header.MsgType != "execute_request" || req.Channel != "shell" {

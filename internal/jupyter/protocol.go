@@ -132,3 +132,21 @@ func resultsFromData(data map[string]any) map[string]any {
 
 	return out
 }
+
+func newKernelInfoRequest(session string) outbound {
+	return outbound{
+		Header: msgHeader{
+			MsgID:    newID(),
+			MsgType:  "kernel_info_request",
+			Username: "sbx",
+			Session:  session,
+			Date:     time.Now().UTC().Format(time.RFC3339Nano),
+			Version:  protocolVersion,
+		},
+		ParentHeader: map[string]any{},
+		Metadata:     map[string]any{},
+		Content:      map[string]any{},
+		Buffers:      []any{},
+		Channel:      "shell",
+	}
+}
