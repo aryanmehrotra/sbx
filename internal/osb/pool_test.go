@@ -347,7 +347,9 @@ func TestClaimWithoutEnvStillRekeys(t *testing.T) {
 // never be dropped by a member that was made without it.
 func TestPoolServesOnlyWhitelistedRequestFields(t *testing.T) {
 	for name, set := range map[string]func(map[string]any){
-		"volumes":       func(b map[string]any) { b["volumes"] = []any{map[string]any{"name": "v", "host": map[string]any{"path": "/tmp"}}} },
+		"volumes": func(b map[string]any) {
+			b["volumes"] = []any{map[string]any{"name": "v", "host": map[string]any{"path": "/tmp"}}}
+		},
 		"snapshotId":    func(b map[string]any) { b["snapshotId"] = "snap-1" },
 		"templateId":    func(b map[string]any) { b["templateId"] = "tpl-1" },
 		"networkPolicy": func(b map[string]any) { b["networkPolicy"] = map[string]any{"defaultAction": "deny"} },
