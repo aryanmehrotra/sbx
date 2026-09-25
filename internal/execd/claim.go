@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 type claimRequest struct {
@@ -35,7 +37,28 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The shutdown grace is execd's own setting, read when it started; a caller who set it at
+	// create - upstream's e2e suite does, on every sandbox - gets it applied here instead. It
+	// stays out of the environment commands see, as it would have from `docker run -e`.
+	var grace *time.Duration
+
+	if v, ok := req.Envs[EnvGraceShutdown]; ok {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest,
+				"invalid claim: "+EnvGraceShutdown+" must be a Go duration such as 200ms or 2s")
+
+			return
+		}
+
+		grace = &d
+	}
+
 	for k := range req.Envs {
+		if k == EnvGraceShutdown {
+			continue
+		}
+
 		if k == "" || strings.ContainsAny(k, "=\x00") || hiddenEnv[k] {
 			writeError(w, http.StatusBadRequest, codeInvalidRequest,
 				"invalid claim: env key "+k+" is not a variable a sandbox may set")
@@ -56,7 +79,15 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	// Into the process environment, not a side table: userEnv starts from os.Environ on every
 	// command, session and path expansion, so this is exactly what `docker run -e` would have
 	// given them - one mechanism, and nothing that could forget to consult a second.
+	if grace != nil {
+		shutdownGrace.Store(int64(*grace))
+	}
+
 	for k, v := range req.Envs {
+		if k == EnvGraceShutdown {
+			continue
+		}
+
 		if err := os.Setenv(k, v); err != nil {
 			writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid claim: env "+k+": "+err.Error())
 			return
@@ -68,3 +99,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// shutdownGrace is how long execd keeps serving after its entrypoint exits, in nanoseconds: set
+// from EXECD_API_GRACE_SHUTDOWN at start, and by a claim.
+var shutdownGrace atomic.Int64
