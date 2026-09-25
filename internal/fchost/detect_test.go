@@ -328,3 +328,17 @@ func TestLinuxAndMacAreHostcapsDecision(t *testing.T) {
 		}
 	}
 }
+
+// Doctor says which helper-VM driver has actually been run end to end.
+func TestDoctorSaysColimaIsTheVerifiedDriver(t *testing.T) {
+	ok := func(context.Context) (State, error) { return Absent, nil }
+
+	_, lima, _ := DoctorRow(context.Background(), Backend{Kind: HelperVM, Helper: "lima", Reason: "M4"}, "sbx-fc", ok)
+	if !strings.Contains(lima, "colima is the verified driver") || !strings.Contains(lima, "SBX_FC_VM_DRIVER=colima") {
+		t.Fatalf("lima row = %q", lima)
+	}
+
+	if _, colima, _ := DoctorRow(context.Background(), Backend{Kind: HelperVM, Helper: "colima", Reason: "M4"}, "sbx-fc", ok); strings.Contains(colima, "note:") {
+		t.Fatalf("colima row = %q", colima)
+	}
+}

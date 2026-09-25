@@ -33,7 +33,7 @@ func DoctorRow(ctx context.Context, b Backend, name string, status func(context.
 			vm = name + " running"
 		}
 
-		return true, fmt.Sprintf("helper VM (%s): %s; %s", b.Helper, b.Reason, vm), ""
+		return true, fmt.Sprintf("helper VM (%s): %s; %s%s", b.Helper, b.Reason, vm, driverNote(b.Helper)), ""
 	default:
 		return false, "refused: " + b.Reason, "--provider firecracker is refused here; " + b.Next
 	}
@@ -56,4 +56,17 @@ func HostDoctorRow(ctx context.Context, b Backend) (have bool, detail, meaning s
 	}
 
 	return DoctorRow(ctx, b, name, status)
+}
+
+// driverNote is what has actually been run end to end. colima has (the spike and every
+// fc-anywhere-e2e run); lima, the default when both are installed, has passed only the unit tests
+// - its image download on the machine that would have run it was projected at ~57 minutes, and the
+// run was stopped - so doctor says so rather than let "lima" read as proven.
+func driverNote(helper string) string {
+	if helper == "lima" {
+		return " - note: lima has not been run end to end yet; colima is the verified driver " +
+			"(SBX_FC_VM_DRIVER=colima)"
+	}
+
+	return ""
 }

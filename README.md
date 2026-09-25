@@ -89,7 +89,7 @@ one into `~/.sbx/osb/key`, `sbx mcp` reads it from there, and the SDKs take it a
 | **Keep twenty sandboxes polite on one laptop** | `cpu`, `memory`, `gpus` per service, so one runaway agent can't starve the rest |
 | **Build your own image** | `build:` instead of `image:`, cached by content hash — so a second create does no rebuild work |
 | **Take the same spec to a cluster** | `--provider kubernetes`, so what worked on your laptop is what runs in CI |
-| **Give each sandbox its own kernel, even on a Mac** | `--provider firecracker` — a Firecracker microVM; directly on Linux with `/dev/kvm`, through a helper VM sbx runs for you on an M3+ Mac (macOS 15+) or Windows 11, refused with the fix anywhere else. `sbx doctor` says which |
+| **Give each sandbox its own kernel, even on a Mac** | `--provider firecracker` — a Firecracker microVM; directly on Linux with `/dev/kvm`, through a helper VM sbx runs for you on an M3+ Mac (macOS 15+; colima is the verified driver, lima is not yet run end to end) or Windows 11, refused with the fix anywhere else. `sbx doctor` says which |
 | **Deploy anywhere and still drive it from your terminal** | `sbx pack` + `sbx connect` turn a one-port platform back into local ports |
 
 **See and drive the fleet**
