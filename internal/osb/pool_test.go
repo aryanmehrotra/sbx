@@ -223,7 +223,10 @@ func TestAMemberThatCannotBeClaimedIsDiscardedAndTheCreateStillSucceeds(t *testi
 	}
 	h.p.mu.Unlock()
 
-	got := h.create(sdkCreate())
+	withEnv := sdkCreate()
+	withEnv["env"] = map[string]string{"A": "b"} // env is what makes a claim call execd
+
+	got := h.create(withEnv)
 	if got.Status.State != stateRunning || got.ID == member {
 		t.Fatalf("create after a failed claim: %s %s, want a cold Running sandbox", got.ID, got.Status.State)
 	}
@@ -297,13 +300,43 @@ func TestFrozenPoolThawsOnClaim(t *testing.T) {
 		t.Fatalf("member not frozen: %s", h.rt.seen())
 	}
 
+	withEnv := sdkCreate()
+	withEnv["env"] = map[string]string{"A": "b"}
+
 	var created sandboxJSON
-	h.do("POST", "/v1/sandboxes", sdkCreate(), &created)
+	h.do("POST", "/v1/sandboxes", withEnv, &created)
 
 	seen := h.rt.seen()
 	thaw := strings.Index(seen, "thaw "+created.ID)
 
 	if created.Status.State != stateRunning || thaw < 0 || len(cl.all()) != 1 {
 		t.Fatalf("frozen claim: state %s, runtime %s, claims %d", created.Status.State, seen, len(cl.all()))
+	}
+}
+
+// A claim with no env makes no call to execd at all: the member's token was minted here and
+// never left this process, so it becomes the caller's token as it is. The round trip through
+// the wake port is only for delivering env.
+func TestClaimWithoutEnvMakesNoExecdCall(t *testing.T) {
+	cl := &claimLog{}
+	h := poolHarness(t, 1, cl)
+	h.poolReady(1)
+
+	var created sandboxJSON
+	h.do("POST", "/v1/sandboxes", sdkCreate(), &created)
+
+	if created.Status.State != stateRunning {
+		t.Fatalf("create: %s", created.Status.State)
+	}
+
+	if n := len(cl.all()); n != 0 {
+		t.Fatalf("%d execd claims for a create with no env, want none", n)
+	}
+
+	var ep endpointJSON
+	h.do("GET", "/v1/sandboxes/"+created.ID+"/endpoints/44772", nil, &ep)
+
+	if len(ep.Headers[tokenHeader]) < 32 {
+		t.Fatalf("endpoint token %q: want the member's own minted token", ep.Headers[tokenHeader])
 	}
 }

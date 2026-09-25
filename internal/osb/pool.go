@@ -12,9 +12,9 @@ package osb
 // gave. That is what keeps it invisible - GET, list, delete and diagnostics all treat a pooled
 // record as absent - while everything underneath (provisioning, the daemon fronting it, removal)
 // is the same code a normal create runs. A claim then gives it a caller: the record takes the
-// request's metadata, expiry and a fresh token, and execd is re-keyed and handed the request's
-// env through POST /sbx/claim. The id was minted when the member was made and never shown to
-// anyone, so it is as new to the caller as a cold create's.
+// request's metadata and expiry, and - when the request carries env - execd is handed it through
+// POST /sbx/claim and re-keyed in the same call. The id and the token were minted when the member
+// was made and never left this process, so they are as new to the caller as a cold create's.
 //
 // What a member cannot take on is anything that shapes the container: image, entrypoint, limits,
 // ports, platform, idle mode, a network policy. A request that differs in any of them is not
@@ -248,11 +248,20 @@ func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, erro
 		s.trace.mark(m.id, "thawed")
 	}
 
-	if err := s.claimExecd(ctx, m.addr, m.token, pl.rec.Token, pl.env); err != nil {
-		return record{}, fmt.Errorf("re-keying execd: %w", err)
-	}
+	// The member's token was minted by this process and has never left it, so it is as good a
+	// credential for the caller as a fresh one - and keeping it costs nothing. execd is called
+	// only to deliver env, and then it is re-keyed in the same call, since that is free.
+	token := m.token
 
-	s.trace.mark(m.id, "execd re-keyed")
+	if len(pl.env) > 0 {
+		if err := s.claimExecd(ctx, m.addr, m.token, pl.rec.Token, pl.env); err != nil {
+			return record{}, fmt.Errorf("re-keying execd: %w", err)
+		}
+
+		token = pl.rec.Token
+
+		s.trace.mark(m.id, "execd re-keyed")
+	}
 
 	now := s.now().UTC()
 
@@ -267,7 +276,7 @@ func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, erro
 	r.Pool = ""
 	r.Metadata = pl.rec.Metadata
 	r.Extensions = pl.rec.Extensions
-	r.Token = pl.rec.Token
+	r.Token = token
 	r.CreatedAt = now
 	r.ExpiresAt = pl.rec.ExpiresAt
 	r.transition(stateRunning, "", "", now)
