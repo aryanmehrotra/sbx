@@ -1,3 +1,5 @@
+//go:build unix
+
 package execd
 
 // The warm-pool claim: an sbx extension, not part of OpenSandbox's execd API.
