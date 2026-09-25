@@ -1,10 +1,17 @@
 package osb
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // An image already on the engine is used as it is. `docker pull` of a present tag still asks the
@@ -113,5 +120,96 @@ func TestGetAsksAboutOneSandboxAndEndpointNothing(t *testing.T) {
 
 	if !slices.Equal(h.p.lists, []string{sb.ID}) {
 		t.Fatalf("lists %q, want one, of this sandbox only (the GET's); the endpoint needs none", h.p.lists)
+	}
+}
+
+// pickingDocker is the fake with a slot picker, and a Create slow enough to overlap: what the
+// docker provider looks like to a burst.
+type pickingDocker struct {
+	*fakeDocker
+
+	inCreate, maxInCreate atomic.Int32
+}
+
+func (p *pickingDocker) PickSlot(taken map[int]bool) (int, error) {
+	for i := range 128 {
+		if !taken[i] {
+			return i, nil
+		}
+	}
+
+	return 0, errors.New("full")
+}
+
+func (p *pickingDocker) Create(ctx context.Context, sandbox string, slot, start int, svc string, s spec.Service,
+	eps []provider.Endpoint, dir string, iso provider.Isolation) error {
+	n := p.inCreate.Add(1)
+	defer p.inCreate.Add(-1)
+
+	for {
+		m := p.maxInCreate.Load()
+		if n <= m || p.maxInCreate.CompareAndSwap(m, n) {
+			break
+		}
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	return p.fakeDocker.Create(ctx, sandbox, slot, start, svc, s, eps, dir, iso)
+}
+
+// A burst of cold creates gets distinct slots without holding the slot lock through `docker
+// run`: the lock covers the choice, an in-process reservation covers the gap until the
+// container exists. And no more than dockerConcurrency runs are in flight at once.
+func TestColdBurstGetsDistinctSlotsWithCreatesOverlapping(t *testing.T) {
+	pd := &pickingDocker{fakeDocker: newFakeDocker()}
+
+	h := newHarness(t, func(_ *harness, o *Options) {
+		o.Provider = pd
+		o.DockerConcurrency = 4
+	})
+
+	const n = 12
+
+	var wg sync.WaitGroup
+
+	ids := make(chan string, n)
+
+	for range n {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			var sb sandboxJSON
+			h.do("POST", "/v1/sandboxes", minimalCreate(), &sb)
+			ids <- sb.ID
+		}()
+	}
+
+	wg.Wait()
+	close(ids)
+
+	for id := range ids {
+		h.waitState(id, stateRunning)
+	}
+
+	pd.mu.Lock()
+	slots := map[int]string{}
+	for sb, u := range pd.units {
+		if other, dup := slots[u.Slot]; dup {
+			t.Errorf("slot %d given to both %s and %s", u.Slot, other, sb)
+		}
+
+		slots[u.Slot] = sb
+	}
+	pd.mu.Unlock()
+
+	if len(slots) != n {
+		t.Fatalf("%d distinct slots for %d creates", len(slots), n)
+	}
+
+	if m := pd.maxInCreate.Load(); m < 2 || m > 4 {
+		t.Fatalf("at most %d creates overlapped; want 2..4 (overlapping, and bounded by 4)", m)
 	}
 }

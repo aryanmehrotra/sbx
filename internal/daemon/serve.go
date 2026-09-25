@@ -129,6 +129,9 @@ type daemon struct {
 	// would each see the new unit as unknown and both bind its port.
 	discovering sync.Mutex
 
+	// refresher coalesces the API's Refresh calls - see refresh.go.
+	refresher refresher
+
 	// held are sandboxes paused on purpose through the API. Kept here rather than on the unit
 	// because a hold must cover units the daemon has not discovered yet - after a restart, the
 	// API re-asserts its holds before the first discovery pass has run.

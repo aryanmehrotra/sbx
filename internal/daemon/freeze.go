@@ -24,7 +24,7 @@ import (
 
 // Refresh runs a discovery pass now rather than on the next tick, so a sandbox created through
 // the API is fronted - and its endpoint answers - within the request that is waiting for it.
-func (d *daemon) Refresh(ctx context.Context) { d.discover(ctx) }
+func (d *daemon) Refresh(ctx context.Context) { d.refresher.do(ctx, d.discover) }
 
 // Hold marks a sandbox paused on purpose (or releases it) without touching the container. The
 // API calls it on start to re-assert pauses that outlived a daemon restart.

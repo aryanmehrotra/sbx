@@ -105,6 +105,11 @@ type Options struct {
 	// Pools are the warm pools to keep full (sbx serve --osb-pool).
 	Pools []PoolSpec
 
+	// DockerConcurrency bounds how many containers are being created at once (zero means 8).
+	// A burst of a hundred creates otherwise fires a hundred `docker run`s together, each a
+	// process and each competing in dockerd with the rest, and every one of them is late.
+	DockerConcurrency int
+
 	// PoolFreeze freezes members while they wait (docker pause) instead of pinning them
 	// running. It saves their idle CPU - near zero for tail and execd - and costs every claim a
 	// thaw, which dockerd serialises: 200-400 ms for twenty at once on colima.
@@ -162,6 +167,12 @@ type Server struct {
 	pools      map[string]*pool
 	poolSem    chan struct{}
 	poolFreeze bool
+
+	// dockerSem bounds container creation; reserved holds the slots handed to creates whose
+	// containers no list can show yet - see createPicked.
+	dockerSem  chan struct{}
+	slotMu     sync.Mutex
+	reserved   map[int]time.Time
 	claimExecd func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
 
 	// base outlives any one request: provisioning continues after the create call has
@@ -267,6 +278,13 @@ func New(o Options) (*Server, error) {
 
 	s.poolSem = make(chan struct{}, o.PoolConcurrency)
 	s.poolFreeze = o.PoolFreeze
+
+	if o.DockerConcurrency <= 0 {
+		o.DockerConcurrency = 8
+	}
+
+	s.dockerSem = make(chan struct{}, o.DockerConcurrency)
+	s.reserved = map[int]time.Time{}
 
 	if err := s.newPools(o.Pools); err != nil {
 		return nil, err

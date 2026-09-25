@@ -113,8 +113,13 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 		used[u.Slot] = true
 	}
 
+	return d.PickSlot(used)
+}
+
+// PickSlot implements SlotPicker: the first slot not in taken whose ports are free.
+func (d *dockerProvider) PickSlot(taken map[int]bool) (int, error) {
 	for i := range maxSlots {
-		if used[i] {
+		if taken[i] {
 			continue
 		}
 
