@@ -6,11 +6,21 @@ import (
 	"strings"
 )
 
-//go:embed filter.go
-var filterSource string
+// The sources the container filter is built from. Every one is a file of this package, compiled
+// by its own tests here, and copied verbatim apart from the package clause.
+var (
+	//go:embed filter.go
+	filterSource string
 
-//go:embed standalone_main.go.txt
-var mainSource string
+	//go:embed policy.go
+	policySource string
+
+	//go:embed control.go
+	controlSource string
+
+	//go:embed standalone_main.go.txt
+	mainSource string
+)
 
 // GoVersion is the toolchain the generated context asks for. Kept beside the sources it builds
 // so a go.mod bump and this move together.
@@ -32,25 +42,30 @@ func BuildContext(builder, runtime string) (map[string]string, error) {
 		return nil, fmt.Errorf("egress: build context needs both a builder and a runtime image")
 	}
 
-	filter := strings.Replace(filterSource, "package egress\n", "package main\n", 1)
-	if !strings.HasPrefix(filter, "package main\n") {
-		return nil, fmt.Errorf("egress: filter.go does not start with its package clause")
-	}
-
-	dockerfile := fmt.Sprintf(`FROM %s AS build
+	files := map[string]string{
+		"Dockerfile": fmt.Sprintf(`FROM %s AS build
 WORKDIR /b
-COPY go.mod filter.go main.go ./
+COPY go.mod *.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /filter .
 
 FROM %s
 COPY --from=build /filter /filter
 ENTRYPOINT ["/filter"]
-`, builder, runtime)
+`, builder, runtime),
+		"go.mod":  "module sbxegress\n\ngo " + GoVersion + "\n",
+		"main.go": mainSource,
+	}
 
-	return map[string]string{
-		"Dockerfile": dockerfile,
-		"go.mod":     "module sbxegress\n\ngo " + GoVersion + "\n",
-		"filter.go":  filter,
-		"main.go":    mainSource,
-	}, nil
+	for name, src := range map[string]string{
+		"filter.go": filterSource, "policy.go": policySource, "control.go": controlSource,
+	} {
+		body := strings.Replace(src, "package egress\n", "package main\n", 1)
+		if !strings.HasPrefix(body, "package main\n") {
+			return nil, fmt.Errorf("egress: %s does not start with its package clause", name)
+		}
+
+		files[name] = body
+	}
+
+	return files, nil
 }

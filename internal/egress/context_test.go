@@ -106,6 +106,8 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 
 	cmd := exec.Command(bin,
 		"-allow", "127.0.0.1",
+		"-token", "t0ken",
+		"-state", filepath.Join(dir, "policy.json"),
 		"-listen", "127.0.0.1:"+proxyPort,
 		"-stat", "127.0.0.1:"+statPort)
 
@@ -164,6 +166,8 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 
 	t.Logf("the compiled container filter allowed one host, refused another, and reports last "+
 		"activity as %s", strings.TrimSpace(string(raw)))
+
+	controlLocksTheRunningFilterDown(t, tr, upstream.URL, "127.0.0.1:"+statPort, filepath.Join(dir, "policy.json"))
 }
 
 func freePort(t *testing.T) string {
@@ -196,4 +200,55 @@ func waitFor(t *testing.T, addr string) {
 	}
 
 	t.Fatalf("%s never came up", addr)
+}
+
+// controlLocksTheRunningFilterDown is the live update, against the compiled binary: the same
+// process, never restarted, is told a new policy over its control endpoint and the host it was
+// carrying a moment ago is refused on the very next request.
+func controlLocksTheRunningFilterDown(t *testing.T, tr *http.Transport, allowedURL, ctl, state string) {
+	t.Helper()
+
+	put := func(token, body string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPut, "http://"+ctl+"/policy", strings.NewReader(body))
+		req.Header.Set(TokenHeader, token)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		return resp
+	}
+
+	// The workload can reach this port - it must not be able to rewrite its own policy.
+	if resp := put("guess", `{"defaultAction":"allow"}`); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a PUT without the token got %d, want 401: the sandbox could open its own egress",
+			resp.StatusCode)
+	}
+
+	if resp := put("t0ken", `{"defaultAction":"deny","egress":[{"action":"deny","target":"127.0.0.0/8"}]}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the control endpoint refused a valid policy: %d", resp.StatusCode)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, allowedURL, nil)
+
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("after a live update denying 127.0.0.0/8 the filter still carried the request (%d): "+
+			"the update did not reach the running process", resp.StatusCode)
+	}
+
+	saved, err := os.ReadFile(state)
+	if err != nil || !strings.Contains(string(saved), "127.0.0.0/8") {
+		t.Fatalf("the live policy was not saved for a restart (%v): %s", err, saved)
+	}
 }

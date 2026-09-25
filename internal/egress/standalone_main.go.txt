@@ -1,15 +1,16 @@
 package main
 
-// Generated build context: this file is compiled beside a verbatim copy of sbx's own
-// internal/egress/filter.go, with only its package clause rewritten. The filter that runs in the
-// container is therefore the filter the test suite covers, not a second implementation of the
-// same idea that can drift from it.
+// Generated build context: this file is compiled beside verbatim copies of sbx's own
+// internal/egress/filter.go, policy.go and control.go, with only their package clauses
+// rewritten. The filter that runs in the container is therefore the filter the test suite
+// covers, not a second implementation of the same idea that can drift from it.
 
 import (
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,29 +18,78 @@ import (
 
 func main() {
 	var (
-		allow  = flag.String("allow", "", "comma-separated hosts this sandbox may reach")
+		allow  = flag.String("allow", "", "comma-separated hosts this sandbox may reach (egress_allow)")
+		policy = flag.String("policy", "", "the network policy to start with, as JSON; wins over -allow")
+		token  = flag.String("token", os.Getenv("SBX_EGRESS_TOKEN"), "secret the control endpoint requires")
+		state  = flag.String("state", "/var/lib/sbx-egress/policy.json", "where a live policy is kept across restarts")
 		listen = flag.String("listen", ":20999", "proxy address")
-		stat   = flag.String("stat", ":20998", "address serving the last-activity timestamp")
+		stat   = flag.String("stat", ":20998", "address serving the last-activity timestamp and the control endpoint")
 	)
 
 	flag.Parse()
+
+	start := New(strings.Split(*allow, ",")).Policy()
+
+	if *policy != "" {
+		p, err := ParsePolicy([]byte(*policy))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "-policy:", err)
+			os.Exit(2)
+		}
+
+		start = p
+	}
+
+	// A policy set live outlives a restart of this container. Without this, a machine that
+	// rebooted would bring the filter back enforcing the policy it was CREATED with, which is
+	// whatever the box was allowed before somebody locked it down - the looser one, typically,
+	// and silently, until the daemon noticed the drift and pushed it again.
+	if b, err := os.ReadFile(*state); err == nil {
+		if p, err := ParsePolicy(b); err == nil {
+			start = p
+		} else {
+			fmt.Fprintln(os.Stderr, "ignoring an unreadable saved policy:", err)
+		}
+	}
 
 	var last atomic.Int64
 
 	last.Store(time.Now().UnixNano())
 
-	f := New(strings.Split(*allow, ","))
+	f := NewPolicy(start)
 	f.OnActivity = func() { last.Store(time.Now().UnixNano()) }
+
+	ctl := &Control{Filter: f, Token: *token, Persist: func(p Policy) error {
+		b, err := p.MarshalJSON()
+		if err != nil {
+			return err
+		}
+
+		if err := os.MkdirAll(filepath.Dir(*state), 0o700); err != nil {
+			return err
+		}
+
+		tmp := *state + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o600); err != nil {
+			return err
+		}
+
+		return os.Rename(tmp, *state)
+	}}
 
 	// The daemon runs on the host and cannot see into the sandbox's bridge, so it cannot observe
 	// this filter's traffic the way it observes its own. It scrapes this instead, once a refresh
 	// tick, and stamps the sandbox's units when the number has moved. A tick is seconds and an
 	// idle window is minutes, so the lag is far inside the decision it feeds.
+	//
+	// The same listener carries the control endpoint, because it is the one port of this
+	// container the daemon can already reach.
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/last", func(w http.ResponseWriter, _ *http.Request) {
 			fmt.Fprintf(w, "%d\n", last.Load())
 		})
+		mux.Handle("/policy", ctl)
 
 		s := &http.Server{Addr: *stat, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		if err := s.ListenAndServe(); err != nil {
@@ -51,7 +101,7 @@ func main() {
 	// as long as the conversation lasts, and a timeout here would cut a streaming response.
 	s := &http.Server{Addr: *listen, Handler: f}
 
-	fmt.Fprintf(os.Stderr, "sbx egress filter on %s, allowing: %s\n", *listen, *allow)
+	fmt.Fprintf(os.Stderr, "sbx egress filter on %s, policy %s (%s)\n", *listen, start.Hash(), start.Mode())
 
 	if err := s.ListenAndServe(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

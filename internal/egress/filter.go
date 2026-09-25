@@ -1,23 +1,33 @@
 package egress
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"strings"
+	"net/netip"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Filter is the data-path component a real egress allow-list needs - the one SPEC.md and
 // the spec's Egress field call for by name ("a filtering proxy in the data path, a component
-// with a lifecycle, not a flag"). A service with an allow-list sits on the same no-NAT bridge
-// that `egress: "deny"` uses, so it has no route off the host on its own; this proxy, reachable
-// on the bridge gateway, is the only way out, and it forwards only to the allowed hosts. A
-// client that ignores the proxy and dials a host directly gets no route at all, so the list is
+// with a lifecycle, not a flag"). A filtered service sits on the same no-NAT bridge that
+// `egress: "deny"` uses, so it has no route off the host on its own; this proxy, reachable
+// on the bridge gateway, is the only way out, and it forwards only what its policy permits. A
+// client that ignores the proxy and dials a host directly gets no route at all, so the policy is
 // enforced rather than advisory - the point the spec comment makes about a control that controls.
 //
-// It answers CONNECT (the tunnel every HTTPS client opens) and plain HTTP. A host that is not on
-// the list gets 403 and no connection; the proxy never opens a socket to it.
+// It answers CONNECT (the tunnel every HTTPS client opens) and plain HTTP. A destination the
+// policy refuses gets 403 and no connection; the proxy never opens a socket to it.
+//
+// The policy is swapped in place (SetPolicy), so a running sandbox's egress can change without
+// recreating anything. A request is judged against the policy in force when it arrives; a
+// tunnel already open is not cut by a later change, the same as a firewall that matches on new
+// connections only.
 type Filter struct {
 	// OnActivity is called when a permitted request is carried, or nil.
 	//
@@ -31,46 +41,134 @@ type Filter struct {
 	// that has stopped sleeps on the ordinary timer.
 	OnActivity func()
 
-	// allow holds lower-cased host suffixes. "openai.com" permits openai.com and any subdomain
-	// of it (api.openai.com), which is what an allow-list of a service's domain has to mean -
-	// an API's endpoints move across subdomains and a per-host list would break on the first one.
-	allow []string
+	// Resolve looks a hostname up, or is nil for the system resolver. The filter resolves names
+	// itself, checks every address, and dials the address it checked - never the name again,
+	// which would let a second answer (DNS rebinding) walk around the first check.
+	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+
+	pol atomic.Pointer[compiled]
+
+	once      sync.Once
+	transport *http.Transport
 }
 
-// New builds a filter from allow entries, each a host or host:port (the port is
-// ignored - the list matches on host). Blank and malformed entries are dropped.
-func New(allow []string) *Filter {
+// New builds a filter from egress_allow entries, each a host or host:port (the port is
+// ignored). A host permits itself and its subdomains, as the field always has.
+func New(allow []string) *Filter { return NewPolicy(FromAllowList(allow)) }
+
+// NewPolicy builds a filter enforcing p. p is expected to be normalized (ParsePolicy or
+// Normalize); a policy that is not is enforced as written, which for a malformed target means a
+// rule that matches nothing.
+func NewPolicy(p Policy) *Filter {
 	f := &Filter{}
-
-	for _, a := range allow {
-		a = strings.ToLower(strings.TrimSpace(a))
-		if h, _, err := net.SplitHostPort(a); err == nil {
-			a = h
-		}
-
-		if a = strings.TrimSuffix(a, "."); a != "" {
-			f.allow = append(f.allow, a)
-		}
-	}
+	f.pol.Store(compile(p))
 
 	return f
 }
 
-// Permits reports whether host (bare or host:port) is on the allow-list, matching the host
-// itself and any subdomain of a listed one.
+// SetPolicy replaces the policy in force, atomically: a request sees the old policy or the new
+// one, never a mixture.
+func (f *Filter) SetPolicy(p Policy) error {
+	n, err := p.Normalize()
+	if err != nil {
+		return err
+	}
+
+	f.pol.Store(compile(n))
+
+	return nil
+}
+
+// Policy returns the policy in force.
+func (f *Filter) Policy() Policy { return f.pol.Load().p }
+
+// Permits reports whether host (bare or host:port) is permitted by name alone - the domain rules
+// and the default for a name, the address rules for an IP literal. It does not resolve; the
+// resolved-address check is applied when a request is actually carried.
 func (f *Filter) Permits(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 
-	for _, a := range f.allow {
-		if host == a || strings.HasSuffix(host, "."+a) {
-			return true
+	c := f.pol.Load()
+
+	if a, err := netip.ParseAddr(host); err == nil {
+		return c.allowsAddr(a)
+	}
+
+	return c.allowsName(host)
+}
+
+// errDenied is a destination the policy refuses, as opposed to one that could not be reached.
+type errDenied struct{ why string }
+
+func (e *errDenied) Error() string { return "egress not allowed: " + e.why }
+
+// admit decides one destination and returns the addresses it may be dialled at.
+func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
+	c := f.pol.Load()
+
+	if a, err := netip.ParseAddr(host); err == nil {
+		if !c.allowsAddr(a) {
+			return nil, &errDenied{why: host}
+		}
+
+		return []netip.Addr{a}, nil
+	}
+
+	if !c.allowsName(host) {
+		return nil, &errDenied{why: host}
+	}
+
+	addrs, err := f.resolve(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+
+	// Every address, not the first: a name whose answer set includes one denied address is a
+	// name that can be steered to it, and which one a client dials is not ours to choose.
+	for _, a := range addrs {
+		if c.deniesResolved(a) {
+			return nil, &errDenied{why: fmt.Sprintf("%s resolves to %s, which the policy denies", host, a)}
 		}
 	}
 
-	return false
+	return addrs, nil
+}
+
+func (f *Filter) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	if f.Resolve != nil {
+		return f.Resolve(ctx, host)
+	}
+
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+// dial opens a connection to host:port, admitted and at a checked address.
+func (f *Filter) dial(ctx context.Context, host, port string) (net.Conn, error) {
+	addrs, err := f.admit(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+
+	d := net.Dialer{Timeout: 10 * time.Second}
+
+	var last error
+
+	for _, a := range addrs {
+		c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(a.String(), port))
+		if err == nil {
+			return c, nil
+		}
+
+		last = err
+	}
+
+	if last == nil {
+		last = fmt.Errorf("%s has no addresses", host)
+	}
+
+	return nil, last
 }
 
 func (f *Filter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -82,26 +180,33 @@ func (f *Filter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.forward(w, r)
 }
 
-// tunnel handles CONNECT: check the host, and only then open the upstream socket and splice.
+// refuse answers a request the policy does not permit, or one whose upstream failed.
+func refuse(w http.ResponseWriter, err error) {
+	var d *errDenied
+	if errors.As(err, &d) {
+		http.Error(w, d.Error(), http.StatusForbidden)
+		return
+	}
+
+	http.Error(w, err.Error(), http.StatusBadGateway)
+}
+
+// tunnel handles CONNECT: check the destination, and only then open the upstream socket and
+// splice.
 func (f *Filter) tunnel(w http.ResponseWriter, r *http.Request) {
 	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		host, port = r.Host, "443"
 	}
 
-	if !f.Permits(host) {
-		http.Error(w, "egress not allowed: "+host, http.StatusForbidden)
-		return
-	}
-
-	f.note()
-
-	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
+	upstream, err := f.dial(r.Context(), host, port)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		refuse(w, err)
 		return
 	}
 	defer upstream.Close()
+
+	f.note()
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -125,10 +230,20 @@ func (f *Filter) tunnel(w http.ResponseWriter, r *http.Request) {
 	<-done
 }
 
-// forward handles a plain (non-CONNECT) HTTP request: check the host, then relay it.
+// forward handles a plain (non-CONNECT) HTTP request: check the destination, then relay it.
 func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
-	if !f.Permits(r.Host) {
-		http.Error(w, "egress not allowed: "+r.Host, http.StatusForbidden)
+	host := r.URL.Hostname()
+	if host == "" {
+		host = r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	}
+
+	// Checked per request, not only at dial: the transport pools connections, and one opened
+	// under an older, looser policy must not carry a request the current policy refuses.
+	if _, err := f.admit(r.Context(), host); err != nil {
+		refuse(w, err)
 		return
 	}
 
@@ -136,9 +251,9 @@ func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 
 	r.RequestURI = ""
 
-	resp, err := http.DefaultTransport.RoundTrip(r)
+	resp, err := f.roundTripper().RoundTrip(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		refuse(w, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -151,6 +266,29 @@ func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(f.active(w), resp.Body)
+}
+
+// roundTripper is the transport plain HTTP is relayed on. Its dialer re-admits and dials a
+// checked address, so the name is never resolved by anything but the filter.
+func (f *Filter) roundTripper() *http.Transport {
+	f.once.Do(func() {
+		f.transport = &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+
+				return f.dial(ctx, host, port)
+			},
+			MaxIdleConns:        16,
+			IdleConnTimeout:     30 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		}
+	})
+
+	return f.transport
 }
 
 // stamp reports activity as bytes move, not just when a request opens.
