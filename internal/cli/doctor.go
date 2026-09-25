@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/aryanmehrotra/sbx/internal/fchost"
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"slices"
@@ -188,6 +189,14 @@ func Doctor(ctx context.Context) Report {
 			Name: iso.flag, Have: ok, Detail: detail, Meaning: iso.why,
 		})
 	}
+
+	// A microVM is a backend decision, not a docker runtime, so it gets its own row: which
+	// backend `--provider firecracker` would use from here and why - directly, through a helper
+	// VM, or refused with the fix. It only reads; the helper VM is never started from here.
+	fcHave, fcDetail, fcMeaning := fchost.HostDoctorRow(ctx)
+	rep.Capabilities = append(rep.Capabilities, Capability{
+		Name: "microVM", Have: fcHave, Detail: fcDetail, Meaning: fcMeaning,
+	})
 
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.

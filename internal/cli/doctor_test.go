@@ -34,7 +34,7 @@ func TestEveryAbsentCapabilityExplainsItself(t *testing.T) {
 func TestReportCoversIsolationAndCheckpoint(t *testing.T) {
 	rep := Doctor(context.Background())
 
-	want := []string{"isolation gvisor", "isolation kata", "docker checkpoint"}
+	want := []string{"isolation gvisor", "isolation kata", "docker checkpoint", "microVM"}
 
 	for _, w := range want {
 		found := false

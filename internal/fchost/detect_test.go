@@ -1,6 +1,7 @@
 package fchost
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -263,5 +264,47 @@ func TestParseChip(t *testing.T) {
 		if got := chipGeneration(in); got != want {
 			t.Errorf("chipGeneration(%q) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+func TestDoctorRow(t *testing.T) {
+	ctx := t.Context()
+	helper := Backend{Kind: HelperVM, Helper: "lima", Reason: "Apple M4 on macOS 26.4.1: ..."}
+
+	cases := []struct {
+		name    string
+		b       Backend
+		state   State
+		err     error
+		have    bool
+		detail  []string
+		meaning string
+	}{
+		{"direct", Backend{Kind: Direct, Reason: "/dev/kvm is present"}, "", nil, true, []string{"direct", "/dev/kvm"}, ""},
+		{"helper, never created", helper, Absent, nil, true, []string{"helper VM (lima)", "sbx-fc not created yet", "first use"}, ""},
+		{"helper, stopped", helper, Stopped, nil, true, []string{"sbx-fc stopped", "on demand"}, ""},
+		{"helper, running", helper, Running, nil, true, []string{"sbx-fc running"}, ""},
+		{"helper, tool broken", helper, "", errors.New("limactl: boom"), false, []string{"limactl: boom"}, "sbx fc vm status"},
+		{"refused", Backend{Kind: Refused, Reason: "no /dev/kvm on Amazon EC2 t3.large", Next: "use a .metal instance"}, "", nil, false, []string{"refused", "Amazon EC2"}, ".metal"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			have, detail, meaning := DoctorRow(ctx, c.b, "sbx-fc", func(context.Context) (State, error) { return c.state, c.err })
+
+			if have != c.have {
+				t.Errorf("have = %v", have)
+			}
+
+			for _, w := range c.detail {
+				if !strings.Contains(detail, w) {
+					t.Errorf("detail %q lacks %q", detail, w)
+				}
+			}
+
+			if !strings.Contains(meaning, c.meaning) || (!have && meaning == "") {
+				t.Errorf("meaning %q, want it to contain %q", meaning, c.meaning)
+			}
+		})
 	}
 }
