@@ -110,6 +110,8 @@ func Main(_ []string) int {
 		return fail("chroot: " + err.Error())
 	}
 
+	writeHostname("/etc/hostname", cfg.Hostname)
+
 	wd := cfg.WorkingDir
 	if wd == "" {
 		wd = "/"

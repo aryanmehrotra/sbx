@@ -57,3 +57,14 @@ func fail(msg string) int {
 	_, _ = os.Stderr.WriteString("sbx fc-init: " + msg + "\n")
 	return 1
 }
+
+// writeHostname fills /etc/hostname the way docker's bind mount would. `docker export` of an
+// image's container gives an empty file there (docker mounts over it), so without this the
+// workload reads no name from it. Best effort: a read-only root keeps the empty file.
+func writeHostname(path, name string) {
+	if name == "" {
+		return
+	}
+
+	_ = os.WriteFile(path, []byte(name+"\n"), 0o644)
+}

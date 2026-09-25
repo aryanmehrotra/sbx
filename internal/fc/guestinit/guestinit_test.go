@@ -1,6 +1,8 @@
 package guestinit
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -34,5 +36,26 @@ func TestMainRefusesOutsideAVM(t *testing.T) {
 	// Not PID 1 on linux, not linux elsewhere: either way a refusal, never a mount attempt.
 	if Main(nil) == 0 {
 		t.Fatal("fc-init ran outside a VM")
+	}
+}
+
+// docker bind-mounts /etc/hostname, so `docker export` gives an EMPTY file; a VM must fill it,
+// or `cat /etc/hostname` in the workload reads nothing (found on a real boot).
+func TestWriteHostname(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hostname")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHostname(p, "nginx")
+
+	if b, _ := os.ReadFile(p); string(b) != "nginx\n" {
+		t.Fatalf("/etc/hostname = %q", b)
+	}
+
+	writeHostname(p, "")
+
+	if b, _ := os.ReadFile(p); string(b) != "nginx\n" {
+		t.Fatalf("an empty name rewrote it: %q", b)
 	}
 }
