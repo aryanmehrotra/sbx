@@ -1445,3 +1445,50 @@ func TestSnapshotNamesDoNotCollide(t *testing.T) {
 		t.Fatal("another image that folds to the same name found the snapshot")
 	}
 }
+
+// health is run, not accepted and ignored: inside the VM, through /bin/sh as docker's CMD-SHELL,
+// and its exit status is the answer. Without a guest agent to run it, the create is refused by
+// name.
+func TestHealthRunsInsideTheVM(t *testing.T) {
+	r := newRig(t)
+
+	svc := redis
+	svc.Health = "redis-cli ping"
+
+	var ran []string
+
+	fail := error(&ExitError{Code: 1})
+	r.p.healthExec = func(_ context.Context, _ string, argv []string) (string, error) {
+		ran = argv
+		return "", fail
+	}
+
+	ref := r.create(t, "s8", svc)
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if serving, declared := r.p.Healthy(r.ctx, ref); serving || !declared {
+		t.Fatalf("a failing health command = %v, %v", serving, declared)
+	}
+
+	if strings.Join(ran, " ") != "/bin/sh -c redis-cli ping" {
+		t.Fatalf("ran %q", ran)
+	}
+
+	fail = nil
+
+	if serving, declared := r.p.Probe(r.ctx, ref); !serving || !declared {
+		t.Fatalf("a passing health command = %v, %v", serving, declared)
+	}
+
+	r2 := newRig(t)
+	r2.p.guest = fc.NoGuest{}
+
+	eps := r2.p.Endpoints("s8b", "cache", 0, 0, svc.Ports)
+	if err := r2.p.Create(r2.ctx, "s8b", 0, 0, "cache", svc, eps, "", IsolationContainer); err == nil ||
+		!strings.Contains(err.Error(), "health") {
+		t.Fatalf("health with no guest agent = %v, want it refused by name", err)
+	}
+}

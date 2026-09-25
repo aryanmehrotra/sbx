@@ -111,6 +111,7 @@ type fcVM struct {
 	Ports     []int     `json:"ports"`  // inside the guest
 	Public    []int     `json:"public"` // where clients connect
 	DependsOn []string  `json:"depends_on,omitempty"`
+	Health    string    `json:"health,omitempty"` // the spec's health command, run by execd
 	Idle      string    `json:"idle,omitempty"`
 	OnIdle    string    `json:"on_idle,omitempty"`
 	Kernel    string    `json:"kernel"`
@@ -167,6 +168,10 @@ type fcProvider struct {
 
 	// probeDial reaches a guest port for Probe; nil is a plain TCP dial. A field for tests.
 	probeDial func(ctx context.Context, addr string) (net.Conn, error)
+
+	// healthExec runs a service's health command in its VM; p.Exec (execd over vsock), a field
+	// for tests.
+	healthExec func(ctx context.Context, ref string, argv []string) (string, error)
 
 	mu    sync.Mutex
 	locks map[string]*refLock
@@ -531,6 +536,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return err
 	}
 
+	// health runs inside the VM through execd; with no guest agent there is nothing to run it,
+	// and a health command that is silently never run is the one thing the spec forbids.
+	if svc.Health != "" && !p.guest.Available() {
+		return fmt.Errorf("the firecracker provider cannot honour health (%q): it runs inside the VM "+
+			"through the guest agent, which this build does not have - remove it, or use --provider docker", svc.Health)
+	}
+
 	vcpu, mem, err := sizing(svc)
 	if err != nil {
 		return err
@@ -615,7 +627,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	vm := &fcVM{
 		Sandbox: sandbox, Service: service, Ref: ref, Instance: randomHex(8),
 		Slot: slot, Index: index, Image: svc.Image, ImageID: rfs.Config.ID,
-		VCPU: vcpu, MemMiB: mem, Ports: svc.Ports, DependsOn: svc.DependsOn,
+		VCPU: vcpu, MemMiB: mem, Ports: svc.Ports, DependsOn: svc.DependsOn, Health: svc.Health,
 		Idle: svc.Idle, OnIdle: svc.OnIdle, Kernel: arts.Kernel, Binary: arts.Firecracker,
 		Clone: clone, Created: time.Now().UTC(),
 		AccessToken: randomHex(16), ControlSecret: randomHex(32),
@@ -1085,21 +1097,42 @@ func (p *fcProvider) Unpause(ctx context.Context, ref string) error {
 	return nil
 }
 
-// Healthy and Probe dial the guest's first port on its tap address. That is a real check, and
+// Healthy and Probe run the service's health command in the guest when it has one, and otherwise
+// dial the guest's first port on its tap address. That is a real check, and
 // declared says so: in a container a published port is docker-proxy, which accepts before the
 // server behind it exists, but here nothing sits in front of the guest's own TCP stack - an
 // accepted connection is a listener. Undeclared, the daemon would wait a flat 2 s on every wake
 // of a snapshot whose workload answers in milliseconds.
+// healthTimeout bounds one run of a service's health command, as docker's --health-timeout does.
+const healthTimeout = 5 * time.Second
+
 func (p *fcProvider) Healthy(ctx context.Context, ref string) (bool, bool) { return p.Probe(ctx, ref) }
 
 func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	vm, err := p.load(ref)
-	if err != nil || len(vm.Ports) == 0 {
+	if err != nil || (len(vm.Ports) == 0 && vm.Health == "") {
 		return false, false
 	}
 
 	if state, err := p.running(ctx, ref); err != nil || state != fc.StateRunning {
-		return false, false
+		return false, vm.Health != ""
+	}
+
+	// A health command is the service's own word on whether it serves - a database that accepts
+	// before it can answer a query is the reason the spec has one - so when there is one it is
+	// what counts, run the way docker runs a CMD-SHELL check: through /bin/sh in the guest.
+	if vm.Health != "" {
+		run := p.healthExec
+		if run == nil {
+			run = p.Exec
+		}
+
+		hctx, cancel := context.WithTimeout(ctx, healthTimeout)
+		defer cancel()
+
+		_, err := run(hctx, ref, []string{"/bin/sh", "-c", vm.Health})
+
+		return err == nil, true
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
