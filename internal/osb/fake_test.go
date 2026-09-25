@@ -194,6 +194,13 @@ func (r *fakeRuntime) seen() string {
 func (r *fakeRuntime) Refresh(context.Context)                   { r.note("refresh") }
 func (r *fakeRuntime) Freeze(_ context.Context, id string) error { r.note("freeze " + id); return nil }
 func (r *fakeRuntime) Thaw(_ context.Context, id string) error   { r.note("thaw " + id); return nil }
+func (r *fakeRuntime) Pin(id string, pinned bool) {
+	if pinned {
+		r.note("pin " + id)
+	} else {
+		r.note("unpin " + id)
+	}
+}
 func (r *fakeRuntime) Hold(id string, held bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

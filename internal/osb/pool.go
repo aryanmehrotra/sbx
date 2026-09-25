@@ -94,6 +94,10 @@ type pool struct {
 	ready   []poolMember
 	filling int
 
+	// lastTake is when a member was last claimed. Refill waits for claims to go quiet - see
+	// fill.
+	lastTake time.Time
+
 	// failures counts members that did not make it in a row; it spaces the retries, so an image
 	// that cannot be pulled is not a create loop running flat out for the life of the daemon.
 	failures int
@@ -103,9 +107,10 @@ type pool struct {
 
 // poolMember is a frozen sandbox ready to be claimed.
 type poolMember struct {
-	id    string
-	token string // the token it was started with; only this process ever held it
-	addr  string // execd through the daemon's wake port
+	id     string
+	token  string // the token it was started with; only this process ever held it
+	addr   string // execd through the daemon's wake port
+	frozen bool
 }
 
 func (p *pool) poke() {
@@ -126,6 +131,7 @@ func (p *pool) take() (poolMember, bool) {
 
 	m := p.ready[0]
 	p.ready = p.ready[1:]
+	p.lastTake = time.Now()
 
 	return m, true
 }
@@ -234,11 +240,13 @@ func (s *Server) fromPool(w http.ResponseWriter, r *http.Request, req createRequ
 func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, error) {
 	s.trace.begin(m.id)
 
-	if err := s.rt.Thaw(ctx, m.id); err != nil {
-		return record{}, fmt.Errorf("thawing: %w", err)
-	}
+	if m.frozen {
+		if err := s.rt.Thaw(ctx, m.id); err != nil {
+			return record{}, fmt.Errorf("thawing: %w", err)
+		}
 
-	s.trace.mark(m.id, "thawed")
+		s.trace.mark(m.id, "thawed")
+	}
 
 	if err := s.claimExecd(ctx, m.addr, m.token, pl.rec.Token, pl.env); err != nil {
 		return record{}, fmt.Errorf("re-keying execd: %w", err)
@@ -274,6 +282,9 @@ func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, erro
 	}
 
 	s.mu.Unlock()
+
+	// The caller's now, so the caller's idle policy - with its clock starting here.
+	s.rt.Pin(m.id, false)
 
 	history.Append(history.Record{Kind: "event", Sandbox: m.id, Event: "created", Actor: "osb",
 		Message: "image " + pl.rec.Image + " (from the warm pool)"})
@@ -336,6 +347,8 @@ func (s *Server) discard(id string) {
 // `docker run`s fired together would slow down the very creates it is refilling for.
 func (s *Server) fill(ctx context.Context, p *pool) {
 	for {
+		s.awaitQuiet(ctx, p)
+
 		p.mu.Lock()
 		need := p.spec.Size - len(p.ready) - p.filling
 		backoff := time.Duration(0)
@@ -424,6 +437,9 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 	s.provisioning[id] = cancel
 	s.mu.Unlock()
 
+	// Pinned before it exists, so the reaper never idles it between being made and claimed.
+	s.rt.Pin(id, true)
+
 	defer cancel()
 
 	s.provision(mctx, pl)
@@ -447,17 +463,20 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 		return false
 	}
 
-	// Frozen and held: a member costs no CPU while it waits, and nothing that connects to its
-	// port - nobody should, it has never been handed out - can thaw it.
-	if err := s.rt.Freeze(ctx, id); err != nil {
-		logs.Default.Warn(id, service, "osb: pool %s: could not freeze a member: %v", p.spec.Image, err)
-		s.discard(id)
+	// Frozen and held when asked for: a member then costs no CPU while it waits, and nothing
+	// that connects to its port can thaw it. Otherwise it stays pinned running (from before it
+	// was made, below), and a claim touches no container at all.
+	if s.poolFreeze {
+		if err := s.rt.Freeze(ctx, id); err != nil {
+			logs.Default.Warn(id, service, "osb: pool %s: could not freeze a member: %v", p.spec.Image, err)
+			s.discard(id)
 
-		return false
+			return false
+		}
 	}
 
 	p.mu.Lock()
-	p.ready = append(p.ready, poolMember{id: id, token: rec.Token, addr: units[0].Client[0].String()})
+	p.ready = append(p.ready, poolMember{id: id, token: rec.Token, addr: units[0].Client[0].String(), frozen: s.poolFreeze})
 	p.mu.Unlock()
 
 	return true
@@ -526,4 +545,31 @@ func (s *Server) poolStatus(w http.ResponseWriter, _ *http.Request) {
 	slices.SortFunc(out, func(a, b poolStatus) int { return strings.Compare(a.Image, b.Image) })
 
 	writeJSON(w, http.StatusOK, out)
+}
+
+// refillQuiet is how long claims must pause before a refill starts.
+const refillQuiet = 300 * time.Millisecond
+
+// awaitQuiet holds a refill back while claims are arriving, unless the pool is down to its last
+// quarter. A burst of claims is exactly when a refill hurts most: every `docker run` it fires
+// competes with the thaws the burst is waiting on, in the same dockerd. Measured at 20 at once,
+// refill running alongside moved the median claim from ~30 ms to ~190 ms. The floor is there so
+// that sustained load, which never goes quiet, still gets members made.
+func (s *Server) awaitQuiet(ctx context.Context, p *pool) {
+	for {
+		p.mu.Lock()
+		wait := refillQuiet - time.Since(p.lastTake)
+		low := len(p.ready)*4 <= p.spec.Size
+		p.mu.Unlock()
+
+		if wait <= 0 || low {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
 }

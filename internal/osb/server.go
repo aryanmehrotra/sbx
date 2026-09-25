@@ -46,6 +46,10 @@ type Runtime interface {
 	// Thaw releases a hold and brings the sandbox back.
 	Thaw(ctx context.Context, sandbox string) error
 
+	// Pin keeps a sandbox from being idled, or releases it - a warm-pool member waiting for
+	// its caller has no traffic, and must still be running when claimed.
+	Pin(sandbox string, pinned bool)
+
 	// Hold re-asserts (or drops) a pause without touching the container - used on start, for
 	// pauses that outlived a daemon restart, and on delete.
 	Hold(sandbox string, held bool)
@@ -101,6 +105,11 @@ type Options struct {
 	// Pools are the warm pools to keep full (sbx serve --osb-pool).
 	Pools []PoolSpec
 
+	// PoolFreeze freezes members while they wait (docker pause) instead of pinning them
+	// running. It saves their idle CPU - near zero for tail and execd - and costs every claim a
+	// thaw, which dockerd serialises: 200-400 ms for twenty at once on colima.
+	PoolFreeze bool
+
 	// PoolConcurrency bounds how many members are being made at once, across every pool.
 	// Zero means 4.
 	PoolConcurrency int
@@ -149,6 +158,7 @@ type Server struct {
 
 	pools      map[string]*pool
 	poolSem    chan struct{}
+	poolFreeze bool
 	claimExecd func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
 
 	// base outlives any one request: provisioning continues after the create call has
@@ -253,6 +263,7 @@ func New(o Options) (*Server, error) {
 	}
 
 	s.poolSem = make(chan struct{}, o.PoolConcurrency)
+	s.poolFreeze = o.PoolFreeze
 
 	if err := s.newPools(o.Pools); err != nil {
 		return nil, err

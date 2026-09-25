@@ -67,6 +67,9 @@ type unit struct {
 	keepAwake bool
 	idle      time.Duration
 
+	// pinned is keepAwake set at run time, by the OpenSandbox warm pool - see pin.go.
+	pinned atomic.Bool
+
 	// served records that this unit has been seen serving at least once.
 	//
 	// Until then it is not eligible to sleep, because "idle" is meaningless before a

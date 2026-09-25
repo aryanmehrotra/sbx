@@ -41,13 +41,13 @@ func (c *claimLog) all() []claimCall {
 }
 
 // poolHarness is a server with one pool of python:3.11-slim, running.
-func poolHarness(t *testing.T, size int, cl *claimLog) *harness {
+func poolHarness(t *testing.T, size int, cl *claimLog, opts ...option) *harness {
 	t.Helper()
 
-	h := newHarness(t, func(_ *harness, o *Options) {
+	h := newHarness(t, append([]option{func(_ *harness, o *Options) {
 		o.Pools = []PoolSpec{{Image: "python:3.11-slim", Size: size}}
 		o.Claim = cl.claim
-	})
+	}}, opts...)...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -123,8 +123,8 @@ func TestPoolServesAMatchingCreateInvisiblyAndRefills(t *testing.T) {
 		t.Fatalf("GET of an unclaimed member = %d, want 404", resp.StatusCode)
 	}
 
-	if strings.Count(h.rt.seen(), "freeze osb-") != 2 {
-		t.Fatalf("members were not frozen: runtime saw %s", h.rt.seen())
+	if strings.Count(h.rt.seen(), "pin osb-") != 2 || strings.Contains(h.rt.seen(), "freeze") {
+		t.Fatalf("members were not pinned running: runtime saw %s", h.rt.seen())
 	}
 
 	body := sdkCreate()
@@ -147,8 +147,8 @@ func TestPoolServesAMatchingCreateInvisiblyAndRefills(t *testing.T) {
 		t.Fatalf("claim calls %+v, want one, carrying the env and a new token", calls)
 	}
 
-	if !strings.Contains(h.rt.seen(), "thaw "+created.ID) {
-		t.Fatalf("the claimed member was not thawed: %s", h.rt.seen())
+	if !strings.Contains(h.rt.seen(), "unpin "+created.ID) || strings.Contains(h.rt.seen(), "thaw") {
+		t.Fatalf("the claimed member was not unpinned, or was thawed though never frozen: %s", h.rt.seen())
 	}
 
 	// The caller's sandbox, with the caller's token on its endpoint and nothing of the pool's.
@@ -284,5 +284,26 @@ func TestParsePool(t *testing.T) {
 		if _, err := ParsePool(in); err == nil {
 			t.Errorf("ParsePool(%q) accepted", in)
 		}
+	}
+}
+
+// With PoolFreeze a member waits frozen and held, and the claim thaws it first.
+func TestFrozenPoolThawsOnClaim(t *testing.T) {
+	cl := &claimLog{}
+	h := poolHarness(t, 1, cl, func(_ *harness, o *Options) { o.PoolFreeze = true })
+	h.poolReady(1)
+
+	if !strings.Contains(h.rt.seen(), "freeze osb-") {
+		t.Fatalf("member not frozen: %s", h.rt.seen())
+	}
+
+	var created sandboxJSON
+	h.do("POST", "/v1/sandboxes", sdkCreate(), &created)
+
+	seen := h.rt.seen()
+	thaw := strings.Index(seen, "thaw "+created.ID)
+
+	if created.Status.State != stateRunning || thaw < 0 || len(cl.all()) != 1 {
+		t.Fatalf("frozen claim: state %s, runtime %s, claims %d", created.Status.State, seen, len(cl.all()))
 	}
 }

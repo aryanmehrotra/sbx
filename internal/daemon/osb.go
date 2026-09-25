@@ -13,7 +13,7 @@ import (
 // openSandboxAPI builds the OpenSandbox lifecycle API and binds its listener, or returns nil
 // when --osb-addr was not given. Bound here, before the daemon starts, so a port that is taken
 // is a startup error with the address in it rather than a log line after everything else is up.
-func (d *daemon) openSandboxAPI(addr, key string, scope Scope, pools []string) (*osb.Server, net.Listener, error) {
+func (d *daemon) openSandboxAPI(addr, key string, scope Scope, pools []string, poolFreeze bool) (*osb.Server, net.Listener, error) {
 	if addr == "" {
 		if len(pools) > 0 {
 			return nil, nil, fmt.Errorf("--osb-pool keeps sandboxes warm for the OpenSandbox API, which is off - add --osb-addr 127.0.0.1:8080")
@@ -62,6 +62,7 @@ func (d *daemon) openSandboxAPI(addr, key string, scope Scope, pools []string) (
 		Egress:       d.Egress(),
 		EgressStatus: EgressHTTPStatus,
 		Pools:        specs,
+		PoolFreeze:   poolFreeze,
 	})
 	if err != nil {
 		return nil, nil, err

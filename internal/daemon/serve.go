@@ -135,6 +135,10 @@ type daemon struct {
 	heldMu sync.RWMutex
 	held   map[string]bool
 
+	// pinned are sandboxes the reaper must leave alone - see pin.go.
+	pinnedMu sync.RWMutex
+	pinned   map[string]bool
+
 	// scope is which sandboxes this daemon may touch at all - see scope.go. Empty is all.
 	scope Scope
 }
@@ -175,6 +179,8 @@ func Serve(args []string) error {
 
 	var pools stringList
 	fs.Var(&pools, "osb-pool", "keep warm OpenSandbox sandboxes of this image ready, IMAGE[=N] (default 8; repeatable): a matching create is answered from one in milliseconds")
+
+	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim")
 
 	var only stringList
 	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
@@ -260,7 +266,7 @@ func Serve(args []string) error {
 		scope:      scope,
 	}
 
-	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, scope, pools)
+	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, scope, pools, *poolFreeze)
 	if err != nil {
 		return err
 	}
@@ -442,6 +448,7 @@ func (d *daemon) discover(ctx context.Context) {
 		u.freezeOnIdle = f.OnIdle == spec.OnIdleFreeze
 		u.frozen = f.Paused
 		u.held.Store(d.isHeld(f.Sandbox))
+		u.pinned.Store(d.isPinned(f.Sandbox))
 
 		uctx, ucancel := context.WithCancel(ctx)
 
@@ -675,7 +682,7 @@ func (d *daemon) reap(ctx context.Context) {
 	}
 
 	for _, u := range units {
-		if u.keepAwake {
+		if u.keepAwake || u.pinned.Load() {
 			continue // an agent may be working inside it with no traffic through the proxy
 		}
 

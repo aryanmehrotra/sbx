@@ -345,6 +345,7 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 	}
 
 	s.rt.Hold(id, false)
+	s.rt.Pin(id, false)
 
 	// The saved live policy goes with the sandbox, or a later sandbox reusing the name would
 	// start enforcing a stranger's rules.
