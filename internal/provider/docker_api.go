@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -74,7 +75,9 @@ func (d *dockerClient) send(ctx context.Context, method, path string, body, out 
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("docker %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(body)))
+
+		return &apiError{status: resp.StatusCode,
+			msg: fmt.Sprintf("docker %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(body)))}
 	}
 
 	if out == nil {
@@ -83,6 +86,45 @@ func (d *dockerClient) send(ctx context.Context, method, path string, body, out 
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// apiError is a non-2xx answer. Its text is what callers have always matched on ("is not
+// running", "already paused"); the status is for the ones that need to tell absent from broken.
+type apiError struct {
+	status int
+	msg    string
+}
+
+func (e *apiError) Error() string { return e.msg }
+
+// inspect reads one container by name or id. Absent is (false, nil): a sandbox removed is an
+// answer, not a failure.
+//
+// One container, where a list is every container: measured on colima, 2-6 ms for an inspect
+// against 43-105 ms for a list of twenty, and 550-720 ms for twenty lists at once against 5 ms
+// for twenty inspects. The API's GET and its readiness wait are on that path per sandbox.
+func (d *dockerClient) inspect(ctx context.Context, name string) (container, bool, error) {
+	var got struct {
+		ID    string `json:"Id"`
+		Name  string `json:"Name"`
+		State struct {
+			Status string `json:"Status"`
+		} `json:"State"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+
+	if err := d.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(name)+"/json", &got); err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return container{}, false, nil
+		}
+
+		return container{}, false, err
+	}
+
+	return container{ID: got.ID, Names: []string{got.Name}, State: got.State.Status, Labels: got.Config.Labels}, true, nil
 }
 
 // container is the slice of the API's container object this proxy actually reads.

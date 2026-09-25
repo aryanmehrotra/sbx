@@ -561,7 +561,7 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 			return
 		}
 
-		units, err := s.p.List(ctx, id)
+		units, err := s.unitsOf(ctx, id)
 		if err != nil {
 			lastErr = err
 		} else if len(units) == 0 {

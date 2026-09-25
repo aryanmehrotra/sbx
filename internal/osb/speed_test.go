@@ -90,9 +90,10 @@ func TestCreateAnswersPendingPastTheWait(t *testing.T) {
 }
 
 // The calls a client makes straight after a create - GET until Running, then the execd
-// endpoint - cost one container list between them: the GET's (shared with any other GET in
-// flight, see coalesce.go), and none for the endpoint, which was 15-25 ms of docker per call.
-func TestGetListsOnceAndEndpointNotAtAll(t *testing.T) {
+// endpoint - ask docker about that one sandbox (an inspect, with the docker provider), or
+// nothing: listing every container for each cost 15-25 ms apiece on colima and grew with every
+// sandbox a burst added.
+func TestGetAsksAboutOneSandboxAndEndpointNothing(t *testing.T) {
 	h := newHarness(t)
 	sb := h.create(minimalCreate())
 
@@ -110,7 +111,7 @@ func TestGetListsOnceAndEndpointNotAtAll(t *testing.T) {
 	h.p.mu.Lock()
 	defer h.p.mu.Unlock()
 
-	if !slices.Equal(h.p.lists, []string{""}) {
-		t.Fatalf("lists %q, want exactly one (the GET's); the endpoint needs none", h.p.lists)
+	if !slices.Equal(h.p.lists, []string{sb.ID}) {
+		t.Fatalf("lists %q, want one, of this sandbox only (the GET's); the endpoint needs none", h.p.lists)
 	}
 }

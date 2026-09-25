@@ -712,6 +712,12 @@ func MeterFor(p Provider) (Meter, error) {
 // scheduler later picks, which means a DaemonSet whose only job is to pull. That is a
 // workload sbx would be creating in the operator's cluster without being asked, so it
 // refuses and says so.
+// UnitGetter reads one service of one sandbox without listing every container: the cheap
+// question for a caller that already knows which sandbox it means. Absent is (Unit{}, false, nil).
+type UnitGetter interface {
+	UnitOf(ctx context.Context, sandbox, service string) (Unit, bool, error)
+}
+
 type Puller interface {
 	// Pull fetches image, and is a no-op if it is already present.
 	Pull(ctx context.Context, image string) error

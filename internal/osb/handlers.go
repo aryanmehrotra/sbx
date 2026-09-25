@@ -176,13 +176,13 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
+	units, err := s.unitsOf(r.Context(), rec.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	out := render(rec, units[rec.ID], true)
+	out := render(rec, units, true)
 	s.trace.mark(rec.ID, "GET answered "+out.Status.State)
 	writeJSON(w, http.StatusOK, out)
 }
@@ -354,7 +354,7 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 		}
 	}
 
-	units, err := s.p.List(ctx, id)
+	units, err := s.unitsOf(ctx, id)
 	if err != nil {
 		return fmt.Errorf("listing %s before removing it: %w", id, err)
 	}
@@ -441,7 +441,7 @@ func (s *Server) patchMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.p.List(r.Context(), updated.ID)
+	units, err := s.unitsOf(r.Context(), updated.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
@@ -619,7 +619,7 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 	// Recorded once execd first answered; before that - or for a record written by an sbx
 	// that did not keep them - docker is asked, about this sandbox only.
 	if len(eps) < len(rec.Ports) {
-		us, err := s.p.List(r.Context(), rec.ID)
+		us, err := s.unitsOf(r.Context(), rec.ID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 			return
@@ -728,7 +728,7 @@ func (s *Server) diagnostics(kind string) http.HandlerFunc {
 }
 
 func (s *Server) containerLogs(ctx context.Context, id string, w io.Writer) string {
-	units, err := s.p.List(ctx, id)
+	units, err := s.unitsOf(ctx, id)
 	if err != nil {
 		return "could not list the container: " + err.Error()
 	}
@@ -807,3 +807,20 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 var errGone = errors.New("the sandbox was deleted while it was being created")
+
+// unitsOf is one sandbox's containers. With a provider that can look one up directly it is a
+// single inspect - milliseconds, where a list of every container grew with each one a burst
+// added, and a hundred of them at once queued behind each other for most of a second.
+func (s *Server) unitsOf(ctx context.Context, id string) ([]provider.Unit, error) {
+	g, ok := s.p.(provider.UnitGetter)
+	if !ok {
+		return s.p.List(ctx, id)
+	}
+
+	u, found, err := g.UnitOf(ctx, id, service)
+	if err != nil || !found {
+		return nil, err
+	}
+
+	return []provider.Unit{u}, nil
+}

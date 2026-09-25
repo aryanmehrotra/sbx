@@ -441,7 +441,7 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 		return false
 	}
 
-	units, err := s.p.List(ctx, id)
+	units, err := s.unitsOf(ctx, id)
 	if err != nil || len(units) == 0 || len(units[0].Client) == 0 {
 		s.discard(id)
 		return false
