@@ -42,6 +42,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execd"
 	"github.com/aryanmehrotra/sbx/internal/fc/guestinit"
+	"github.com/aryanmehrotra/sbx/internal/fchost"
 	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -125,7 +126,7 @@ func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string)
 	socket = fs.String("socket", "", "docker endpoint; defaults to DOCKER_HOST, then the active docker context")
 	namespace = fs.String("namespace", cmp.Or(os.Getenv("SBX_NAMESPACE"), "sbx"), "kubernetes namespace")
 	isolation = fs.String("isolation", cmp.Or(os.Getenv("SBX_ISOLATION"), string(provider.IsolationContainer)),
-		"container | gvisor | kata")
+		"container | gvisor | kata | firecracker (kubernetes: the kata-fc RuntimeClass)")
 
 	return kind, socket, namespace, isolation
 }
@@ -134,7 +135,7 @@ func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string)
 func resolve(kind, socket, namespace, isolation string) (provider.Provider, provider.Isolation, error) {
 	iso := provider.Isolation(isolation)
 	if !iso.Valid() {
-		return nil, "", fmt.Errorf("unknown isolation %q (want container, gvisor or kata)", isolation)
+		return nil, "", fmt.Errorf("unknown isolation %q (want container, gvisor, kata or firecracker)", isolation)
 	}
 
 	p, err := provider.For(kind, socket, namespace)
@@ -195,6 +196,22 @@ func Main(ver string, examples embed.FS, argv []string) int {
 			Failed: e.Level == "ERROR",
 		})
 	})
+
+	// Firecracker on a host that cannot run it (a Mac, Windows): the command runs, unchanged, in
+	// the helper VM. Recorded here as well, because this journal is the person's; the VM keeps
+	// its own. serve is not redirected - fchost.ServeMain is the host half of it (dispatch).
+	if argv[1] != "serve" && fchost.Wants(argv[1], argv[2:], os.Getenv) {
+		if handled, code := fchost.Redirect(context.Background(), version, argv[1], argv[2:]); handled {
+			var err error
+			if code != 0 {
+				err = fmt.Errorf("exit status %d", code)
+			}
+
+			record(argv[1], argv[1:], err)
+
+			return code
+		}
+	}
 
 	// The daemon is recorded when it starts, not when it stops. Recording it on the way out
 	// like everything else means a daemon that is still running - the normal state, and the
@@ -1002,7 +1019,21 @@ func dispatch(cmd string, args []string) error {
 		return cli.Selftest(context.Background(), p, iso, *keep)
 
 	case "serve":
+		// On a host with no /dev/kvm, `--provider firecracker` means the helper VM's daemon,
+		// reached from here; a refused host says why rather than failing on an unknown provider.
+		if fchost.Wants(cmd, args, os.Getenv) {
+			switch b := fchost.Detect(fchost.Host()); b.Kind {
+			case fchost.HelperVM:
+				return fchost.ServeMain(version, args)
+			case fchost.Refused:
+				return fchost.Refusal(b)
+			}
+		}
+
 		return daemon.Serve(args)
+
+	case "fc":
+		return fchost.Main(version, args)
 
 	case "version", "--version", "-v":
 		fmt.Println(version)
@@ -1175,7 +1206,11 @@ Finding out
   sbx prewarm  [--spec sandbox.json]            pull images now, so a create is not a download
 
 Any command touching a sandbox also takes:
-  --provider docker|kubernetes   --namespace NS   --isolation container|gvisor|kata
+  --provider docker|kubernetes|firecracker   --namespace NS   --isolation container|gvisor|kata|firecracker
+
+MicroVMs
+  sbx fc backend                                where a Firecracker microVM runs here, and why
+  sbx fc vm status|start|stop|rm                the helper VM that runs them on macOS and Windows
 
 `+"`sbx <command> --help`"+` explains one command.
 `)

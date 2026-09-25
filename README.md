@@ -85,6 +85,7 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 | **Keep twenty sandboxes polite on one laptop** | `cpu`, `memory`, `gpus` per service, so one runaway agent can't starve the rest |
 | **Build your own image** | `build:` instead of `image:`, cached by content hash — so a second create does no rebuild work |
 | **Take the same spec to a cluster** | `--provider kubernetes`, so what worked on your laptop is what runs in CI |
+| **Give each sandbox its own kernel, even on a Mac** | `--provider firecracker` — a Firecracker microVM; directly on Linux with `/dev/kvm`, through a helper VM sbx runs for you on an M3+ Mac (macOS 15+) or Windows 11, refused with the fix anywhere else. `sbx doctor` says which |
 | **Deploy anywhere and still drive it from your terminal** | `sbx pack` + `sbx connect` turn a one-port platform back into local ports |
 
 **See and drive the fleet**
@@ -192,8 +193,8 @@ sbx selftest     # create, sleep to zero, wake on a socket, data intact — ~9 s
 | `sbx pack` · `sbx connect` | package a sandbox for a one-port platform · turn it back into local ports |
 | `sbx serve` | **the daemon** — owns the ports, does all waking and sleeping; one per machine |
 
-Every sandbox command takes `--provider docker|kubernetes`, `--namespace`,
-`--isolation container|gvisor|kata` and `--socket`; `SBX_PROVIDER_KIND`, `SBX_NAMESPACE`,
+Every sandbox command takes `--provider docker|kubernetes|firecracker`, `--namespace`,
+`--isolation container|gvisor|kata|firecracker` (on kubernetes: the kata-fc RuntimeClass) and `--socket`; `SBX_PROVIDER_KIND`, `SBX_NAMESPACE`,
 `SBX_ISOLATION` set the defaults and `DOCKER_HOST` is honoured.
 
 ---

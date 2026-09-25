@@ -476,7 +476,7 @@ func fetchFleet(ctx context.Context, base *url.URL, token string, stats bool) ([
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, false, fmt.Errorf("%s rejected the token", base.Redacted())
+		return nil, false, fmt.Errorf("%s %w", base.Redacted(), errTokenRejected)
 	}
 
 	if resp.StatusCode != http.StatusOK {

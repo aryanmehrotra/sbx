@@ -149,11 +149,16 @@ const (
 	// IsolationKata gives each sandbox a real VM. The strongest of the three and the only
 	// one that makes "run anything, no restriction" safe to say out loud in public.
 	IsolationKata Isolation = "kata"
+
+	// IsolationFirecracker gives each sandbox a Firecracker microVM. On kubernetes it is kata's
+	// Firecracker RuntimeClass; locally the microVM is --provider firecracker instead, which is
+	// a provider rather than a runtime because it owns the whole lifecycle, snapshots included.
+	IsolationFirecracker Isolation = "firecracker"
 )
 
 func (i Isolation) Valid() bool {
 	switch i {
-	case IsolationContainer, IsolationGVisor, IsolationKata:
+	case IsolationContainer, IsolationGVisor, IsolationKata, IsolationFirecracker:
 		return true
 	default:
 		return false
@@ -794,4 +799,17 @@ func PullerFor(p Provider) (Puller, error) {
 // and the per-service check still applies.
 type EgressPreflighter interface {
 	EgressPreflight(ctx context.Context, sandbox string) error
+}
+
+// FirecrackerRuntimeClassEnv names the RuntimeClass `--isolation firecracker` asks a cluster
+// for, when it was installed under something other than kata-deploy's default.
+const FirecrackerRuntimeClassEnv = "SBX_KATA_FC_RUNTIMECLASS"
+
+// FirecrackerRuntimeClass is that name: the env override, else "kata-fc".
+func FirecrackerRuntimeClass(getenv func(string) string) string {
+	if v := strings.TrimSpace(getenv(FirecrackerRuntimeClassEnv)); v != "" {
+		return v
+	}
+
+	return "kata-fc"
 }

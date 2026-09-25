@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -49,6 +50,9 @@ func TestIsolationMapsToARuntime(t *testing.T) {
 		{IsolationContainer, "", ""},
 		{IsolationGVisor, "runsc", "gvisor"},
 		{IsolationKata, "kata-runtime", "kata"},
+		// A microVM per pod is kata's Firecracker handler on a cluster. docker has no runtime
+		// for it - locally a microVM is the firecracker provider - so it has no mapping there.
+		{IsolationFirecracker, "", "kata-fc"},
 	}
 
 	for _, c := range cases {
@@ -81,5 +85,28 @@ func TestOrdinalsFitInAPortBlock(t *testing.T) {
 		t.Fatalf("spec.MaxOrdinals is %d and a provider slot reserves %d ports - a sandbox "+
 			"can now claim addresses inside the next sandbox's block",
 			spec.MaxOrdinals, blockSize)
+	}
+}
+
+// The RuntimeClass name is the cluster's choice; kata-deploy's default is only a default.
+func TestFirecrackerRuntimeClassIsConfigurable(t *testing.T) {
+	t.Setenv("SBX_KATA_FC_RUNTIMECLASS", "kata-firecracker")
+
+	if got := kubeRuntimeClass(IsolationFirecracker); got != "kata-firecracker" {
+		t.Fatalf("runtimeClass = %q, want the configured kata-firecracker", got)
+	}
+}
+
+// docker cannot give a container a microVM, and must not run one as a container instead.
+func TestDockerRefusesFirecrackerIsolation(t *testing.T) {
+	err := dockerRefuses(IsolationFirecracker)
+	if err == nil || !strings.Contains(err.Error(), "--provider firecracker") || !strings.Contains(err.Error(), "--provider kubernetes") {
+		t.Fatalf("got %v: the refusal must name both ways that do work", err)
+	}
+
+	for _, iso := range []Isolation{IsolationContainer, IsolationGVisor, IsolationKata} {
+		if dockerRefuses(iso) != nil {
+			t.Errorf("%s refused", iso)
+		}
 	}
 }

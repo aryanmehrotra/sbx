@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -117,4 +118,26 @@ func volumeName(key string) string {
 	}, key)
 
 	return "sbx-execd-" + key
+}
+
+// ErrPublishedOnly is AgentFile's answer when the only linux binary for this version is the one
+// inside the published activator image: a release build on a machine with no linux sbx and no
+// go toolchain. The caller that cannot pull an image fetches the release asset instead.
+var ErrPublishedOnly = errors.New("no local linux sbx binary; only the published release has one")
+
+// AgentFile is the file half of agentbin.Locate, for a caller that needs the linux sbx binary
+// itself rather than a volume holding it - the Firecracker helper VM, which runs the same version
+// of sbx as the host. One lookup order for both, so the two cannot disagree about which binary
+// "this version" is.
+func AgentFile(ctx context.Context, version, arch string) (string, error) {
+	src, err := agentbin.Locate(ctx, arch, version)
+	if err != nil {
+		return "", err
+	}
+
+	if src.File == "" {
+		return "", ErrPublishedOnly
+	}
+
+	return src.File, nil
 }

@@ -268,8 +268,13 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 	// their database while the actual problem is that the cluster has no gVisor.
 	if rc := kubeRuntimeClass(iso); rc != "" {
 		if _, err := kubectl("", "get", "runtimeclass", rc); err != nil {
-			return fmt.Errorf("isolation %q needs RuntimeClass %q, which this cluster does not have - "+
-				"install it, or create with --isolation container", iso, rc)
+			hint := ""
+			if iso == IsolationFirecracker {
+				hint = fmt.Sprintf(" (kata-deploy installs it; if it is there under another name, set %s)", FirecrackerRuntimeClassEnv)
+			}
+
+			return fmt.Errorf("isolation %q needs RuntimeClass %q, which this cluster does not have%s - "+
+				"install it, or create with --isolation container", iso, rc, hint)
 		}
 	}
 
@@ -491,6 +496,8 @@ func kubeRuntimeClass(iso Isolation) string {
 		return "gvisor"
 	case IsolationKata:
 		return "kata"
+	case IsolationFirecracker:
+		return FirecrackerRuntimeClass(os.Getenv)
 	default:
 		return ""
 	}

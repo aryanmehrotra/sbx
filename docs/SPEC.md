@@ -521,6 +521,26 @@ reserved, so adding it later doesn't renumber everything else.
 
 ---
 
+## The same spec as microVMs
+
+Nothing in the file names a backend. `--provider firecracker` realises the same spec with each
+service in a Firecracker microVM, and where that runs depends on the host, not the spec:
+
+| host | backend | |
+|---|---|---|
+| Linux with `/dev/kvm` | direct | the provider drives Firecracker itself |
+| macOS, Apple M3+, macOS 15+ | helper VM | lima (else colima) VM `sbx-fc` with nested virtualisation, created on first use |
+| Windows 11 | helper VM | a WSL2 distro `sbx-fc`; refused, quoting the `.wslconfig` line, when nested virtualisation is off |
+| kubernetes | RuntimeClass | `--isolation firecracker` sets `runtimeClassName: kata-fc` (`SBX_KATA_FC_RUNTIMECLASS` renames it) |
+| anything else | refused | with the reason and the fix - never a silent fallback to a container |
+
+Through a helper VM, `sbx env` prints the same ports on the host as in the VM, and a connection
+to one wakes the microVM exactly as it wakes a container. `sbx fc backend` and `sbx doctor` say
+which row this machine is on.
+→ [DECISIONS.md](DECISIONS.md#a-microvm-off-linux-runs-in-a-helper-vm-not-on-virtualizationframework)
+
+---
+
 ## Or skip the file entirely
 
 ```sh
