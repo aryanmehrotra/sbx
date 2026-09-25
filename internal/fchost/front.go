@@ -120,9 +120,13 @@ type FrontOptions struct {
 
 // Front runs until ctx ends or the tunnel to the VM dies.
 func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
-	if opt.OSBAddr != "" && opt.OSBKey == "" && !loopback(opt.OSBAddr) {
-		return fmt.Errorf("--osb-addr %s is not loopback, so it needs --osb-key (or SBX_OSB_KEY): "+
-			"the API it proxies creates and runs code", opt.OSBAddr)
+	// The same bind rule as a docker-backed `sbx serve --osb-addr`: loopback only, key or not. The
+	// sandbox endpoints the API hands out are 127.0.0.1 listeners here, so an API served off this
+	// machine would hand out addresses its callers cannot reach - and would be reachable itself.
+	if opt.OSBAddr != "" {
+		if err := osb.CheckBind(opt.OSBAddr, opt.OSBKey); err != nil {
+			return err
+		}
 	}
 
 	opt.EnsureOptions.OSB = opt.OSBAddr != ""
@@ -284,19 +288,4 @@ func serveUntil(ctx context.Context, srv *http.Server) error {
 	_ = srv.Shutdown(sctx)
 
 	return nil
-}
-
-func loopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-
-	if host == "localhost" {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-
-	return ip != nil && ip.IsLoopback()
 }

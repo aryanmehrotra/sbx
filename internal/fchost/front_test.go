@@ -174,12 +174,16 @@ func TestFrontEndsWhenTheTunnelDies(t *testing.T) {
 	}
 }
 
-func TestFrontRefusesAnOpenAPIWithoutAKey(t *testing.T) {
+// Front binds the API by the docker path's rule: loopback only, and a key does not change that.
+func TestFrontRefusesAnAPIOffLoopbackKeyOrNot(t *testing.T) {
 	m := limaManager(t, &fakeRunner{})
 
-	err := m.Front(context.Background(), FrontOptions{OSBAddr: "0.0.0.0:8080", skipEnsure: true})
-	if err == nil || !strings.Contains(err.Error(), "--osb-key") {
-		t.Fatalf("got %v", err)
+	for _, key := range []string{"", "k"} {
+		err := m.Front(context.Background(), FrontOptions{OSBAddr: "0.0.0.0:8080", skipEnsure: true,
+			EnsureOptions: EnsureOptions{OSBKey: key}})
+		if err == nil || !strings.Contains(err.Error(), "not a loopback address") {
+			t.Fatalf("key %q: got %v", key, err)
+		}
 	}
 }
 
