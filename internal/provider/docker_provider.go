@@ -338,6 +338,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--label", labelOnIdle+"="+spec.OnIdleFreeze)
 	}
 
+	if svc.OSBOwner != "" {
+		args = append(args, "--label", labelOSB+"="+svc.OSBOwner)
+	}
+
 	// An allow-list gets the no-NAT bridge too - direct egress denied - plus a filtering proxy
 	// on the gateway as its one way out. HTTP(S)_PROXY points ordinary clients at it; a client
 	// that ignores the proxy and dials out directly has no route, so the allow-list holds.
@@ -1078,6 +1082,7 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 		}
 
 		u.EgressPolicy = c.Labels[labelEgressPolicy]
+		u.OSB = c.Labels[labelOSB]
 
 		if dep := c.Labels[labelDependsOn]; dep != "" {
 			u.DependsOn = strings.Split(dep, ",")

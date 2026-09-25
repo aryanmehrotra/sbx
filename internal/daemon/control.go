@@ -116,7 +116,7 @@ func (d *daemon) controlRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !d.scope.Match(body.Sandbox) {
+	if !d.sandboxInScope(body.Sandbox) {
 		http.Error(w, outOfScope(body.Sandbox, d.scope), http.StatusForbidden)
 
 		return
