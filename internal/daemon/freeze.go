@@ -164,3 +164,18 @@ func (u *unit) freeze(ctx context.Context, pa provider.Pauser) error {
 
 	return nil
 }
+
+// refHeld reports whether the unit behind ref belongs to a sandbox paused through the API, and
+// which sandbox that is. d.mu is released before isHeld takes heldMu: Hold takes them in the
+// other order.
+func (d *daemon) refHeld(ref string) (string, bool) {
+	d.mu.Lock()
+	u, ok := d.units[ref]
+	d.mu.Unlock()
+
+	if !ok {
+		return "", false
+	}
+
+	return u.sandbox, u.isHeld() || d.isHeld(u.sandbox)
+}
