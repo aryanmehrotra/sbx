@@ -124,7 +124,7 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 		// so it narrows the race rather than closing it; the lock in cli/slotlock.go covers
 		// the rest for one machine, and nothing covers two machines driving one remote
 		// daemon, which is why this is best-effort by design.
-		if !d.backingPortsFree(i) {
+		if !d.slotPortsFree(i) {
 			continue
 		}
 
@@ -1142,25 +1142,34 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	return nil
 }
 
-// backingPortsFree reports whether a slot's docker-published ports can be bound.
+// slotPortsFree reports whether both halves of a slot can be bound: the backing ports docker
+// publishes on (30000+) and the public ports the daemon fronts them on (20000+).
 //
-// The backing ports, not the public ones: docker publishes on 30000+, and the public ports
-// belong to the daemon, which may not be running when a sandbox is created. Probing the wrong
-// half of the pair is a check that always passes.
+// Both, and the public half is not optional. This used to probe only the backing ports, on the
+// argument that the public ones belong to the daemon, which may not be running yet. But this is
+// asked only for a slot that no container on this engine claims, so nothing legitimately holds
+// its public ports - and something that does is a daemon fronting a DIFFERENT engine on the
+// same host (a second colima profile, a remote DOCKER_HOST's local daemon). Handing out that
+// slot made a sandbox whose wake port its own daemon could never bind: never fronted, never
+// reaped, and a client dialling it reached the other engine's daemon, which forwarded to the
+// backing port of whatever it thought lived there. The cost of probing is a skipped slot while
+// our own daemon still holds a just-removed sandbox's listener, which is none.
 //
-// Only the first few of the block are tried. A slot is claimed by its first service, so a
-// collision shows up there, and binding twenty sockets per candidate slot to be thorough
-// would cost more than the race does.
-func (d *dockerProvider) backingPortsFree(slot int) bool {
-	for i := range 3 {
-		port := backingBase + slot*blockSize + i
+// Only the first few of each block are tried. A slot is claimed by its first service, so a
+// collision shows up there, and binding forty sockets per candidate slot to be thorough would
+// cost more than the race does.
+func (d *dockerProvider) slotPortsFree(slot int) bool {
+	for _, base := range []int{backingBase, publicBase} {
+		for i := range 3 {
+			port := base + slot*blockSize + i
 
-		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-		if err != nil {
-			return false
+			ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+			if err != nil {
+				return false
+			}
+
+			_ = ln.Close()
 		}
-
-		_ = ln.Close()
 	}
 
 	return true
