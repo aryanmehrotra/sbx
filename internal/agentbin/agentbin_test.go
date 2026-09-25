@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -34,5 +35,37 @@ func TestFindSourceIsThisCheckout(t *testing.T) {
 
 	if isModuleRoot(other) {
 		t.Fatal("another module's root was taken for sbx's")
+	}
+}
+
+// A release build uses its published artifact, never a cross-compile of whatever checkout is
+// nearby; a dev build, which has no published artifact, still compiles its source.
+func TestAReleaseNeverCompilesANearbyCheckout(t *testing.T) {
+	t.Setenv("SBX_EXECD_BINARY", "")
+
+	if _, ok := FindSource(); !ok {
+		t.Skip("needs the checkout")
+	}
+
+	saved := crossCompile
+	t.Cleanup(func() { crossCompile = saved })
+
+	compiled := 0
+	crossCompile = func(context.Context, string, string, string, string) (string, error) {
+		compiled++
+		return "/built/sbx", nil
+	}
+
+	src, err := Locate(context.Background(), "arm64", "v0.11.0")
+	if err != nil || compiled != 0 || src.Image != Activator+":v0.11.0" {
+		t.Fatalf("release: %+v, %v, compiled %d times", src, err, compiled)
+	}
+
+	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
+		return // a linux/arm64 dev build uses itself
+	}
+
+	if src, err := Locate(context.Background(), "arm64", "dev"); err != nil || compiled != 1 || src.File != "/built/sbx" {
+		t.Fatalf("dev: %+v, %v, compiled %d times", src, err, compiled)
 	}
 }

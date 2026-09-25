@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -57,9 +58,14 @@ func Locate(ctx context.Context, arch, version string) (Source, error) {
 
 	var buildErr error
 
-	if gobin, err := exec.LookPath("go"); err == nil {
+	// A release build never compiles whatever checkout it happens to find - , next
+	// to the executable, or above the working directory - into the binary it runs as root in a
+	// sandbox or the helper VM: that is some other source tree at some other commit, possibly one
+	// the person merely cloned. It uses the published artifact for its own version, whose
+	// checksum the release carries. Dev builds, which have no published artifact, still compile.
+	if gobin, err := exec.LookPath("go"); err == nil && !Release(version) {
 		if src, ok := FindSource(); ok {
-			out, err := CrossCompile(ctx, gobin, src, arch, version)
+			out, err := crossCompile(ctx, gobin, src, arch, version)
 			if err == nil {
 				return Source{File: out}, nil
 			}
@@ -83,6 +89,14 @@ func Locate(ctx context.Context, arch, version string) (Source, error) {
 
 	return Source{}, errors.New(msg)
 }
+
+// crossCompile is CrossCompile; a variable so a test can see whether Locate reached for it.
+var crossCompile = CrossCompile
+
+// Release reports whether version is a published release (vX.Y.Z), as release.sh stamps it.
+func Release(version string) bool { return releaseRE.MatchString(version) }
+
+var releaseRE = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 // CrossCompile builds this module for linux into ~/.sbx/execd, statically, so it runs in any
 // image - including one with no libc.
