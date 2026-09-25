@@ -1075,3 +1075,83 @@ func TestProbeIsADeclaredCheckOnAVM(t *testing.T) {
 		t.Fatalf("not listening yet: Probe = %v %v, want (false, true) so the caller polls", s, d)
 	}
 }
+
+// An idle Stop that is mid-sleep and a wake arriving for the same service: the wake must read
+// the record the sleep leaves (snapshot valid) and restore it, not the one from before the sleep
+// took the lock (snapshot invalid), which cold-boots over a fresh snapshot and loses the memory.
+func TestStartDuringASleepRestoresTheSnapshotItMade(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "race", redis)
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	sealing, release := make(chan struct{}), make(chan struct{})
+	r.g.onSeal = func(string) {
+		r.g.onSeal = nil
+		close(sealing)
+		<-release
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- r.p.Stop(r.ctx, ref) }()
+
+	<-sealing
+
+	started := make(chan error, 1)
+	go func() { started <- r.p.Start(r.ctx, ref) }()
+
+	time.Sleep(100 * time.Millisecond) // long enough for a Start that loads before locking to load
+	close(release)
+
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+
+	if vm := r.vm(t, ref); !vm.Restored {
+		t.Fatalf("the wake cold-booted over the snapshot the sleep had just made: %+v", vm)
+	}
+}
+
+// Two creates of one service at once: one wins, the other is told it exists - and never removes
+// the directory the winner filled.
+func TestConcurrentCreatesOfOneServiceKeepTheWinner(t *testing.T) {
+	r := newRig(t)
+	r.p.ready = func(context.Context, *fcVM, string) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+
+	slot, err := r.p.AllocSlot(r.ctx, "dup")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eps := r.p.Endpoints("dup", "cache", slot, 0, redis.Ports)
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- r.p.Create(r.ctx, "dup", slot, 0, "cache", redis, eps, "", IsolationContainer) }()
+	}
+
+	var failed []error
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			failed = append(failed, err)
+		}
+	}
+
+	if len(failed) != 1 || !strings.Contains(failed[0].Error(), "already exists") {
+		t.Fatalf("errors = %v, want exactly one \"already exists\"", failed)
+	}
+
+	if vm := r.vm(t, containerName("dup", "cache")); !vm.SnapshotValid {
+		t.Fatalf("the winner's VM is not intact: %+v", vm)
+	}
+}

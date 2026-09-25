@@ -515,12 +515,38 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	ref := containerName(sandbox, service)
 	dir := p.dir(ref)
 
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	// The existence check is made holding the lock, and before the cleanup below is armed: two
+	// concurrent creates of one service must not both pass it, and the one that loses must not
+	// RemoveAll the directory the winner just filled.
+	unlock := p.lock(ref)
+	defer unlock()
+
 	if _, err := os.Stat(filepath.Join(dir, "vm.json")); err == nil {
 		return fmt.Errorf("%s already exists; sbx rm %s first", ref, sandbox)
 	}
 
-	if snap, ok := p.snapshotFor(svc.Image); ok {
-		return p.createFromSnapshot(ctx, snap, svc.Image, ref, slot, eps)
+	// A failure from here on leaves nothing behind: a half-made VM directory would be listed
+	// as a service that can never start.
+	ok := false
+	defer func() {
+		if !ok {
+			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
+	if snap, found := p.snapshotFor(svc.Image); found {
+		if err := p.createFromSnapshot(ctx, snap, svc.Image, ref, slot, eps); err != nil {
+			return err
+		}
+
+		ok = true
+
+		return nil
 	}
 
 	arts, err := p.arts.Resolve(ctx, p.arch)
@@ -541,23 +567,6 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	if err != nil {
 		return err
 	}
-
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-
-	unlock := p.lock(ref)
-	defer unlock()
-
-	// A failure from here on leaves nothing behind: a half-made VM directory would be listed
-	// as a service that can never start.
-	ok := false
-	defer func() {
-		if !ok {
-			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
-			_ = os.RemoveAll(dir)
-		}
-	}()
 
 	clone, err := fc.CloneFile(rfs.Path, filepath.Join(dir, fc.RootfsName))
 	if err != nil {
@@ -765,13 +774,15 @@ func (p *fcProvider) running(ctx context.Context, ref string) string {
 }
 
 func (p *fcProvider) Start(ctx context.Context, ref string) error {
+	// Lock, THEN load: a record read before the lock can be one a concurrent sleep is about to
+	// replace, and acting on its stale SnapshotValid=false cold-boots over a fresh snapshot.
+	unlock := p.lock(ref)
+	defer unlock()
+
 	vm, err := p.load(ref)
 	if err != nil {
 		return err
 	}
-
-	unlock := p.lock(ref)
-	defer unlock()
 
 	switch p.running(ctx, ref) {
 	case fc.StateRunning:
@@ -886,13 +897,13 @@ func (p *fcProvider) revalidate(vm *fcVM, cause error) error {
 }
 
 func (p *fcProvider) Stop(ctx context.Context, ref string) error {
+	unlock := p.lock(ref) // before load; see Start
+	defer unlock()
+
 	vm, err := p.load(ref)
 	if err != nil {
 		return err
 	}
-
-	unlock := p.lock(ref)
-	defer unlock()
 
 	switch p.running(ctx, ref) {
 	case "":
@@ -1274,13 +1285,13 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 			"changes (%s) the way docker commit does", strings.Join(changes, ", "))
 	}
 
+	unlock := p.lock(ref) // before load; see Start
+	defer unlock()
+
 	vm, err := p.load(ref)
 	if err != nil {
 		return err
 	}
-
-	unlock := p.lock(ref)
-	defer unlock()
 
 	dst := p.snapshotDir(image)
 	if err := os.MkdirAll(dst, 0o700); err != nil {
@@ -1377,18 +1388,11 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 			ref, s.VM.Slot, slot, s.VM.Slot)
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-
-	unlock := p.lock(ref)
-	defer unlock()
-
+	// Create holds the lock and removes dir if this fails.
 	src := p.snapshotDir(image)
 
 	for _, f := range []string{fc.RootfsName, "agent.ext4", fc.StateName, fc.MemName} {
 		if _, err := fc.CloneFile(filepath.Join(src, f), filepath.Join(dir, f)); err != nil {
-			_ = os.RemoveAll(dir)
 			return fmt.Errorf("restoring %s from its snapshot: %w", f, err)
 		}
 	}
