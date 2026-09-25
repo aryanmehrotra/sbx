@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -77,13 +78,19 @@ func listenVsock(port uint32) (net.Listener, error) {
 }
 
 type vsockListener struct {
-	f    *os.File
-	rc   syscall.RawConn
-	addr vsockAddr
+	f      *os.File
+	rc     syscall.RawConn
+	addr   vsockAddr
+	closed atomic.Bool
 }
 
 func (l *vsockListener) Addr() net.Addr { return l.addr }
-func (l *vsockListener) Close() error   { return l.f.Close() }
+
+func (l *vsockListener) Close() error {
+	l.closed.Store(true)
+
+	return l.f.Close()
+}
 
 func (l *vsockListener) Accept() (net.Conn, error) {
 	for {
@@ -112,8 +119,11 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 			return true
 		})
 		if err != nil {
-			// The listener was closed: the one error http.Server treats as a clean stop.
-			if errors.Is(err, os.ErrClosed) {
+			// The listener was closed: the one error http.Server treats as a clean stop. An Accept
+			// parked on the poller when Close runs gets internal/poll's "use of closed file",
+			// which is not os.ErrClosed - so the listener's own flag decides (found on a real
+			// kernel: the test had only ever skipped).
+			if l.closed.Load() || errors.Is(err, os.ErrClosed) {
 				return nil, net.ErrClosed
 			}
 
