@@ -1,6 +1,7 @@
 package osb
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -210,5 +211,55 @@ func TestCheckHostPaths(t *testing.T) {
 
 	if err := CheckHostPaths([]string{"/Users/me/sandboxes", "/srv/data"}); err != nil {
 		t.Error(err)
+	}
+}
+
+// The mounts are never written anywhere sbx reads back: they are in the container docker
+// already has, and in the record only as the pvc volumes this sandbox owns. So a restarted
+// server must drive a sandbox with volumes - pause, resume, delete and its owned-volume
+// cleanup - without re-deriving a spec, and without recreating the container.
+func TestVolumesSurviveARestartWithoutASpec(t *testing.T) {
+	root, allow := hostRoot(t)
+	h := newHarness(t, allow)
+
+	sb := h.create(withVolumes(
+		map[string]any{"name": "scratch", "pvc": map[string]any{"claimName": "scratch", "deleteOnSandboxTermination": true},
+			"mountPath": "/scratch"},
+		map[string]any{"name": "work", "host": map[string]any{"path": root + "/work"}, "mountPath": "/work"},
+	))
+
+	before := h.p.service(sb.ID)
+
+	h.http.Close()
+	h.srv.Close()
+	h.rt = &fakeRuntime{}
+	h.start(allow)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go h.srv.Run(ctx)
+
+	defer cancel()
+
+	if resp := h.do("POST", "/v1/sandboxes/"+sb.ID+"/pause", nil, nil); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("pause after restart: %d", resp.StatusCode)
+	}
+
+	h.waitState(sb.ID, statePaused)
+
+	if resp := h.do("POST", "/v1/sandboxes/"+sb.ID+"/resume", nil, nil); resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("resume after restart: %d", resp.StatusCode)
+	}
+
+	h.waitState(sb.ID, stateRunning)
+
+	after := h.p.service(sb.ID)
+	if !slices.Equal(after.VolumeMounts, before.VolumeMounts) || len(after.ReadOnlyVolumes) != 1 {
+		t.Fatalf("the container was re-specified across a restart: %+v -> %+v", before, after)
+	}
+
+	h.do("DELETE", "/v1/sandboxes/"+sb.ID, nil, nil)
+
+	if rm := h.p.lists(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-scratch"}) {
+		t.Fatalf("owned volume after a restart: removed = %v", rm)
 	}
 }

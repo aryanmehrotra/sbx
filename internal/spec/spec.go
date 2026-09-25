@@ -298,7 +298,11 @@ type Service struct {
 	// /opt/sbx). Named volumes rather than bind mounts because a bind mount of a host path
 	// depends on the container runtime's VM sharing that path, which on a Mac it may not - a
 	// volume lives on the runtime's side of that boundary by construction.
-	ReadOnlyVolumes map[string]string `json:"readonly_volumes,omitempty"`
+	//
+	// Not a sandbox.json field (`json:"-"`), and neither is VolumeMounts: a spec that could name
+	// any volume could mount another sandbox's data or the API's sbx-osb-pvc-* claims, and the
+	// namespacing that makes those safe lives in the API, not here. Only code sets them.
+	ReadOnlyVolumes map[string]string `json:"-"`
 
 	// VolumeMounts attaches storage the caller named - a named volume or a host directory -
 	// with the options `mounts` cannot express: read-only, and a subdirectory of a volume.
@@ -307,7 +311,7 @@ type Service struct {
 	// the server has already decided the request is allowed (host paths only under roots the
 	// operator listed, volumes only in the API's own namespace). A spec author wants `volume`
 	// or `mounts` instead; this carries no policy of its own beyond "the mount is well formed".
-	VolumeMounts []VolumeMount `json:"volume_mounts,omitempty"`
+	VolumeMounts []VolumeMount `json:"-"`
 
 	// OnIdle is what going idle does: "" or "stop" stops the container (0 B, the default), and
 	// "freeze" pauses it instead - memory and running processes kept, no CPU, thawed in about
