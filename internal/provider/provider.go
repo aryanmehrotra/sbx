@@ -239,8 +239,10 @@ func For(kind, socket, namespace string) (Provider, error) {
 		return newDocker(ep), nil
 	case "kubernetes", "k8s":
 		return newKube(namespace), nil
+	case "firecracker", "fc":
+		return forFirecracker(socket)
 	default:
-		return nil, fmt.Errorf("unknown provider %q (want docker or kubernetes)", kind)
+		return nil, fmt.Errorf("unknown provider %q (want docker, kubernetes or firecracker)", kind)
 	}
 }
 
