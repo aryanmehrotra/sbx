@@ -271,6 +271,43 @@ func TestVolumesSurviveARestartWithoutASpec(t *testing.T) {
 	}
 }
 
+// The host path is checked when the request arrives and mounted when docker runs, seconds
+// later. A directory swapped for a symlink out of the allowed root in between must be refused
+// at create, not followed by docker.
+func TestHostPathSwappedForASymlinkBeforeCreateIsRefused(t *testing.T) {
+	root, allow := hostRoot(t)
+	h := newHarness(t, allow)
+
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := t.TempDir()
+
+	h.p.mu.Lock()
+	h.p.onInspect = func() {
+		if err := os.Rename(work, work+".old"); err != nil {
+			t.Error(err)
+		}
+
+		if err := os.Symlink(outside, work); err != nil {
+			t.Error(err)
+		}
+	}
+	h.p.mu.Unlock()
+
+	sb := h.create(withVolumes(map[string]any{"name": "work", "host": map[string]any{"path": work}, "mountPath": "/work"}))
+
+	if sb.Status.State != stateFailed || sb.Status.Reason != "host_path_changed" {
+		t.Fatalf("state = %s (%s: %s), want Failed host_path_changed", sb.Status.State, sb.Status.Reason, sb.Status.Message)
+	}
+
+	if svc := h.p.service(sb.ID); len(svc.VolumeMounts) != 0 {
+		t.Fatalf("a container was created with %+v", svc.VolumeMounts)
+	}
+}
+
 // A refused create leaves nothing behind: not a host directory made while validating a request
 // that a later check refused.
 func TestRefusedCreateMakesNoHostDirectory(t *testing.T) {

@@ -506,6 +506,11 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 			return
 		}
 
+		if hp := (*hostPathChanged)(nil); errors.As(err, &hp) {
+			fail("host_path_changed", err.Error())
+			return
+		}
+
 		fail("create_failed", err.Error())
 
 		return
@@ -514,6 +519,12 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 	s.rt.Refresh(ctx)
 	s.waitReady(ctx, id)
 }
+
+// hostPathChanged is a host volume that no longer resolves to the directory that was allowed.
+type hostPathChanged struct{ err error }
+
+func (e *hostPathChanged) Error() string { return e.err.Error() }
+func (e *hostPathChanged) Unwrap() error { return e.err }
 
 // createContainer allocates the slot and creates the container under the machine's slot lock,
 // then checks the sandbox was not deleted while that was happening.
@@ -533,6 +544,19 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 	}
 
 	eps := s.p.Endpoints(id, service, slot, 0, svc.Ports)
+
+	// The host paths were checked when the request arrived; docker resolves them now. Checked
+	// again as the last thing before create, so a directory swapped for a symlink in between is
+	// refused rather than followed. The window left is this call to docker's own resolution.
+	for _, m := range svc.VolumeMounts {
+		if m.Host == "" {
+			continue
+		}
+
+		if err := s.checkHostMount(m.Host); err != nil {
+			return &hostPathChanged{err}
+		}
+	}
 
 	if err := s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer); err != nil {
 		return err

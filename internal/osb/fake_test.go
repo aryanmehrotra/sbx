@@ -47,6 +47,10 @@ type fakeDocker struct {
 	volRemoved []string
 	volErr     error
 	inspectErr map[string]error // ImageInfo fails for these images
+
+	// onInspect runs inside ImageInfo: a point in provisioning after the create call answered
+	// and before the container is created.
+	onInspect func()
 }
 
 func newFakeDocker() *fakeDocker {
@@ -141,7 +145,12 @@ func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) erro
 func (f *fakeDocker) ImageInfo(_ context.Context, image string) (provider.ImageInfo, error) {
 	f.mu.Lock()
 	err := f.inspectErr[image]
+	hook := f.onInspect
 	f.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
 
 	if err != nil {
 		return provider.ImageInfo{}, err
