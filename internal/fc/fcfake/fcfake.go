@@ -55,6 +55,14 @@ type Server struct {
 	srv *http.Server
 }
 
+// StallNext is Stall set under the server's lock, safe while it is serving.
+func (s *Server) StallNext(path string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Stall[path] = d
+}
+
 // Start serves a fresh fake on the unix socket at sock.
 func Start(sock string) (*Server, error) {
 	_ = os.Remove(sock)

@@ -1208,7 +1208,7 @@ func TestASlowVMMIsNotTreatedAsAsleep(t *testing.T) {
 		{"start", func() error { return r.p.Start(r.ctx, ref) }},
 	} {
 		srv := r.l.server(dir)
-		srv.Stall["/"] = describeTimeout + 300*time.Millisecond
+		srv.StallNext("/", describeTimeout+300*time.Millisecond)
 		kills := r.l.kills
 
 		if err := op.do(); err == nil || !strings.Contains(err.Error(), "alive but did not answer") {
