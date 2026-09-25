@@ -72,6 +72,9 @@ Roughly: anything that breaks a boundary sbx claims to hold.
 
 - A sandbox reaching another sandbox's data, or a fork inheriting state it should not.
 - `egress: "deny"` permitting routed egress on docker.
+- A filtered service (`egress_policy`, `egress_allow`, `egress: "allow"`) reaching a destination its
+  policy denies - directly, through the filter, or through a name that resolves into a denied
+  range - or rewriting its own policy through the filter's control endpoint.
 - `--isolation gvisor|kata` reporting success while running under the default runtime.
 - A public port serving a different sandbox than the one `sbx env` named - including a
   `sbx connect` tunnel still carrying traffic to a port whose sandbox was recreated under it.

@@ -1,3 +1,4 @@
+| **`egress_policy`** · live `sbx egress` · CIDR rules | ● | ○ | a filtering proxy on a no-NAT bridge; a cluster needs a NetworkPolicy plus an egress gateway, and refuses rather than approximates |
 # Compared
 
 > **Short version:** sbx wakes on any TCP connection — no SDK, no account, on hardware you own.

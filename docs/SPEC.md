@@ -91,8 +91,9 @@ script that already knows a port.
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `depends_on` | | Services that must be serving before this one starts - at creation, and on every wake |
 | `optional` | | Not created unless `--optional` - but still reserves its ports |
-| `egress` | | `"deny"` - no routed egress. It can still be reached, and can still talk to its own sandbox |
+| `egress` | | `"deny"` - no routed egress. It can still be reached, and can still talk to its own sandbox. `"allow"` - open, but through the egress filter, so the policy can be narrowed while it runs |
 | `egress_allow` | | Reach only these hosts (host or `host:port`, matching subdomains): `["api.openai.com"]`. Everything else is denied, enforced by a filtering proxy |
+| `egress_policy` | | OpenSandbox's network policy: `{"defaultAction":"allow\|deny","egress":[{"action":"deny","target":"10.0.0.0/8"}]}`. Hosts, `*.wildcards`, IPs and CIDRs; changeable while the service runs (`sbx egress`) |
 | `idle` | | Override the idle timer for this service: `"never"` (keep awake while an agent works inside), `"0"`, or a duration like `"30m"` |
 | `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
 | `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
@@ -309,7 +310,8 @@ block egress **and** stop docker publishing the port, producing a sandbox that c
 woken. → [DECISIONS.md](DECISIONS.md)
 
 For a **domain allow-list** rather than all-or-nothing, use `egress_allow` (below) - the
-filtering proxy this once said would be needed, now built. DNS still resolves under plain `deny` -
+filtering proxy this once said would be needed, now built - or `egress_policy` for deny rules,
+CIDRs, and a policy you can change while the service runs. DNS still resolves under plain `deny` -
 docker's resolver sits on the bridge and needs no route out.
 
 The kubernetes provider **refuses** a service that declares it rather than starting one with
@@ -359,6 +361,84 @@ sleeps on its ordinary timer. Measured: an allow-listed box calling out every fi
 awake through twelve consecutive 30-second idle windows, while a plain service beside it in the
 same sandbox slept on schedule. Two allow-listed services in one sandbox do keep each other awake;
 if that matters, put them in different sandboxes.
+
+### `egress_policy` is a network policy, and it changes while the box runs
+
+```json
+{ "image": "python:3.12", "ports": [8000],
+  "egress_policy": { "defaultAction": "deny",
+                     "egress": [ { "action": "allow", "target": "*.pypi.org" },
+                                 { "action": "allow", "target": "pypi.org" },
+                                 { "action": "deny",  "target": "10.0.0.0/8" } ] } }
+```
+
+The shape is OpenSandbox's `NetworkPolicy`, verbatim, and so are the semantics - checked against
+its `release-1.1.0` source and cited in `internal/egress/policy.go`:
+
+| | |
+|---|---|
+| **targets** | `example.com` is that host exactly. `*.example.com` is every subdomain, **not** the apex - list both for both. An IP or a CIDR, v4 or v6 |
+| **name rules** | **first match in list order** wins, exact and wildcard alike |
+| **address rules** | a **deny beats an allow** whatever the order - upstream compiles them into nftables sets and drops before it accepts |
+| **default** | `defaultAction` for anything no rule matches. Omitted means `deny`; `{}` is deny-all |
+| **a hostname** | judged by name first, then **every address it resolves to** against the address rules, and the address that was checked is the one dialled. A name you allowed cannot be pointed into a range you denied |
+| **stricter than upstream** | a URL or `host:port` as a target is refused, where upstream accepts it as a rule that never matches. For a deny, that is a hole that looks like a control |
+
+`egress: "allow"` is the same thing with nothing in it - `{"defaultAction":"allow"}` - for a box
+that should start open and be narrowed later. `egress_allow: ["openai.com"]` is still accepted and
+means what it always did: deny by default, and each entry allows the host **and** its subdomains
+(it becomes `openai.com` plus `*.openai.com`). The three are alternatives; a spec naming two is
+refused, as are two services of one sandbox declaring different policies - they share one filter,
+and it would be enforcing a mixture nobody wrote.
+
+**Changing it on the running service.** Nothing is recreated and nothing restarts:
+
+```
+sbx egress agent-1                                     # what is in force
+sbx egress agent-1 --deny '*.pastebin.com' --deny 10.0.0.0/8
+sbx egress agent-1 --default deny --allow api.anthropic.com
+sbx egress agent-1 --remove 10.0.0.0/8
+sbx egress agent-1 --reset                             # back to what the spec declared
+sbx egress agent-1 --json                              # OpenSandbox's policy status
+```
+
+New rules go **ahead** of the existing ones (OpenSandbox's PATCH), so a deny carved out of a
+wildcard you allowed earlier takes hold. A request is judged by the policy in force when it
+arrives; a tunnel already open is not cut, the same as a firewall that matches new connections.
+This is what lets a box fetch its dependencies wide open and then lock down before untrusted work
+starts, which used to take two sandboxes. It is one Go API (`daemon.EgressControl`), which is
+also what OpenSandbox's `networkpolicy` endpoints are built on.
+
+The live policy is kept by the filter and on the host (`~/.sbx/egress/<sandbox>.json`), so a
+daemon restart, a reboot or a replaced filter container comes back enforcing it - not the one the
+sandbox was created with. It belongs to that sandbox: `sbx rm` drops it, and a recreate from a spec
+that declares a different policy starts from the new declaration.
+
+**What is enforced, measured.** A CIDR rule is not advisory, and neither is a deny under a default
+of allow, because a filtered service is on the no-NAT bridge: the filter is the only way out.
+Checked on a real sandbox (`TestLiveEgressPolicyOnARealSandbox`, colima on a Mac): with
+`deny 1.1.1.0/24` under `defaultAction: allow`, a client that unset the proxy variables and dialled
+`1.1.1.1:80` directly got no route - and so did one dialling `8.8.8.8:53`, which no rule mentions -
+while the same box through the proxy got `403` for `1.1.1.1` and fetched `example.com`. The same
+test with masquerade switched on reaches `1.1.1.1` directly, which is the failure it exists to
+catch. A deny patched in live refused the next request, with the service and the filter container
+keeping their IDs and start times.
+
+**What it costs.** Because the filter is the only door, *open* means open to what the filter
+carries: HTTP and HTTPS, through `HTTP_PROXY`/`HTTPS_PROXY`. A default-allow box has no raw TCP
+out - `git://`, SSH to a remote, a database on another host. That is the price of every deny being
+real, and it is the same price `egress_allow` has always had.
+
+**Two things the filter refuses unless a rule names them.** Its own loopback and link-local
+(`127.0.0.0/8`, `::1`, `169.254.0.0/16` - cloud metadata - and the rest): the filter runs on the host
+or beside the sandbox, so `CONNECT 127.0.0.1:2375` through it would reach *its* machine, which the
+workload never could on its own. An explicit allow for the address opens it.
+
+**What it does not reach.** Destinations that are not routed: the sandbox's own bridge (its sibling
+services) and the bridge gateway, which is the host. Those are local delivery, not egress, and a
+rule covering them is enforced only for traffic that goes through the proxy. And the kubernetes
+provider **refuses** every filtered service - `egress_policy`, `egress_allow` and `egress: "allow"`
+alike - rather than creating one whose policy nothing enforces.
 
 ### `cap_add` grants a capability, and is not `privileged`
 

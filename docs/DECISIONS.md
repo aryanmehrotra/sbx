@@ -228,8 +228,16 @@ that terminates or inspects connections:
   Linux and must run inside the VM on macOS — a capability that would degrade with a reason where
   it is absent, exactly like `--isolation gvisor|kata`.
 
-Neither is a flag today, which is why the first attempt at one was reverted rather than shipped.
-Coarse is a real control and a coarse one, and COMPARISON.md scores it that way.
+This section used to end: *"Neither is a flag today, which is why the first attempt at one was
+reverted rather than shipped."* It was true when written and stopped being true when the filtering
+proxy was built - `egress_allow`, a domain allow-list, and then
+`egress_policy`, OpenSandbox's network policy with domain, wildcard, IP and CIDR rules that change
+on the running service. It took neither a trusted certificate nor TLS termination, because a
+CONNECT names its host and plain HTTP names it in the request - the proxy decides on that, and
+splices the TLS it never opens. And it took no `DOCKER-USER` rule, because this bridge already
+has no route out: the proxy does not have to *stop* traffic that walks around it, since none can.
+What shipped is a component with a lifecycle, which is what this section said it would have to be. `egress: "deny"`
+itself is still coarse, and still the right answer for a box that needs nothing at all.
 
 ### sbx is a tool people run, not a service anyone offers
 
@@ -427,3 +435,71 @@ never sleeps, so admission has to be on the permitted side of the check.
 
 What it does not cover: a box with no allow-list, and outbound traffic that is not HTTP. There
 sbx still sees nothing and `idle: "never"` is still the answer.
+
+### A live egress policy is held by the filter and pushed to it
+
+OpenSandbox changes a sandbox's network policy while it runs, and so does `sbx egress`. The filter
+already existed in two forms - a listener inside the daemon where the daemon can bind the bridge
+gateway, and a container on the bridge where it cannot (every Mac) - and the question was where the
+policy lives and how a change reaches it.
+
+**The filter holds it, in memory, and swaps it atomically.** A request is judged by one policy or
+the other, never a mixture, and nothing restarts: restarting the filter would cut every tunnel open
+through it, and "change it without recreating anything" is the whole feature. A hosted filter is
+swapped by the daemon directly. A container filter is told over **the loopback port it already
+publishes for activity scraping** - a token-guarded `GET`/`PUT /policy` on the same listener as
+`/last`. It is the one port of that container the daemon can already reach, on every docker sbx
+supports, so the control channel needed no new port, no socket mount and no second listener.
+
+The token is not decoration. That listener is on every interface the container has, including the
+sandbox's own bridge, so without it the workload could rewrite its own policy. It is generated per
+filter container and carried as a label, which is readable by whoever can `docker inspect` - who
+can already do anything to the container.
+
+**Only replace crosses the wire.** Merge, remove and reset are computed by the caller from a `GET`,
+and the `PUT` carries `If-Match` with the hash it read. Two writers - the CLI and the OpenSandbox API
+- cannot silently drop each other's rules; the loser re-reads and retries.
+
+**Persisted twice, for two different failures.** The container writes what it was told to its own
+disk, so a reboot restarts it enforcing the live policy rather than the one on its command line - the
+looser one, typically, since boxes are usually locked down after they start. And the host keeps a
+copy in `~/.sbx/egress/`, which the daemon pushes back to a filter container that was replaced, and
+which a hosted filter reads on start and within a second of a CLI change. The host copy records the
+hash of the declaration it was made against, and `sbx rm` removes it, so a sandbox recreated under
+the same name does not inherit exceptions to a policy it no longer has.
+
+**Rejected: rebuild the container with the new policy on its command line.** It is what the
+allow-list did when it changed, and it drops every open connection, takes seconds, and turns a
+lock-down into a window where the box has no egress at all.
+
+**Rejected: mount the policy file into the filter and have it watch.** It needs the host path to be
+visible where docker runs: on a remote `DOCKER_HOST` it is on another machine, and on a VM-backed
+docker it depends on how that VM shares files - the same seam `files:` already has to diagnose. The
+port is reachable wherever the activity scrape already works.
+
+**Rejected: per-service policies inside one sandbox.** The filter is per bridge and a `CONNECT`
+carries nothing that says which container opened it. The source address could, but it changes every
+time a service sleeps and wakes. A write naming one of several services that share a filter is
+refused, and the answer is a sandbox each - which is what an OpenSandbox sandbox already is.
+
+### Default-allow is enforced by the same door, and it costs raw TCP
+
+OpenSandbox's policies are often `defaultAction: allow` with a few denies - no metadata endpoint, no
+internal ranges. On a bridge with NAT that would be advisory: a client that ignores `HTTP_PROXY`
+dials the denied range directly. So a default-allow service goes on the same no-NAT bridge as a
+deny-default one, and every deny is real because nothing leaves except through the filter.
+Measured: under `deny 1.1.1.0/24`, a direct dial from inside the box to `1.1.1.1` and to `8.8.8.8`
+both had no route, `1.1.1.1` through the proxy got 403, and with masquerade switched on for the same
+test the direct dial got through - the failure the arrangement exists to prevent.
+
+The price is that *open* means open to what a proxy carries: HTTP and HTTPS. Raw TCP to the
+internet has no way out. That was the other option's price too, in reverse - an open bridge with a
+proxy nobody is forced through is a policy that holds only for clients that agree to it, and a
+deny rule that holds only for polite clients is the control that looks like one and is not.
+Refused rather than pretended, as `egress_allow` on a machine that could not run the filter was.
+
+Two consequences of where the filter sits. It resolves hostnames itself, checks every address
+against the address rules and dials the one it checked, so a permitted name cannot be rebound into a
+denied range. And it refuses its own loopback and link-local unless a rule names them: upstream
+enforces inside the sandbox's namespace, where `127.0.0.1` is the sandbox; sbx's filter is on the
+host or beside the box, where `127.0.0.1` is somebody's docker socket.
