@@ -314,10 +314,9 @@ func TestFrozenPoolThawsOnClaim(t *testing.T) {
 	}
 }
 
-// A claim with no env makes no call to execd at all: the member's token was minted here and
-// never left this process, so it becomes the caller's token as it is. The round trip through
-// the wake port is only for delivering env.
-func TestClaimWithoutEnvMakesNoExecdCall(t *testing.T) {
+// A claim with no env still re-keys execd: the member's token predates its caller, and only a
+// token minted for the request is known to be nobody else's.
+func TestClaimWithoutEnvStillRekeys(t *testing.T) {
 	cl := &claimLog{}
 	h := poolHarness(t, 1, cl)
 	h.poolReady(1)
@@ -329,14 +328,47 @@ func TestClaimWithoutEnvMakesNoExecdCall(t *testing.T) {
 		t.Fatalf("create: %s", created.Status.State)
 	}
 
-	if n := len(cl.all()); n != 0 {
-		t.Fatalf("%d execd claims for a create with no env, want none", n)
+	calls := cl.all()
+	if len(calls) != 1 || calls[0].newToken == calls[0].oldToken || len(calls[0].env) != 0 {
+		t.Fatalf("claims %+v, want one re-key with no env", calls)
 	}
 
 	var ep endpointJSON
 	h.do("GET", "/v1/sandboxes/"+created.ID+"/endpoints/44772", nil, &ep)
 
-	if len(ep.Headers[tokenHeader]) < 32 {
-		t.Fatalf("endpoint token %q: want the member's own minted token", ep.Headers[tokenHeader])
+	if ep.Headers[tokenHeader] != calls[0].newToken {
+		t.Fatalf("endpoint token %q, want the re-keyed one", ep.Headers[tokenHeader])
+	}
+}
+
+// Only what a member can honour is served from the pool, and that is decided by a whitelist of
+// request fields, not a list of the ones known to matter: a field this code has never heard of
+// (volumes, a template, a claim added upstream later) must send the create down the cold path,
+// never be dropped by a member that was made without it.
+func TestPoolServesOnlyWhitelistedRequestFields(t *testing.T) {
+	for name, set := range map[string]func(map[string]any){
+		"volumes":       func(b map[string]any) { b["volumes"] = []any{map[string]any{"name": "v", "host": map[string]any{"path": "/tmp"}}} },
+		"snapshotId":    func(b map[string]any) { b["snapshotId"] = "snap-1" },
+		"templateId":    func(b map[string]any) { b["templateId"] = "tpl-1" },
+		"networkPolicy": func(b map[string]any) { b["networkPolicy"] = map[string]any{"defaultAction": "deny"} },
+		"unknown field": func(b map[string]any) { b["claims"] = []any{"x"} },
+		"extension":     func(b map[string]any) { b["extensions"] = map[string]string{"sbx.ports": "8080"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cl := &claimLog{}
+			h := poolHarness(t, 1, cl)
+			h.poolReady(1)
+
+			body := sdkCreate()
+			body["env"] = map[string]string{"A": "b"}
+			set(body)
+
+			var got sandboxJSON
+			h.do("POST", "/v1/sandboxes", body, &got)
+
+			if n := len(cl.all()); n != 0 {
+				t.Fatalf("a create with %s was served from the pool (%d claims)", name, n)
+			}
+		})
 	}
 }

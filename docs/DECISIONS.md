@@ -503,3 +503,40 @@ against the address rules and dials the one it checked, so a permitted name cann
 denied range. And it refuses its own loopback and link-local unless a rule names them: upstream
 enforces inside the sandbox's namespace, where `127.0.0.1` is the sandbox; sbx's filter is on the
 host or beside the box, where `127.0.0.1` is somebody's docker socket.
+
+### 128 docker slots, bounded by the ephemeral range
+
+60 slots held a laptop's branches. A warm pool plus ComputeSDK's burst of a hundred creates needs
+more than 60 sandboxes on one engine at once, so the cap is 128. The ceiling is not arbitrary:
+backing ports run from 30000 in blocks of 20, and they must stay below Linux's default ephemeral
+range (32768+) or an outgoing connection on the host can hold a port docker is about to publish -
+a failure that arrives at random, not at once. 30000 + 128×20 = 32560. Public ports run
+20000-22559. `TestBackingRangeStaysBelowTheEphemeralPorts` holds the arithmetic.
+
+### The API's creates hold the slot lock for the choice only
+
+The machine-wide slot lock used to be held from reading the container list until the new
+container existed - correct for one create, a queue for a hundred: each waited for every earlier
+create's list and `docker run`, the hundredth for about a minute. The OpenSandbox API now holds it
+only while choosing: slots it has handed to creates still in `docker run` are reserved in-process
+(until a minute after the container exists, so a list that began earlier cannot miss it), and at
+most 8 `docker run`s are in flight.
+
+Accepted, not closed: an `sbx create` on the CLI choosing a slot while the daemon is mid-`docker
+run` can now pick the same slot, where before it waited. It fails at `docker run` on the port -
+the port probe in the choice narrows this, as it already did for two machines on one remote
+engine - and a retry takes the next slot (TROUBLESHOOTING.md). Closing it would mean the CLI
+asking the daemon for a slot, a protocol this does not add.
+
+### Warm-pool members wait pinned running, and every claim re-keys
+
+A pool member was first frozen while it waited. Every claim then paid a `docker unpause`, which
+dockerd serialises: twenty at once measured 200-430 ms on colima, a burst of 20 claims ~870 ms.
+Members now wait running and pinned (the reaper leaves them alone until the claim); a waiting
+member costs `tail` and an idle execd. `--osb-pool-freeze` restores freezing.
+
+Every claim re-keys execd with a token minted for the request, env or not. A member's token
+existed before its caller did, and a secret minted ahead of the caller can be shared - a clone
+of a snapshot carries it. The round trip is the price (docs/BENCHMARKS.md). What a member may
+serve is a whitelist of request fields; anything else, including a field this sbx does not know,
+takes the cold path rather than being dropped by a member made without it.

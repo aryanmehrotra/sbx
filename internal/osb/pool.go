@@ -194,8 +194,8 @@ func (s *Server) newPools(specs []PoolSpec) error {
 // fromPool answers a create from a warm member when the plan matches a pool. It reports false,
 // having written nothing, when there is no pool for the plan or no member ready - the caller
 // then takes the cold path.
-func (s *Server) fromPool(w http.ResponseWriter, r *http.Request, req createRequest, pl plan) bool {
-	if req.Extensions["sbx.pool"] == "off" {
+func (s *Server) fromPool(w http.ResponseWriter, r *http.Request, raw []byte, req createRequest, pl plan) bool {
+	if !poolable(raw, req) {
 		return false
 	}
 
@@ -248,20 +248,17 @@ func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, erro
 		s.trace.mark(m.id, "thawed")
 	}
 
-	// The member's token was minted by this process and has never left it, so it is as good a
-	// credential for the caller as a fresh one - and keeping it costs nothing. execd is called
-	// only to deliver env, and then it is re-keyed in the same call, since that is free.
-	token := m.token
-
-	if len(pl.env) > 0 {
-		if err := s.claimExecd(ctx, m.addr, m.token, pl.rec.Token, pl.env); err != nil {
-			return record{}, fmt.Errorf("re-keying execd: %w", err)
-		}
-
-		token = pl.rec.Token
-
-		s.trace.mark(m.id, "execd re-keyed")
+	// Re-keyed on every claim, env or not. The member's token existed before its caller did,
+	// and anything minted ahead of a caller is a secret that could be shared - by a snapshot a
+	// member was cloned from, by a log of the pool's own traffic. A token minted for this
+	// request is not. The round trip is the price: see docs/BENCHMARKS.md.
+	if err := s.claimExecd(ctx, m.addr, m.token, pl.rec.Token, pl.env); err != nil {
+		return record{}, fmt.Errorf("re-keying execd: %w", err)
 	}
+
+	token := pl.rec.Token
+
+	s.trace.mark(m.id, "execd re-keyed")
 
 	now := s.now().UTC()
 
@@ -588,4 +585,43 @@ func (s *Server) awaitQuiet(ctx context.Context, p *pool) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// poolFields are the request fields a member can honour: the ones that shape the container are
+// matched by poolKey, and the rest (env, metadata, timeout) are applied at the claim. Anything
+// else - volumes, a snapshot or template, a network policy, or a field this sbx does not know,
+// such as one upstream adds later - sends the create down the cold path. A whitelist, because
+// the failure of a blacklist is silent: a member made without the mount answers Running and the
+// caller's storage is simply not there.
+var poolFields = map[string]bool{
+	"image": true, "entrypoint": true, "resourceLimits": true, "timeout": true,
+	"env": true, "metadata": true, "extensions": true, "platform": true,
+}
+
+// poolExtensions are the extensions a claim can carry: none change the container.
+var poolExtensions = map[string]bool{"sbx.pool": true}
+
+func poolable(raw []byte, req createRequest) bool {
+	if req.Extensions["sbx.pool"] == "off" {
+		return false
+	}
+
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+
+	for k, v := range fields {
+		if !poolFields[k] && present(v) && string(v) != "[]" && string(v) != `""` && string(v) != "false" {
+			return false
+		}
+	}
+
+	for k := range req.Extensions {
+		if !poolExtensions[k] {
+			return false
+		}
+	}
+
+	return true
 }

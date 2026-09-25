@@ -45,8 +45,12 @@ type plan struct {
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxBody))
-	if err := dec.Decode(&req); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err == nil {
+		err = json.Unmarshal(raw, &req)
+	}
+
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "SANDBOX::INVALID_PARAMETER", "the body is not a CreateSandboxRequest: "+err.Error())
 		return
 	}
@@ -57,7 +61,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.fromPool(w, r, req, pl) {
+	if s.fromPool(w, r, raw, req, pl) {
 		return
 	}
 
