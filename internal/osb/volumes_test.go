@@ -335,11 +335,16 @@ func TestUnsavedCreateRemovesTheVolumesItMade(t *testing.T) {
 	h.p.volumes = map[string]bool{"sbx-osb-pvc-kept": true}
 	h.p.mu.Unlock()
 
-	if err := os.Chmod(h.dir, 0o500); err != nil {
+	// The state directory is replaced by a regular file, so the save fails with ENOTDIR. A
+	// read-only directory would not do: root writes through its permission bits, and the suite
+	// runs as root in the Linux sandbox.
+	if err := os.RemoveAll(h.dir); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { _ = os.Chmod(h.dir, 0o700) })
+	if err := os.WriteFile(h.dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	resp := h.do("POST", "/v1/sandboxes", withVolumes(
 		map[string]any{"name": "a", "pvc": map[string]any{"claimName": "fresh"}, "mountPath": "/a"},
