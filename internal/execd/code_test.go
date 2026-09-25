@@ -29,7 +29,9 @@ type miniJupyter struct {
 	kernels    map[string]chan struct{}
 	n          int
 	interrupts atomic.Int32
-	running    chan string // kernel id, sent when a "sleep" starts
+	specHits   atomic.Int32
+	downUntil  atomic.Int64 // unix nanos; kernelspecs answers 503 before it, like a server still starting
+	running    chan string  // kernel id, sent when a "sleep" starts
 }
 
 func newMiniJupyter(t *testing.T) *miniJupyter {
@@ -56,6 +58,13 @@ func (f *miniJupyter) serve(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == "GET" && p == "/api/kernelspecs":
+		f.specHits.Add(1)
+
+		if time.Now().UnixNano() < f.downUntil.Load() {
+			http.Error(w, "starting", http.StatusServiceUnavailable)
+			return
+		}
+
 		reply(200, map[string]any{"default": "python3", "kernelspecs": map[string]any{
 			"python3": map[string]any{"name": "python3", "spec": map[string]any{"language": "python"}},
 		}})
@@ -329,4 +338,84 @@ func TestRunCodeBusyAndInterrupt(t *testing.T) {
 	// An id that is not a kernel's falls through to commands and sessions.
 	status, _, body = s.do("DELETE", "/code?id=nope", nil)
 	wantError(t, status, body, http.StatusNotFound, codeContextNotFound)
+}
+
+// A positive probe is remembered: a busy client must not pay a Jupyter round trip per call.
+func TestCodeAvailabilityIsCachedOnceUp(t *testing.T) {
+	f := newMiniJupyter(t)
+	s := newTestServer(t, Options{Jupyter: f.engine()})
+
+	for range 5 {
+		if status, _, body := s.do("GET", "/code/contexts", nil); status != http.StatusOK {
+			t.Fatalf("list: %d %s", status, body)
+		}
+	}
+
+	if n := f.specHits.Load(); n != 1 {
+		t.Fatalf("Jupyter probed %d times for 5 calls, want once", n)
+	}
+}
+
+// The first call can arrive while the image's entrypoint is still starting Jupyter: it waits for
+// it instead of answering 501 for a server that is seconds away.
+func TestCodeWaitsForAJupyterThatIsStarting(t *testing.T) {
+	f := newMiniJupyter(t)
+	f.downUntil.Store(time.Now().Add(700 * time.Millisecond).UnixNano())
+
+	s := newTestServer(t, Options{Jupyter: f.engine(), JupyterStartupWait: 10 * time.Second})
+
+	status, _, body := s.do("POST", "/code/context", map[string]string{"language": "python"})
+	if status != http.StatusOK {
+		t.Fatalf("create during startup: %d %s, want it to wait for Jupyter", status, body)
+	}
+}
+
+// A configured Jupyter that never comes up is still a 501 - after the window, not forever.
+func TestCodeGivesUpOnAJupyterThatNeverStarts(t *testing.T) {
+	f := newMiniJupyter(t)
+	f.downUntil.Store(time.Now().Add(time.Hour).UnixNano())
+
+	s := newTestServer(t, Options{Jupyter: f.engine(), JupyterStartupWait: 400 * time.Millisecond})
+
+	start := time.Now()
+	status, _, body := s.do("GET", "/code/contexts", nil)
+	wantError(t, status, body, http.StatusNotImplemented, codeNotSupported)
+
+	if d := time.Since(start); d < 400*time.Millisecond || d > 5*time.Second {
+		t.Fatalf("gave up after %s, want about the 400ms window", d)
+	}
+}
+
+// After the engine reports Jupyter unreachable, the cache is dropped and the next call probes.
+func TestCodeReprobesAfterJupyterGoesAway(t *testing.T) {
+	f := newMiniJupyter(t)
+	s := newTestServer(t, Options{Jupyter: f.engine(), JupyterStartupWait: 200 * time.Millisecond})
+
+	if status, _, body := s.do("GET", "/code/contexts", nil); status != http.StatusOK {
+		t.Fatalf("list: %d %s", status, body)
+	}
+
+	f.srv.Close()
+
+	// Uses the cache, reaches the engine, which cannot reach Jupyter.
+	if status, _, _ := s.do("POST", "/code/context", map[string]string{"language": "python"}); status == http.StatusOK {
+		t.Fatal("create succeeded against a closed Jupyter")
+	}
+
+	// Now the probe runs again and finds nothing.
+	status, _, body := s.do("GET", "/code/contexts", nil)
+	wantError(t, status, body, http.StatusNotImplemented, codeNotSupported)
+}
+
+// Unconfigured is not "starting": no wait at all.
+func TestCodeUnconfiguredDoesNotWait(t *testing.T) {
+	s := newTestServer(t, Options{Jupyter: jupyter.New(jupyter.Config{}), JupyterStartupWait: 10 * time.Second})
+
+	start := time.Now()
+	status, _, body := s.do("GET", "/code/contexts", nil)
+	wantError(t, status, body, http.StatusNotImplemented, codeNotSupported)
+
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("an image with no Jupyter waited %s", d)
+	}
 }

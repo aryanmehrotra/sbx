@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -57,6 +58,10 @@ type Options struct {
 	// Jupyter runs the /code routes. Nil means an engine configured from JUPYTER_HOST,
 	// JUPYTER_TOKEN and JUPYTER_PORT, which answers 501 with the reason when they name nothing.
 	Jupyter *jupyter.Engine
+
+	// JupyterStartupWait bounds how long a /code call waits for a configured Jupyter that is not
+	// answering yet, as when the image entrypoint is still starting it. Zero means 30s.
+	JupyterStartupWait time.Duration
 }
 
 // Server is the execd HTTP API. Build it with New, serve it with any http.Server, and Close it
@@ -67,6 +72,11 @@ type Server struct {
 	log   *log.Logger
 	mux   *http.ServeMux
 	code  *jupyter.Engine
+
+	// codeUp remembers that Jupyter answered, so /code calls skip the probe; codeWait is how
+	// long a call waits for a configured Jupyter that is still starting. See codeReady.
+	codeUp   atomic.Bool
+	codeWait time.Duration
 
 	// proxyH is /proxy/, guarded; see proxy for why it bypasses the mux.
 	proxyH http.Handler
@@ -98,6 +108,11 @@ func New(o Options) (*Server, error) {
 
 	if s.code == nil {
 		s.code = jupyter.New(jupyter.ConfigFromEnv())
+	}
+
+	s.codeWait = o.JupyterStartupWait
+	if s.codeWait <= 0 {
+		s.codeWait = 30 * time.Second
 	}
 
 	if s.log == nil {

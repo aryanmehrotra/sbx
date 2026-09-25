@@ -3,12 +3,14 @@
 package execd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/jupyter"
 )
@@ -41,18 +43,53 @@ type runCodeRequest struct {
 
 // codeReady answers 501 when there is no Jupyter to talk to. It reports whether the caller may
 // go on.
+//
+// A Jupyter that answered once is assumed to still be there, so a busy client does not pay a
+// probe per call; the assumption is dropped by the first engine error that could mean Jupyter
+// went away (see codeError). A Jupyter that is configured but not answering is waited for, up to
+// the startup window: the first call often arrives while the image's entrypoint is still
+// starting it, and a 501 then would be a wrong answer about the image. An image with no Jupyter
+// configured at all is refused at once.
 func (s *Server) codeReady(w http.ResponseWriter, r *http.Request) bool {
-	if err := s.code.Available(r.Context()); err != nil {
+	if s.codeUp.Load() {
+		return true
+	}
+
+	err := s.code.Available(r.Context())
+
+	if err != nil && !errors.Is(err, jupyter.ErrNotConfigured) {
+		ctx, cancel := context.WithTimeout(r.Context(), s.codeWait)
+		defer cancel()
+
+		t := time.NewTicker(250 * time.Millisecond)
+		defer t.Stop()
+
+		for err != nil {
+			select {
+			case <-ctx.Done():
+			case <-t.C:
+				err = s.code.Available(ctx)
+				continue
+			}
+
+			break
+		}
+	}
+
+	if err != nil {
 		writeError(w, http.StatusNotImplemented, codeNotSupported, err.Error())
 		return false
 	}
+
+	s.codeUp.Store(true)
 
 	return true
 }
 
 // codeError maps an engine error to a status and error code. Anything unrecognised is a 500,
-// upstream's answer for every code-interpreter failure.
-func codeError(w http.ResponseWriter, err error) {
+// upstream's answer for every code-interpreter failure - and a reason to probe Jupyter again on
+// the next call, since the likeliest unrecognised failure is Jupyter no longer answering.
+func (s *Server) codeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, jupyter.ErrUnsupportedLanguage):
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
@@ -60,10 +97,14 @@ func codeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, codeContextNotFound,
 			err.Error()+"; ids come from POST /code/context or GET /code/contexts")
 	case errors.Is(err, jupyter.ErrNotConfigured):
+		s.codeUp.Store(false)
 		writeError(w, http.StatusNotImplemented, codeNotSupported, err.Error())
+	case errors.Is(err, jupyter.ErrContextBusy):
+		// Upstream answers a second execution on a busy context with a 500, and clients
+		// written against it retry on that. Jupyter is fine; keep the cache.
+		writeError(w, http.StatusInternalServerError, codeRuntimeError, err.Error())
 	default:
-		// ErrContextBusy included: upstream answers a second execution on a busy context with
-		// a 500, and clients written against it retry on that.
+		s.codeUp.Store(false)
 		writeError(w, http.StatusInternalServerError, codeRuntimeError, err.Error())
 	}
 }
@@ -92,7 +133,7 @@ func (s *Server) createCodeContext(w http.ResponseWriter, r *http.Request) {
 
 	c, err := s.code.CreateContext(r.Context(), req.Language, req.Cwd)
 	if err != nil {
-		codeError(w, err)
+		s.codeError(w, err)
 		return
 	}
 
@@ -123,6 +164,7 @@ func (s *Server) deleteCodeContexts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.code.DeleteContextsByLanguage(r.Context(), lang); err != nil {
+		s.codeUp.Store(false)
 		writeError(w, http.StatusInternalServerError, codeRuntimeError,
 			fmt.Sprintf("delete %s contexts: %v", lang, err))
 
@@ -139,7 +181,7 @@ func (s *Server) getCodeContext(w http.ResponseWriter, r *http.Request) {
 
 	c, err := s.code.GetContext(r.PathValue("contextId"))
 	if err != nil {
-		codeError(w, err)
+		s.codeError(w, err)
 		return
 	}
 
@@ -152,7 +194,7 @@ func (s *Server) deleteCodeContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.code.DeleteContext(r.Context(), r.PathValue("contextId")); err != nil {
-		codeError(w, err)
+		s.codeError(w, err)
 		return
 	}
 
@@ -198,7 +240,7 @@ func (s *Server) runCode(w http.ResponseWriter, r *http.Request) {
 
 	err := s.code.Run(r.Context(), jupyter.RunRequest{ContextID: req.Context.ID, Language: lang, Code: req.Code}, ew.Emit)
 	if err != nil && !ew.Started() {
-		codeError(w, err)
+		s.codeError(w, err)
 	}
 	// Once the stream has started the status line is gone; the stream itself carries the
 	// error, and all that is left is to end the response.
@@ -256,6 +298,7 @@ func (s *Server) interruptCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.code.Interrupt(r.Context(), id); err != nil {
+		s.codeUp.Store(false)
 		writeError(w, http.StatusInternalServerError, codeRuntimeError, err.Error())
 		return
 	}
