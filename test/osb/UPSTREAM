@@ -1,0 +1,13 @@
+# The OpenSandbox release whose own Go e2e suite defines "compatible".
+#
+# The tag names it and the commit proves it: scripts/osb-conformance.sh fetches the tag and
+# refuses to run if it does not resolve to this commit, because a tag can be moved and a
+# conformance claim against "whatever release-1.1.0 means today" is not a claim.
+# Checked with: git ls-remote https://github.com/alibaba/OpenSandbox.git 'refs/tags/release-1.1.0*'
+#   836b182e...  refs/tags/release-1.1.0       (the annotated tag object)
+#   b1a29cf9...  refs/tags/release-1.1.0^{}    (the commit - what is pinned here)
+# The Go SDK's own module tag, sdks/sandbox/go/v1.1.0, is the same commit, which is why
+# test/osb/go.mod can require it from the module proxy for the benchmark.
+repo=https://github.com/alibaba/OpenSandbox.git
+tag=release-1.1.0
+commit=b1a29cf93a823a95913f7943010febb3f29de05c

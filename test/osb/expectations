@@ -1,0 +1,27 @@
+# What each release claims, and the only skips it may report.
+#
+# Read by test/osb/cmd/osbharness. Two kinds of line:
+#
+#   tier <release> <file>...
+#       The upstream test files (tests/go/<file>_e2e_test.go; "e2e" is tests/go/e2e_test.go)
+#       that must pass from this release on. Tiers are cumulative: asking for v0.10.0 runs
+#       every v0.9.0 file as well. This is the table in
+#       docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md, "Releases".
+#
+#   skip <Test> | <text the skip message must contain> | <why this skip is acceptable>
+#       A SKIP is not a pass. A test not listed here that skips fails the run, and a listed
+#       test that skips for a DIFFERENT reason also fails it - so "Pause not supported" can
+#       never hide behind the allowance for upstream's own unconditional skip.
+
+tier v0.9.0  sandbox command filesystem manager lifecycle_metrics error_handling concurrent streaming_timeout
+tier v0.10.0 volume egress_env code_interpreter
+tier v0.11.0 isolated_session credential_vault pool
+# v0.12.0 is "everything not needing an LLM endpoint": scenario_agent needs LLM_ENDPOINT.
+tier v0.12.0 e2e
+
+# Upstream skips these two unconditionally as the first statement of the test, at the pinned
+# commit (sandbox_e2e_test.go:207, manager_e2e_test.go:115). No server can make them run, so
+# sbx's pause/resume is proved by its own tests instead. If upstream removes the t.Skip, the
+# message stops matching and the run fails until this line is revisited.
+skip TestSandbox_PauseAndResume | skip pause/resume e2e test | upstream skips it unconditionally at release-1.1.0
+skip TestManager_PauseAndResume | skip pause/resume e2e test | upstream skips it unconditionally at release-1.1.0
