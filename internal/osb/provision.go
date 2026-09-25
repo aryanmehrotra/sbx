@@ -39,6 +39,10 @@ type plan struct {
 	// egressPolicy is the networkPolicy the sandbox starts with; nil is no filter at all.
 	egressPolicy *egress.Policy
 
+	// egressEnv are the OPENSANDBOX_EGRESS_* the caller set for the sidecar: accepted and
+	// recorded, not applied - see egressenv.go.
+	egressEnv map[string]string
+
 	// volumes are the caller's `volumes`, already allowed; claims are the pvc ones, which the
 	// create call makes exist before answering.
 	volumes []spec.VolumeMount
@@ -123,6 +127,20 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 
 	if _, err := provider.InjectorFor(s.p); err != nil {
 		return plan{}, http.StatusNotImplemented, "SANDBOX::API_NOT_SUPPORTED", err.Error()
+	}
+
+	// First, before any "not supported yet": these refusals are about the request itself, and
+	// upstream answers them with 400 whatever else the request asks for - including a
+	// credentialProxy this server would otherwise refuse with 501.
+	sandboxEnv, egressEnv, err := splitEgressEnv(req.Env)
+	if err != nil {
+		return bad("%v", err)
+	}
+
+	if credentialProxyEnabled(req.CredentialProxy) && egressEnv[egressSSLInsecure] != "" {
+		return bad("%s cannot be set when credentialProxy is enabled: the credential proxy "+
+			"terminates TLS, and turning off upstream certificate checks there would hand "+
+			"injected credentials to any server that answers", egressSSLInsecure)
 	}
 
 	sources := 0
@@ -315,7 +333,13 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 
 	now := s.now().UTC()
 
-	pl.env = req.Env
+	pl.env = sandboxEnv
+
+	// With a networkPolicy there is a filter they would configure; without one there is
+	// nothing, and upstream drops them. Either way they never reach the workload.
+	if policy != nil {
+		pl.egressEnv = egressEnv
+	}
 	pl.rec = record{
 		ID:               s.newID(),
 		Image:            strings.TrimSpace(req.Image.URI),
@@ -356,6 +380,12 @@ func present(raw json.RawMessage) bool {
 // provision does the slow part: pull, place execd, create, wait for /ping.
 func (s *Server) provision(ctx context.Context, pl plan) {
 	id := pl.rec.ID
+
+	if len(pl.egressEnv) > 0 {
+		keys := slices.Sorted(maps.Keys(pl.egressEnv))
+		history.Append(history.Record{Kind: "event", Sandbox: id, Event: "egress.env", Actor: "osb",
+			Message: "accepted for the egress filter, not applied by sbx's filter yet: " + strings.Join(keys, ", ")})
+	}
 
 	fail := func(reason, msg string) {
 		s.update(id, func(r *record) { r.transition(stateFailed, reason, msg, s.now()) })
