@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -66,6 +67,9 @@ type Server struct {
 	log   *log.Logger
 	mux   *http.ServeMux
 	code  *jupyter.Engine
+
+	// proxyH is /proxy/, guarded; see proxy for why it bypasses the mux.
+	proxyH http.Handler
 
 	outputDir     string
 	ownsOutputDir bool
@@ -155,6 +159,11 @@ func (s *Server) Close() {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, proxyPrefix) {
+		s.proxyH.ServeHTTP(w, r)
+		return
+	}
+
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -220,6 +229,7 @@ func (s *Server) routes() {
 	})
 
 	s.mux = m
+	s.proxyH = s.guard(s.proxy)
 }
 
 // notYet maps each unimplemented prefix to the sbx release that implements it, per the release
@@ -227,7 +237,6 @@ func (s *Server) routes() {
 var notYet = map[string]string{
 	"/pty":          "v0.10.0 (pty)",
 	"/pty/":         "v0.10.0 (pty)",
-	"/proxy/":       "v0.10.0 (port proxy)",
 	"/v1/isolated/": "v0.11.0 (isolated sessions)",
 }
 
