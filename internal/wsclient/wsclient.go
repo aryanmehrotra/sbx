@@ -472,10 +472,24 @@ func (c *Conn) Ping(payload []byte) error {
 	return c.writeFrame(opPing, payload)
 }
 
-// Close sends a normal close frame and closes the socket. It does not wait for the server's
-// reply: every caller here is done with the connection, and waiting would need the reader.
+// closeLinger bounds how long Close waits for the server to finish reading and close its end.
+var closeLinger = time.Second
+
+// Close sends a normal close frame, lets the server finish, and closes the socket.
+//
+// Closing the socket straight after the close frame loses data. When anything the server sent
+// is still unread here - a pong, a message nobody read - the kernel answers close() with a RST
+// instead of a FIN, and a RST makes the server's kernel throw away whatever it had received but
+// the server had not read yet: the tail of what this client wrote, gone although every Write
+// succeeded. Linux does this reliably; a test writing 400 messages with pings in between lost
+// about a quarter of them. So Close half-closes, then reads and discards until the server closes
+// its end (it has read everything by then) or closeLinger passes.
 func (c *Conn) Close() error {
 	err := c.writeFrame(opClose, closePayload(CloseNormal, ""))
+	if err == nil {
+		c.linger()
+	}
+
 	cerr := c.conn.Close()
 
 	if err != nil && !errors.Is(err, ErrClosed) {
@@ -572,4 +586,17 @@ func newKey() string {
 	_, _ = rand.Read(b[:])
 
 	return base64.StdEncoding.EncodeToString(b[:])
+}
+
+// linger half-closes and drains the socket until the server closes it or closeLinger passes. It
+// reads the raw connection, not the buffered reader, so a ReadMessage running concurrently in
+// another goroutine is never raced on its buffer; whichever read sees the bytes, they are unread
+// data the caller has already given up on.
+func (c *Conn) linger() {
+	if hc, ok := c.conn.(interface{ CloseWrite() error }); ok {
+		_ = hc.CloseWrite()
+	}
+
+	_ = c.conn.SetReadDeadline(time.Now().Add(closeLinger))
+	_, _ = io.Copy(io.Discard, c.conn)
 }
