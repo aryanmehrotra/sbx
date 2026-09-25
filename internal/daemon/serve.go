@@ -23,6 +23,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 	"strings"
 )
 
@@ -116,6 +117,17 @@ type daemon struct {
 	// like traffic and nothing with a filter would ever sleep - the same bug this feature
 	// exists to fix, running the other way.
 	egressSeen map[string]int64
+
+	// discovering serialises discover(). The ticker was its only caller until the OpenSandbox
+	// API began asking for a pass right after it creates a sandbox; two passes interleaving
+	// would each see the new unit as unknown and both bind its port.
+	discovering sync.Mutex
+
+	// held are sandboxes paused on purpose through the API. Kept here rather than on the unit
+	// because a hold must cover units the daemon has not discovered yet - after a restart, the
+	// API re-asserts its holds before the first discovery pass has run.
+	heldMu sync.RWMutex
+	held   map[string]bool
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -295,6 +307,9 @@ func (d *daemon) run(ctx context.Context) {
 // discover reconciles the live sandbox set with the units being served. New sandboxes get
 // listeners; removed ones get theirs closed.
 func (d *daemon) discover(ctx context.Context) {
+	d.discovering.Lock()
+	defer d.discovering.Unlock()
+
 	found, err := d.provider.List(ctx, "")
 	if err != nil {
 		logs.Default.Error("", "", "discovery failed: %v", err)
@@ -344,6 +359,9 @@ func (d *daemon) discover(ctx context.Context) {
 		u.dependsOn = f.DependsOn
 		u.egressGateway = f.EgressGateway
 		u.peers = d.peersOf
+		u.freezeOnIdle = f.OnIdle == spec.OnIdleFreeze
+		u.frozen = f.Paused
+		u.held.Store(d.isHeld(f.Sandbox))
 
 		uctx, ucancel := context.WithCancel(ctx)
 
@@ -423,7 +441,19 @@ func (d *daemon) correctAwake(f provider.Unit) {
 	u := d.units[f.Ref]
 	d.mu.Unlock()
 
-	if u == nil || !u.isAwake() {
+	if u == nil {
+		return
+	}
+
+	// Frozen or stopped decides which verb wakes it, and a pause done outside sbx (`docker
+	// pause`) is otherwise invisible until a Start is refused. Synced whenever no wake is in
+	// flight, awake or not - it is a fact about the container, not a belief about serving.
+	if f.Paused != u.isFrozen() && u.waking.TryLock() {
+		u.setFrozen(f.Paused)
+		u.waking.Unlock()
+	}
+
+	if !u.isAwake() {
 		return
 	}
 
@@ -436,6 +466,8 @@ func (d *daemon) correctAwake(f provider.Unit) {
 	if !u.isAwake() {
 		return
 	}
+
+	u.setFrozen(f.Paused)
 
 	u.setAwake(false)
 	logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; will be started on demand")

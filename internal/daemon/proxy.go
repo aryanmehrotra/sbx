@@ -74,6 +74,27 @@ type unit struct {
 	// schema migrations looks exactly like one nobody has touched. Measured from discovery
 	// instead, a 39-second creation was put to sleep underneath the command creating it.
 	served bool
+
+	// freezeOnIdle makes going idle a pause rather than a stop (spec on_idle: "freeze"). The
+	// sandbox keeps its memory and running processes and uses no CPU; the next connection thaws
+	// it in about 10 ms instead of starting it cold.
+	freezeOnIdle bool
+
+	// frozen is true while the workload is paused rather than stopped, under mu. It decides how
+	// a wake brings it back: a runtime asked to START a paused container refuses.
+	frozen bool
+
+	// held is true while this unit's sandbox is paused on purpose (the OpenSandbox pause call)
+	// and must not be thawed by traffic until it is resumed. Atomic because every connection
+	// reads it and only the API ever sets it; false for every sandbox from a sandbox.json.
+	held atomic.Bool
+}
+
+// errHeld is a wake refused because the sandbox was paused on purpose.
+type errHeld struct{ name string }
+
+func (e errHeld) Error() string {
+	return e.name + " is paused; resume it (POST /v1/sandboxes/{id}/resume) before connecting"
 }
 
 // leg is one port this daemon listens on and where it forwards.
@@ -348,6 +369,13 @@ func (u *unit) serve(ctx context.Context, p provider.Provider, l leg, readyTimeo
 func (u *unit) handle(ctx context.Context, p provider.Provider, client net.Conn, l leg, readyTimeout time.Duration) {
 	defer client.Close()
 
+	// Paused on purpose: hang up rather than thaw. A caller that paused a sandbox and then
+	// found it running again because something connected would have no pause at all.
+	if u.isHeld() {
+		logs.Default.Info(u.sandbox, u.service, "refused a connection: paused until resumed")
+		return
+	}
+
 	u.touch()
 
 	// Held by default, which is the whole design: the client waits and its request is served,
@@ -498,6 +526,10 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 	u.waking.Lock()
 	defer u.waking.Unlock()
 
+	if u.isHeld() {
+		return errHeld{u.name}
+	}
+
 	// Awake, and now known to be so for as long as this lock is held: nothing can sleep it
 	// between here and the caller's dial. A burst of connections to one sleeping unit blocks
 	// here too, so only the first of them starts the container.
@@ -523,6 +555,32 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 	}
 
 	start := time.Now()
+
+	// Frozen, not stopped: thaw it, and do not probe. Its processes were serving when they were
+	// frozen and resume exactly where they were, so there is nothing to wait for - asking the
+	// health check would add an exec round trip to a wake that is otherwise ~10 ms.
+	//
+	// A thaw that fails falls through to Start. The container may have been stopped or restarted
+	// outside sbx while it was believed frozen, and Start is the answer for that.
+	if u.isFrozen() {
+		u.setFrozen(false)
+
+		if pa, ok := p.(provider.Pauser); ok {
+			if err := pa.Unpause(ctx, u.ref); err == nil {
+				u.setAwake(true)
+				u.touch()
+
+				u.mu.Lock()
+				u.served = true
+				u.mu.Unlock()
+
+				logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "thawed",
+					time.Since(start).Milliseconds(), "thawed in %dms", time.Since(start).Milliseconds())
+
+				return nil
+			}
+		}
+	}
 
 	// Straight to Start, with no probe first.
 	//
@@ -630,6 +688,30 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 	// takes the wake path instead of believing a stale "awake".
 	u.setAwake(false)
 
+	// Freeze instead of stop, where the sandbox asked for it and the provider can. The live
+	// connections were closed above for the same reason as a stop: bytes written into a frozen
+	// container hang rather than fail, and only a NEW connection reaches the thaw in handle().
+	//
+	// A provider that cannot pause stops it instead. Nothing downstream can tell the difference
+	// except that memory is lost, and the kubernetes provider refuses on_idle "freeze" at create
+	// for exactly that reason, so this fallback is only reachable by a label edited by hand.
+	if u.freezeOnIdle {
+		if pa, ok := p.(provider.Pauser); ok {
+			if err := pa.Pause(ctx, u.ref); err != nil {
+				logs.Default.Error(u.sandbox, u.service, "could not freeze: %v", err)
+				u.setAwake(true) // it is still running; say so, so the next tick can try again
+
+				return
+			}
+
+			u.setFrozen(true)
+			logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "froze",
+				u.idleFor().Milliseconds(), "froze - idle for %s", u.idleFor().Round(time.Second))
+
+			return
+		}
+	}
+
 	if err := p.Stop(ctx, u.ref); err != nil {
 		logs.Default.Error(u.sandbox, u.service, "could not sleep: %v", err)
 		return
@@ -663,6 +745,21 @@ func (u *unit) setAwake(v bool) {
 	u.awake = v
 	u.mu.Unlock()
 }
+
+func (u *unit) isFrozen() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	return u.frozen
+}
+
+func (u *unit) setFrozen(v bool) {
+	u.mu.Lock()
+	u.frozen = v
+	u.mu.Unlock()
+}
+
+func (u *unit) isHeld() bool { return u.held.Load() }
 
 // listenAddr binds loopback on a laptop and every interface in a pod, because there the
 // connection arrives from a Service on the pod network rather than from this machine.
