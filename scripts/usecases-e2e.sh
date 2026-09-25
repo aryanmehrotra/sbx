@@ -35,8 +35,10 @@ sandboxes() { "$SBX" list 2>/dev/null | awk -v t="$TAG" '$1 ~ t {print $1}' | so
 cleanup() {
   [ -n "$DAEMON" ] && kill "$DAEMON" 2>/dev/null
   for s in $(sandboxes); do "$SBX" rm "$s" >/dev/null 2>&1; done
-  docker rmi -f "$(docker images -q "sbx-snap-$TAG-*" 2>/dev/null)" >/dev/null 2>&1
-  docker volume rm "$(docker volume ls -q --filter "name=sbx-snapvol-$TAG" 2>/dev/null)" >/dev/null 2>&1
+  # xargs, not "$(...)": this run makes two snapshots, and a quoted substitution hands docker
+  # both names as ONE argument, which it refuses - so both were left behind on every run.
+  docker images -q "sbx-snap-$TAG-*" 2>/dev/null | xargs -r docker rmi -f >/dev/null 2>&1
+  docker volume ls -q --filter "name=sbx-snapvol-$TAG" 2>/dev/null | xargs -r docker volume rm >/dev/null 2>&1
   docker network rm "sbx-noegress-$TAG-egress" >/dev/null 2>&1
   rm -rf "$WORK"
 }
