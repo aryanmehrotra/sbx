@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 )
 
 // hiddenEnv are execd's own settings, kept out of every process it starts. The access token
@@ -15,6 +17,9 @@ import (
 var hiddenEnv = map[string]bool{
 	EnvAccessToken:   true,
 	EnvGraceShutdown: true,
+
+	// The control secret is the host's, for seal and re-key; user code has no use for it.
+	execdctl.EnvControlSecret: true,
 }
 
 // userEnv is the environment a command or session sees, as upstream layers it: execd's own

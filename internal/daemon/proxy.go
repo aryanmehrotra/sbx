@@ -116,6 +116,11 @@ type leg struct {
 	// nil where the address is not a plain IP - a cluster Service name has to be resolved on
 	// each dial, because that is the point of it - and the dial falls back to the old path.
 	addr *net.TCPAddr
+
+	// dialer, when set, replaces the TCP dial entirely: the provider said this workload is
+	// reached some other way (provider.GuestDialer - a Firecracker vsock device). Asked once, when
+	// the leg is built, like addr.
+	dialer provider.DialFunc
 }
 
 // resolve fills in addr where the upstream is a literal address, which is every leg on the
@@ -788,7 +793,18 @@ func listenAddr(port int) string {
 // goroutines, never reaching the revoke-and-rewake below. So a name keeps DialTimeout.
 //
 // Either way a refused dial returns promptly, which is what that recovery path needs.
+// guestDialTimeout bounds a provider dialer, for the same reason a name keeps DialTimeout: a VM
+// that is paused or gone must fail the dial, so handle() reaches its revoke-and-rewake path.
+var guestDialTimeout = 10 * time.Second
+
 func (l *leg) dial() (net.Conn, error) {
+	if l.dialer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), guestDialTimeout)
+		defer cancel()
+
+		return l.dialer(ctx)
+	}
+
 	if l.addr != nil {
 		return net.DialTCP("tcp", nil, l.addr)
 	}

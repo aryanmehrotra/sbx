@@ -204,6 +204,8 @@ func TestExecdStartupFailures(t *testing.T) {
 		{"missing entrypoint", nil, []string{"--addr", "127.0.0.1:0", "--", "sbx-execd-no-such-binary"}, 127},
 		{"bad grace", []string{EnvGraceShutdown + "=soon"}, []string{"--addr", "127.0.0.1:0"}, 2},
 		{"bad flag", nil, []string{"--nope"}, 2},
+		{"no listener", nil, []string{"--addr", ""}, 2},
+		{"vsock port any", nil, []string{"--addr", "127.0.0.1:0", "--vsock-port", "4294967295"}, 2},
 	}
 
 	for _, c := range cases {
