@@ -144,6 +144,15 @@ jobs:
           go vet ./...
           go test ./...
 
+      - name: OpenSandbox harness module
+        # Also its own module - the upstream SDK may be required here and nowhere else. Its
+        # unit tests are the conformance gate's own gate: every way a run can look green
+        # without being green has a case.
+        run: |
+          cd test/osb
+          GOWORK=off go vet ./...
+          GOWORK=off go test ./...
+
       - name: the root module has no dependencies
         # A product claim, a README badge, and the reason the console is a separate module.
         # Asserted here as well as in a Go test, because this is the one that gates a merge.
@@ -261,6 +270,26 @@ jobs:
       - run: go build -o sbx .
       - name: three sandboxes, concurrently
         run: ./scripts/e2e.sh 3
+
+  # OpenSandbox compatibility, measured by OpenSandbox's own Go e2e suite at the commit pinned
+  # in test/osb/UPSTREAM, run unmodified against a throwaway `sbx serve --osb-addr`. The tier
+  # is the release this branch claims (docs/superpowers/specs/2026-09-25-opensandbox-compat-
+  # design.md, "Releases"); a skip not allowed by test/osb/expectations fails it.
+  osb-conformance:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: upstream tests/go, the v0.9.0 tier
+        # The script builds sbx itself, fetches and verifies the pinned upstream, and gates on
+        # its own exit status. On failure it prints where the daemon log and the raw
+        # go test -json stream were kept.
+        run: ./scripts/osb-conformance.sh --tier v0.9.0
 
   # Snapshot and fork touch volumes, images and a stopped container's data directory, and
   # every one of those is a place where "it worked on my machine" has already been wrong
