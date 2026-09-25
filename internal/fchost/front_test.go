@@ -246,7 +246,7 @@ func TestEnsureInstallsByContentAndRestartsOnlyOnChange(t *testing.T) {
 			"systemctl stop sbx-fc-serve",
 			"systemd-run --quiet --unit=sbx-fc-serve --collect -p Restart=on-failure -p EnvironmentFile=/etc/sbx-fc/env",
 			`'\''/usr/local/bin/sbx'\'' '\''serve'\'' '\''--provider'\'' '\''firecracker'\''`,
-			`'\''--connect-addr'\'' '\''127.0.0.1:20980'\'' '\''--osb-addr'\'' '\''127.0.0.1:20981'\'' '\''--idle'\'' '\''2m'\''`,
+			`'\''--connect-addr'\'' '\''127.0.0.1:22980'\'' '\''--osb-addr'\'' '\''127.0.0.1:22981'\'' '\''--idle'\'' '\''2m'\''`,
 		} {
 			if !strings.Contains(all, w) {
 				t.Errorf("no %q in\n%s", w, all)
@@ -306,7 +306,7 @@ func TestTunnelForwardsOnlyTheTwoControlPorts(t *testing.T) {
 	// ControlPersist yes, and through that mux `ssh -N -L` hands its forwards to the master and
 	// exits at once - which the front reads as the tunnel closing.
 	want := "ssh -F /c -o LogLevel=ERROR -o ControlMaster=no -o ControlPath=none -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 " +
-		"-o ServerAliveCountMax=3 -N -L 127.0.0.1:50001:127.0.0.1:20980 -L 127.0.0.1:50002:127.0.0.1:20981 lima-sbx-fc"
+		"-o ServerAliveCountMax=3 -N -L 127.0.0.1:50001:127.0.0.1:22980 -L 127.0.0.1:50002:127.0.0.1:22981 lima-sbx-fc"
 	if got != want {
 		t.Fatalf("\n got %s\nwant %s", got, want)
 	}

@@ -42,6 +42,13 @@ const (
 	maxSlots    = 128
 )
 
+// PortRanges are the host ports sandboxes use: the public block every client connects to, and the
+// backing block docker publishes behind it. Both half-open [lo, hi). Anything else sbx listens on
+// must stay out of both.
+func PortRanges() (publicLo, publicHi, backingLo, backingHi int) {
+	return publicBase, publicBase + maxSlots*blockSize, backingBase, backingBase + maxSlots*blockSize
+}
+
 type dockerProvider struct {
 	api      *dockerClient // hot path: start, stop, health
 	endpoint dockerEndpoint

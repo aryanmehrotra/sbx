@@ -3,6 +3,8 @@ package fchost
 import (
 	"strings"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Every other test in the package sees a host that holds nothing, not whatever this machine runs.
@@ -31,5 +33,17 @@ func TestBusySlots(t *testing.T) {
 
 	if got := busySlots(func(s int) bool { return !held[s] }); got != "0,2,127" {
 		t.Fatalf("busySlots = %q", got)
+	}
+}
+
+// The helper VM's control ports must never be a sandbox port: the in-VM daemon binds every
+// public port of every slot on the same loopback, and WSL forwards that loopback to the host.
+func TestControlPortsAreOutsideTheSandboxRanges(t *testing.T) {
+	pubLo, pubHi, backLo, backHi := provider.PortRanges()
+
+	for _, port := range []int{GuestConnectPort, GuestOSBPort} {
+		if (port >= pubLo && port < pubHi) || (port >= backLo && port < backHi) {
+			t.Errorf("control port %d is inside a sandbox range [%d,%d) or [%d,%d)", port, pubLo, pubHi, backLo, backHi)
+		}
 	}
 }

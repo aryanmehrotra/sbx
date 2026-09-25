@@ -25,9 +25,14 @@ import (
 )
 
 // In-VM constants. Loopback inside the VM: nothing but the host's ssh forward reaches them.
+//
+// The two control ports sit OUTSIDE the sandbox ranges (public 20000-22559, backing 30000-32559):
+// WSL forwards the VM's loopback to the host at the same numbers, and the in-VM daemon binds every
+// sandbox's public port there too, so a control port inside the public range is a slot that can
+// never be served.
 const (
-	GuestConnectPort = 20980
-	GuestOSBPort     = 20981
+	GuestConnectPort = 22980
+	GuestOSBPort     = 22981
 	guestBinary      = "/usr/local/bin/sbx"
 	guestUnit        = "sbx-fc-serve"
 	guestEnvFile     = "/etc/sbx-fc/env"

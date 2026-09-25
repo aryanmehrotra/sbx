@@ -6,11 +6,11 @@ package fchost
 // sbx's daemon running, then does two things with the daemon's two loopback listeners, both
 // reached through one ssh forward:
 //
-//   - connect (20980 in the VM) is followed by daemon.Mirror, which binds every sandbox port on
+//   - connect (22980 in the VM) is followed by daemon.Mirror, which binds every sandbox port on
 //     this machine's loopback at the SAME number the in-VM `sbx env` prints, and carries each
 //     connection over the existing WebSocket tunnel. A TCP connect on the Mac reaches the in-VM
 //     daemon's listener, which is what wakes the microVM. Connect-to-wake survives the hop.
-//   - OSB (20981 in the VM) is reverse-proxied at --osb-addr, so the OpenSandbox API answers on
+//   - OSB (22981 in the VM) is reverse-proxied at --osb-addr, so the OpenSandbox API answers on
 //     the Mac exactly where a docker-backed `sbx serve --osb-addr` would.
 //
 // The rest of the CLI (create, list, env, exec, logs, rm, ...) is redirected into the VM by
