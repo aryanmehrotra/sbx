@@ -39,7 +39,7 @@ func Main(version string, args []string) error {
 
 	switch args[0] {
 	case "backend":
-		b := Detect(Host())
+		b := HostBackend()
 		fmt.Printf("%s", b.Kind)
 
 		if b.Helper != "" {
@@ -77,7 +77,7 @@ func Main(version string, args []string) error {
 }
 
 func helperManager(out io.Writer) (*Manager, error) {
-	b := Detect(Host())
+	b := HostBackend()
 
 	switch b.Kind {
 	case HelperVM:

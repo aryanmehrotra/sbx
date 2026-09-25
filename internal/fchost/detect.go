@@ -82,6 +82,20 @@ type Probe struct {
 	Home string
 }
 
+// hostProbe is the machine HostBackend reads: Host, or a fake in a test.
+var hostProbe = Host
+
+// HostBackend is THE decision for this machine, and every path that acts on one asks it: the
+// provider (through provider.DecideHost, installed from this package's init), the CLI redirect,
+// `sbx serve`, `sbx fc` and `sbx doctor`. Two detectors that each read the machine their own way
+// disagreed on every M3+ Mac, on Windows and on SBX_FC_ASSUME_NESTED; one cannot.
+func HostBackend() Backend { return Detect(hostProbe()) }
+
+// Decision is b as hostcap spells it, for the provider package.
+func (b Backend) Decision() hostcap.Decision {
+	return hostcap.Decision{Backend: b.Kind, Reason: b.Reason, Next: b.Next}
+}
+
 // Host is the real machine.
 func Host() Probe {
 	home, _ := os.UserHomeDir()

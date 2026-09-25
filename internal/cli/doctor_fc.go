@@ -7,46 +7,26 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 )
 
-// firecrackerCapabilities is what `--provider firecracker` can do here, from the same hostcap
-// decision the provider itself acts on - so doctor can never say yes to a machine the provider
-// then refuses, or the reverse.
-func firecrackerCapabilities(r hostcap.Report, ipForward string) []Capability {
-	d := hostcap.Decide(r)
-
-	fcCap := Capability{
-		Name:   "firecracker",
-		Have:   d.Backend == hostcap.Direct,
-		Detail: string(d.Backend) + ": " + d.Reason,
+// firecrackerCapabilities are the rows under the one "microVM" row: what a Direct host still
+// needs for `--provider firecracker` to work. They are shown only when kind - the same
+// fchost.HostBackend decision the microVM row, the provider and the redirect act on - says this
+// machine runs Firecracker itself. On a helper-VM host those checks belong to the VM, whose
+// provisioning installs e2fsprogs and whose bridges are its own; showing the Mac's here would
+// grade a machine that never runs the VMM.
+func firecrackerCapabilities(kind hostcap.Backend, mkfs, ipForward string) []Capability {
+	if kind != hostcap.Direct {
+		return nil
 	}
 
-	switch d.Backend {
-	case hostcap.Direct:
-	case hostcap.HelperVM:
-		fcCap.Meaning = "--provider firecracker runs through a Linux helper VM here, which the " +
-			"helper-VM layer provisions; this machine cannot run it directly"
-	case hostcap.KataRuntimeClass:
-		fcCap.Meaning = "use --provider kubernetes --isolation kata for a VM boundary"
-	default:
-		fcCap.Meaning = "--provider firecracker is refused: " + d.Next
-	}
-
-	caps := []Capability{fcCap}
-
-	// Only where firecracker would run here. On a Mac the helper VM's own doctor answers this.
-	if r.OS != "linux" {
-		return caps
-	}
-
-	mkfs := Capability{Name: "mkfs.ext4", Have: r.Mkfs != "", Detail: r.Mkfs,
+	row := Capability{Name: "mkfs.ext4", Have: mkfs != "", Detail: mkfs,
 		Meaning: "the firecracker provider cannot build a root filesystem; install e2fsprogs"}
-	if r.Mkfs == "" {
-		mkfs.Detail = "not on PATH"
+	if mkfs == "" {
+		row.Detail = "not on PATH"
 	}
 
-	caps = append(caps, mkfs)
+	caps := []Capability{row}
 
-	fwd := strings.TrimSpace(ipForward)
-	switch fwd {
+	switch strings.TrimSpace(ipForward) {
 	case "0":
 		caps = append(caps, Capability{Name: "vm bridges isolated", Have: true,
 			Detail: "ip_forward=0: the host routes nothing between sandbox bridges"})

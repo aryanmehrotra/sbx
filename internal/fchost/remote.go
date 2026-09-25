@@ -33,11 +33,14 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
-func init() { provider.HelperVMProvider = helperVMProvider }
+func init() {
+	provider.HelperVMProvider = helperVMProvider
+	provider.DecideHost = func() hostcap.Decision { return HostBackend().Decision() }
+}
 
 // helperVMProvider is provider.HelperVMProvider: the helper VM for this machine, as a Provider.
 func helperVMProvider(hostcap.Decision) (provider.Provider, error) {
-	b := Detect(Host())
+	b := HostBackend()
 	if b.Kind != HelperVM {
 		// hostcap said helper-vm and the full detection (which also needs a VM tool) did not.
 		return nil, Refusal(b)

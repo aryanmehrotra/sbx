@@ -59,11 +59,18 @@ var HelperVMProvider func(d hostcap.Decision) (Provider, error)
 // probeHost is hostcap.Probe; a variable so the selection path is tested for every host shape.
 var probeHost = hostcap.Probe
 
+// DecideHost is the ONE decision about where a microVM runs from this machine. The helper-VM
+// layer (fchost.HostBackend: hostcap's Linux and macOS verdict, plus the SBX_FC_ASSUME_NESTED
+// override, the VM tool that would run the helper VM, and the whole Windows branch) installs it
+// from its init, so the provider, the CLI redirect, `sbx serve` and `sbx doctor` all act on the
+// same answer. The default - hostcap alone - is only what a build without that layer sees.
+var DecideHost = func() hostcap.Decision { return hostcap.Decide(probeHost()) }
+
 // Version is the sbx build version, used to find the agent binary; app sets it.
 var Version = "dev"
 
 func forFirecracker(socket string) (Provider, error) {
-	d := hostcap.Decide(probeHost())
+	d := DecideHost()
 
 	switch d.Backend {
 	case hostcap.Direct:

@@ -83,7 +83,7 @@ func Refusal(b Backend) error {
 // Redirect runs a firecracker command line wherever it can run. handled=false means this host
 // runs Firecracker directly and the caller should carry on as normal.
 func Redirect(ctx context.Context, version, cmd string, args []string) (handled bool, code int) {
-	b := Detect(Host())
+	b := HostBackend()
 
 	switch b.Kind {
 	case Direct:

@@ -1034,7 +1034,7 @@ func dispatch(cmd string, args []string) error {
 		// On a host with no /dev/kvm, `--provider firecracker` means the helper VM's daemon,
 		// reached from here; a refused host says why rather than failing on an unknown provider.
 		if fchost.Wants(cmd, args, os.Getenv) {
-			switch b := fchost.Detect(fchost.Host()); b.Kind {
+			switch b := fchost.HostBackend(); b.Kind {
 			case fchost.HelperVM:
 				return fchost.ServeMain(version, args)
 			case fchost.Refused:

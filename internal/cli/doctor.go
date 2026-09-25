@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/fchost"
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -194,10 +193,20 @@ func Doctor(ctx context.Context) Report {
 	// A microVM is a backend decision, not a docker runtime, so it gets its own row: which
 	// backend `--provider firecracker` would use from here and why - directly, through a helper
 	// VM, or refused with the fix. It only reads; the helper VM is never started from here.
-	fcHave, fcDetail, fcMeaning := fchost.HostDoctorRow(ctx)
+	// One decision (fchost.HostBackend) feeds the row and the detail rows under it, and is the
+	// same one the provider and the redirect act on.
+	fb := fchost.HostBackend()
+	fcHave, fcDetail, fcMeaning := fchost.HostDoctorRow(ctx, fb)
 	rep.Capabilities = append(rep.Capabilities, Capability{
 		Name: "microVM", Have: fcHave, Detail: fcDetail, Meaning: fcMeaning,
 	})
+
+	mkfsPath := ""
+	if ok, where := have("mkfs.ext4"); ok {
+		mkfsPath = where
+	}
+
+	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(fb.Kind, mkfsPath, readIPForward())...)
 
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.
@@ -207,8 +216,6 @@ func Doctor(ctx context.Context) Report {
 		Detail:  "daemon experimental=" + orUnknown(exp),
 		Meaning: "sbx checkpoint / resume is unavailable; sleeping and forking keep the disk, not the process",
 	})
-
-	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(hostcap.Probe(), readIPForward())...)
 
 	kubectlOK, kubectlWhere := have("kubectl")
 	rep.Capabilities = append(rep.Capabilities, Capability{

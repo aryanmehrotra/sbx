@@ -39,9 +39,9 @@ func DoctorRow(ctx context.Context, b Backend, name string, status func(context.
 	}
 }
 
-// HostDoctorRow is DoctorRow for this machine.
-func HostDoctorRow(ctx context.Context) (have bool, detail, meaning string) {
-	b := Detect(Host())
+// HostDoctorRow is DoctorRow for b, the decision HostBackend made for this machine; the caller
+// passes it so the rows under it (mkfs.ext4, ip_forward) describe the same decision.
+func HostDoctorRow(ctx context.Context, b Backend) (have bool, detail, meaning string) {
 
 	name := DefaultName
 	status := func(context.Context) (State, error) { return Absent, nil }
