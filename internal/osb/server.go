@@ -97,6 +97,16 @@ type Options struct {
 
 	// EgressStatus maps an Egress error to its HTTP status (daemon.EgressHTTPStatus).
 	EgressStatus func(error) int
+
+	// Pools are the warm pools to keep full (sbx serve --osb-pool).
+	Pools []PoolSpec
+
+	// PoolConcurrency bounds how many members are being made at once, across every pool.
+	// Zero means 4.
+	PoolConcurrency int
+
+	// Claim re-keys a pool member's execd; nil is the real POST /sbx/claim. A test seam.
+	Claim func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
 }
 
 // EgressAPI is the live policy of a sandbox's egress filter. *daemon.EgressControl implements
@@ -133,6 +143,10 @@ type Server struct {
 
 	// trace times each create phase when SBX_OSB_TRACE is set.
 	trace *tracer
+
+	pools      map[string]*pool
+	poolSem    chan struct{}
+	claimExecd func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
 
 	// base outlives any one request: provisioning continues after the create call has
 	// returned its 202, which is the whole point of Pending.
@@ -185,6 +199,7 @@ func New(o Options) (*Server, error) {
 		provisioning: map[string]context.CancelFunc{},
 		seeded:       map[string]bool{},
 		trace:        newTracer(),
+		pools:        map[string]*pool{},
 	}
 
 	if s.readyTimeout <= 0 {
@@ -225,6 +240,21 @@ func New(o Options) (*Server, error) {
 		s.newID = newID
 	}
 
+	s.claimExecd = o.Claim
+	if s.claimExecd == nil {
+		s.claimExecd = claimExecdHTTP
+	}
+
+	if o.PoolConcurrency <= 0 {
+		o.PoolConcurrency = 4
+	}
+
+	s.poolSem = make(chan struct{}, o.PoolConcurrency)
+
+	if err := s.newPools(o.Pools); err != nil {
+		return nil, err
+	}
+
 	s.base, s.cancel = context.WithCancel(context.Background())
 
 	recs, errs := s.store.all()
@@ -240,9 +270,16 @@ func New(o Options) (*Server, error) {
 }
 
 // Close stops provisioning goroutines and waits for them. Sandboxes are left as they are - the
-// daemon stopping is not a reason to tear anything down.
+// daemon stopping is not a reason to tear anything down - except warm-pool members nobody
+// claimed, which are only of use to the process holding their tokens.
 func (s *Server) Close() {
 	s.cancel()
+	s.wg.Wait()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	s.drainPools(ctx)
 	s.wg.Wait()
 }
 
@@ -250,6 +287,22 @@ func (s *Server) Close() {
 func (s *Server) Run(ctx context.Context) {
 	s.recover(ctx)
 	s.reap(ctx)
+
+	// Stopped by whichever ends first, the daemon or Close: Close waits for these.
+	fctx, fcancel := context.WithCancel(ctx)
+	defer fcancel()
+
+	context.AfterFunc(s.base, fcancel)
+
+	for _, p := range s.pools {
+		s.wg.Add(1)
+
+		go func() {
+			defer s.wg.Done()
+
+			s.fill(fctx, p)
+		}()
+	}
 
 	t := time.NewTicker(s.reapEvery)
 	defer t.Stop()
@@ -272,7 +325,17 @@ func (s *Server) recover(ctx context.Context) {
 
 	var pending []*record
 
+	var stale []string
+
 	for _, r := range s.recs {
+		// A member from before a restart: its hold died with the old process, and the new
+		// pool is filled fresh. Removed rather than reused, because nothing about it is known
+		// to be as it was left.
+		if r.Pool != "" {
+			stale = append(stale, r.ID)
+			continue
+		}
+
 		if r.PausedByAPI {
 			s.rt.Hold(r.ID, true)
 		}
@@ -282,6 +345,10 @@ func (s *Server) recover(ctx context.Context) {
 		}
 	}
 	s.mu.Unlock()
+
+	for _, id := range stale {
+		s.discard(id)
+	}
 
 	if len(pending) == 0 {
 		return
@@ -346,6 +413,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes/{id}/diagnostics/logs", s.diagnostics("logs"))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/diagnostics/events", s.diagnostics("events"))
 	mux.HandleFunc("POST /v1/metrics/events", s.metrics)
+	mux.HandleFunc("GET /sbx/v1/pool", s.poolStatus)
 
 	mux.HandleFunc("GET /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
 	mux.HandleFunc("PUT /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)

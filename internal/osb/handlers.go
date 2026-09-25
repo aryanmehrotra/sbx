@@ -71,7 +71,9 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (record, bool) {
 	id := r.PathValue("id")
 
 	rec, ok := s.snapshot(id)
-	if !validID(id) || !ok {
+
+	// An unclaimed pool member does not exist as far as any caller can tell.
+	if !validID(id) || !ok || rec.Pool != "" {
 		writeErr(w, http.StatusNotFound, "SANDBOX::NOT_FOUND",
 			fmt.Sprintf("no sandbox %q - ids look like osb-0123456789ab; GET /v1/sandboxes lists them", id))
 
@@ -229,7 +231,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 
 	for _, id := range ids {
 		rec, ok := s.snapshot(id)
-		if !ok {
+		if !ok || rec.Pool != "" {
 			continue
 		}
 

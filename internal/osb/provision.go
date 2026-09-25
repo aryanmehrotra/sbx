@@ -57,6 +57,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.fromPool(w, r, req, pl) {
+		return
+	}
+
 	s.mu.Lock()
 	s.recs[pl.rec.ID] = &pl.rec
 
@@ -264,6 +268,13 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 	extra, err := parsePorts(req.Extensions["sbx.ports"])
 	if err != nil {
 		return bad("%v", err)
+	}
+
+	switch req.Extensions["sbx.pool"] {
+	case "", "off":
+	default:
+		return bad("extensions[\"sbx.pool\"] %q must be \"off\" (never serve this create from a warm "+
+			"pool) or absent", req.Extensions["sbx.pool"])
 	}
 
 	switch req.Extensions["sbx.idle"] {

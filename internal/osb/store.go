@@ -66,6 +66,10 @@ type record struct {
 	// PausedByAPI is a pause somebody asked for, as opposed to the daemon freezing an idle
 	// sandbox. Only this one is reported as Paused and refuses traffic.
 	PausedByAPI bool `json:"pausedByApi,omitempty"`
+
+	// Pool is the warm-pool key of a member nobody has claimed yet. Such a record is invisible
+	// to every API route; claiming it clears this.
+	Pool string `json:"pool,omitempty"`
 }
 
 func (r *record) transition(state, reason, message string, now time.Time) {
