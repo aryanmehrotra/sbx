@@ -124,7 +124,7 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 		// so it narrows the race rather than closing it; the lock in cli/slotlock.go covers
 		// the rest for one machine, and nothing covers two machines driving one remote
 		// daemon, which is why this is best-effort by design.
-		if !d.backingPortsFree(i) {
+		if !d.slotPortsFree(i) {
 			continue
 		}
 
@@ -1142,25 +1142,29 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	return nil
 }
 
-// backingPortsFree reports whether a slot's docker-published ports can be bound.
+// slotPortsFree reports whether a slot's ports can be bound - both halves.
 //
-// The backing ports, not the public ones: docker publishes on 30000+, and the public ports
-// belong to the daemon, which may not be running when a sandbox is created. Probing the wrong
-// half of the pair is a check that always passes.
+// The backing ports are docker's: it publishes on 30000+, and this is the race with another
+// create. The public ports are the daemon's, and for a slot no sandbox holds they should be
+// free; one that is not belongs to another program - typically a second sbx daemon driving a
+// different engine on this machine, which allocates from slot 0 just as this one does. Handing
+// out that slot gives a sandbox a wake port it can never bind, and every request to it lands
+// on the other daemon's sandbox instead. Measured before this: a create's readiness ping woke a
+// sandbox on the other engine and the create took 9 s.
 //
 // Only the first few of the block are tried. A slot is claimed by its first service, so a
 // collision shows up there, and binding twenty sockets per candidate slot to be thorough
 // would cost more than the race does.
-func (d *dockerProvider) backingPortsFree(slot int) bool {
+func (d *dockerProvider) slotPortsFree(slot int) bool {
 	for i := range 3 {
-		port := backingBase + slot*blockSize + i
+		for _, port := range []int{backingBase + slot*blockSize + i, publicBase + slot*blockSize + i} {
+			ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+			if err != nil {
+				return false
+			}
 
-		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-		if err != nil {
-			return false
+			_ = ln.Close()
 		}
-
-		_ = ln.Close()
 	}
 
 	return true

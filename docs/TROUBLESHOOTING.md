@@ -172,7 +172,9 @@ bug worth reporting with `sbx list | wc -l`.
 Slot allocation reads which slots are spoken for and takes the first gap, but ports are only
 really claimed when a container binds them - so two racing creates can be handed the same gap.
 sbx narrows this from both sides: a lock under `~/.sbx` serialises the claim on one machine, and
-`AllocSlot` binds a candidate slot's backing ports before returning it.
+`AllocSlot` binds a candidate slot's backing and public ports before returning it - the public
+ones so that a second sbx daemon on this machine, driving another engine, never hands out a
+slot whose wake ports the first daemon already holds.
 
 Neither closes it completely: two machines driving one remote `DOCKER_HOST` share no lock.
 Measured on a laptop, four concurrent creates repeated five times: 5 of 20 succeeded before, 17
