@@ -96,6 +96,16 @@ threat model is not "untrusted users share one daemon".**
   boundary and is *refused with a reason* where the runtime is absent rather than silently
   downgraded. If you are running code you did not write, use one of those or use a tool built
   on microVMs; [COMPARISON.md](docs/COMPARISON.md) names them.
+- **A microVM sandbox (`--provider firecracker`) is on the host's network, not behind it.**
+  Each sandbox is a bridge (`10.231.<slot>.0/24`, the host at `.1`) with no NAT, and sbx writes
+  no firewall rule. Two consequences, both yours to close on a shared host:
+  - **A guest reaches every host service bound to `0.0.0.0`** (or to the bridge address) at
+    `10.231.<slot>.1` - the host's INPUT chain decides, not sbx. Bind host services to
+    `127.0.0.1`, or drop INPUT from `sbxfc+` interfaces except established traffic.
+  - **Isolation between sandboxes is the host's FORWARD policy.** With `ip_forward=1` (docker
+    turns it on) one sandbox's VMs can reach another's unless the policy is `DROP`, which docker
+    sets but sbx neither sets nor owns. `sbx doctor` checks it (`vm bridges isolated`), and every
+    create warns when it is not confirmed.
 - **`egress: "deny"` is coarse.** It removes routed egress by putting the service on a bridge
   with IP masquerade disabled. It is not a filtering firewall: it cannot allow one domain and
   deny another, and it is enforced by docker's networking rather than by anything sbx

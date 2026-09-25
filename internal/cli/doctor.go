@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fchost"
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -206,12 +207,17 @@ func Doctor(ctx context.Context) Report {
 		mkfsPath = where
 	}
 
+	var bridges fc.BridgeIsolation
+	if fb.Kind == fchost.Direct {
+		bridges = fc.HostBridgeIsolation()
+	}
+
 	var usage *provider.FirecrackerUsage
 	if u, err := provider.FirecrackerDiskUsage(); err == nil {
 		usage = &u
 	}
 
-	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(fb.Kind, mkfsPath, readIPForward(), usage)...)
+	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(fb.Kind, mkfsPath, bridges, usage)...)
 
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.

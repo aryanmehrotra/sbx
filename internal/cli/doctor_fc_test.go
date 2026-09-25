@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
@@ -25,7 +26,7 @@ func TestDoctorFirecrackerDetailRows(t *testing.T) {
 		{"refused", hostcap.Refused, "/sbin/mkfs.ext4", "0", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			caps := firecrackerCapabilities(tc.kind, tc.mkfs, tc.fwd, nil)
+			caps := firecrackerCapabilities(tc.kind, tc.mkfs, fc.CheckBridgeIsolation(tc.fwd, acceptAll), nil)
 
 			var names []string
 			for _, c := range caps {
@@ -46,7 +47,7 @@ func TestDoctorFirecrackerDetailRows(t *testing.T) {
 		})
 	}
 
-	caps := firecrackerCapabilities(hostcap.Direct, "", "0", nil)
+	caps := firecrackerCapabilities(hostcap.Direct, "", fc.CheckBridgeIsolation("0", nil), nil)
 	if caps[0].Have || !strings.Contains(caps[0].Meaning, "e2fsprogs") {
 		t.Fatalf("mkfs row = %+v", caps[0])
 	}
@@ -56,7 +57,7 @@ func TestDoctorFirecrackerDetailRows(t *testing.T) {
 func TestDoctorShowsMicroVMDiskUsage(t *testing.T) {
 	u := &provider.FirecrackerUsage{Root: "/root/.sbx/fc", VMs: 3, Memory: 768 << 20, Disks: 2 << 30, Snapshots: 256 << 20}
 
-	caps := firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", "0", u)
+	caps := firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("0", nil), u)
 
 	last := caps[len(caps)-1]
 	if last.Name != "microVM disk" || !last.Have ||
@@ -64,7 +65,18 @@ func TestDoctorShowsMicroVMDiskUsage(t *testing.T) {
 		t.Fatalf("disk row = %+v", last)
 	}
 
-	if caps := firecrackerCapabilities(hostcap.HelperVM, "", "", u); len(caps) != 0 {
+	if caps := firecrackerCapabilities(hostcap.HelperVM, "", fc.BridgeIsolation{}, u); len(caps) != 0 {
 		t.Fatalf("a helper-VM host graded its own disk: %+v", caps)
+	}
+}
+
+func acceptAll() (string, error) { return "-P FORWARD ACCEPT\n", nil }
+
+// ip_forward=1 with an ACCEPT policy is a host that routes between sandbox bridges: graded ✗
+// with what to do, not passed because forwarding is merely on.
+func TestDoctorGradesTheForwardPolicy(t *testing.T) {
+	caps := firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("1", acceptAll), nil)
+	if row := caps[1]; row.Name != "vm bridges isolated" || row.Have || !strings.Contains(row.Meaning, "FORWARD DROP") {
+		t.Fatalf("row = %+v", row)
 	}
 }

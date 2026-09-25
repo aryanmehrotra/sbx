@@ -1500,3 +1500,21 @@ func TestInjectorForNamesFirecracker(t *testing.T) {
 		t.Fatalf("InjectorFor(firecracker) = %v", err)
 	}
 }
+
+// A host that routes between sandbox bridges is said out loud on create.
+func TestCreateWarnsWhenBridgesAreNotIsolated(t *testing.T) {
+	r := newRig(t)
+
+	var warned strings.Builder
+
+	r.p.warn = &warned
+	r.p.bridgeCheck = func() fc.BridgeIsolation {
+		return fc.CheckBridgeIsolation("1", func() (string, error) { return "-P FORWARD ACCEPT\n", nil })
+	}
+
+	r.create(t, "m3", redis)
+
+	if !strings.Contains(warned.String(), "not be isolated") || !strings.Contains(warned.String(), "FORWARD DROP") {
+		t.Fatalf("warned %q", warned.String())
+	}
+}

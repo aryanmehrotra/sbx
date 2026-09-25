@@ -173,6 +173,11 @@ type fcProvider struct {
 	// for tests.
 	healthExec func(ctx context.Context, ref string, argv []string) (string, error)
 
+	// bridgeCheck reads whether this host drops traffic between sandbox bridges
+	// (fc.HostBridgeIsolation); nil skips it. warn is where Create says so; nil is stderr.
+	bridgeCheck func() fc.BridgeIsolation
+	warn        io.Writer
+
 	mu    sync.Mutex
 	locks map[string]*refLock
 }
@@ -213,6 +218,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 			Root:   os.Geteuid() == 0,
 		},
 		launch:      fc.ExecLauncher{},
+		bridgeCheck: fc.HostBridgeIsolation,
 		bootTimeout: 60 * time.Second,
 		locks:       map[string]*refLock{},
 	}
@@ -546,6 +552,19 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	vcpu, mem, err := sizing(svc)
 	if err != nil {
 		return err
+	}
+
+	// Said on every create, loudly: sbx writes no firewall rule, so a host that routes between
+	// bridges lets this sandbox's VMs reach every other sandbox's.
+	if p.bridgeCheck != nil {
+		if iso := p.bridgeCheck(); iso.Known && !iso.Isolated {
+			w := p.warn
+			if w == nil {
+				w = os.Stderr
+			}
+
+			fmt.Fprintf(w, "  warning: microVM sandboxes may not be isolated from each other: %s - %s\n", iso.Detail, iso.Meaning)
+		}
 	}
 
 	ref := containerName(sandbox, service)
