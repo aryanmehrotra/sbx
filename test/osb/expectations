@@ -15,6 +15,8 @@
 
 tier v0.9.0  sandbox command filesystem manager lifecycle_metrics error_handling concurrent streaming_timeout
 tier v0.10.0 volume egress_env code_interpreter
+# volume needs no allowance: its three tests t.Skip only when the create fails, and the harness
+# allow-lists their host dir (--osb-host-paths) and lets sbx create the pvc volume.
 tier v0.11.0 isolated_session credential_vault pool
 # v0.12.0 is "everything not needing an LLM endpoint": scenario_agent needs LLM_ENDPOINT.
 tier v0.12.0 e2e
