@@ -3,6 +3,7 @@
 package execd
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/jupyter"
 )
 
@@ -62,14 +64,30 @@ type Options struct {
 	// JupyterStartupWait bounds how long a /code call waits for a configured Jupyter that is not
 	// answering yet, as when the image entrypoint is still starting it. Zero means 30s.
 	JupyterStartupWait time.Duration
+
+	// ControlSecret authorises /sbx/seal and /sbx/rekey, the host's calls around a snapshot. Empty
+	// means both are refused: with no secret there is no host to take a re-key from. See
+	// internal/execdctl for the protocol.
+	ControlSecret string
+
+	// ControlOverVsockOnly refuses the control endpoints on any connection that did not arrive
+	// over vsock. Set when execd serves vsock: then the host is on the other end of that, and the
+	// TCP listener is reachable by everything on the sandbox's network.
+	ControlOverVsockOnly bool
 }
 
 // Server is the execd HTTP API. Build it with New, serve it with any http.Server, and Close it
 // to kill what it started.
 type Server struct {
-	// token is swapped once, by a warm-pool claim, while requests are being served.
-	token   atomic.Pointer[[]byte]
+	// auth is the current access token and the context every request it authorised runs under.
+	// Swapped whole - by a warm-pool claim or a restore's re-key - while requests are being served,
+	// so a request always checks a token and inherits the lifetime of the same generation.
+	auth    atomic.Pointer[authState]
 	claimed atomic.Bool
+
+	// sealed refuses every client call until a re-key; see rekey.go.
+	sealed atomic.Bool
+	ctl    control
 
 	procs *procs
 	log   *log.Logger
@@ -137,7 +155,11 @@ func New(o Options) (*Server, error) {
 	}
 
 	tok := []byte(o.AccessToken)
-	s.token.Store(&tok)
+	s.auth.Store(newAuth(tok))
+
+	s.ctl.secret = []byte(o.ControlSecret)
+	s.ctl.vsockOnly = o.ControlOverVsockOnly
+	s.ctl.identityEnv = map[string]bool{}
 
 	// A server with no token was never a pool member, so there is nothing to claim.
 	s.claimed.Store(len(tok) == 0)
@@ -210,9 +232,22 @@ func (s *Server) routes() {
 
 	// /ping answers without the token, as upstream does: it is the liveness probe, and the
 	// thing probing it (sbx serve, a load balancer) is not necessarily holding the token.
+	//
+	// Sealed, it says 503: a sandbox waiting for its re-key is not serving, and the wake proxy
+	// must not be told otherwise.
 	m.Handle("GET /ping", recoverer(s.log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if s.sealed.Load() {
+			writeSealed(w)
+			return
+		}
+
 		w.WriteHeader(http.StatusOK)
 	})))
+
+	// The host's calls around a snapshot. Not behind guard: they are authorised by the control
+	// secret, not the access token they replace, and must work while sealed.
+	m.Handle("POST "+execdctl.PathSeal, recoverer(s.log, http.HandlerFunc(s.seal)))
+	m.Handle("POST "+execdctl.PathRekey, recoverer(s.log, http.HandlerFunc(s.rekey)))
 
 	handle("POST /sbx/claim", s.claim)
 
@@ -291,7 +326,17 @@ func (s *Server) guard(h http.HandlerFunc) http.Handler {
 	inner := recoverer(s.log, h)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tok := *s.token.Load(); len(tok) > 0 {
+		// Sealed before the auth check, and for everyone: this is the state a snapshot captures,
+		// and what a clone must answer until its host has re-keyed it.
+		if s.sealed.Load() {
+			writeSealed(w)
+			return
+		}
+
+		// One load: the token checked and the lifetime inherited are the same generation.
+		a := s.auth.Load()
+
+		if tok := a.token; len(tok) > 0 {
 			got := r.Header.Get(AccessTokenHeader)
 			// Constant time, so the token cannot be recovered a byte at a time from how long a
 			// wrong guess takes. Upstream compares with != ; this is the one place sbx is
@@ -305,7 +350,16 @@ func (s *Server) guard(h http.HandlerFunc) http.Handler {
 			}
 		}
 
-		inner.ServeHTTP(w, r)
+		// A re-key that replaces this token ends this request, as a dropped client would. In a
+		// restored clone that client's connection is already gone; in a live sandbox it is
+		// someone whose credential was just revoked.
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		stop := context.AfterFunc(a.ctx, cancel)
+		defer stop()
+
+		inner.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

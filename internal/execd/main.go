@@ -16,6 +16,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 )
 
 // defaultGrace is upstream's EXECD_API_GRACE_SHUTDOWN default.
@@ -41,8 +43,9 @@ func run(args []string, stderr io.Writer) int {
 			"The OpenSandbox execd API, for inside a sandbox. Environment:\n"+
 			"  %s  token clients must send in %s (unset: no auth)\n"+
 			"  %s  how long to keep serving after the command exits (default %s)\n"+
-			"  %s  file of KEY=VALUE lines added to every command's environment\n",
-			DefaultAddr, EnvAccessToken, AccessTokenHeader, EnvGraceShutdown, defaultGrace, EnvExtraEnvs)
+			"  %s  file of KEY=VALUE lines added to every command's environment\n"+
+			"  %s  secret a Firecracker host presents to seal and re-key this execd (unset: refused)\n",
+			DefaultAddr, EnvAccessToken, AccessTokenHeader, EnvGraceShutdown, defaultGrace, EnvExtraEnvs, execdctl.EnvControlSecret)
 	}
 
 	addr := fs.String("addr", DefaultAddr, "TCP address to serve the execd API on (empty: no TCP listener)")
@@ -78,6 +81,10 @@ func run(args []string, stderr io.Writer) int {
 	token := os.Getenv(EnvAccessToken)
 	_ = os.Unsetenv(EnvAccessToken)
 
+	// The same for the control secret, which is the host's alone.
+	secret := os.Getenv(execdctl.EnvControlSecret)
+	_ = os.Unsetenv(execdctl.EnvControlSecret)
+
 	child := fs.Args()
 
 	// Reap when orphans will come to us: as PID 1 always, and on Linux whenever there is an
@@ -87,7 +94,13 @@ func run(args []string, stderr io.Writer) int {
 		reap = true
 	}
 
-	srv, err := New(Options{AccessToken: token, Reap: reap, Logger: logger})
+	srv, err := New(Options{
+		AccessToken: token, Reap: reap, Logger: logger,
+		ControlSecret: secret,
+		// Serving vsock means a Firecracker host is on the other end of it, and the control calls
+		// belong there only.
+		ControlOverVsockOnly: *vsockPort != 0,
+	})
 	if err != nil {
 		logger.Print(err)
 		return 1
