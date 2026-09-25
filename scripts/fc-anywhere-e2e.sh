@@ -82,8 +82,17 @@ if "$SBX" fc vm start; then ok "created and started in $(( $(date +%s) - t0 ))s"
 if "$SBX" fc vm status | grep -q 'inside: active'; then ok "sbx serve --provider firecracker is active inside"; else bad "the in-VM daemon is not active" "$("$SBX" fc vm status)"; fi
 
 echo "== host side"
-osb_port=$(( 20000 + RANDOM % 10000 ))
-"$SBX" serve --provider firecracker --osb-addr "127.0.0.1:$osb_port" >"$WORK/front.log" 2>&1 &
+# The OpenSandbox API cannot create a microVM yet (its sandboxes take sbx's agent as a volume),
+# so asking for it is refused at startup, before the helper VM is touched.
+if out=$("$SBX" serve --provider firecracker --osb-addr 127.0.0.1:18089 2>&1); then
+  bad "serve --osb-addr on firecracker was accepted"
+elif printf '%s' "$out" | grep -q 'osb-addr with --provider firecracker'; then
+  ok "serve --osb-addr on firecracker is refused, with the reason"
+else
+  bad "serve --osb-addr refused for another reason" "$out"
+fi
+
+"$SBX" serve --provider firecracker >"$WORK/front.log" 2>&1 &
 front_pid=$!
 
 for _ in $(seq 1 120); do
@@ -93,12 +102,6 @@ for _ in $(seq 1 120); do
 done
 
 if grep -q 'is serving' "$WORK/front.log"; then ok "host front up"; else bad "host front never came up" "$(tail -5 "$WORK/front.log")"; exit 1; fi
-
-if curl -fsS -o /dev/null "http://127.0.0.1:$osb_port/v1/sandboxes"; then
-  ok "OpenSandbox API answers on the Mac"
-else
-  bad "OpenSandbox API did not answer on 127.0.0.1:$osb_port"
-fi
 
 echo "== a microVM sandbox, from the Mac"
 if "$SBX" create "$NAME" --template nginx >"$WORK/create.log" 2>&1; then ok "sbx create --provider firecracker"; else bad "create failed" "$(tail -5 "$WORK/create.log")"; exit 1; fi
