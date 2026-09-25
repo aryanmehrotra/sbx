@@ -161,3 +161,17 @@ execd, thaws it and returns `Running`; the pool refills behind it. Target, measu
 their harness against `sbx serve`: **median < 44 ms at burst 100**. A local result is not a
 leaderboard entry — their runner needs a reachable hosted endpoint, which is the operator's
 decision, not this design's.
+
+## The goal, as the operator set it (2026-09-25)
+
+1. **All of OpenSandbox's specification, end to end** — lifecycle, execd, egress/credential
+   vault, diagnostics — proven by upstream's own `tests/go`, not by a feature table.
+2. **Functionality and use cases first; optimise wherever it is cheap to.**
+3. **Go only.**
+4. **Released**: pushed to `aryanmehrotra/sbx` and tagged, in successive versions (up to five).
+5. **Hosted**, and listed on ComputeSDK with the aim of **#1 on Burst TTI** (current leader
+   44 ms median) and the widest feature/use-case coverage of any listed provider.
+
+Hosting needs a machine where sbx can reach a container runtime (a docker socket or a Kubernetes
+API). ZopCloud's shared VM pool runs services as containers with no documented way to mount one;
+that, and creating the project there, are the operator's call.
