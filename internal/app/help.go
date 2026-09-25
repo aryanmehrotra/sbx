@@ -67,6 +67,15 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"that turns out to need a cache, without editing a file first.",
 		"sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'",
 	},
+	"egress": {
+		"sbx egress <sandbox> [service] [--allow H]... [--deny H]... [--remove H]... [--default allow|deny] [--reset] [--show] [--json]",
+		"Read or change a running sandbox's network policy, without recreating it. Rules are\n" +
+			"OpenSandbox's: hosts, *.wildcards, IPs and CIDRs, first matching name wins, an\n" +
+			"address deny beats an address allow. New rules go ahead of the existing ones.\n" +
+			"Only a sandbox created with egress_policy, egress_allow or egress: \"allow\" has a\n" +
+			"filter to change; --reset goes back to what its spec declared.",
+		"sbx egress agent-1 --deny '*.pastebin.com' --deny 10.0.0.0/8 --default allow",
+	},
 	"snapshot": {
 		"sbx snapshot <sandbox> <name>",
 		"Save every service's filesystem under a name. Data only: processes start cold when\n" +
