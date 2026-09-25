@@ -41,6 +41,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/daemon"
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execd"
+	"github.com/aryanmehrotra/sbx/internal/fc/guestinit"
 	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -162,6 +163,12 @@ func Main(ver string, examples embed.FS, argv []string) int {
 	// the help on purpose - nobody types it; `sbx serve` puts it in a container's entrypoint.
 	if argv[1] == "execd" {
 		return execd.Main(argv[2:])
+	}
+
+	// fc-init is PID 1 inside a Firecracker VM, before execd exists: it mounts the image root and
+	// becomes execd. Same reasons as execd for being here, and likewise left out of the help.
+	if argv[1] == "fc-init" {
+		return guestinit.Main(argv[2:])
 	}
 
 	logs.Version = version
