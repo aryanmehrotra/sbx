@@ -433,20 +433,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%s:%d", backing[i], svc.Ports[i]))
 	}
 
-	if svc.Health != "" {
-		// The interval is the floor on how long a wake appears to take, because docker only
-		// re-evaluates health on it. The long start period is the opposite of low retries:
-		// inside it a failing check does not latch the container as unhealthy, while a
-		// passing one still flips it immediately - so a database that needs six seconds to
-		// open its data directory is not declared broken at 300ms.
-		args = append(args,
-			"--health-cmd", svc.Health,
-			"--health-interval", probeInterval(svc).String(),
-			"--health-timeout", "2s",
-			"--health-retries", "3",
-			"--health-start-period", "60s",
-		)
-	}
+	args = append(args, healthArgs(svc, svc.HealthStartInterval != "" && d.hasStartInterval())...)
 
 	for _, k := range SortedKeys(svc.Env) {
 		args = append(args, "-e", k+"="+svc.Env[k])

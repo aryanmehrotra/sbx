@@ -211,12 +211,15 @@ func checkSubPath(sub string) error {
 	return nil
 }
 
-// hostSource resolves a host volume to the directory to bind, or refuses it.
+// hostSource resolves a host volume to the directory to bind, or refuses it. It changes
+// nothing on disk: it runs while the request is still being validated, and a request refused by
+// a later check must leave no directory behind. makeHostDirs creates what is missing once the
+// whole request has passed.
 //
 // Lexically first, then again after following symlinks: a link inside an allowed root that
-// points at / passes a string check and escapes at mount time, because docker follows it.
-// The directory is created if missing - as the user running sbx, not as root, which is what
-// docker would do - and the canonical path is what gets mounted, so the check and the mount
+// points at / passes a string check and escapes at mount time, because docker follows it. A
+// path that does not exist yet is resolved through its nearest existing ancestor - the part a
+// symlink could be in - and the canonical path is what gets mounted, so the check and the mount
 // are about the same directory.
 func (s *Server) hostSource(v volumeJSON) (string, *volumeErr) {
 	if len(s.hostPaths) == 0 {
@@ -237,12 +240,7 @@ func (s *Server) hostSource(v volumeJSON) (string, *volumeErr) {
 		return "", notAllowed(v.Name, p, s.hostPaths)
 	}
 
-	if err := os.MkdirAll(p, 0o755); err != nil {
-		return "", &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::HOST_PATH_CREATE_FAILED",
-			msg: fmt.Sprintf("volume %q: could not create %s on the machine running sbx serve: %v", v.Name, p, err)}
-	}
-
-	canonical, err := filepath.EvalSymlinks(p)
+	canonical, err := resolveExisting(p)
 	if err != nil {
 		return "", &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::HOST_PATH_CREATE_FAILED",
 			msg: fmt.Sprintf("volume %q: resolving %s: %v", v.Name, p, err)}
@@ -253,6 +251,108 @@ func (s *Server) hostSource(v volumeJSON) (string, *volumeErr) {
 	}
 
 	return canonical, nil
+}
+
+// resolveExisting is filepath.EvalSymlinks for a path that may not exist yet: the nearest
+// ancestor that does exist is resolved, and the missing components - which cannot be symlinks,
+// since they are not anything - are appended to it.
+func resolveExisting(p string) (string, error) {
+	var missing []string
+
+	for cur := p; ; cur = filepath.Dir(cur) {
+		if _, err := os.Lstat(cur); err == nil {
+			base, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				return "", err
+			}
+
+			slices.Reverse(missing)
+
+			return filepath.Join(append([]string{base}, missing...)...), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		if cur == filepath.Dir(cur) {
+			return "", fmt.Errorf("no part of %s exists", p)
+		}
+
+		missing = append(missing, filepath.Base(cur))
+	}
+}
+
+// makeHostDirs creates the host directories a validated request mounts - as the user running
+// sbx, not as root, which is what docker would do - and checks each still resolves to itself
+// under an allowed root. The returned undo removes the directories this call created, deepest
+// first and only while empty, for a create that fails after it.
+func (s *Server) makeHostDirs(mounts []spec.VolumeMount) (func(), *volumeErr) {
+	var made []string
+
+	undo := func() {
+		for _, d := range slices.Backward(made) {
+			_ = os.Remove(d)
+		}
+	}
+
+	for _, m := range mounts {
+		if m.Host == "" {
+			continue
+		}
+
+		var fresh []string
+
+		for cur := m.Host; ; cur = filepath.Dir(cur) {
+			if _, err := os.Lstat(cur); err == nil || cur == filepath.Dir(cur) {
+				break
+			}
+
+			fresh = append(fresh, cur)
+		}
+
+		if err := os.MkdirAll(m.Host, 0o755); err != nil {
+			undo()
+
+			return nil, &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::HOST_PATH_CREATE_FAILED",
+				msg: fmt.Sprintf("could not create %s on the machine running sbx serve: %v", m.Host, err)}
+		}
+
+		slices.Reverse(fresh) // parents first, so undo removes children first
+		made = append(made, fresh...)
+
+		if err := s.checkHostMount(m.Host); err != nil {
+			undo()
+			return nil, volBad("VOLUME::HOST_PATH_NOT_ALLOWED", "%v", err)
+		}
+	}
+
+	return undo, nil
+}
+
+// checkHostMount is the allow-list check again, for a path that was canonical when the request
+// was validated: it must still be a directory, still resolve to exactly itself, and still be
+// under an allowed root. A component swapped for a symlink since then changes what it resolves
+// to, and docker would follow it.
+func (s *Server) checkHostMount(p string) error {
+	now, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return fmt.Errorf("host path %s changed since the request was checked: %w", p, err)
+	}
+
+	if now != p {
+		return fmt.Errorf("host path %s changed since the request was checked: it now leads to %s, "+
+			"and sbx mounts only the directory it checked", p, now)
+	}
+
+	if !underAny(now, s.hostRoots()) {
+		return fmt.Errorf("host path %s is no longer under a root this server allows (%s)",
+			p, strings.Join(s.hostPaths, ", "))
+	}
+
+	if fi, err := os.Stat(now); err != nil || !fi.IsDir() {
+		return fmt.Errorf("host path %s is no longer a directory", p)
+	}
+
+	return nil
 }
 
 func notAllowed(name, p string, roots []string) *volumeErr {
@@ -308,27 +408,20 @@ func CheckHostPaths(roots []string) error {
 }
 
 // ensureClaims makes sure every pvc volume exists, creating those allowed to be created. It
-// returns the volumes it created that the caller asked to have removed with the sandbox; if it
-// fails part way, it removes what it created itself, since no sandbox will ever own them.
-func (s *Server) ensureClaims(ctx context.Context, claims []pvcJSON) ([]string, *volumeErr) {
+// returns every volume it created, and the subset the caller asked to have removed with the
+// sandbox. If it fails part way it removes what it created itself; if the create fails after it
+// returns, the caller removes `created` (removeVolumes), since no sandbox will ever own them.
+func (s *Server) ensureClaims(ctx context.Context, claims []pvcJSON) (created, owned []string, _ *volumeErr) {
 	if len(claims) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	nv, err := provider.NamedVolumesFor(s.p)
 	if err != nil {
-		return nil, &volumeErr{status: http.StatusNotImplemented, code: "SANDBOX::API_NOT_SUPPORTED", msg: err.Error()}
+		return nil, nil, &volumeErr{status: http.StatusNotImplemented, code: "SANDBOX::API_NOT_SUPPORTED", msg: err.Error()}
 	}
 
-	var created, owned []string
-
-	undo := func() {
-		for _, name := range created {
-			if err := nv.RemoveVolume(context.WithoutCancel(ctx), name); err != nil {
-				logs.Default.Warn("", "", "osb: could not remove volume %s after a refused create: %v", name, err)
-			}
-		}
-	}
+	undo := func() { s.removeVolumes(ctx, created) }
 
 	seen := map[string]bool{}
 
@@ -343,7 +436,7 @@ func (s *Server) ensureClaims(ctx context.Context, claims []pvcJSON) ([]string, 
 		exists, err := nv.VolumeExists(ctx, name)
 		if err != nil {
 			undo()
-			return nil, &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::PVC_INSPECT_FAILED",
+			return nil, nil, &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::PVC_INSPECT_FAILED",
 				msg: fmt.Sprintf("claim %q: inspecting docker volume %s: %v", c.ClaimName, name, err)}
 		}
 
@@ -353,14 +446,14 @@ func (s *Server) ensureClaims(ctx context.Context, claims []pvcJSON) ([]string, 
 
 		if c.CreateIfNotExists != nil && !*c.CreateIfNotExists {
 			undo()
-			return nil, volBad("VOLUME::PVC_NOT_FOUND", "claim %q: docker volume %s does not exist "+
+			return nil, nil, volBad("VOLUME::PVC_NOT_FOUND", "claim %q: docker volume %s does not exist "+
 				"and createIfNotExists is false - create it with `docker volume create %s`, or "+
 				"let sbx create it", c.ClaimName, name, name)
 		}
 
 		if err := nv.CreateVolume(ctx, name, map[string]string{pvcLabel: c.ClaimName}); err != nil {
 			undo()
-			return nil, &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::PVC_INSPECT_FAILED",
+			return nil, nil, &volumeErr{status: http.StatusInternalServerError, code: "VOLUME::PVC_INSPECT_FAILED",
 				msg: fmt.Sprintf("claim %q: creating docker volume %s: %v", c.ClaimName, name, err)}
 		}
 
@@ -373,7 +466,23 @@ func (s *Server) ensureClaims(ctx context.Context, claims []pvcJSON) ([]string, 
 		}
 	}
 
-	return owned, nil
+	return created, owned, nil
+}
+
+// removeVolumes removes pvc volumes made for a create that then failed. Best effort, and
+// logged: the create is already being refused, and a volume left behind is named in the log.
+func (s *Server) removeVolumes(ctx context.Context, names []string) {
+	nv, err := provider.NamedVolumesFor(s.p)
+	if err != nil {
+		return
+	}
+
+	for _, name := range names {
+		if err := nv.RemoveVolume(context.WithoutCancel(ctx), name); err != nil {
+			logs.Default.Warn("", "", "osb: could not remove volume %s after a refused create: %v - "+
+				"`docker volume rm %s`", name, err, name)
+		}
+	}
 }
 
 // releaseClaims removes the volumes a sandbox owned. Best effort: a volume another sandbox

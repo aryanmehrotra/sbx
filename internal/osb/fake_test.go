@@ -53,6 +53,10 @@ type fakeDocker struct {
 	volRemoved []string
 	volErr     error
 	inspectErr map[string]error // ImageInfo fails for these images
+
+	// onInspect runs inside ImageInfo: a point in provisioning after the create call answered
+	// and before the container is created.
+	onInspect func()
 }
 
 func newFakeDocker() *fakeDocker {
@@ -158,13 +162,21 @@ func (f *fakeDocker) Pull(_ context.Context, image string) error {
 
 func (f *fakeDocker) ImageInfo(_ context.Context, image string) (provider.ImageInfo, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	err := f.inspectErr[image]
+	missing := f.missing[image]
+	hook := f.onInspect
+	f.mu.Unlock()
 
-	if err := f.inspectErr[image]; err != nil {
+	// Outside the lock: the hook changes the world under provisioning and may call back in.
+	if hook != nil {
+		hook()
+	}
+
+	if err != nil {
 		return provider.ImageInfo{}, err
 	}
 
-	if f.missing[image] {
+	if missing {
 		return provider.ImageInfo{}, fmt.Errorf("no such image: %s", image)
 	}
 

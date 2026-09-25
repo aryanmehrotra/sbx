@@ -80,9 +80,21 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 
 	// After the pool: a request with volumes is never poolable (poolFields), so a claim needs
 	// none, and only the cold path creates them.
-	owned, verr := s.ensureClaims(r.Context(), pl.claims)
+	//
+	// Side effects only from here on, once nothing in the request can still be refused - and
+	// each undone if a later step fails, since no sandbox will ever own what a failed create
+	// made, and so nothing would ever remove it.
+	created, owned, verr := s.ensureClaims(r.Context(), pl.claims)
 	if verr != nil {
 		writeErr(w, verr.status, verr.code, verr.msg)
+		return
+	}
+
+	rmDirs, verr := s.makeHostDirs(pl.volumes)
+	if verr != nil {
+		s.removeVolumes(r.Context(), created)
+		writeErr(w, verr.status, verr.code, verr.msg)
+
 		return
 	}
 
@@ -98,6 +110,9 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		delete(s.recs, accepted.ID)
 		s.mu.Unlock()
+
+		s.removeVolumes(r.Context(), created)
+		rmDirs()
 
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR",
 			fmt.Sprintf("could not record the sandbox under %s: %v", s.store.dir, err))
@@ -545,14 +560,21 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		// two seconds and hoping - the fallback it takes for a service with no health check.
 		// httpcheck is sbx's own, so it works in an image with no curl or wget; it does need
 		// /bin/sh, because docker runs a health command through one.
-		Health:         execdMount + "/" + execdBinary + " httpcheck http://127.0.0.1:" + strconv.Itoa(execdPort) + "/ping",
-		HealthInterval: "5s",
-		CPU:            pl.cpu,
-		Memory:         pl.memory,
-		GPUs:           pl.gpus,
-		OnIdle:         pl.onIdle,
-		EgressPolicy:   pl.egressPolicy,
-		VolumeMounts:   pl.volumes,
+		//
+		// Every check is a runc exec, so the interval is paid per sandbox for as long as it
+		// runs: every 5s was 20 execs a second at 100 sandboxes. The wake path runs this command
+		// itself (Probe) rather than waiting on docker's verdict, and Running waits on execd's
+		// own /ping, so docker's status only has to arrive once, promptly, after a start - which
+		// the start interval gives - and can then be refreshed once a minute. See DECISIONS.md.
+		Health:              execdMount + "/" + execdBinary + " httpcheck http://127.0.0.1:" + strconv.Itoa(execdPort) + "/ping",
+		HealthInterval:      "60s",
+		HealthStartInterval: "1s",
+		CPU:                 pl.cpu,
+		Memory:              pl.memory,
+		GPUs:                pl.gpus,
+		OnIdle:              pl.onIdle,
+		EgressPolicy:        pl.egressPolicy,
+		VolumeMounts:        pl.volumes,
 	}
 
 	if err := svc.Validate(service); err != nil {
@@ -576,6 +598,11 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 			return
 		}
 
+		if hp := (*hostPathChanged)(nil); errors.As(err, &hp) {
+			fail("host_path_changed", err.Error())
+			return
+		}
+
 		fail("create_failed", err.Error())
 
 		return
@@ -591,6 +618,12 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 
 	s.waitReady(ctx, id)
 }
+
+// hostPathChanged is a host volume that no longer resolves to the directory that was allowed.
+type hostPathChanged struct{ err error }
+
+func (e *hostPathChanged) Error() string { return e.err.Error() }
+func (e *hostPathChanged) Unwrap() error { return e.err }
 
 // createContainer allocates the slot and creates the container under the machine's slot lock,
 // then checks the sandbox was not deleted while that was happening.
@@ -627,6 +660,19 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 	s.trace.mark(id, "slot allocated")
 
 	eps := s.p.Endpoints(id, service, slot, 0, svc.Ports)
+
+	// The host paths were checked when the request arrived; docker resolves them now. Checked
+	// again as the last thing before create, so a directory swapped for a symlink in between is
+	// refused rather than followed. The window left is this call to docker's own resolution.
+	for _, m := range svc.VolumeMounts {
+		if m.Host == "" {
+			continue
+		}
+
+		if err := s.checkHostMount(m.Host); err != nil {
+			return &hostPathChanged{err}
+		}
+	}
 
 	if err := s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer); err != nil {
 		return err

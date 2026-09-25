@@ -140,6 +140,16 @@ type Service struct {
 	// whose readiness is worth catching quickly.
 	HealthInterval string `json:"health_interval,omitempty"`
 
+	// HealthStartInterval is how often the check runs during the start period, where it differs
+	// from HealthInterval: quick while the service is coming up, so the first healthy report
+	// lands in about a second, and HealthInterval once it is up. Empty is HealthInterval
+	// throughout. Docker applies it only on an engine with API 1.44 or later; an older one gets
+	// HealthInterval throughout.
+	//
+	// Set by the OpenSandbox API, not a sandbox.json field: at one runc exec per check per
+	// sandbox, the steady interval is what a machine full of sandboxes pays for.
+	HealthStartInterval string `json:"-"`
+
 	Env  map[string]string `json:"env,omitempty"`
 	Args []string          `json:"args,omitempty"`
 
@@ -298,7 +308,11 @@ type Service struct {
 	// /opt/sbx). Named volumes rather than bind mounts because a bind mount of a host path
 	// depends on the container runtime's VM sharing that path, which on a Mac it may not - a
 	// volume lives on the runtime's side of that boundary by construction.
-	ReadOnlyVolumes map[string]string `json:"readonly_volumes,omitempty"`
+	//
+	// Not a sandbox.json field (`json:"-"`), and neither is VolumeMounts: a spec that could name
+	// any volume could mount another sandbox's data or the API's sbx-osb-pvc-* claims, and the
+	// namespacing that makes those safe lives in the API, not here. Only code sets them.
+	ReadOnlyVolumes map[string]string `json:"-"`
 
 	// VolumeMounts attaches storage the caller named - a named volume or a host directory -
 	// with the options `mounts` cannot express: read-only, and a subdirectory of a volume.
@@ -307,7 +321,7 @@ type Service struct {
 	// the server has already decided the request is allowed (host paths only under roots the
 	// operator listed, volumes only in the API's own namespace). A spec author wants `volume`
 	// or `mounts` instead; this carries no policy of its own beyond "the mount is well formed".
-	VolumeMounts []VolumeMount `json:"volume_mounts,omitempty"`
+	VolumeMounts []VolumeMount `json:"-"`
 
 	// OnIdle is what going idle does: "" or "stop" stops the container (0 B, the default), and
 	// "freeze" pauses it instead - memory and running processes kept, no CPU, thawed in about
@@ -346,6 +360,10 @@ func (s Service) validate(name string) error {
 
 	if err := checkInterval(s.HealthInterval); err != nil {
 		return fmt.Errorf("service %q: health_interval %w", name, err)
+	}
+
+	if err := checkInterval(s.HealthStartInterval); err != nil {
+		return fmt.Errorf("service %q: health start interval %w", name, err)
 	}
 
 	for _, p := range s.Ports {

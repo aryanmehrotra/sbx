@@ -209,7 +209,10 @@ build (`readiness`, a `disk` size) are refused rather than stored and ignored.
 lists roots with `sbx serve --osb-host-paths`. A path is checked as written and again after
 following symlinks - a link inside an allowed root that points at `/` passes a string check and
 escapes at mount time - and the directory is created as the user running sbx, not by docker as
-root. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
+root. It is created only once the whole request has passed, and resolved and checked again
+immediately before the container is created, so a directory swapped for a symlink in between is
+refused. Docker resolves a bind source again at every container start, which this does not cover:
+the roots are the operator's, and a root a sandbox's adversary can write to is not one to list. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
 it creates it inside the runtime's VM, where the caller's files are not. Refused is the useful
 failure.
 
@@ -650,3 +653,77 @@ existed before its caller did, and a secret minted ahead of the caller can be sh
 of a snapshot carries it. The round trip is the price (docs/BENCHMARKS.md). What a member may
 serve is a whitelist of request fields; anything else, including a field this sbx does not know,
 takes the cold path rather than being dropped by a member made without it.
+### An API sandbox's health check runs once a minute, and quickly only while it starts
+
+Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes
+used to declare, that is 0.2 execs a second per sandbox, forever - 20 a second at 100 sandboxes -
+for an answer almost nothing waits on: the wake path runs the same command itself (`Probe`) rather
+than waiting for docker's verdict, and a create reports Running on execd's own `/ping` through the
+wake port. What does read docker's status is the idle clock, which will not start until a unit has
+been seen healthy once, so that first report has to arrive promptly after a start and nothing after
+it has to be fresh.
+
+So the check runs every 60s, with `--health-start-interval 1s` inside the 60s start period. Docker
+uses the start interval only until the first healthy result, so a sandbox pays one exec about a
+second after each start and then one a minute. The flag needs Engine API 1.44 (Docker 25); sbx asks
+the engine's version once and leaves it off on an older one, which then reports healthy on docker's
+own schedule inside the start period rather than refusing the create.
+
+Measured on the osb colima engine (Docker 29.2.1, API 1.53), 10 containers per arm running
+together, `docker events` counting `exec_start`:
+
+| | first 60s | next 60s | first check after start |
+|---|---|---|---|
+| before: `--health-interval 5s` | 116 execs (1.93/s) | 118 (1.96/s) | ~5 s |
+| after: `60s` + start interval `1s` | 10 (0.16/s) | 10 (0.16/s) | 1.4 s |
+
+12x fewer execs, and the first healthy report sooner rather than later.
+
+**Rejected: drop the docker health check once execd has answered through the wake port.** A
+container's health config is fixed at create, so dropping it means recreating the container - or
+never declaring one, and then the wake path has nothing to run and falls back to sleeping two
+seconds and hoping, which is exactly what declaring it avoided.
+
+### The OpenSandbox API is docker-only, for now
+
+Every API sandbox runs sbx's agent, execd, inside an image the caller chose and sbx did not build.
+On docker that is a named volume seeded once and mounted read-only at `/opt/sbx` - the `Injector`
+capability. A cluster's equivalent is an init container copying the binary from an image the nodes
+can pull, which is a different mechanism with a different trust story (whose registry, which
+digest), and it has not been built. So `POST /v1/sandboxes` on the kubernetes provider answers 501
+naming the missing capability, rather than creating something that cannot become ready.
+
+`pause` would be refused there regardless. Scaling to zero keeps the filesystem and discards the
+memory, and OpenSandbox's pause is a promise that a process running before it is running after it.
+The original design's "k8s: scale to 0, reported honestly in `status.message`" was a pause that
+does not pause with a note saying so - the stub the capability pattern exists to avoid.
+
+**Rejected: a kubernetes path that bakes execd into a derived image.** It would mean sbx building
+and pushing images to the operator's registry on every create, for every image anyone names.
+
+### What the API remembers lives in its record file, not in labels
+
+Metadata, expiry, the execd token, the held-pause flag and the pvc volumes a sandbox owns are in
+`~/.sbx/osb/<id>.json` (0600) and nowhere else. The design said metadata would also be written as
+labels; it is not, because docker labels are fixed when a container is created. A label copy is
+stale after the first `PATCH`, and relabelling means recreating the container - a restart, with its
+processes and memory gone, that the caller did not ask for. Labels carry only what docker's own
+view needs and nothing the API edits: sandbox, service, slot, ports, idle policy.
+
+The cost is that a record file lost is metadata lost while the container survives. That is the
+same trade the rest of this state makes (expiry is in the same file), and the alternative is two
+copies that disagree after the first edit.
+
+### An API sandbox freezes when idle; a sandbox.json sandbox stops
+
+sbx's default is to stop an idle container: 0 B held, woken by `docker start` in about 110 ms, and
+anything that was running in it is gone. OpenSandbox's contract is the opposite - a background
+command started in one request is expected to be running at the next, however long the gap - and
+stopping breaks it silently: the next request succeeds against a sandbox whose server is no longer
+there. So an API sandbox's default `on_idle` is `freeze` (`docker pause`, the cgroup freezer):
+memory and processes kept, no CPU, thawed in about 10 ms by the next byte.
+
+It is the API's default and not sbx's because it holds memory, and holding nothing is why sbx
+exists. `extensions["sbx.idle"]="sleep"` opts an API sandbox back into stopping; `on_idle:
+"freeze"` opts a `sandbox.json` service into freezing. A frozen sandbox the caller paused is a
+different thing - held, reported as `Paused`, and not thawed by traffic (ARCHITECTURE.md).
