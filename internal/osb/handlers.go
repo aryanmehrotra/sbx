@@ -179,7 +179,9 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, render(rec, units[rec.ID], true))
+	out := render(rec, units[rec.ID], true)
+	s.trace.mark(rec.ID, "GET answered "+out.Status.State)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +318,8 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 // remove tears a sandbox down: container, data volume and record. actor is who asked, for the
 // history: "osb" for a DELETE, "expiry" for the reaper.
 func (s *Server) remove(ctx context.Context, id, actor string) error {
+	defer s.trace.end(id)
+
 	s.mu.Lock()
 
 	r, ok := s.recs[id]
@@ -630,6 +634,7 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if p == execdPort {
+			s.trace.mark(rec.ID, "execd endpoint answered")
 			writeJSON(w, http.StatusOK, endpointJSON{Endpoint: addr(i), Headers: auth})
 		} else {
 			writeJSON(w, http.StatusOK, endpointJSON{Endpoint: addr(i)})

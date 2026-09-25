@@ -70,24 +70,67 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.trace.begin(pl.rec.ID)
+
 	ctx, cancel := context.WithCancel(s.base)
 	s.provisioning[pl.rec.ID] = cancel
-	resp := render(pl.rec, nil, false)
+	accepted := pl.rec // copied under the lock: &pl.rec is the live record from here on
 	s.mu.Unlock()
 
 	history.Append(history.Record{Kind: "event", Sandbox: pl.rec.ID, Event: "created", Actor: "osb",
 		Message: "image " + pl.rec.Image})
+
+	done := make(chan struct{})
 
 	s.wg.Add(1)
 
 	go func() {
 		defer s.wg.Done()
 		defer cancel()
+		defer close(done)
 
 		s.provision(ctx, pl)
 	}()
 
-	w.Header().Set("Location", "/v1/sandboxes/"+pl.rec.ID)
+	s.answerCreate(w, r, accepted, done)
+}
+
+// answerCreate holds the response until provisioning finishes or createWait runs out, then
+// answers with whatever state the sandbox is in. Always 202: the spec's create status, and a
+// client that reads the body sees Running or Pending either way.
+func (s *Server) answerCreate(w http.ResponseWriter, r *http.Request, accepted record, done <-chan struct{}) {
+	id := accepted.ID
+
+	if s.createWait > 0 {
+		t := time.NewTimer(s.createWait)
+
+		select {
+		case <-done:
+		case <-t.C:
+		case <-r.Context().Done():
+		}
+
+		t.Stop()
+	}
+
+	// A DELETE during the wait removed the record; the sandbox was still accepted, so the
+	// caller gets what it was accepted as, and its next GET says it is gone.
+	rec, ok := s.snapshot(id)
+	if !ok {
+		rec = accepted
+	}
+	resp := render(rec, nil, false)
+
+	// render checks Running against the container, and this path has none to hand: it has
+	// just watched execd answer through the wake port, which is a stronger claim than a list.
+	if rec.State == stateRunning {
+		at := rec.LastTransitionAt
+		resp.Status = statusJSON{State: stateRunning, LastTransitionAt: &at}
+	}
+
+	s.trace.mark(id, "create answered "+resp.Status.State)
+
+	w.Header().Set("Location", "/v1/sandboxes/"+id)
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
@@ -286,20 +329,32 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		return
 	}
 
-	if pu, ok := s.p.(provider.Puller); ok {
-		if err := pu.Pull(ctx, pl.rec.Image); err != nil {
-			fail("image_pull_failed", fmt.Sprintf("pulling %s: %v - check the name and that this "+
-				"machine can reach its registry (`docker pull %s`)", pl.rec.Image, err, pl.rec.Image))
+	// Pulled only when absent, as `docker run` and upstream's docker runtime both do. Pulling a
+	// tag that is already here still asks the registry for its manifest - 2.8-3.2 s per create
+	// on colima, measured, most of a cold create - and learns nothing unless the tag moved,
+	// which is what an explicit `docker pull` on this machine is for.
+	info, err := inj.ImageInfo(ctx, pl.rec.Image)
+	if err != nil {
+		if pu, ok := s.p.(provider.Puller); ok {
+			if err := pu.Pull(ctx, pl.rec.Image); err != nil {
+				fail("image_pull_failed", fmt.Sprintf("pulling %s: %v - check the name and that this "+
+					"machine can reach its registry (`docker pull %s`)", pl.rec.Image, err, pl.rec.Image))
 
+				return
+			}
+
+			s.trace.mark(id, "image pulled")
+
+			info, err = inj.ImageInfo(ctx, pl.rec.Image)
+		}
+
+		if err != nil {
+			fail("image_inspect_failed", err.Error())
 			return
 		}
 	}
 
-	info, err := inj.ImageInfo(ctx, pl.rec.Image)
-	if err != nil {
-		fail("image_inspect_failed", err.Error())
-		return
-	}
+	s.trace.mark(id, "image inspected")
 
 	arch := normalizeArch(info.Arch)
 
@@ -329,6 +384,8 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		fail("execd_unavailable", err.Error())
 		return
 	}
+
+	s.trace.mark(id, "execd placed")
 
 	env := maps.Clone(pl.env)
 	if env == nil {
@@ -384,7 +441,11 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		return
 	}
 
+	s.trace.mark(id, "container created")
+
 	s.rt.Refresh(ctx)
+	s.trace.mark(id, "daemon refreshed")
+
 	s.waitReady(ctx, id)
 }
 
@@ -400,10 +461,14 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 
 	defer release()
 
+	s.trace.mark(id, "slot lock held")
+
 	slot, err := s.p.AllocSlot(ctx, id)
 	if err != nil {
 		return err
 	}
+
+	s.trace.mark(id, "slot allocated")
 
 	eps := s.p.Endpoints(id, service, slot, 0, svc.Ports)
 
@@ -472,6 +537,11 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 
 	var lastErr error
 
+	// Backing off from 5 ms rather than a flat 250: execd is usually listening within a few ms
+	// of `docker run` returning, and a flat interval rounded every create up to it when the
+	// first ping lost that race. Capped, because each round is a container list and a ping.
+	wait := 5 * time.Millisecond
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -506,6 +576,8 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 
 			if len(u.Client) > 0 {
 				if lastErr = s.ping(ctx, u.Client[0].String()); lastErr == nil {
+					s.trace.mark(id, "execd answered: Running")
+
 					s.update(id, func(r *record) {
 						if r.State == statePending {
 							r.transition(stateRunning, "", "", s.now())
@@ -518,6 +590,8 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 
 					return
 				}
+
+				s.trace.mark(id, "execd ping failed: "+lastErr.Error())
 			}
 		}
 
@@ -539,8 +613,10 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(wait):
 		}
+
+		wait = min(2*wait, 250*time.Millisecond)
 	}
 }
 

@@ -30,6 +30,10 @@ type fakeDocker struct {
 	paused  []string
 	slot    int
 
+	// missing images are not on the engine until pulled; pulls records every pull asked for.
+	missing map[string]bool
+	pulls   []string
+
 	exitOnStart bool // new containers are not running: the entrypoint exited
 	logs        string
 	arch        string
@@ -120,12 +124,28 @@ func (f *fakeDocker) Probe(context.Context, string) (bool, bool)                
 func (f *fakeDocker) Exec(context.Context, string, []string) (string, error)         { return "", nil }
 func (f *fakeDocker) ExecTTY(context.Context, string, []string) error                { return nil }
 func (f *fakeDocker) Copy(context.Context, string, string, string) error             { return nil }
-func (f *fakeDocker) Pull(context.Context, string) error                             { return nil }
 func (f *fakeDocker) VolumeRuns(context.Context, string, string, string) bool        { return true }
 func (f *fakeDocker) SeedFile(context.Context, string, string, string, string) error { return nil }
 func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) error    { return nil }
 
-func (f *fakeDocker) ImageInfo(context.Context, string) (provider.ImageInfo, error) {
+func (f *fakeDocker) Pull(_ context.Context, image string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.pulls = append(f.pulls, image)
+	delete(f.missing, image)
+
+	return nil
+}
+
+func (f *fakeDocker) ImageInfo(_ context.Context, image string) (provider.ImageInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.missing[image] {
+		return provider.ImageInfo{}, fmt.Errorf("no such image: %s", image)
+	}
+
 	return provider.ImageInfo{Cmd: []string{"python3"}, OS: "linux", Arch: f.arch}, nil
 }
 
@@ -216,7 +236,9 @@ func (h *harness) start(opts ...option) {
 		StateDir:     h.dir,
 		Version:      "test",
 		ReadyTimeout: 2 * time.Second,
-		Now:          h.clock,
+		// Short, so a test that keeps execd silent is not held for the production default.
+		CreateWait: 50 * time.Millisecond,
+		Now:        h.clock,
 		Ping: func(context.Context, string) error {
 			h.mu.Lock()
 			defer h.mu.Unlock()

@@ -69,6 +69,15 @@ type Options struct {
 	// ReadyTimeout bounds Pending: from the container existing to execd answering /ping.
 	ReadyTimeout time.Duration
 
+	// CreateWait is how long a create holds its response for the sandbox to become Running
+	// before answering Pending. Zero means 10s; negative answers at once.
+	//
+	// Held because every OpenSandbox SDK polls GET every two seconds until Running: a sandbox
+	// ready at 300 ms but answered Pending cost its caller a whole interval, which is where most
+	// of a 4 s create went. Bounded because a first pull of a large image takes minutes, and a
+	// request held that long trips the client's own timeout.
+	CreateWait time.Duration
+
 	// ReapEvery is how often expiry is checked.
 	ReapEvery time.Duration
 
@@ -110,6 +119,7 @@ type Server struct {
 	version string
 
 	readyTimeout time.Duration
+	createWait   time.Duration
 	reapEvery    time.Duration
 
 	now       func() time.Time
@@ -120,6 +130,9 @@ type Server struct {
 
 	egress       EgressAPI
 	egressStatus func(error) int
+
+	// trace times each create phase when SBX_OSB_TRACE is set.
+	trace *tracer
 
 	// base outlives any one request: provisioning continues after the create call has
 	// returned its 202, which is the whole point of Pending.
@@ -162,6 +175,7 @@ func New(o Options) (*Server, error) {
 		store:        store{dir: o.StateDir},
 		version:      o.Version,
 		readyTimeout: o.ReadyTimeout,
+		createWait:   o.CreateWait,
 		reapEvery:    o.ReapEvery,
 		now:          o.Now,
 		ping:         o.Ping,
@@ -170,10 +184,15 @@ func New(o Options) (*Server, error) {
 		recs:         map[string]*record{},
 		provisioning: map[string]context.CancelFunc{},
 		seeded:       map[string]bool{},
+		trace:        newTracer(),
 	}
 
 	if s.readyTimeout <= 0 {
 		s.readyTimeout = 2 * time.Minute
+	}
+
+	if s.createWait == 0 {
+		s.createWait = 10 * time.Second
 	}
 
 	if s.reapEvery <= 0 {
