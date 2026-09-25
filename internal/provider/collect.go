@@ -25,21 +25,9 @@ func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {
 	}
 
 	for _, name := range lines(vols) {
-		a := Artifact{Kind: "volume", Name: name}
-
-		switch {
-		case strings.HasPrefix(name, "sbx-snapvol-"):
-			a.Snapshot = true
-		case strings.HasSuffix(name, "-data"):
-			// sbx-<sandbox>-<service>-data. The service name may contain dashes and the
-			// sandbox may too, so this is a prefix question rather than a split: a volume
-			// belongs to a live sandbox if any live sandbox's prefix matches it.
-			a.Sandbox = ownerOf(name, live)
-			if a.Sandbox != "" {
-				continue // its sandbox still exists
-			}
-		default:
-			continue // not ours to judge
+		a, orphan := classifyVolume(name, live)
+		if !orphan {
+			continue
 		}
 
 		a.Age = d.ageOfVolume(ctx, name)
@@ -141,4 +129,35 @@ func lines(s string) []string {
 	}
 
 	return out
+}
+
+// PVCVolumePrefix names the volumes the OpenSandbox API creates for a `pvc` volume. They are
+// a caller's persistent storage, created on request and kept until that caller deletes them -
+// no sandbox owns them, so "no live sandbox" says nothing about whether they are garbage.
+const PVCVolumePrefix = "sbx-osb-pvc-"
+
+// classifyVolume decides whether a volume is an orphan, and of what.
+func classifyVolume(name string, live map[string]bool) (Artifact, bool) {
+	a := Artifact{Kind: "volume", Name: name}
+
+	switch {
+	case strings.HasPrefix(name, PVCVolumePrefix):
+		// Checked before the -data suffix: a claim named "x-data" would otherwise be read as
+		// the data volume of a sandbox that does not exist, and swept.
+		return a, false
+	case strings.HasPrefix(name, "sbx-snapvol-"):
+		a.Snapshot = true
+	case strings.HasSuffix(name, "-data"):
+		// sbx-<sandbox>-<service>-data. The service name may contain dashes and the
+		// sandbox may too, so this is a prefix question rather than a split: a volume
+		// belongs to a live sandbox if any live sandbox's prefix matches it.
+		a.Sandbox = ownerOf(name, live)
+		if a.Sandbox != "" {
+			return a, false // its sandbox still exists
+		}
+	default:
+		return a, false // not ours to judge
+	}
+
+	return a, true
 }

@@ -501,6 +501,14 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "-v", vol+":"+svc.ReadOnlyVolumes[vol]+":ro")
 	}
 
+	// --mount rather than -v, for the one difference that matters: -v creates a missing bind
+	// source, and on a Mac it creates it inside the runtime's VM, where nobody will look - the
+	// sandbox writes happily to a directory that is not the one its caller named. --mount
+	// refuses instead, which is the failure a caller can act on.
+	for _, m := range svc.VolumeMounts {
+		args = append(args, "--mount", mountOption(m))
+	}
+
 	// --entrypoint takes one word, so the rest of Entrypoint goes after the image, ahead of
 	// Args - which is where docker would have put the image's own CMD.
 	if len(svc.Entrypoint) > 0 {

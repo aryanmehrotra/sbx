@@ -60,6 +60,7 @@ func (r *recorder) VolumeFor(sandbox, service string) string {
 }
 
 func (r *recorder) Commit(context.Context, string, string) error     { return nil }
+func (r *recorder) RemoveImage(context.Context, string) error        { return nil }
 func (r *recorder) Images(context.Context, string) ([]string, error) { return nil, nil }
 
 // Every snapshotted service's data is written to the name its service will be created with,

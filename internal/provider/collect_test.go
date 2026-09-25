@@ -91,3 +91,19 @@ func TestALiveSandboxNeverLooksLikeAnOrphan(t *testing.T) {
 		}
 	}
 }
+
+// A pvc volume belongs to whoever asked for it, not to a sandbox, so gc must never read one as
+// the data volume of a sandbox that has gone - even when its claim name ends in "-data".
+func TestAPIClaimVolumesAreNeverOrphans(t *testing.T) {
+	live := map[string]bool{}
+
+	for _, name := range []string{"sbx-osb-pvc-scratch", "sbx-osb-pvc-train-data"} {
+		if _, orphan := classifyVolume(name, live); orphan {
+			t.Errorf("%s classified as an orphan; gc would delete a caller's persistent volume", name)
+		}
+	}
+
+	if a, orphan := classifyVolume("sbx-gone-db-data", live); !orphan || a.Sandbox != "" {
+		t.Errorf("a dead sandbox's data volume is no longer collected: %+v %v", a, orphan)
+	}
+}

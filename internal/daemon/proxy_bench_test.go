@@ -43,6 +43,8 @@ func (alwaysServing) List(context.Context, string) ([]provider.Unit, error) { re
 func (alwaysServing) Remove(context.Context, string) error                  { return nil }
 func (alwaysServing) Commit(context.Context, string, string) error          { return nil }
 
+func (alwaysServing) RemoveImage(context.Context, string) error { return nil }
+
 func (alwaysServing) Images(context.Context, string) ([]string, error) { return nil, nil }
 
 func (alwaysServing) CopyVolume(context.Context, string, string) error { return nil }

@@ -275,6 +275,10 @@ type Snapshotter interface {
 
 	// VolumeFor names the volume a service's data lives in.
 	VolumeFor(sandbox, service string) string
+
+	// RemoveImage deletes a saved image; one already gone is success. An image still used by
+	// a unit is refused by the backend, and that refusal is returned rather than forced.
+	RemoveImage(ctx context.Context, image string) error
 }
 
 // SnapshotterFor returns the provider's snapshot support, or a refusal naming the backend.
@@ -287,6 +291,36 @@ func SnapshotterFor(p Provider) (Snapshotter, error) {
 	}
 
 	return s, nil
+}
+
+// NamedVolumes is storage a caller names and keeps: a docker named volume, a claim in a cluster.
+//
+// Separate from the data volume every service with `volume` already has, because that one
+// belongs to its sandbox and dies with it, and these do not: a named volume outlives any one
+// sandbox that mounts it unless whoever created it asks otherwise. Kubernetes does not
+// implement it yet - a PersistentVolumeClaim is the answer there, with a storage class and a
+// size that are the operator's decisions - so the API says so rather than guessing them.
+type NamedVolumes interface {
+	// VolumeExists reports whether name exists. An error is not an absence.
+	VolumeExists(ctx context.Context, name string) (bool, error)
+
+	// CreateVolume creates name with labels.
+	CreateVolume(ctx context.Context, name string, labels map[string]string) error
+
+	// RemoveVolume deletes name; a volume still mounted is refused by the backend.
+	RemoveVolume(ctx context.Context, name string) error
+}
+
+// NamedVolumesFor returns the provider's named-volume support, or a refusal naming the backend.
+func NamedVolumesFor(p Provider) (NamedVolumes, error) {
+	v, ok := p.(NamedVolumes)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot create named volumes: on a cluster that "+
+			"is a PersistentVolumeClaim, whose storage class and size are the operator's to "+
+			"choose, and sbx does not create one for you yet", p.Name())
+	}
+
+	return v, nil
 }
 
 // Checkpointer saves and restores a running unit's MEMORY and process state, so a resume

@@ -104,6 +104,8 @@ func (*transitionRecorder) Exec(context.Context, string, []string) (string, erro
 }
 func (*transitionRecorder) Commit(context.Context, string, string) error { return nil }
 
+func (*transitionRecorder) RemoveImage(context.Context, string) error { return nil }
+
 func (*transitionRecorder) Images(context.Context, string) ([]string, error) { return nil, nil }
 
 func (*transitionRecorder) CopyVolume(context.Context, string, string) error { return nil }
