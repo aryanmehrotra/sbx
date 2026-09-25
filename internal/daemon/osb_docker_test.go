@@ -240,6 +240,26 @@ func TestDockerOpenSandboxLifecycle(t *testing.T) {
 
 	waitFor("Running", 120*time.Second)
 
+	// Running only says execd answered on the wake port - not that THIS daemon owns it. Another
+	// listener on that port (another engine's daemon) answers too, and then nothing below is
+	// testing the daemon under test. Say so here rather than as a freeze timeout.
+	adopted := time.Now().Add(10 * time.Second)
+	for {
+		d.mu.Lock()
+		_, ok := d.units[container]
+		d.mu.Unlock()
+
+		if ok {
+			break
+		}
+
+		if time.Now().After(adopted) {
+			t.Fatalf("the daemon under test never kept %s: its wake port is held by another listener", container)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	for _, m := range strings.Split(dockerCLI(t, "inspect", "--format",
 		"{{range .Mounts}}{{.Name}}={{.Destination}}:{{.RW}} {{end}}", container), " ") {
 		if strings.HasSuffix(m, "=/opt/sbx:false") {

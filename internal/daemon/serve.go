@@ -135,6 +135,10 @@ type daemon struct {
 	heldMu sync.RWMutex
 	held   map[string]bool
 
+	// life is run()'s context: what every listener lives as long as. Nil until run starts, for
+	// a daemon a test builds as a literal and discovers by hand.
+	life context.Context
+
 	// scope is which sandboxes this daemon may touch at all - see scope.go. Empty is all.
 	scope Scope
 }
@@ -341,6 +345,10 @@ func Serve(args []string) error {
 }
 
 func (d *daemon) run(ctx context.Context) {
+	d.mu.Lock()
+	d.life = ctx
+	d.mu.Unlock()
+
 	d.discover(ctx)
 
 	go d.watchEgress(ctx)
@@ -440,7 +448,11 @@ func (d *daemon) discover(ctx context.Context) {
 		u.frozen = f.Paused
 		u.held.Store(d.isHeld(f.Sandbox))
 
-		uctx, ucancel := context.WithCancel(ctx)
+		// The daemon's lifetime, not the caller's. discover is also run on behalf of a request
+		// (Refresh, from the OpenSandbox API), and a listener derived from THAT context closed
+		// when the request ended - leaving a registered unit with a dead port that no later tick
+		// would rebind, because the unit was still "known".
+		uctx, ucancel := context.WithCancel(d.lifetime(ctx))
 
 		d.mu.Lock()
 		d.units[f.Ref] = u
@@ -763,4 +775,17 @@ func hostOr(h string) string {
 	}
 
 	return h
+}
+
+// lifetime is the context listeners are opened under: the daemon's own once run has started,
+// the caller's before that (a test driving discover directly owns the lifetime itself).
+func (d *daemon) lifetime(caller context.Context) context.Context {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.life != nil {
+		return d.life
+	}
+
+	return caller
 }
