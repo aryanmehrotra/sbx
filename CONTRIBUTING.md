@@ -28,6 +28,7 @@ CI fails if `go.mod` ever gains a `require` line. That is a product claim, not a
 | crash recovery | docker | `./scripts/recovery.sh` |
 | endurance / leaks (on main push & release) | docker + a running `sbx serve` | `./scripts/soak.sh` |
 | every documented use case | docker | `./scripts/usecases-e2e.sh` |
+| OpenSandbox compatibility (upstream's own suite) | docker with no other sbx sandboxes, network once | `./scripts/osb-conformance.sh` - see [test/osb](test/osb/README.md) |
 | the suite on Linux, on a Mac | docker + sbx | `./scripts/linux-tests.sh` |
 | every platform builds and vets | - | `./scripts/platforms.sh` |
 | shell, workflows, docs, pins | - | `scripts/lib/measure_test.sh`, `scripts/lint-workflows.sh`, `scripts/lint-docs.sh`, `scripts/pin-templates.sh --check` |
