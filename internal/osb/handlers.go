@@ -41,6 +41,7 @@ func (s *Server) snapshot(id string) (record, bool) {
 	c.Extensions = maps.Clone(r.Extensions)
 	c.Entrypoint = slices.Clone(r.Entrypoint)
 	c.Ports = slices.Clone(r.Ports)
+	c.Endpoints = slices.Clone(r.Endpoints)
 
 	return c, true
 }
@@ -175,13 +176,14 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
+	// Filtered to this one: listing every container to render one grew with every sandbox.
+	units, err := s.p.List(r.Context(), rec.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	out := render(rec, units[rec.ID], true)
+	out := render(rec, units, true)
 	s.trace.mark(rec.ID, "GET answered "+out.Status.State)
 	writeJSON(w, http.StatusOK, out)
 }
@@ -440,13 +442,13 @@ func (s *Server) patchMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
+	units, err := s.p.List(r.Context(), updated.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, render(updated, units[updated.ID], true))
+	writeJSON(w, http.StatusOK, render(updated, units, true))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
@@ -613,21 +615,31 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
-		return
+	eps := rec.Endpoints
+
+	// Recorded once execd first answered; before that - or for a record written by an sbx
+	// that did not keep them - docker is asked, about this sandbox only.
+	if len(eps) < len(rec.Ports) {
+		us, err := s.p.List(r.Context(), rec.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
+			return
+		}
+
+		if len(us) == 0 || len(us[0].Client) < len(rec.Ports) {
+			writeErr(w, http.StatusNotFound, "SANDBOX::NOT_READY",
+				fmt.Sprintf("%s has no container yet (state %s) - wait for Running", rec.ID, rec.State))
+
+			return
+		}
+
+		eps = nil
+		for _, c := range us[0].Client {
+			eps = append(eps, c.String())
+		}
 	}
 
-	us := units[rec.ID]
-	if len(us) == 0 || len(us[0].Client) < len(rec.Ports) {
-		writeErr(w, http.StatusNotFound, "SANDBOX::NOT_READY",
-			fmt.Sprintf("%s has no container yet (state %s) - wait for Running", rec.ID, rec.State))
-
-		return
-	}
-
-	addr := func(i int) string { return us[0].Client[i].String() }
+	addr := func(i int) string { return eps[i] }
 	auth := map[string]string{tokenHeader: rec.Token}
 
 	for i, p := range rec.Ports {

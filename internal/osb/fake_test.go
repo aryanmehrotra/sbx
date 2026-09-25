@@ -34,6 +34,9 @@ type fakeDocker struct {
 	missing map[string]bool
 	pulls   []string
 
+	// lists records the sandbox each List was filtered to ("" for all).
+	lists []string
+
 	exitOnStart bool // new containers are not running: the entrypoint exited
 	logs        string
 	arch        string
@@ -68,6 +71,8 @@ func (f *fakeDocker) Create(_ context.Context, sandbox string, slot, _ int, svc 
 func (f *fakeDocker) List(_ context.Context, sandbox string) ([]provider.Unit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	f.lists = append(f.lists, sandbox)
 
 	var out []provider.Unit
 

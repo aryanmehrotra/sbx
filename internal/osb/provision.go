@@ -592,10 +592,17 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 				if lastErr = s.ping(ctx, u.Client[0].String()); lastErr == nil {
 					s.trace.mark(id, "execd answered: Running")
 
+					eps := make([]string, 0, len(u.Client))
+					for _, c := range u.Client {
+						eps = append(eps, c.String())
+					}
+
 					s.update(id, func(r *record) {
 						if r.State == statePending {
 							r.transition(stateRunning, "", "", s.now())
 						}
+
+						r.Endpoints = eps
 					})
 
 					s.mu.Lock()

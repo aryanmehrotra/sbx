@@ -88,3 +88,30 @@ func TestCreateAnswersPendingPastTheWait(t *testing.T) {
 
 	h.waitState(created.ID, stateRunning)
 }
+
+// The calls a client makes straight after a create - GET until Running, then the execd
+// endpoint - ask docker about that one sandbox, or not at all. Listing every container for them
+// cost 15-25 ms each on colima with a handful of sandboxes, and grew with every sandbox a burst
+// added.
+func TestGetAndEndpointDoNotListEverySandbox(t *testing.T) {
+	h := newHarness(t)
+	sb := h.create(minimalCreate())
+
+	h.p.mu.Lock()
+	h.p.lists = nil
+	h.p.mu.Unlock()
+
+	h.do("GET", "/v1/sandboxes/"+sb.ID, nil, nil)
+
+	var ep endpointJSON
+	if resp := h.do("GET", "/v1/sandboxes/"+sb.ID+"/endpoints/44772", nil, &ep); resp.StatusCode != http.StatusOK || ep.Endpoint == "" {
+		t.Fatalf("endpoint = %d %+v", resp.StatusCode, ep)
+	}
+
+	h.p.mu.Lock()
+	defer h.p.mu.Unlock()
+
+	if !slices.Equal(h.p.lists, []string{sb.ID}) {
+		t.Fatalf("lists %q, want exactly one, filtered to %s (the GET); the endpoint needs none", h.p.lists, sb.ID)
+	}
+}

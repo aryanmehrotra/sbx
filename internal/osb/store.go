@@ -51,6 +51,11 @@ type record struct {
 	// the caller asked to have fronted directly (extensions["sbx.ports"]).
 	Ports []int `json:"ports"`
 
+	// Endpoints are the addresses of Ports through the daemon, in the same order, recorded when
+	// the sandbox first answered. A container's slot - and so these - never changes, so the
+	// endpoint route answers from here instead of asking docker on every call.
+	Endpoints []string `json:"endpoints,omitempty"`
+
 	// Token is execd's access token. It is a credential for everything inside the sandbox,
 	// which is why this file is 0600.
 	Token string `json:"token"`
