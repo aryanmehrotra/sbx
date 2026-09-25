@@ -374,4 +374,3 @@ func TestPoolServesOnlyWhitelistedRequestFields(t *testing.T) {
 		})
 	}
 }
-
