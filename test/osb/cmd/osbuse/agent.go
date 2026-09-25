@@ -322,10 +322,13 @@ func caseInterpreter(ctx context.Context, t *T, e *env) {
 	ex, err = ci.ExecuteInContext(ctx, cc.ID, "python", "1/0", nil)
 	t.check(err == nil && ex.Error != nil && ex.Error.Name == "ZeroDivisionError", "an exception comes back as an error, not a crash: %+v", ex.Error)
 
-	// The inline backend, as a notebook user has it: that is what turns a figure into display_data.
-	plot := "%matplotlib inline\nimport matplotlib.pyplot as plt\nplt.plot([1,2,3],[4,1,9])\nplt.show()"
+	// An image through display(), which is how a figure reaches a notebook. Built from bytes rather
+	// than matplotlib: opensandbox/code-interpreter:latest does not ship matplotlib (measured:
+	// ModuleNotFoundError), and what is under test is the display_data path, not a plotting library.
+	plot := "import base64\nfrom IPython.display import Image, display\n" +
+		"display(Image(data=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==')))"
 	ex, err = ci.ExecuteInContext(ctx, cc.ID, "python", plot, nil)
-	t.check(err == nil && hasMIME(ex, "image/png"), "a plot comes back as an image/png result (%s, %v)", mimes(ex), err)
+	t.check(err == nil && hasMIME(ex, "image/png"), "an image comes back as an image/png result (%s, %v, error=%v, stdout=%q)", mimes(ex), err, execErr(ex), ex.Text())
 
 	html := "from IPython.display import display, HTML\ndisplay(HTML('<b>hi</b>'))"
 	ex, err = ci.ExecuteInContext(ctx, cc.ID, "python", html, nil)
@@ -403,4 +406,12 @@ func mimes(ex *opensandbox.Execution) string {
 	}
 
 	return "[" + strings.Join(out, " ") + "]"
+}
+
+func execErr(ex *opensandbox.Execution) string {
+	if ex == nil || ex.Error == nil {
+		return "none"
+	}
+
+	return ex.Error.Name + ": " + clip(ex.Error.Value)
 }

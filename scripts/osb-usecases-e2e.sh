@@ -69,7 +69,6 @@ cleanup_classic() {
   for n in $CLASSIC; do sbxc rm "$n" >/dev/null 2>&1; done
   CLASSIC=""
 }
-trap 'cleanup_classic; osb_teardown' EXIT
 
 stop_daemon() {
   [ -n "$OSB_DAEMON" ] || return 0
@@ -105,6 +104,9 @@ foreign_daemons() {
 }
 
 osb_init
+# After osb_init, which sets its own EXIT trap: this one must replace it, not be replaced by it.
+# The status is carried across cleanup_classic: osb_teardown reads $? and exits with it.
+trap 'rc=$?; cleanup_classic; (exit "$rc"); osb_teardown' EXIT
 osb_resolve_docker "${DOCKER_URL:-}"
 osb_build_tools
 
@@ -164,7 +166,7 @@ if want egress; then
     shown="$(sbxc egress "$id" --show 2>&1)"
     printf '    sbx egress %s --show:\n%s\n' "$id" "$(printf '%s\n' "$shown" | sed 's/^/      /')"
     case "$shown" in *example.com*) ;; *) ok=0; echo "    FAIL sbx egress does not show example.com" ;; esac
-    case "$shown" in *wikipedia.org*) ;; *) ok=0; echo "    FAIL sbx egress does not show the rule added through the API" ;; esac
+    case "$shown" in *".example.org"*) ;; *) ok=0; echo "    FAIL sbx egress does not show the rule added through the API" ;; esac
 
     # And the other direction: a rule added with the CLI is what the API reports.
     if sbxc egress "$id" --allow api.github.com >/dev/null 2>&1 &&
@@ -255,7 +257,8 @@ if want mixed; then
   use create -out "$OSB_WORK/mixed.id" >/dev/null || ok=0
   api="$(cat "$OSB_WORK/mixed.id" 2>/dev/null)"
 
-  port="$(sbxc env "$pg" --template postgres 2>/dev/null | sed -n 's/.*DATABASE_PORT=\([0-9]*\).*/\1/p')"
+  # Evaluated, not scraped: the value is quoted, and eval is exactly what a user does with it.
+  port="$(eval "$(sbxc env "$pg" --template postgres 2>/dev/null)"; printf '%s' "${DATABASE_PORT:-}")"
 
   # Asleep means no container running - 0 B, not a paused process.
   n=0

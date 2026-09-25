@@ -323,20 +323,22 @@ func caseEgress(ctx context.Context, t *T, e *env) {
 		}
 	}()
 
+	// Reached means the far end answered with ANY status - a site may well refuse urllib's user
+	// agent with its own 403. Denied is the proxy refusing the tunnel, which never gets that far.
 	fetch := func(url string) (bool, string) {
-		code := fmt.Sprintf("import urllib.request as u\ntry:\n    print('STATUS', u.urlopen(%q, timeout=15).status)\nexcept Exception as e:\n    print('ERR', type(e).__name__, e)", url)
+		code := fmt.Sprintf("import urllib.request as u, urllib.error as ue\ntry:\n    print('STATUS', u.urlopen(%q, timeout=15).status)\nexcept ue.HTTPError as e:\n    print('STATUS', e.code)\nexcept Exception as e:\n    print('ERR', type(e).__name__, e)", url)
 		out, _, _, err := run(ctx, sb, "python -c "+shellQuote(code))
 		if err != nil {
 			return false, err.Error()
 		}
 
-		return strings.Contains(out, "STATUS 200"), strings.TrimSpace(out)
+		return strings.Contains(out, "STATUS "), strings.TrimSpace(out)
 	}
 
 	ok, out := fetch("https://example.com/")
 	t.check(ok, "the allowed host is reachable: %s", clip(out))
 
-	ok, out = fetch("https://www.wikipedia.org/")
+	ok, out = fetch("https://www.example.org/")
 	t.check(!ok, "a host not on the list is denied: %s", clip(out))
 
 	raw, _, _, _ := run(ctx, sb, `python -c "import socket
@@ -350,10 +352,10 @@ except Exception as e:
 	t.must(err, "container start time")
 
 	lc := opensandbox.NewLifecycleClient(e.url+"/v1", e.key)
-	_, err = lc.PatchNetworkPolicy(ctx, sb.ID(), []opensandbox.NetworkRule{{Action: "allow", Target: "*.wikipedia.org"}})
-	t.check(err == nil, "PATCH networkpolicy adds *.wikipedia.org (%v)", err)
+	_, err = lc.PatchNetworkPolicy(ctx, sb.ID(), []opensandbox.NetworkRule{{Action: "allow", Target: "*.example.org"}})
+	t.check(err == nil, "PATCH networkpolicy adds *.example.org (%v)", err)
 
-	ok, out = fetch("https://www.wikipedia.org/")
+	ok, out = fetch("https://www.example.org/")
 	t.check(ok, "the newly allowed host now works, with no restart: %s", clip(out))
 
 	ok, out = fetch("https://example.com/")
@@ -370,7 +372,7 @@ except Exception as e:
 		}
 
 		joined := strings.Join(targets, " ")
-		t.check(strings.Contains(joined, "allow:example.com") && strings.Contains(joined, "allow:*.wikipedia.org") && pol.Policy.DefaultAction == "deny",
+		t.check(strings.Contains(joined, "allow:example.com") && strings.Contains(joined, "allow:*.example.org") && pol.Policy.DefaultAction == "deny",
 			"and it holds both rules and default deny: %s default=%s", joined, pol.Policy.DefaultAction)
 	}
 
