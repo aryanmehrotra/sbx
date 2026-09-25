@@ -154,7 +154,7 @@ func remote(t *testing.T) (*Remote, *recProvider, *loopRunner) {
 	rp := &recProvider{}
 	lr := &loopRunner{prov: rp}
 
-	return &Remote{M: &Manager{Driver: lima{}, Config: testCfg, Run: lr, Out: io.Discard, StateDir: t.TempDir()}}, rp, lr
+	return &Remote{M: current(t, &Manager{Driver: lima{}, Config: testCfg, Run: lr, Out: io.Discard, StateDir: t.TempDir()})}, rp, lr
 }
 
 func TestHelperVMProviderIsWired(t *testing.T) {

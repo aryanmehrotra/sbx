@@ -127,21 +127,13 @@ func Redirect(ctx context.Context, version, cmd string, args []string) (handled 
 func (m *Manager) redirect(ctx context.Context, version, cmd string, args []string,
 	stdin io.Reader, stdout, stderr io.Writer,
 ) int {
-	st, err := m.Status(ctx)
-	if err != nil {
+	// Started on demand, and brought up to this build after an upgrade. A running VM this build
+	// already ensured costs one listing and one stat: re-hashing the binary on every `sbx list`
+	// would put a round trip into the VM on each one.
+	if err := m.EnsureCurrent(ctx, EnsureOptions{Version: version}); err != nil {
 		fmt.Fprintf(stderr, "sbx: %v\n", err)
 
 		return 1
-	}
-
-	// Started on demand. Only when not running: a running VM was ensured by whoever started
-	// it, and re-hashing the binary on every `sbx list` would put a round trip on each one.
-	if st != Running {
-		if err := m.Ensure(ctx, EnsureOptions{Version: version}); err != nil {
-			fmt.Fprintf(stderr, "sbx: %v\n", err)
-
-			return 1
-		}
 	}
 
 	dir, _ := os.Getwd()

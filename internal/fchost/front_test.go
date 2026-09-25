@@ -29,7 +29,18 @@ const runningLima = `{"name":"sbx-fc","status":"Running","sshConfigFile":"/lima/
 func limaManager(t *testing.T, r *fakeRunner) *Manager {
 	t.Helper()
 
-	return &Manager{Driver: lima{}, Config: testCfg, Run: r, Out: io.Discard, StateDir: t.TempDir()}
+	return current(t, &Manager{Driver: lima{}, Config: testCfg, Run: r, Out: io.Discard, StateDir: t.TempDir()})
+}
+
+// current makes m's helper VM one this build already ensured, as it is on every command after the
+// first: a test about something else is not also a test of the upgrade path.
+func current(t *testing.T, m *Manager) *Manager {
+	t.Helper()
+
+	m.hostStamp = func(string) string { return "this-build" }
+	m.writeStamp("")
+
+	return m
 }
 
 // fakeVMDaemon is the in-VM `sbx serve --provider firecracker` as the host sees it through the

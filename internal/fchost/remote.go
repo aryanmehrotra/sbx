@@ -66,7 +66,13 @@ type Remote struct {
 var _ provider.Provider = (*Remote)(nil)
 
 // request is every method's arguments, by name; each method reads the ones it takes.
+// CallProto is the `sbx fc call` wire version. The host and the helper VM run the same build -
+// EnsureCurrent sees to that - and this catches the case it cannot: a VM ensured by another
+// build, reached before it is. Bump it on any change to request or response.
+const CallProto = 1
+
 type request struct {
+	Proto      int                 `json:"proto"`
 	Sandbox    string              `json:"sandbox,omitempty"`
 	Service    string              `json:"service,omitempty"`
 	Ref        string              `json:"ref,omitempty"`
@@ -94,17 +100,7 @@ type response struct {
 }
 
 func (r *Remote) ensure(ctx context.Context) error {
-	r.once.Do(func() {
-		st, err := r.M.Status(ctx)
-		if err != nil {
-			r.ensured = err
-			return
-		}
-
-		if st != Running {
-			r.ensured = r.M.Ensure(ctx, EnsureOptions{Version: r.Version})
-		}
-	})
+	r.once.Do(func() { r.ensured = r.M.EnsureCurrent(ctx, EnsureOptions{Version: r.Version}) })
 
 	return r.ensured
 }
@@ -114,6 +110,8 @@ func (r *Remote) argv(ctx context.Context, method string, req request, tty bool)
 	if err := r.ensure(ctx); err != nil {
 		return nil, err
 	}
+
+	req.Proto = CallProto
 
 	b, err := json.Marshal(req)
 	if err != nil {
@@ -306,6 +304,12 @@ func Call(ctx context.Context, p provider.Provider, args []string, stdin io.Read
 	var req request
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return fmt.Errorf("sbx fc call: the request is not JSON: %w", err)
+	}
+
+	if req.Proto != CallProto {
+		return json.NewEncoder(stdout).Encode(response{Error: fmt.Sprintf("sbx fc call: the host speaks "+
+			"protocol %d and this sbx in the helper VM speaks %d - they are different builds; "+
+			"`sbx fc vm start` reinstalls this one", req.Proto, CallProto)})
 	}
 
 	reply := func(result any, err error) error {

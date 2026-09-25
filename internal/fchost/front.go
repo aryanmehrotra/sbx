@@ -119,7 +119,13 @@ func (m *Manager) Ensure(ctx context.Context, opt EnsureOptions) error {
 		d = saved
 	}
 
-	return m.StartDaemon(ctx, DaemonOptions{Token: tok, OSBKey: d.OSBKey, Serve: d.Serve, Restart: changed, OSB: d.OSB})
+	if err := m.StartDaemon(ctx, DaemonOptions{Token: tok, OSBKey: d.OSBKey, Serve: d.Serve, Restart: changed, OSB: d.OSB}); err != nil {
+		return err
+	}
+
+	m.writeStamp(opt.Version)
+
+	return nil
 }
 
 // daemonConfig is what `sbx serve` last asked the in-VM daemon to run with, kept host-side in the

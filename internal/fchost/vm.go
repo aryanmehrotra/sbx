@@ -103,6 +103,9 @@ type Manager struct {
 	Run      Runner
 	Out      io.Writer // progress for a person; never parsed
 	StateDir string    // host-side files: the ssh config colima prints, the connect token
+
+	// hostStamp replaces hostStamp (stamp.go) in tests.
+	hostStamp func(version string) string
 }
 
 // NewManager is the manager for the helper Detect chose, sized from the environment.
