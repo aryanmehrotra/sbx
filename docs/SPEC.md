@@ -529,9 +529,9 @@ service in a Firecracker microVM, and where that runs depends on the host, not t
 | host | backend | |
 |---|---|---|
 | Linux with `/dev/kvm` | direct | the provider drives Firecracker itself |
-| macOS, Apple M3+, macOS 15+ | helper VM | lima (else colima) VM `sbx-fc` with nested virtualisation, created on first use |
-| Windows 11 | helper VM | a WSL2 distro `sbx-fc`; refused, quoting the `.wslconfig` line, when nested virtualisation is off |
-| kubernetes | RuntimeClass | `--isolation firecracker` sets `runtimeClassName: kata-fc` (`SBX_KATA_FC_RUNTIMECLASS` renames it) |
+| macOS, Apple M3+, macOS 15+ | helper VM | lima (else colima) VM `sbx-fc` with nested virtualisation, created on first use. Run end to end with colima; lima is built and unit-tested, not yet run end to end (`SBX_FC_VM_DRIVER=colima` picks colima) |
+| Windows 11 | helper VM | a WSL2 distro `sbx-fc`; refused, quoting the `.wslconfig` line, when nested virtualisation is off. **Built and unit-tested; not yet run on a Windows host** |
+| kubernetes | RuntimeClass | `--isolation firecracker` sets `runtimeClassName: kata-fc` (`SBX_KATA_FC_RUNTIMECLASS` renames it). **Unit-tested (the RuntimeClass it names); not yet run on a cluster with kata-fc installed** |
 | anything else | refused | with the reason and the fix - never a silent fallback to a container |
 
 Through a helper VM, `sbx env` prints the same ports on the host as in the VM, and a connection
