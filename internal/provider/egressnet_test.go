@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -177,4 +178,60 @@ func hasPair(args []string, flag, value string) bool {
 	}
 
 	return false
+}
+
+// A service with an egress_policy - including a default-ALLOW one - goes on the no-NAT bridge
+// behind the filter, with its declared policy on a label for the daemon. Default-allow is the
+// case that matters: were it left on the ordinary bridge its deny rules would be advisory, since
+// a client could dial round the proxy.
+func TestAnEgressPolicyPutsTheServiceBehindTheFilter(t *testing.T) {
+	_, record := fakeDocker(t, "127.0.0.1")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
+
+	svc := spec.Service{
+		Image: "python:3.12",
+		Ports: []int{8000},
+		EgressPolicy: &egress.Policy{DefaultAction: "allow", Egress: []egress.Rule{
+			{Action: "deny", Target: "169.254.0.0/16"},
+		}},
+	}
+
+	if err := d.Create(context.Background(), "osblab", 3, 0, "sandbox", svc,
+		[]Endpoint{{Host: "127.0.0.1", Port: 20060}}, t.TempDir(), IsolationContainer); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := os.ReadFile(record)
+	args := strings.Split(strings.TrimSpace(string(got)), "\n")
+
+	if !hasPair(args, "--network", "sbx-noegress-osblab") {
+		t.Errorf("a default-allow policy was not put on the no-NAT bridge, so its deny rules "+
+			"could be walked around:\n%s", strings.Join(args, " "))
+	}
+
+	want := labelEgressPolicy + `={"defaultAction":"allow","egress":[{"action":"deny","target":"169.254.0.0/16"}]}`
+	if !hasPair(args, "--label", want) {
+		t.Errorf("the declared policy is not on the container for the daemon to read:\n%s",
+			strings.Join(args, "\n"))
+	}
+
+	if !strings.Contains(string(got), "HTTPS_PROXY=http://127.0.0.1:") {
+		t.Errorf("the service was not pointed at the filtering proxy:\n%s", got)
+	}
+}
+
+func TestKubernetesRefusesAnEgressFilter(t *testing.T) {
+	k := &kubeProvider{}
+
+	for _, svc := range []spec.Service{
+		{Image: "x", Egress: "allow"},
+		{Image: "x", EgressAllow: []string{"a.com"}},
+		{Image: "x", EgressPolicy: &egress.Policy{DefaultAction: "deny"}},
+	} {
+		err := k.Create(context.Background(), "s", 0, 0, "svc", svc, nil, "", IsolationContainer)
+		if err == nil || !strings.Contains(err.Error(), "egress filter") {
+			t.Errorf("%+v: kubernetes created a filtered service it cannot filter (err %v)", svc, err)
+		}
+	}
 }

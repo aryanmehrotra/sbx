@@ -1261,7 +1261,7 @@ func wantsAllowList(sp *spec.Spec, withOptional bool) bool {
 			continue
 		}
 
-		if len(svc.EgressAllow) > 0 {
+		if svc.Filtered() {
 			return true
 		}
 	}
