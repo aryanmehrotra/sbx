@@ -184,7 +184,7 @@ func Serve(args []string) error {
 	// The key is never a flag default, because flag defaults are printed by --help.
 	osbNoKey := fs.Bool("osb-insecure-no-key", false, "serve --osb-addr with no key at all (loopback only). Any container on a VM-backed engine can reach the host loopback, so this lets every sandbox drive the API")
 	osbAddr := fs.String("osb-addr", envOr("SBX_OSB_ADDR", ""), "serve the OpenSandbox lifecycle API here, e.g. 127.0.0.1:8080; off unless set")
-	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY); needed for a non-loopback --osb-addr")
+	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY, else one generated into ~/.sbx/osb/key)")
 	osbHostPaths := fs.String("osb-host-paths", envOr("SBX_OSB_HOST_PATHS", ""), "comma-separated host directories an OpenSandbox host volume may bind from; none unless set")
 
 	var only stringList
