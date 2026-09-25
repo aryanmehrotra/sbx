@@ -107,6 +107,13 @@ func (d *daemon) Freeze(ctx context.Context, sandbox string) error {
 		u.held.Store(true) // again: a unit discovered between Hold and here missed the sweep
 
 		if err := u.freeze(ctx, pa); err != nil {
+			// The caller answers this with an error and records the sandbox as still running,
+			// and resume refuses a sandbox that is not paused. A hold left here would hang up
+			// on every connection with no API call able to release it, so undo it. Units
+			// already frozen stay frozen but unheld: the next connection thaws them, which is
+			// the ordinary wake path.
+			d.Hold(sandbox, false)
+
 			return err
 		}
 	}
@@ -123,6 +130,11 @@ func (d *daemon) Thaw(ctx context.Context, sandbox string) error {
 		u.held.Store(false)
 
 		if err := u.wake(ctx, d.provider, d.ready); err != nil {
+			// The mirror of Freeze: a failed resume leaves the API saying Paused, so the
+			// daemon must keep refusing traffic rather than let a connection wake what the
+			// caller still believes is paused.
+			d.Hold(sandbox, true)
+
 			return err
 		}
 	}

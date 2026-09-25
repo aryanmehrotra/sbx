@@ -157,6 +157,56 @@ func TestPausedOnPurposeIsNotThawedByTraffic(t *testing.T) {
 	}
 }
 
+// failingPause is a provider whose pause and unpause fail, the way a docker call does when the
+// API request that asked for it is cancelled half way.
+type failingPause struct{ pausing }
+
+func (*failingPause) Pause(context.Context, string) error   { return context.Canceled }
+func (*failingPause) Unpause(context.Context, string) error { return context.Canceled }
+
+// Start fails too: a failed unpause falls back to a start, and the thaw only fails when both do.
+func (*failingPause) Start(context.Context, string) error { return context.Canceled }
+
+// A pause that failed must leave nothing held. The API answers 500 and keeps the sandbox
+// Running, and resume refuses a sandbox that is not paused - so a hold left behind here would
+// hang up on every connection with no call that could ever release it.
+func TestAFailedFreezeHoldsNothing(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	u := idleUnit(true)
+	d := &daemon{provider: &failingPause{}, units: map[string]*unit{"c1": u}}
+
+	if err := d.Freeze(context.Background(), "osb-1"); err == nil {
+		t.Fatal("Freeze with a failing pause returned nil")
+	}
+
+	if u.isHeld() || d.held["osb-1"] {
+		t.Fatalf("after a failed freeze: unit held=%v, daemon held=%v; want neither", u.isHeld(), d.held["osb-1"])
+	}
+}
+
+// The mirror: a resume that failed leaves the API saying Paused, so the daemon must go on
+// refusing traffic, or "a paused sandbox is not woken by a connection" stops being true for it.
+func TestAFailedThawKeepsTheHold(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	u := idleUnit(true)
+	u.setAwake(false)
+	u.setFrozen(true)
+	u.held.Store(true)
+
+	d := &daemon{provider: &failingPause{}, ready: time.Second, units: map[string]*unit{"c1": u},
+		held: map[string]bool{"osb-1": true}}
+
+	if err := d.Thaw(context.Background(), "osb-1"); err == nil {
+		t.Fatal("Thaw with a failing unpause returned nil")
+	}
+
+	if !u.isHeld() || !d.held["osb-1"] {
+		t.Fatalf("after a failed thaw: unit held=%v, daemon held=%v; want both still held", u.isHeld(), d.held["osb-1"])
+	}
+}
+
 // Pausing a backend that cannot keep memory must be refused, not approximated with a stop.
 func TestFreezeIsRefusedByAProviderThatCannotPause(t *testing.T) {
 	log.SetOutput(io.Discard)
