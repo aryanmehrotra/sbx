@@ -268,7 +268,9 @@ func TestEnsureInstallsByContentAndRestartsOnlyOnChange(t *testing.T) {
 			}
 		}
 
-		if env != "SBX_CONNECT_TOKEN="+tok+"\nSBX_OSB_KEY=osbk\n" {
+		// HOME: a systemd unit has none, and the daemon must find the state the redirected
+		// commands (sudo -H, so /root) write - without it the daemon exits at start.
+		if env != "SBX_CONNECT_TOKEN="+tok+"\nHOME=/root\nSBX_OSB_KEY=osbk\n" {
 			t.Errorf("env file = %q", env)
 		}
 
@@ -300,7 +302,10 @@ func TestTokenIsStableAndPrivate(t *testing.T) {
 func TestTunnelForwardsOnlyTheTwoControlPorts(t *testing.T) {
 	got := strings.Join(TunnelArgv(transport{sshConfig: "/c", sshHost: "lima-sbx-fc"}, 50001, 50002), " ")
 
-	want := "ssh -F /c -o LogLevel=ERROR -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 " +
+	// ControlMaster=no, ControlPath=none: lima and colima both write ControlMaster auto +
+	// ControlPersist yes, and through that mux `ssh -N -L` hands its forwards to the master and
+	// exits at once - which the front reads as the tunnel closing.
+	want := "ssh -F /c -o LogLevel=ERROR -o ControlMaster=no -o ControlPath=none -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 " +
 		"-o ServerAliveCountMax=3 -N -L 127.0.0.1:50001:127.0.0.1:20980 -L 127.0.0.1:50002:127.0.0.1:20981 lima-sbx-fc"
 	if got != want {
 		t.Fatalf("\n got %s\nwant %s", got, want)

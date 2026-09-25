@@ -419,7 +419,10 @@ func ServeArgv(extra []string) []string {
 // supervised, restarted on failure, and with its secrets in a root-only environment file
 // rather than on a command line anyone in the VM can read with ps.
 func (m *Manager) StartDaemon(ctx context.Context, opt DaemonOptions) error {
-	env := "SBX_CONNECT_TOKEN=" + opt.Token + "\n"
+	// HOME=/root: a transient unit has no HOME, and without one the provider has no state
+	// directory and the daemon exits at start. /root, because every redirected command runs
+	// as `sudo -H`, and the daemon must read the state those commands write.
+	env := "SBX_CONNECT_TOKEN=" + opt.Token + "\nHOME=/root\n"
 	if opt.OSBKey != "" {
 		env += "SBX_OSB_KEY=" + opt.OSBKey + "\n"
 	}
@@ -496,12 +499,15 @@ func (m *Manager) Tunnel(ctx context.Context) (Endpoints, func() error, error) {
 	}, wait, nil
 }
 
-// TunnelArgv is the ssh local forward. ExitOnForwardFailure so a port that could not be bound
+// TunnelArgv is the ssh local forward. Its own connection, never the config's ControlMaster:
+// through lima's or colima's persistent mux, `ssh -N -L` registers the forwards on the master and
+// exits at once, which reads as the tunnel closing. ExitOnForwardFailure so a port that could not be bound
 // is an exit, not a tunnel that silently carries nothing; keepalives so a sleeping laptop's dead
 // connection is noticed.
 func TunnelArgv(t transport, hostConnect, hostOSB int) []string {
 	return []string{
-		"ssh", "-F", t.sshConfig, "-o", "LogLevel=ERROR", "-o", "ExitOnForwardFailure=yes",
+		"ssh", "-F", t.sshConfig, "-o", "LogLevel=ERROR", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+		"-o", "ExitOnForwardFailure=yes",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-N",
 		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", hostConnect, GuestConnectPort),
 		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", hostOSB, GuestOSBPort),
