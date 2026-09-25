@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 )
 
 // fakeHost is a machine described by what its tools would print. Every detection path runs
@@ -256,17 +258,6 @@ func TestKubernetesIsARuntimeClass(t *testing.T) {
 	}
 }
 
-func TestParseChip(t *testing.T) {
-	for in, want := range map[string]int{
-		"Apple M1": 1, "Apple M3 Pro": 3, "Apple M4 Max": 4, "Apple M10 Ultra": 10,
-		"Apple Silicon": 0, "": 0, "Intel(R) Core(TM) i9": 0,
-	} {
-		if got := chipGeneration(in); got != want {
-			t.Errorf("chipGeneration(%q) = %d, want %d", in, got, want)
-		}
-	}
-}
-
 func TestDoctorRow(t *testing.T) {
 	ctx := t.Context()
 	helper := Backend{Kind: HelperVM, Helper: "lima", Reason: "Apple M4 on macOS 26.4.1: ..."}
@@ -306,5 +297,34 @@ func TestDoctorRow(t *testing.T) {
 				t.Errorf("meaning %q, want it to contain %q", meaning, c.meaning)
 			}
 		})
+	}
+}
+
+// Detect and the provider must never disagree about Linux or a Mac: both are hostcap.Decide.
+// A /dev/kvm that exists but answers the wrong API version is the case the old presence-only
+// check here approved and the provider then refused.
+func TestLinuxAndMacAreHostcapsDecision(t *testing.T) {
+	h := fakeHost{goos: "linux", goarch: "amd64", devs: map[string]bool{"/dev/kvm": true}}
+	p := h.probe()
+	p.KVM = func() hostcap.KVM { return hostcap.KVM{Present: true, APIVersion: 11} }
+
+	b := Detect(p)
+	if b.Kind != Refused || !strings.Contains(b.Reason, "API version 11") {
+		t.Fatalf("a KVM answering API 11 = %s %q, want hostcap's refusal", b.Kind, b.Reason)
+	}
+
+	for _, h := range []fakeHost{
+		mac("Apple M4", "26.4.1", "limactl"),
+		mac("Apple M2", "26.4.1", "limactl"),
+		mac("Apple M3", "14.1", "limactl"),
+		{goos: "linux", goarch: "arm64", files: map[string]string{"/sys/class/dmi/id/sys_vendor": "Amazon EC2\n"}},
+		{goos: "linux", goarch: "arm64", devs: map[string]bool{"/dev/kvm": true}},
+	} {
+		want := hostcap.Decide(report(h.probe()))
+		got := Detect(h.probe())
+
+		if got.Kind != want.Backend || !strings.HasPrefix(got.Reason, want.Reason) || got.Next != want.Next {
+			t.Errorf("%s/%s: Detect = %+v, hostcap = %+v", h.goos, h.goarch, got, want)
+		}
 	}
 }

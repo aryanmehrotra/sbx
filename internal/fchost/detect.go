@@ -30,18 +30,20 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// Kind is which backend a microVM would use here. The names match the hostcap package the
-// Linux-direct provider carries, so the two reconcile by aliasing rather than translating.
-type Kind string
+// Kind is which backend a microVM would use here: hostcap's, not a copy of it. hostcap decides
+// Linux and macOS for the provider, doctor and this package alike; the names cannot drift apart
+// because there is only one set.
+type Kind = hostcap.Backend
 
 const (
-	Direct           Kind = "direct"
-	HelperVM         Kind = "helper-vm"
-	KataRuntimeClass Kind = "kata-runtimeclass"
-	Refused          Kind = "refused"
+	Direct           = hostcap.Direct
+	HelperVM         = hostcap.HelperVM
+	KataRuntimeClass = hostcap.KataRuntimeClass
+	Refused          = hostcap.Refused
 )
 
 // Backend is the decision plus what a person needs to read about it.
@@ -64,6 +66,10 @@ type Backend struct {
 type Probe struct {
 	GOOS, GOARCH string
 
+	// KVM opens /dev/kvm and asks its API version (hostcap.ProbeKVM). Nil in a fake means
+	// CharDevice("/dev/kvm") stands in for it: present is taken as usable.
+	KVM func() hostcap.KVM
+
 	// Output runs a read-only command and returns its stdout.
 	Output func(name string, args ...string) (string, error)
 
@@ -82,6 +88,7 @@ func Host() Probe {
 
 	return Probe{
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		KVM: hostcap.ProbeKVM,
 		Output: func(name string, args ...string) (string, error) {
 			out, err := exec.Command(name, args...).Output()
 
@@ -126,98 +133,63 @@ func ForProvider(kind string, p Probe) Backend {
 	}
 }
 
-// Detect decides for this machine.
+// Detect decides for this machine. Linux and macOS are hostcap's decision, made from a Report
+// this package fills from its own fakeable Probe; what is left here is what hostcap does not
+// own: which tool runs the helper VM on a Mac (lima or colima), the SBX_FC_ASSUME_NESTED
+// override (hostcap never reads the environment), and the whole Windows/WSL branch.
 func Detect(p Probe) Backend {
+	if p.GOOS == "windows" {
+		return detectWindows(p)
+	}
+
+	d := hostcap.Decide(report(p))
+	b := Backend{Kind: d.Backend, Reason: d.Reason, Next: d.Next}
+
+	if b.Kind == HelperVM && p.GOOS == "darwin" {
+		helper, refusal := pickDarwinHelper(p)
+		if refusal != nil {
+			return *refusal
+		}
+
+		b.Helper = helper
+		b.Reason += "; sbx runs that VM with " + helper
+	}
+
+	return b
+}
+
+// report is hostcap.Probe, answered through p so every host shape is testable anywhere.
+func report(p Probe) hostcap.Report {
+	r := hostcap.Report{OS: p.GOOS, Arch: p.GOARCH}
+
 	switch p.GOOS {
 	case "linux":
-		return detectLinux(p)
+		if p.KVM != nil {
+			r.KVM = p.KVM()
+		} else if p.CharDevice("/dev/kvm") {
+			r.KVM = hostcap.KVM{Present: true, Usable: true, APIVersion: hostcap.KVMAPIVersion}
+		} else {
+			r.KVM = hostcap.KVM{Detail: "/dev/kvm does not exist"}
+		}
+
+		r.Vendor = firstLine(p.ReadFile, "/sys/class/dmi/id/sys_vendor")
+		r.Product = firstLine(p.ReadFile, "/sys/class/dmi/id/product_name")
+
+		if v, err := p.ReadFile("/proc/version"); err == nil {
+			r.WSL = strings.Contains(strings.ToLower(string(v)), "microsoft")
+		}
+
+		cpuinfo, _ := p.ReadFile("/proc/cpuinfo")
+		r.CPUVirt = hostcap.CPUVirt(string(cpuinfo))
+		r.Guest, r.GuestHint = hostcap.GuestEvidence(r.Vendor, r.Product, string(cpuinfo))
 	case "darwin":
-		return detectDarwin(p)
-	case "windows":
-		return detectWindows(p)
-	default:
-		return Backend{
-			Kind:   Refused,
-			Reason: fmt.Sprintf("Firecracker needs Linux KVM, and %s has none (bhyve is not a backend sbx drives)", p.GOOS),
-			Next:   "run sbx on a Linux host with /dev/kvm, or use --provider docker here",
-		}
-	}
-}
-
-// --- linux ------------------------------------------------------------------------------------
-
-func detectLinux(p Probe) Backend {
-	if p.CharDevice("/dev/kvm") {
-		// Presence only. Whether this process can open it and KVM_GET_API_VERSION answers 12
-		// is the direct provider's probe to make - it is the one about to use it.
-		return Backend{Kind: Direct, Reason: "/dev/kvm is present"}
+		brand, _ := p.Output("sysctl", "-n", "machdep.cpu.brand_string")
+		ver, _ := p.Output("sw_vers", "-productVersion")
+		r.CPUBrand, r.OSVersion = strings.TrimSpace(brand), strings.TrimSpace(ver)
+		r.AssumeNested = p.Getenv(AssumeNestedEnv) != ""
 	}
 
-	generic := "enable nested virtualisation on this instance, move to a bare-metal instance type, " +
-		"or run with --isolation gvisor|kata instead of a microVM"
-
-	// Inside WSL2 the fix is one line on the Windows side, and it is a different line from
-	// every cloud's.
-	if v, err := p.ReadFile("/proc/version"); err == nil && strings.Contains(strings.ToLower(string(v)), "microsoft") {
-		return Backend{
-			Kind:   Refused,
-			Reason: "no /dev/kvm in this WSL2 distro: nested virtualisation is off",
-			Next:   wslNestedFix + ", or " + generic[strings.Index(generic, "run with"):],
-		}
-	}
-
-	vendor := firstLine(p.ReadFile, "/sys/class/dmi/id/sys_vendor")
-	product := firstLine(p.ReadFile, "/sys/class/dmi/id/product_name")
-
-	where := "this host"
-	if vendor != "" {
-		where = strings.TrimSpace(vendor + " " + product)
-	}
-
-	reason := fmt.Sprintf("no /dev/kvm on %s, so Firecracker cannot run here", where)
-
-	// The CPU can do it and the kernel was never told: the cheapest fix of all.
-	if info, err := p.ReadFile("/proc/cpuinfo"); err == nil && cpuHasVirt(string(info)) {
-		return Backend{
-			Kind:   Refused,
-			Reason: reason + " - the CPU advertises vmx/svm, so the kvm module is not loaded",
-			Next:   "sudo modprobe kvm_intel (or kvm_amd), or " + generic,
-		}
-	}
-
-	next := generic
-
-	switch {
-	case strings.Contains(vendor, "Amazon"):
-		next = "EC2 exposes KVM only on .metal instance types (or instance types launched with nested " +
-			"virtualisation enabled); move to one, or run with --isolation gvisor|kata"
-	case strings.Contains(vendor, "Google"):
-		next = "recreate the instance with --enable-nested-virtualization (an Intel N1/N2/C2/C3 machine type), " +
-			"or run with --isolation gvisor|kata"
-	case strings.Contains(vendor, "Microsoft"):
-		next = "on Azure pick a size that supports nested virtualisation (Dv3/Ev3 and later), or run with " +
-			"--isolation gvisor|kata"
-	}
-
-	return Backend{Kind: Refused, Reason: reason, Next: next}
-}
-
-func cpuHasVirt(cpuinfo string) bool {
-	sc := bufio.NewScanner(strings.NewReader(cpuinfo))
-	for sc.Scan() {
-		name, val, ok := strings.Cut(sc.Text(), ":")
-		if !ok || strings.TrimSpace(name) != "flags" {
-			continue
-		}
-
-		for _, f := range strings.Fields(val) {
-			if f == "vmx" || f == "svm" {
-				return true
-			}
-		}
-	}
-
-	return false
+	return r
 }
 
 func firstLine(read func(string) ([]byte, error), path string) string {
@@ -233,87 +205,12 @@ func firstLine(read func(string) ([]byte, error), path string) string {
 
 // --- darwin -----------------------------------------------------------------------------------
 
-// AssumeNestedEnv lets a chip whose name this code cannot parse through. It does not unlock a
-// chip it can parse and knows is too old: the override is for the future, not for arguing.
-const AssumeNestedEnv = "SBX_FC_ASSUME_NESTED"
+// AssumeNestedEnv lets a chip whose name hostcap cannot parse through. It does not unlock a chip
+// it can parse and knows is too old: the override is for the future, not for arguing.
+const AssumeNestedEnv = hostcap.AssumeNestedEnv
 
 // DriverEnv forces lima or colima when both are installed.
 const DriverEnv = "SBX_FC_VM_DRIVER"
-
-var chipRE = regexp.MustCompile(`\bApple M(\d+)\b`)
-
-// chipGeneration is 3 for "Apple M3 Pro", and 0 when the string names no M-series chip.
-func chipGeneration(brand string) int {
-	m := chipRE.FindStringSubmatch(brand)
-	if m == nil {
-		return 0
-	}
-
-	n, _ := strconv.Atoi(m[1])
-
-	return n
-}
-
-func majorVersion(v string) int {
-	head, _, _ := strings.Cut(strings.TrimSpace(v), ".")
-	n, _ := strconv.Atoi(head)
-
-	return n
-}
-
-func detectDarwin(p Probe) Backend {
-	if p.GOARCH != "arm64" {
-		return Backend{
-			Kind: Refused,
-			Reason: "an Intel Mac: Virtualization.framework offers nested virtualisation only on Apple M3 " +
-				"and later, so no Linux VM here can have /dev/kvm",
-			Next: "run microVM sandboxes on a Linux host with /dev/kvm, or use --provider docker here",
-		}
-	}
-
-	brand, _ := p.Output("sysctl", "-n", "machdep.cpu.brand_string")
-	brand = strings.TrimSpace(brand)
-
-	ver, _ := p.Output("sw_vers", "-productVersion")
-	ver = strings.TrimSpace(ver)
-
-	gen := chipGeneration(brand)
-
-	switch {
-	case gen == 0 && p.Getenv(AssumeNestedEnv) == "":
-		return Backend{
-			Kind:   Refused,
-			Reason: fmt.Sprintf("could not tell the chip generation from %q, and nested virtualisation needs Apple M3 or later", brand),
-			Next:   fmt.Sprintf("if this is an M3 or later, set %s=1", AssumeNestedEnv),
-		}
-	case gen > 0 && gen < 3:
-		return Backend{
-			Kind: Refused,
-			Reason: fmt.Sprintf("%s: Virtualization.framework offers nested virtualisation only on Apple M3 and later, "+
-				"so a Linux VM here cannot have /dev/kvm", brand),
-			Next: "run microVM sandboxes on a Linux host with /dev/kvm (or an M3+ Mac), or use --provider docker here",
-		}
-	}
-
-	if majorVersion(ver) < 15 {
-		return Backend{
-			Kind:   Refused,
-			Reason: fmt.Sprintf("macOS %s: nested virtualisation needs macOS 15 or later", orUnknown(ver)),
-			Next:   "update macOS to 15 or later, or use --provider docker here",
-		}
-	}
-
-	helper, refusal := pickDarwinHelper(p)
-	if refusal != nil {
-		return *refusal
-	}
-
-	return Backend{
-		Kind:   HelperVM,
-		Helper: helper,
-		Reason: fmt.Sprintf("%s on macOS %s: a %s VM with nested virtualisation provides /dev/kvm", brand, ver, helper),
-	}
-}
 
 func pickDarwinHelper(p Probe) (string, *Backend) {
 	bin := map[string]string{"lima": "limactl", "colima": "colima"}
@@ -358,9 +255,8 @@ func pickDarwinHelper(p Probe) (string, *Backend) {
 
 // --- windows ----------------------------------------------------------------------------------
 
-// wslNestedFix is the exact edit, pasteable. WSL2 turns nested virtualisation on by default on
-// Windows 11, so a machine needing this line is one where somebody turned it off.
-const wslNestedFix = "add `nestedVirtualization=true` under `[wsl2]` in %USERPROFILE%\\.wslconfig, then run `wsl --shutdown`"
+// wslNestedFix is hostcap's, which the WSL2-inside-linux refusal quotes too.
+const wslNestedFix = hostcap.WSLNestedFix
 
 var winBuildRE = regexp.MustCompile(`\[Version \d+\.\d+\.(\d+)`)
 

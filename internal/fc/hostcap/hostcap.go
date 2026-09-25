@@ -15,8 +15,10 @@ package hostcap
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -78,6 +80,23 @@ type Report struct {
 	// asks a cluster: that is a network call to somebody else's API, and this package is meant
 	// to answer in microseconds on a machine with no network at all.
 	KataRuntimeClass bool `json:"kata_runtimeclass"`
+
+	// A Mac's chip and macOS version, as the probe read them; Decide parses them. Empty off darwin.
+	CPUBrand  string `json:"cpu_brand,omitempty"`
+	OSVersion string `json:"os_version,omitempty"`
+
+	// AssumeNested is set by the CALLER (fchost, from SBX_FC_ASSUME_NESTED) for a Mac whose chip
+	// name Decide cannot parse. It never unlocks a chip Decide can parse and knows is too old:
+	// the override is for the future, not for arguing.
+	AssumeNested bool `json:"assume_nested,omitempty"`
+
+	// Linux evidence that turns "no /dev/kvm" into the right next step: the DMI vendor and
+	// product (which cloud), a WSL2 kernel (the fix is on the Windows side), and a CPU that
+	// advertises vmx/svm (the module is simply not loaded).
+	Vendor  string `json:"vendor,omitempty"`
+	Product string `json:"product,omitempty"`
+	WSL     bool   `json:"wsl,omitempty"`
+	CPUVirt bool   `json:"cpu_virt,omitempty"`
 }
 
 // Decision is what to do with a Report.
@@ -106,15 +125,22 @@ var (
 	probeKVM    = kvmProbe
 	probeNested = nestedProbe
 	probeGuest  = guestProbe
+	probeMac    = macProbe
+	probeLinux  = linuxProbe
 	lookPath    = exec.LookPath
 )
 
 // Probe reads the machine. It does not decide anything; see Decide.
+// ProbeKVM is only the /dev/kvm question: open it read-write and ask KVM_GET_API_VERSION.
+func ProbeKVM() KVM { return probeKVM() }
+
 func Probe() Report {
 	r := Report{OS: runtime.GOOS, Arch: runtime.GOARCH}
 	r.KVM = probeKVM()
 	r.Nested, r.NestedHint = probeNested()
 	r.Guest, r.GuestHint = probeGuest()
+	r.CPUBrand, r.OSVersion = probeMac()
+	r.Vendor, r.Product, r.WSL, r.CPUVirt = probeLinux()
 
 	if p, err := lookPath("mkfs.ext4"); err == nil {
 		r.Mkfs = p
@@ -171,34 +197,143 @@ func decideLinux(r Report) Decision {
 			Reason: "/dev/kvm exists but this process cannot use it (" + r.KVM.Detail + ")",
 			Next: "add yourself to its group - `sudo usermod -aG kvm $USER`, then log in again - " +
 				"or run sbx as a user that can open /dev/kvm read-write"}
-	case r.Guest:
-		// Inside a VM whose hypervisor did not pass virtualisation through. Worth saying
-		// precisely, because the fix is on the OTHER machine.
+	case r.WSL:
+		// Inside WSL2 the fix is one line on the Windows side, and a different line from
+		// every cloud's.
 		return Decision{Backend: Refused,
-			Reason: "no /dev/kvm: this Linux is itself a virtual machine (" + r.GuestHint +
+			Reason: "no /dev/kvm in this WSL2 distro: nested virtualisation is off",
+			Next:   WSLNestedFix + ", or " + noMicroVM}
+	case r.CPUVirt:
+		// The CPU can do it and the kernel was never told: the cheapest fix of all.
+		return Decision{Backend: Refused,
+			Reason: "no /dev/kvm on " + r.where() + " - the CPU advertises vmx/svm, so the kvm module is not loaded",
+			Next:   "sudo modprobe kvm_intel (or kvm_amd), or " + noMicroVM}
+	case r.Guest || cloudFix(r.Vendor) != cloudFix(""):
+		// Inside a VM whose hypervisor did not pass virtualisation through. Worth saying
+		// precisely, because the fix is on the OTHER machine - and each cloud spells it
+		// differently.
+		return Decision{Backend: Refused,
+			Reason: "no /dev/kvm: this Linux is itself a virtual machine (" + r.guestName() +
 				") and its hypervisor does not expose virtualisation to it",
-			Next: "enable nested virtualisation for this VM on its host (colima: " +
-				"`--nested-virtualization`; a cloud VM: an instance type or flag that allows it), " +
-				"or use --provider docker"}
+			Next: cloudFix(r.Vendor)}
 	default:
 		return Decision{Backend: Refused,
-			Reason: "no /dev/kvm (" + r.KVM.Detail + ")",
-			Next: "load the module (`sudo modprobe kvm_intel` or `kvm_amd`; on arm64 it is " +
-				"built in) and enable virtualisation in the firmware, or use --provider docker"}
+			Reason: "no /dev/kvm on " + r.where() + " (" + r.KVM.Detail + "), so Firecracker cannot run here",
+			Next: "load the module (`sudo modprobe kvm_intel` or `kvm_amd`; on arm64 it is built in) " +
+				"and enable virtualisation in the firmware; on a VM, enable nested virtualisation or " +
+				"move to a bare-metal instance type; or " + noMicroVM}
 	}
 }
 
-func decideDarwin(r Report) Decision {
-	if r.Nested {
-		return Decision{Backend: HelperVM, Reason: "macOS has no KVM, but this Mac can give a " +
-			"Linux VM a working /dev/kvm through nested virtualisation (" + r.NestedHint + ")"}
+// noMicroVM is the way out that needs no KVM at all.
+const noMicroVM = "run with --isolation gvisor|kata instead of a microVM, or use --provider docker"
+
+// WSLNestedFix is the exact edit, pasteable. WSL2 turns nested virtualisation on by default on
+// Windows 11, so a machine needing this line is one where somebody turned it off.
+const WSLNestedFix = "add `nestedVirtualization=true` under `[wsl2]` in %USERPROFILE%\\.wslconfig, then run `wsl --shutdown`"
+
+func (r Report) guestName() string {
+	switch w := r.where(); {
+	case r.GuestHint == "":
+		return w
+	case w == "this host" || strings.Contains(w, r.GuestHint):
+		return r.GuestHint
+	default:
+		return r.GuestHint + ", " + w
+	}
+}
+
+func (r Report) where() string {
+	if w := strings.TrimSpace(r.Vendor + " " + r.Product); w != "" {
+		return w
 	}
 
-	return Decision{Backend: Refused,
-		Reason: "macOS has no KVM, and this Mac cannot nest virtualisation for a Linux VM (" +
-			r.NestedHint + "); that needs Apple M3 or later on macOS 15 or later",
-		Next: "use --provider docker here - a stopped container is the sleep state it has - " +
-			"or run sbx on a Linux host with /dev/kvm"}
+	return "this host"
+}
+
+// cloudFix is how each cloud that sbx has been asked about exposes KVM to a VM.
+func cloudFix(vendor string) string {
+	switch {
+	case strings.Contains(vendor, "Amazon"):
+		return "EC2 exposes KVM only on .metal instance types (or instance types launched with nested " +
+			"virtualisation enabled); move to one, or " + noMicroVM
+	case strings.Contains(vendor, "Google"):
+		return "recreate the instance with --enable-nested-virtualization (an Intel N1/N2/C2/C3 machine " +
+			"type), or " + noMicroVM
+	case strings.Contains(vendor, "Microsoft"):
+		return "on Azure pick a size that supports nested virtualisation (Dv3/Ev3 and later), or " + noMicroVM
+	default:
+		return "enable nested virtualisation for this VM on its host (colima: `--nested-virtualization`; " +
+			"a cloud VM: an instance type or flag that allows it), move to a bare-metal instance type, or " +
+			noMicroVM
+	}
+}
+
+// AssumeNestedEnv is how a person lets through a Mac chip this code cannot name. hostcap never
+// reads the environment; the caller does and sets Report.AssumeNested.
+const AssumeNestedEnv = "SBX_FC_ASSUME_NESTED"
+
+// decideDarwin: nested virtualisation came to Virtualization.framework in macOS 15, on Apple M3
+// and later. Each way of missing that is its own refusal, because each has its own fix.
+func decideDarwin(r Report) Decision {
+	if r.Arch != "arm64" {
+		return Decision{Backend: Refused,
+			Reason: "an Intel Mac: Virtualization.framework offers nested virtualisation only on Apple M3 " +
+				"and later, so no Linux VM here can have /dev/kvm",
+			Next: "run microVM sandboxes on a Linux host with /dev/kvm, or use --provider docker here"}
+	}
+
+	gen := ChipGeneration(r.CPUBrand)
+
+	switch {
+	case gen == 0 && !r.AssumeNested:
+		return Decision{Backend: Refused,
+			Reason: fmt.Sprintf("could not tell the chip generation from %q, and nested virtualisation "+
+				"needs Apple M3 or later", r.CPUBrand),
+			Next: fmt.Sprintf("if this is an M3 or later, set %s=1; otherwise use --provider docker here", AssumeNestedEnv)}
+	case gen > 0 && gen < 3:
+		return Decision{Backend: Refused,
+			Reason: fmt.Sprintf("%s: Virtualization.framework offers nested virtualisation only on Apple "+
+				"M3 and later, so a Linux VM here cannot have /dev/kvm", r.CPUBrand),
+			Next: "use --provider docker here - a stopped container is the sleep state it has - or run " +
+				"microVM sandboxes on a Linux host with /dev/kvm (or an M3+ Mac)"}
+	case majorVersion(r.OSVersion) < 15:
+		return Decision{Backend: Refused,
+			Reason: fmt.Sprintf("macOS %s: nested virtualisation needs macOS 15 or later", orUnknown(r.OSVersion)),
+			Next:   "update macOS to 15 or later, or use --provider docker here"}
+	}
+
+	return Decision{Backend: HelperVM, Reason: fmt.Sprintf("%s on macOS %s: macOS has no KVM, but a "+
+		"Linux VM with nested virtualisation here has a working /dev/kvm", r.CPUBrand, r.OSVersion)}
+}
+
+var chipRE = regexp.MustCompile(`\bApple M(\d+)\b`)
+
+// ChipGeneration is 3 for "Apple M3 Pro", and 0 when the string names no M-series chip.
+func ChipGeneration(brand string) int {
+	m := chipRE.FindStringSubmatch(brand)
+	if m == nil {
+		return 0
+	}
+
+	n, _ := strconv.Atoi(m[1])
+
+	return n
+}
+
+func majorVersion(v string) int {
+	head, _, _ := strings.Cut(strings.TrimSpace(v), ".")
+	n, _ := strconv.Atoi(head)
+
+	return n
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "(unknown version)"
+	}
+
+	return s
 }
 
 // appleNests reads a Mac's CPU brand string and macOS version and says whether a Linux VM on it
@@ -212,29 +347,40 @@ func decideDarwin(r Report) Decision {
 func appleNests(brand, version string) (bool, string) {
 	hint := brand + ", macOS " + version
 
-	var major int
-	if _, err := fmt.Sscanf(version, "%d", &major); err != nil {
-		return false, hint + " (macOS version unreadable)"
-	}
-
-	var gen int
-	if _, err := fmt.Sscanf(brand, "Apple M%d", &gen); err != nil {
-		return false, hint
-	}
-
-	return gen >= 3 && major >= 15, hint
+	return ChipGeneration(brand) >= 3 && majorVersion(version) >= 15, hint
 }
+
+// GuestEvidence says whether a Linux with these DMI strings and this /proc/cpuinfo is itself a
+// virtual machine, and names the hypervisor when it can. Exported so a caller that reads the
+// machine through its own fakeable probe (fchost) reaches the same verdict as Probe.
+func GuestEvidence(vendor, product, cpuinfo string) (bool, string) {
+	if name := knownHypervisor(vendor, product); name != "" {
+		return true, name
+	}
+
+	if hypervisorFlag(cpuinfo) {
+		return true, "cpuinfo carries the hypervisor flag"
+	}
+
+	return false, ""
+}
+
+// CPUVirt reports whether /proc/cpuinfo advertises vmx or svm: hardware virtualisation the
+// kernel could use if the kvm module were loaded.
+func CPUVirt(cpuinfo string) bool { return cpuFlag(cpuinfo, "vmx") || cpuFlag(cpuinfo, "svm") }
 
 // hypervisorFlag reports whether /proc/cpuinfo carries the x86 "hypervisor" flag, which the CPU
 // sets for any guest. arm64 has no such flag; DMI is the evidence there.
-func hypervisorFlag(cpuinfo string) bool {
+func hypervisorFlag(cpuinfo string) bool { return cpuFlag(cpuinfo, "hypervisor") }
+
+func cpuFlag(cpuinfo, flag string) bool {
 	for _, line := range strings.Split(cpuinfo, "\n") {
 		k, v, ok := strings.Cut(line, ":")
 		if !ok || strings.TrimSpace(k) != "flags" {
 			continue
 		}
 
-		if slices.Contains(strings.Fields(v), "hypervisor") {
+		if slices.Contains(strings.Fields(v), flag) {
 			return true
 		}
 	}

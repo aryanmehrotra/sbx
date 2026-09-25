@@ -24,7 +24,7 @@ func TestDoctorSaysWhyFirecrackerCannotRun(t *testing.T) {
 			true, "direct", []string{"firecracker", "mkfs.ext4", "vm bridges isolated"}},
 		{"linux, no kvm", hostcap.Report{OS: "linux", Arch: "amd64"}, "0",
 			false, "modprobe", []string{"firecracker", "mkfs.ext4", "vm bridges isolated"}},
-		{"mac that nests", hostcap.Report{OS: "darwin", Arch: "arm64", Nested: true, NestedHint: "Apple M4"}, "",
+		{"mac that nests", hostcap.Report{OS: "darwin", Arch: "arm64", CPUBrand: "Apple M4", OSVersion: "26.4.1", Nested: true, NestedHint: "Apple M4"}, "",
 			false, "helper VM", []string{"firecracker"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

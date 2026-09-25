@@ -60,16 +60,33 @@ func nestedProbe() (bool, string) {
 }
 
 func guestProbe() (bool, string) {
-	vendor, _ := os.ReadFile("/sys/class/dmi/id/sys_vendor")
-	product, _ := os.ReadFile("/sys/class/dmi/id/product_name")
+	vendor, product, _, _ := linuxProbe()
+	cpuinfo, _ := os.ReadFile("/proc/cpuinfo")
 
-	if name := knownHypervisor(string(vendor), string(product)); name != "" {
-		return true, name
-	}
-
-	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil && hypervisorFlag(string(b)) {
-		return true, "cpuinfo carries the hypervisor flag"
-	}
-
-	return false, ""
+	return GuestEvidence(vendor, product, string(cpuinfo))
 }
+
+// linuxProbe reads the evidence a refusal is worded from: DMI (which cloud), /proc/version (a
+// WSL2 kernel) and /proc/cpuinfo (vmx/svm present with no module loaded).
+func linuxProbe() (vendor, product string, wsl, cpuVirt bool) {
+	line := func(p string) string {
+		b, _ := os.ReadFile(p)
+		l, _, _ := strings.Cut(string(b), "\n")
+
+		return strings.TrimSpace(l)
+	}
+
+	vendor, product = line("/sys/class/dmi/id/sys_vendor"), line("/sys/class/dmi/id/product_name")
+
+	if v, err := os.ReadFile("/proc/version"); err == nil {
+		wsl = strings.Contains(strings.ToLower(string(v)), "microsoft")
+	}
+
+	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuVirt = CPUVirt(string(b))
+	}
+
+	return vendor, product, wsl, cpuVirt
+}
+
+func macProbe() (brand, version string) { return "", "" }

@@ -14,3 +14,7 @@ func nestedProbe() (bool, string) {
 }
 
 func guestProbe() (bool, string) { return false, "" }
+
+func macProbe() (brand, version string) { return "", "" }
+
+func linuxProbe() (string, string, bool, bool) { return "", "", false, false }
