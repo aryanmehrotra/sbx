@@ -193,7 +193,7 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx rm feature-x",
 	},
 	"serve": {
-		"sbx serve [--idle 5m] [--socket PATH] [--connect-addr ADDR] [--front NAME=PORT]",
+		"sbx serve [--idle 5m] [--socket PATH] [--connect-addr ADDR] [--front NAME=PORT] [--only PREFIX] [--osb-addr ADDR]",
 		"The daemon. It owns the ports `sbx env` hands out, wakes a sandbox when something\n" +
 			"connects, and sleeps it after --idle. One per machine, not one per sandbox.\n" +
 			"\n" +
@@ -205,7 +205,13 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"token gates, so front the ports you need and read SECURITY.md.\n" +
 			"--behind-proxy is for when the platform terminates the TLS.\n" +
 			"SBX_CONNECT_TOKEN must be set for any of it - it is the only thing standing\n" +
-			"between the endpoint and whoever finds its URL.",
+			"between the endpoint and whoever finds its URL.\n" +
+			"\n" +
+			"--only PREFIX (repeatable; a glob also works) makes this daemon ignore every\n" +
+			"sandbox outside it: never fronted, woken, slept or removed. That is what lets a\n" +
+			"second daemon - a test run - share an engine with somebody's live stack.\n" +
+			"--osb-addr serves the OpenSandbox lifecycle API (loopback unless --osb-key, or\n" +
+			"SBX_OSB_KEY, is set; then OPEN-SANDBOX-API-KEY is required).",
 		"sbx serve --idle 5m &",
 	},
 	"selftest": {

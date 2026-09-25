@@ -156,6 +156,11 @@ func Main(ver string, examples embed.FS, argv []string) int {
 
 	logs.Version = version
 
+	// Before the journal is wired up: these run inside a sandbox, not on the host.
+	if run, ok := inContainer[argv[1]]; ok {
+		return run(argv[2:])
+	}
+
 	// Everything the daemon says about a sandbox goes into the journal as well as to its
 	// stdout. Subscribing here rather than editing the wake path keeps file IO out of the
 	// one code path this project publishes a number for.

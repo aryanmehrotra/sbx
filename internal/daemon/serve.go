@@ -162,6 +162,11 @@ func Serve(args []string) error {
 	front := fs.String("front", envOr("SBX_FRONT", ""), "carry these ports over the connect endpoint: 5432, db=5432,cache=6379, or db=10.0.4.7:3306 for a host this container can route to")
 	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
 
+	// The OpenSandbox lifecycle API. Off unless asked for, loopback unless keyed - see osb.
+	// The key is never a flag default, because flag defaults are printed by --help.
+	osbAddr := fs.String("osb-addr", envOr("SBX_OSB_ADDR", ""), "serve the OpenSandbox lifecycle API here, e.g. 127.0.0.1:8080; off unless set")
+	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY); needed for a non-loopback --osb-addr")
+
 	var only stringList
 	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
 	_ = fs.Parse(args)
@@ -246,6 +251,11 @@ func Serve(args []string) error {
 		scope:      scope,
 	}
 
+	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, scope)
+	if err != nil {
+		return err
+	}
+
 	var connectSrv *http.Server
 
 	if *connectAddr != "" {
@@ -288,6 +298,25 @@ func Serve(args []string) error {
 		}()
 
 		defer func() { _ = connectSrv.Close() }()
+	}
+
+	if api != nil {
+		srv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+
+		logs.Default.Info("", "", "OpenSandbox API on http://%s/v1", osbLn.Addr())
+
+		go func() {
+			if err := srv.Serve(osbLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logs.Default.Error("", "", "OpenSandbox API stopped: %v", err)
+			}
+		}()
+
+		go api.Run(ctx)
+
+		defer func() {
+			_ = srv.Close()
+			api.Close()
+		}()
 	}
 
 	if startupErr == nil {
