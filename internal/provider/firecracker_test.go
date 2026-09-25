@@ -942,3 +942,36 @@ func TestTheControlSecretFollowsExecd(t *testing.T) {
 		t.Fatalf("after a cold boot the seal presented %q, want the boot secret", last)
 	}
 }
+
+// In the helper VM the provider can probe only the VM's loopback, but the Mac mirrors every
+// sandbox port at the same number on ITS loopback - where a docker sandbox may already hold it.
+// The Mac says which slots are taken there, and the provider must not hand one out.
+func TestSlotsTheHostHoldsAreSkipped(t *testing.T) {
+	r := newRig(t)
+	t.Setenv(HostBusySlotsEnv, "0,1, 3")
+
+	s, err := r.p.AllocSlot(r.ctx, "a")
+	if err != nil || s != 2 {
+		t.Fatalf("slot = %d, %v; want 2, the first the host does not hold", s, err)
+	}
+
+	r.create(t, "a", redis)
+
+	if s, _ := r.p.AllocSlot(r.ctx, "b"); s != 4 {
+		t.Fatalf("second slot = %d, want 4", s)
+	}
+
+	// A sandbox that already has a slot keeps it, whatever the host says now.
+	t.Setenv(HostBusySlotsEnv, "2")
+
+	if s, _ := r.p.AllocSlot(r.ctx, "a"); s != 2 {
+		t.Fatalf("an existing sandbox moved to slot %d", s)
+	}
+}
+
+func TestParseSlots(t *testing.T) {
+	got := parseSlots(" 5,x,,7 ,-1,128")
+	if len(got) != 2 || !got[5] || !got[7] {
+		t.Fatalf("parseSlots = %v, want {5,7}: junk and out-of-range numbers ignored", got)
+	}
+}

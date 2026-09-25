@@ -336,6 +336,11 @@ func (p *fcProvider) AllocSlot(ctx context.Context, sandbox string) (int, error)
 		used[vm.Slot] = true
 	}
 
+	// Slots whose ports the machine in front of this one already holds (the helper-VM case).
+	for s := range parseSlots(os.Getenv(HostBusySlotsEnv)) {
+		used[s] = true
+	}
+
 	for i := range maxSlots {
 		if used[i] || !p.portsFree(i) {
 			continue
@@ -346,6 +351,27 @@ func (p *fcProvider) AllocSlot(ctx context.Context, sandbox string) (int, error)
 
 	return 0, fmt.Errorf("all %d sandbox slots are in use; destroy one first", maxSlots)
 }
+
+// HostBusySlotsEnv lists, comma-separated, the slots whose public ports the HOST holds when this
+// provider runs in a helper VM. The Mac mirrors every sandbox port at the same number on its own
+// loopback, where a docker sandbox of the user's may already be; probing the VM's loopback
+// cannot see that, so the host probes and says (fchost.GuestArgv).
+const HostBusySlotsEnv = "SBX_FC_HOST_BUSY_SLOTS"
+
+func parseSlots(s string) map[int]bool {
+	out := map[int]bool{}
+
+	for _, f := range strings.Split(s, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n >= 0 && n < maxSlots {
+			out[n] = true
+		}
+	}
+
+	return out
+}
+
+// SlotPortsFree reports whether a slot's public ports can be bound on this machine.
+func SlotPortsFree(slot int) bool { return publicPortsFree(slot) }
 
 // publicPortsFree is the docker provider's probe on the public half only: a VM has no backing
 // port on the host. It is also what keeps a firecracker slot off one a docker sandbox holds,

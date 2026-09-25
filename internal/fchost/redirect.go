@@ -16,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Firecracker is the provider kind this package fronts.
@@ -64,7 +66,13 @@ func Wants(cmd string, args []string, getenv func(string) string) bool {
 // as a flag, because appending --provider to `exec`'s argv would hand it to the command being
 // executed, and prepending it would land before the sandbox name some commands read first.
 func GuestArgv(cmd string, args []string) []string {
-	return append([]string{"env", "SBX_PROVIDER_KIND=" + Firecracker, guestBinary, cmd}, args...)
+	argv := []string{"env", "SBX_PROVIDER_KIND=" + Firecracker}
+
+	if busy := hostBusySlots(); busy != "" {
+		argv = append(argv, provider.HostBusySlotsEnv+"="+busy)
+	}
+
+	return append(append(argv, guestBinary, cmd), args...)
 }
 
 // Refusal formats a Refused backend the way sbx errors read.
