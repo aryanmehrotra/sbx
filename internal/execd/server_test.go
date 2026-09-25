@@ -47,8 +47,6 @@ func TestLaterReleasesAnswer501NotFound(t *testing.T) {
 	s := newTestServer(t, Options{})
 
 	cases := []struct{ method, path, release string }{
-		{"POST", "/pty", "v0.10.0"},
-		{"GET", "/pty/abc/ws", "v0.10.0"},
 		{"POST", "/v1/isolated/session", "v0.11.0"},
 		{"GET", "/v1/isolated/capabilities", "v0.11.0"},
 	}

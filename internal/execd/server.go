@@ -77,6 +77,7 @@ type Server struct {
 	mu       sync.Mutex
 	commands map[string]*command
 	sessions map[string]*session
+	ptys     map[string]*ptySession
 
 	stopJanitor chan struct{}
 	closeOnce   sync.Once
@@ -90,6 +91,7 @@ func New(o Options) (*Server, error) {
 		log:         o.Logger,
 		commands:    map[string]*command{},
 		sessions:    map[string]*session{},
+		ptys:        map[string]*ptySession{},
 		stopJanitor: make(chan struct{}),
 		code:        o.Jupyter,
 	}
@@ -144,10 +146,19 @@ func (s *Server) Close() {
 				groups = append(groups, pgid)
 			}
 		}
+
+		ptys := make([]*ptySession, 0, len(s.ptys))
+		for _, ps := range s.ptys {
+			ptys = append(ptys, ps)
+		}
 		s.mu.Unlock()
 
 		for _, g := range groups {
 			_ = signalGroup(g, syscall.SIGKILL)
+		}
+
+		for _, ps := range ptys {
+			ps.close()
 		}
 
 		s.procs.close()
@@ -215,6 +226,11 @@ func (s *Server) routes() {
 	handle("GET /code/contexts/{contextId}", s.getCodeContext)
 	handle("DELETE /code/contexts/{contextId}", s.deleteCodeContext)
 
+	handle("POST /pty", s.createPTY)
+	handle("GET /pty/{sessionId}", s.getPTY)
+	handle("DELETE /pty/{sessionId}", s.deletePTY)
+	handle("GET /pty/{sessionId}/ws", s.ptyWebSocket)
+
 	// Parts of the API a later release adds. They answer 501 with the spec's error shape, not
 	// 404: a 404 reads as "you have the path wrong", and a client should instead learn that
 	// this daemon knows the endpoint and does not do it yet.
@@ -235,8 +251,6 @@ func (s *Server) routes() {
 // notYet maps each unimplemented prefix to the sbx release that implements it, per the release
 // table in docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md.
 var notYet = map[string]string{
-	"/pty":          "v0.10.0 (pty)",
-	"/pty/":         "v0.10.0 (pty)",
 	"/v1/isolated/": "v0.11.0 (isolated sessions)",
 }
 
