@@ -61,6 +61,12 @@ type EnsureOptions struct {
 // Ensure brings the VM to "running, with this sbx, with its daemon up". Idempotent, and cheap
 // when it already is: one listing, one hash, one systemctl.
 func (m *Manager) Ensure(ctx context.Context, opt EnsureOptions) error {
+	unlock, err := m.lockVM(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	if err := m.Start(ctx); err != nil {
 		return err
 	}

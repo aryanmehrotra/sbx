@@ -187,6 +187,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // Stop stops a running VM. Its disk, the installed binary and every snapshot stay.
 func (m *Manager) Stop(ctx context.Context) error {
+	unlock, err := m.lockVM(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	st, err := m.Status(ctx)
 	if err != nil || st != Running {
 		return err
@@ -197,6 +203,12 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 // Remove deletes the VM and everything in it: every microVM sandbox it held goes with it.
 func (m *Manager) Remove(ctx context.Context) error {
+	unlock, err := m.lockVM(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	st, err := m.Status(ctx)
 	if err != nil || st == Absent {
 		return err
