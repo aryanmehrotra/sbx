@@ -190,7 +190,7 @@ Everything the spec declares maps onto both; nothing in `sandbox.json` names a b
 | address | `127.0.0.1:20002` | `sbx-x-pg.sbx.svc:5432` | `127.0.0.1:20002`, upstream the guest's tap IP |
 | wake | `docker start` | scale → 1 | snapshot load + resume |
 | sleep | `docker stop` | scale → 0 | snapshot (Diff) + kill the VMM |
-| health | HEALTHCHECK | readinessProbe | first port accepts (declared=false until the guest agent runs checks) |
+| health | HEALTHCHECK | readinessProbe | the spec's `health`, run by execd over vsock (`/bin/sh -c`); without one, the guest's first port accepting |
 | storage | named volume | PVC | the VM's own ext4 root, cloned per VM |
 | isolation | `--runtime` | `runtimeClassName` | a guest kernel, always |
 
@@ -203,11 +203,14 @@ doesn't know which it drives.
 
 `--provider firecracker` makes each service a Firecracker VM whose sleeping state is a snapshot
 on disk, so a wake brings memory and running processes back rather than a cold process against a
-warm disk (ROADMAP §1). Linux with `/dev/kvm` only; everywhere else the path is decided by
-`internal/fc/hostcap`, which `sbx doctor`, the provider and the helper-VM layer all share.
+warm disk (ROADMAP §1). Directly on Linux with `/dev/kvm`; on an M3+ Mac (macOS 15+) or Windows 11
+through a Linux helper VM that `internal/fchost` runs. Where it runs is ONE decision,
+`fchost.HostBackend` - hostcap's Linux/macOS verdict plus the VM tool, `SBX_FC_ASSUME_NESTED` and the
+Windows branch - installed as `provider.DecideHost` and used by the provider, the CLI redirect,
+`sbx serve`, `sbx fc` and `sbx doctor` alike.
 
 ```
-  hostcap.Probe → Decide ─┬─ direct ─────────── fcProvider (this machine)
+  fchost.HostBackend ─────┬─ direct ─────────── fcProvider (this machine)
                           ├─ helper-vm ──────── HelperVMProvider hook (macOS, Windows)
                           ├─ kata-runtimeclass ─ --provider kubernetes --isolation kata
                           └─ refused ────────── reason + the one thing to change
@@ -235,11 +238,12 @@ devpts and the agent at `/opt/sbx/sbx`, switches root and execs `sbx execd --vso
 The guest's address comes from the kernel command line (`ip=`, `CONFIG_IP_PNP=y` in the pinned kernel).
 
 **The guest seam.** Everything the lifecycle needs from inside the VM is `fc.Guest` - `Dial`, `Seal`,
-`Rekey`, `Available` - assigned through `fc.NewGuest`. The shipped `fc.NoGuest` refuses all four; with
-it the provider sleeps and wakes (same identity, nothing to re-key) and refuses exec, copy and
-forking. The vsock work (`internal/fcvsock`, `internal/execdctl`) implements it; the daemon's
-`GuestDialer` adapts `fcProvider.DialGuestPort`. Until then the wake proxy dials `Upstream` - the
-guest's tap address - over TCP, which a direct Linux host can reach.
+`Rekey`, `Available` - assigned through `fc.NewGuest`. On Linux it is `fc.VsockGuest` (`internal/fcvsock`,
+`internal/execdctl`): exec, copy, logs, the `health` command and the daemon's `GuestDialer`
+(`fcProvider.DialGuestPort`) all reach execd over vsock. `fc.NoGuest` - what a non-Linux build of
+the provider gets - refuses all four; with it the provider still sleeps and wakes (same identity,
+nothing to re-key) and refuses exec, copy, `health` and forking by name. A sleep or snapshot that fails
+after Seal stops the VM (its next wake is a cold boot) rather than leave execd sealed.
 
 Nothing in the provider assumes it is the process that started a VM or the one facing the user:
 every fact is in `vm.json` or answered by the API socket, and every operation takes the VM's

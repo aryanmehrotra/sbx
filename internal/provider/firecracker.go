@@ -446,10 +446,12 @@ func unsupported(svc spec.Service) error {
 	}
 
 	add(svc.Build != nil, "build", "build the image with docker first and name it with `image`")
-	add(len(svc.Files) > 0, "files", "needs the guest agent to write into a running VM")
+	add(len(svc.Files) > 0, "files", "not written into a VM yet: execd can copy into a running VM, but create "+
+		"does not do it before the first snapshot")
 	add(len(svc.Mounts) > 0 || len(svc.VolumeMounts) > 0 || len(svc.ReadOnlyVolumes) > 0,
 		"mounts", "a host directory cannot be bind-mounted into a VM; it would be a virtio-fs device")
-	add(len(svc.Init) > 0, "init", "needs the guest agent to run commands inside the VM")
+	add(len(svc.Init) > 0, "init", "not run in a VM yet: execd can run commands, but create does not run them "+
+		"after the first healthy check")
 	add(svc.GPUs != "", "gpus", "Firecracker has no device passthrough")
 	add(len(svc.CapAdd) > 0, "cap_add", "the workload is root in its own kernel; there is no capability set to widen")
 	add(len(svc.EgressAllow) > 0 || svc.EgressPolicy != nil, "egress_allow/egress_policy",
@@ -1690,7 +1692,7 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 	case s.Dir != dir:
 		return fmt.Errorf("the firecracker snapshot for %s/%s can only be restored as that same "+
 			"sandbox and service: its drive paths are baked into the VM state, and restoring it "+
-			"under another name would be a fork, which needs the guest agent to re-key it", s.VM.Sandbox, s.VM.Service)
+			"under another name would be a fork, which sbx refuses", s.VM.Sandbox, s.VM.Service)
 	case s.VM.Slot != slot:
 		return fmt.Errorf("the firecracker snapshot for %s was taken in slot %d, and this sandbox "+
 			"got slot %d: the guest's address is part of its memory. Free slot %d and retry",
