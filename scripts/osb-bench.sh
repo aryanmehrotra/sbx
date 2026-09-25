@@ -5,9 +5,15 @@
 #   scripts/osb-bench.sh --external http://host:8080     # someone else's server only
 #   scripts/osb-bench.sh --compare  http://host:8080     # sbx AND that server, interleaved
 #
+#   scripts/osb-bench.sh --burst 100 [--pool node:22-slim=100]  # ComputeSDK Burst TTI
+#
 # Other flags: --key K (for --external/--compare; else OPENSANDBOX_TEST_API_KEY),
 # --idle DUR (start sbx with --idle DUR and measure a wake from the idle freeze after
 # waiting past it), --image IMG, --docker-host URL, --keep-logs.
+# --burst N switches to ComputeSDK's Burst TTI: N concurrent create -> runCommand('node -v') per
+# round, image node:22-slim unless --image, median/p95/p99/success and their score. --pool SPEC
+# starts sbx with --osb-pool SPEC and waits for full pools before each round; --burst-modes
+# default,cold also times creates that bypass the pool.
 #
 # Measures create -> first command, command round trip, 1 MiB upload and download, and
 # pause -> resume -> first command; the numbers come from test/osb/bench, which interleaves
@@ -24,10 +30,13 @@ ROUNDS=5
 EXTERNAL=""
 COMPARE=""
 KEY=""
-IMAGE="python:3.11-slim"
+IMAGE=""
 DOCKER_URL=""
+BURST=""
+POOL=""
+MODES=""
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +48,9 @@ while [ $# -gt 0 ]; do
     --image)       IMAGE="${2:?--image needs an image}"; shift 2 ;;
     --docker-host) DOCKER_URL="${2:?--docker-host needs a URL}"; shift 2 ;;
     --keep-logs)   OSB_KEEP_WORK=1; shift ;;
+    --burst)       BURST="${2:?--burst needs a number}"; shift 2 ;;
+    --pool)        POOL="${2:?--pool needs IMAGE[=N]}"; shift 2 ;;
+    --burst-modes) MODES="${2:?--burst-modes needs default,cold}"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     *)             usage >&2; osb_die "unknown argument '$1'" ;;
   esac
@@ -56,8 +68,21 @@ BENCH="$OSB_WORK/bench"
 OTHER="${EXTERNAL:-$COMPARE}"
 OTHER_KEY="${KEY:-${OPENSANDBOX_TEST_API_KEY:-}}"
 
+[ -z "$IMAGE" ] && [ -z "$BURST" ] && IMAGE="python:3.11-slim"
+[ -n "$POOL" ] && [ -n "$EXTERNAL" ] && osb_die "--pool configures the sbx this starts; with --external there is none"
+
 # Positional parameters rather than an array: bash 3.2 and set -u (see lib/osb.sh).
-set -- -rounds "$ROUNDS" -image "$IMAGE"
+set -- -rounds "$ROUNDS"
+[ -n "$IMAGE" ] && set -- "$@" -image "$IMAGE"
+
+if [ -n "$BURST" ]; then
+  set -- "$@" -burst "$BURST"
+  [ -n "$MODES" ] && set -- "$@" -burst-modes "$MODES"
+  [ -n "$POOL" ] && set -- "$@" -wait-pool
+fi
+
+# sbx serve reads it as --osb-pool; exported so the throwaway daemon inherits it.
+[ -n "$POOL" ] && export SBX_OSB_POOL="$POOL"
 
 if [ -z "$EXTERNAL" ]; then
   osb_resolve_docker "$DOCKER_URL"

@@ -46,6 +46,10 @@ type Runtime interface {
 	// Thaw releases a hold and brings the sandbox back.
 	Thaw(ctx context.Context, sandbox string) error
 
+	// Pin keeps a sandbox from being idled, or releases it - a warm-pool member waiting for
+	// its caller has no traffic, and must still be running when claimed.
+	Pin(sandbox string, pinned bool)
+
 	// Hold re-asserts (or drops) a pause without touching the container - used on start, for
 	// pauses that outlived a daemon restart, and on delete.
 	Hold(sandbox string, held bool)
@@ -68,6 +72,17 @@ type Options struct {
 
 	// ReadyTimeout bounds Pending: from the container existing to execd answering /ping.
 	ReadyTimeout time.Duration
+
+	// CreateWait is how long a create holds its response for the sandbox to become Running
+	// before answering Pending. Zero means 20s; negative answers at once.
+	//
+	// Held because every OpenSandbox SDK polls GET every two seconds until Running: a sandbox
+	// ready at 300 ms but answered Pending cost its caller a whole interval, which is where most
+	// of a 4 s create went. Bounded because a first pull of a large image takes minutes, and a
+	// request held that long trips the client's own timeout - the Go SDK's default is 30 s.
+	// 20 s covers a cold burst of a hundred on a 3-CPU colima (p95 ~16 s measured), where 10 s
+	// left the slowest tenth answered Pending and waiting out a further 2 s poll.
+	CreateWait time.Duration
 
 	// ReapEvery is how often expiry is checked.
 	ReapEvery time.Duration
@@ -93,6 +108,25 @@ type Options struct {
 	// every host volume: a bind mount is the sandbox writing to this machine's disk, and which
 	// part of it is the operator's call, never a default.
 	HostPaths []string
+	// Pools are the warm pools to keep full (sbx serve --osb-pool).
+	Pools []PoolSpec
+
+	// DockerConcurrency bounds how many containers are being created at once (zero means 8).
+	// A burst of a hundred creates otherwise fires a hundred `docker run`s together, each a
+	// process and each competing in dockerd with the rest, and every one of them is late.
+	DockerConcurrency int
+
+	// PoolFreeze freezes members while they wait (docker pause) instead of pinning them
+	// running. It saves their idle CPU - near zero for tail and execd - and costs every claim a
+	// thaw, which dockerd serialises: 200-400 ms for twenty at once on colima.
+	PoolFreeze bool
+
+	// PoolConcurrency bounds how many members are being made at once, across every pool.
+	// Zero means 4.
+	PoolConcurrency int
+
+	// Claim re-keys a pool member's execd; nil is the real POST /sbx/claim. A test seam.
+	Claim func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
 }
 
 // EgressAPI is the live policy of a sandbox's egress filter. *daemon.EgressControl implements
@@ -115,6 +149,7 @@ type Server struct {
 	version string
 
 	readyTimeout time.Duration
+	createWait   time.Duration
 	reapEvery    time.Duration
 
 	now       func() time.Time
@@ -125,6 +160,29 @@ type Server struct {
 
 	egress       EgressAPI
 	egressStatus func(error) int
+
+	// trace times each create phase when SBX_OSB_TRACE is set.
+	trace *tracer
+
+	// lister shares one container list among the GETs and lists that arrive together.
+	lister *listCoalescer
+
+	// images shares image inspects between the creates of a burst - see imagecache.go.
+	images imageCache
+
+	// saveMu orders the writes of each record - see persist.go.
+	saveMu [persistStripes]sync.Mutex
+
+	pools      map[string]*pool
+	poolSem    chan struct{}
+	poolFreeze bool
+
+	// dockerSem bounds container creation; reserved holds the slots handed to creates whose
+	// containers no list can show yet - see createPicked.
+	dockerSem  chan struct{}
+	slotMu     sync.Mutex
+	reserved   map[int]time.Time
+	claimExecd func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
 
 	// base outlives any one request: provisioning continues after the create call has
 	// returned its 202, which is the whole point of Pending.
@@ -174,6 +232,7 @@ func New(o Options) (*Server, error) {
 		store:        store{dir: o.StateDir},
 		version:      o.Version,
 		readyTimeout: o.ReadyTimeout,
+		createWait:   o.CreateWait,
 		reapEvery:    o.ReapEvery,
 		now:          o.Now,
 		ping:         o.Ping,
@@ -182,10 +241,16 @@ func New(o Options) (*Server, error) {
 		recs:         map[string]*record{},
 		provisioning: map[string]context.CancelFunc{},
 		seeded:       map[string]bool{},
+		trace:        newTracer(),
+		pools:        map[string]*pool{},
 	}
 
 	if s.readyTimeout <= 0 {
 		s.readyTimeout = 2 * time.Minute
+	}
+
+	if s.createWait == 0 {
+		s.createWait = 20 * time.Second
 	}
 
 	if s.reapEvery <= 0 {
@@ -217,6 +282,31 @@ func New(o Options) (*Server, error) {
 	if s.newID == nil {
 		s.newID = newID
 	}
+
+	s.claimExecd = o.Claim
+	if s.claimExecd == nil {
+		s.claimExecd = claimExecdHTTP
+	}
+
+	if o.PoolConcurrency <= 0 {
+		o.PoolConcurrency = 4
+	}
+
+	s.poolSem = make(chan struct{}, o.PoolConcurrency)
+	s.poolFreeze = o.PoolFreeze
+
+	if o.DockerConcurrency <= 0 {
+		o.DockerConcurrency = 8
+	}
+
+	s.dockerSem = make(chan struct{}, o.DockerConcurrency)
+	s.reserved = map[int]time.Time{}
+
+	if err := s.newPools(o.Pools); err != nil {
+		return nil, err
+	}
+
+	s.lister = &listCoalescer{list: func(ctx context.Context) ([]provider.Unit, error) { return s.p.List(ctx, "") }}
 
 	s.base, s.cancel = context.WithCancel(context.Background())
 
@@ -252,9 +342,16 @@ func New(o Options) (*Server, error) {
 }
 
 // Close stops provisioning goroutines and waits for them. Sandboxes are left as they are - the
-// daemon stopping is not a reason to tear anything down.
+// daemon stopping is not a reason to tear anything down - except warm-pool members nobody
+// claimed, which are only of use to the process holding their tokens.
 func (s *Server) Close() {
 	s.cancel()
+	s.wg.Wait()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	s.drainPools(ctx)
 	s.wg.Wait()
 }
 
@@ -262,6 +359,22 @@ func (s *Server) Close() {
 func (s *Server) Run(ctx context.Context) {
 	s.recover(ctx)
 	s.reap(ctx)
+
+	// Stopped by whichever ends first, the daemon or Close: Close waits for these.
+	fctx, fcancel := context.WithCancel(ctx)
+	defer fcancel()
+
+	context.AfterFunc(s.base, fcancel)
+
+	for _, p := range s.pools {
+		s.wg.Add(1)
+
+		go func() {
+			defer s.wg.Done()
+
+			s.fill(fctx, p)
+		}()
+	}
 
 	t := time.NewTicker(s.reapEvery)
 	defer t.Stop()
@@ -287,7 +400,17 @@ func (s *Server) recover(ctx context.Context) {
 
 	var pending []*record
 
+	var stale []string
+
 	for _, r := range s.recs {
+		// A member from before a restart: its hold died with the old process, and the new
+		// pool is filled fresh. Removed rather than reused, because nothing about it is known
+		// to be as it was left.
+		if r.Pool != "" {
+			stale = append(stale, r.ID)
+			continue
+		}
+
 		if r.PausedByAPI {
 			s.rt.Hold(r.ID, true)
 		}
@@ -297,6 +420,10 @@ func (s *Server) recover(ctx context.Context) {
 		}
 	}
 	s.mu.Unlock()
+
+	for _, id := range stale {
+		s.discard(id)
+	}
 
 	if len(pending) == 0 {
 		return
@@ -361,6 +488,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes/{id}/diagnostics/logs", s.diagnostics("logs"))
 	mux.HandleFunc("GET /v1/sandboxes/{id}/diagnostics/events", s.diagnostics("events"))
 	mux.HandleFunc("POST /v1/metrics/events", s.metrics)
+	mux.HandleFunc("GET /sbx/v1/pool", s.poolStatus)
 
 	mux.HandleFunc("GET /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
 	mux.HandleFunc("PUT /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)

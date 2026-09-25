@@ -370,6 +370,88 @@ ClickHouse is idle at about 200 MB either way - its cache caps pay off under loa
 
 ---
 
+## OpenSandbox create → first command (ComputeSDK's Burst TTI)
+
+ComputeSDK ranks hosted sandboxes on **TTI: client-timed `create()` → first successful
+`runCommand('node -v')`, 100 launched at once**, scored 0.6·s(median) + 0.25·s(p95) +
+0.15·s(p99) with s(ms) = 100·(1 − ms/10000), times the success rate
+([computesdk/benchmarks](https://github.com/computesdk/benchmarks), METHODOLOGY.md). The same
+thing, through the upstream OpenSandbox Go SDK (`CreateSandbox` = POST, GET until Running, the
+execd endpoint, `/ping`; then `RunCommand`):
+
+```sh
+scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 1 --rounds 10 \
+  --pool node:22-slim=8 --burst-modes default,cold          # one at a time, pool vs cold, interleaved
+scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 100 --rounds 1 \
+  --pool node:22-slim=100                                   # from the pool
+scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 100 --rounds 1 \
+  --burst-modes cold                                        # no pool
+```
+
+Apple M4, 16 GiB; a dedicated colima profile with **3 vCPU / 3 GiB**, docker 29.2.1;
+`node:22-slim` pre-pulled. Measured 2026-09-26. **A local number, not a leaderboard entry**:
+ComputeSDK's runner measures a hosted endpoint over the internet.
+
+### Where a create's 4 seconds went
+
+`SBX_OSB_TRACE=1` logs each phase of a create, in ms from the POST being accepted. One create at
+a time, before (09f3db2) and after:
+
+| phase | before | after, cold | after, from the pool |
+|---|---:|---:|---:|
+| `docker pull` of an image already present | **2803-3185** | skipped | - |
+| image inspected | 2853-3223 | 19 | - |
+| container created (`docker run`) | 3182-3249 | 158 | - |
+| execd answers through the wake port → Running | 3202-3260 | 169 | - |
+| create answered | 1 (Pending) | 170 (**Running**) | ~10 (Running) |
+| the SDK's GET sees Running | **4019-4025** | 176 | ~26 |
+| execd endpoint answered | 4030-4036 | 182 | ~38 |
+| **TTI** (client, `node -v` done) | **4039, 4048** (n=2; a first create seeding the execd volume: 6042) | 227 median (n=10) | **11.1 median** (n=10) |
+
+The 4 s was two fixed costs stacked: an unconditional `docker pull` that asked the registry for
+a manifest the engine already had (~3 s), and the SDK's `waitForRunning`, which polls GET every
+**2 s** - a sandbox Running at 3.2 s was seen at the 4 s poll. sbx now pulls only a missing
+image (as upstream's docker runtime does) and holds the create's answer until Running (up to
+20 s), so the SDK's first GET ends its wait.
+
+### Burst
+
+| run | mode | sandboxes | ok | median ms | p95 ms | p99 ms | score |
+|---|---|---:|---:|---:|---:|---:|---:|
+| burst 1 × 10, interleaved | **pool** | 10 | 10 | **11.1** | 18.3 | 18.3 | **99.86** |
+| burst 1 × 10, interleaved | cold | 10 | 10 | 227.0 | 288.5 | 288.5 | 97.49 |
+| burst 100, run 1 (cold first) | cold | 100 | 100 | 8072.7 | 16169.2 | 16447.3 | 11.57 |
+| burst 100, run 2 | **pool** | 100 | 100 | **412.6** | 482.9 | 504.7 | **95.57** |
+| burst 100, run 3 | **pool** | 100 | 100 | **432.3** | 517.5 | 520.5 | **95.34** |
+| burst 100, run 4 | cold | 100 | 100 | 46720.4 | 79832.1 | 80213.3 | 0.00 |
+| burst 1 × 10, re-key every claim | **pool** | 10 | 10 | 13.7 | 41.2 | 41.2 | 99.76 |
+| burst 1 × 10, same run | cold | 10 | 10 | 207.5 | 356.0 | 356.0 | 97.34 |
+| burst 100, re-key every claim | **pool** | 100 | 100 | 472.1 | 566.9 | 573.2 | 94.89 |
+
+Runs 1-4 alternate cold/pool/pool/cold, each against a fresh daemon. The two cold runs differ by
+6x - the second followed two pool runs that had just made and removed 200 containers - so the
+cold burst is *not resolvable* beyond "seconds to tens of seconds"; what is resolvable is that
+all 100 succeed where 09f3db2 had 60 slots. The two pool runs agree within 20 ms.
+
+The last three rows are after every claim re-keys execd (runs 2-3 re-keyed only when the create
+carried env). At one at a time the difference is inside the spread (5.7-41.2 ms): not resolvable.
+At 100 it is ~40-60 ms of median, one round trip through the wake port per claim.
+
+What bounds each path here:
+
+- **Pool, burst 100**: a claim touches no container (members wait pinned running, not frozen:
+  twenty concurrent `docker unpause`s measured 200-430 ms, serialised in dockerd). The server has
+  answered every GET and endpoint by ~160 ms; the rest is 100 `node -v` processes starting at
+  once on 3 vCPUs, plus colima's port forward on every new connection. A single claim is 11 ms.
+- **Cold, burst 100**: `docker run` throughput - ~150 ms of engine time per container, 8 in
+  flight - after the lock convoys were removed (slot choice, discovery, image inspect, record
+  writes; see the commits on `osb/speed`).
+- **Memory**: 50 waiting members held ~620 MiB of the 3 GiB VM (free: 922 MiB used vs ~300
+  idle), so a pool of 100 plus a burst of 100 claimed fits; 200 cold containers on top would not
+  be attempted here.
+
+---
+
 ## Against other platforms
 
 Vendor-documented figures, read August 2026, beside ours - useful context, not a controlled

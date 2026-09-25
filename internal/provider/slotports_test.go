@@ -44,3 +44,19 @@ func TestASlotWhosePublicPortIsTakenIsNotFree(t *testing.T) {
 		t.Fatalf("slot %d is not free once the listener is gone", slot)
 	}
 }
+
+// Every backing port stays below Linux's default ephemeral range (net.ipv4.ip_local_port_range
+// starts at 32768), or an outgoing connection on the host can hold a port docker is about to
+// publish. Raising maxSlots past this breaks creates at random, not at once.
+func TestBackingRangeStaysBelowTheEphemeralPorts(t *testing.T) {
+	const linuxEphemeralStart = 32768
+
+	if top := backingBase + maxSlots*blockSize; top > linuxEphemeralStart {
+		t.Fatalf("backing ports reach %d, into the ephemeral range at %d - lower maxSlots or move backingBase",
+			top, linuxEphemeralStart)
+	}
+
+	if top := publicBase + maxSlots*blockSize; top > backingBase {
+		t.Fatalf("public ports reach %d, into the backing range at %d", top, backingBase)
+	}
+}

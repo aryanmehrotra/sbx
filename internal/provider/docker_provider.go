@@ -30,11 +30,16 @@ import (
 	"time"
 )
 
+// maxSlots is how many sandboxes one engine can hold. 128, up from 60: a warm pool plus a burst
+// of a hundred creates (ComputeSDK's Burst TTI) needs more than 60 at once. The ceiling is
+// the backing range, which must stay below Linux's default ephemeral ports (32768+) or an
+// outgoing connection can take a port docker is about to publish: 30000 + 128*20 = 32560.
+// Public ports then run 20000-22559.
 const (
 	publicBase  = 20000
 	backingBase = 30000
 	blockSize   = 20
-	maxSlots    = 60
+	maxSlots    = 128
 )
 
 type dockerProvider struct {
@@ -108,8 +113,13 @@ func (d *dockerProvider) AllocSlot(ctx context.Context, sandbox string) (int, er
 		used[u.Slot] = true
 	}
 
+	return d.PickSlot(used)
+}
+
+// PickSlot implements SlotPicker: the first slot not in taken whose ports are free.
+func (d *dockerProvider) PickSlot(taken map[int]bool) (int, error) {
 	for i := range maxSlots {
-		if used[i] {
+		if taken[i] {
 			continue
 		}
 
@@ -1062,44 +1072,11 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 	var units []Unit
 
 	for _, c := range cs {
-		pairs, err := ParsePorts(c.Labels[labelPorts])
-		if err != nil || len(pairs) == 0 {
+		u, ok := unitOf(c)
+		if !ok {
 			// A container carrying the sandbox label but no parseable ports is not something
 			// sbx can front. Skipping it keeps `sbx list` working rather than failing whole.
 			continue
-		}
-
-		slot, _ := strconv.Atoi(c.Labels[labelSlot])
-
-		u := Unit{
-			Sandbox:       c.Labels[labelSandbox],
-			Service:       c.Labels[labelService],
-			Slot:          slot,
-			Ref:           c.name(),
-			Instance:      c.ID,
-			Running:       c.State == "running",
-			Paused:        c.State == "paused",
-			OnIdle:        c.Labels[labelOnIdle],
-			Index:         (pairs[0].Public - publicBase) % blockSize,
-			EgressGateway: c.Labels[labelEgressGateway],
-			Idle:          c.Labels[labelIdle],
-			EgressStat:    c.Labels[labelEgressStat],
-		}
-
-		if a := c.Labels[labelEgressAllow]; a != "" {
-			u.EgressAllow = strings.Split(a, ",")
-		}
-
-		u.EgressPolicy = c.Labels[labelEgressPolicy]
-
-		if dep := c.Labels[labelDependsOn]; dep != "" {
-			u.DependsOn = strings.Split(dep, ",")
-		}
-
-		for _, pr := range pairs {
-			u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pr.Public})
-			u.Listen = append(u.Listen, pr.Public)
-			u.Upstream = append(u.Upstream, Endpoint{Host: "127.0.0.1", Port: pr.Backing})
 		}
 
 		units = append(units, u)
@@ -1116,6 +1093,50 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 	})
 
 	return units, nil
+}
+
+// unitOf reads one container's labels and state as a Unit; false when it has no ports sbx
+// could front.
+func unitOf(c container) (Unit, bool) {
+	pairs, err := ParsePorts(c.Labels[labelPorts])
+	if err != nil || len(pairs) == 0 {
+		return Unit{}, false
+	}
+
+	slot, _ := strconv.Atoi(c.Labels[labelSlot])
+
+	u := Unit{
+		Sandbox:       c.Labels[labelSandbox],
+		Service:       c.Labels[labelService],
+		Slot:          slot,
+		Ref:           c.name(),
+		Instance:      c.ID,
+		Running:       c.State == "running",
+		Paused:        c.State == "paused",
+		OnIdle:        c.Labels[labelOnIdle],
+		Index:         (pairs[0].Public - publicBase) % blockSize,
+		EgressGateway: c.Labels[labelEgressGateway],
+		Idle:          c.Labels[labelIdle],
+		EgressStat:    c.Labels[labelEgressStat],
+	}
+
+	if a := c.Labels[labelEgressAllow]; a != "" {
+		u.EgressAllow = strings.Split(a, ",")
+	}
+
+	u.EgressPolicy = c.Labels[labelEgressPolicy]
+
+	if dep := c.Labels[labelDependsOn]; dep != "" {
+		u.DependsOn = strings.Split(dep, ",")
+	}
+
+	for _, pr := range pairs {
+		u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pr.Public})
+		u.Listen = append(u.Listen, pr.Public)
+		u.Upstream = append(u.Upstream, Endpoint{Host: "127.0.0.1", Port: pr.Backing})
+	}
+
+	return u, true
 }
 
 func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
@@ -1359,4 +1380,20 @@ func bindable(gw string) error {
 	}
 
 	return probe.Close()
+}
+
+// UnitOf implements UnitGetter with one inspect of the service's container. A container that
+// exists but is not a sandbox sbx can front - no ports label, another sandbox's name - is absent.
+func (d *dockerProvider) UnitOf(ctx context.Context, sandbox, service string) (Unit, bool, error) {
+	c, ok, err := d.api.inspect(ctx, containerName(sandbox, service))
+	if err != nil || !ok {
+		return Unit{}, false, err
+	}
+
+	u, ok := unitOf(c)
+	if !ok || u.Sandbox != sandbox {
+		return Unit{}, false, nil
+	}
+
+	return u, true, nil
 }

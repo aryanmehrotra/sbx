@@ -85,7 +85,7 @@ func TestSnapshotIsACommitThatGoesCreatingThenReady(t *testing.T) {
 		t.Errorf("ready reason %q", ready.Status.Reason)
 	}
 
-	commits := h.p.lists(&h.p.commits)
+	commits := h.p.snapshotOf(&h.p.commits)
 	if len(commits) != 1 || commits[0] != "sbx-"+sb.ID+"-sandbox -> sbx-osb-snap:"+sj.ID {
 		t.Fatalf("commits = %v: the snapshot must be the sandbox's own container committed to sbx-osb-snap:<id>", commits)
 	}
@@ -112,7 +112,7 @@ func TestSnapshotCommitFailureIsFailedWithTheReason(t *testing.T) {
 		t.Fatalf("DELETE Failed = %d", resp.StatusCode)
 	}
 
-	if rm := h.p.lists(&h.p.removedImg); len(rm) != 0 {
+	if rm := h.p.snapshotOf(&h.p.removedImg); len(rm) != 0 {
 		t.Errorf("removed images %v for a snapshot that never had one", rm)
 	}
 }
@@ -270,7 +270,7 @@ func TestCreateFromSnapshotIsAFork(t *testing.T) {
 		t.Fatalf("DELETE = %d", resp.StatusCode)
 	}
 
-	if rm := h.p.lists(&h.p.removedImg); !slices.Equal(rm, []string{"sbx-osb-snap:" + sj.ID}) {
+	if rm := h.p.snapshotOf(&h.p.removedImg); !slices.Equal(rm, []string{"sbx-osb-snap:" + sj.ID}) {
 		t.Errorf("removed images %v", rm)
 	}
 
@@ -367,7 +367,7 @@ func TestSnapshotCommitScrubsPerSandboxEnv(t *testing.T) {
 	h := newHarness(t)
 	h.snapshotOf(nil)
 
-	changes := h.p.lists(&h.p.changes)
+	changes := h.p.snapshotOf(&h.p.changes)
 	for _, k := range []string{"EXECD_ACCESS_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		if !slices.Contains(changes, "ENV "+k+"=") {
 			t.Errorf("commit changes %v do not clear %s", changes, k)

@@ -145,14 +145,14 @@ func TestPVCIsANamespacedDockerVolume(t *testing.T) {
 		t.Fatalf("mounts = %+v, want %+v", got, want)
 	}
 
-	if c := h.p.lists(&h.p.volCreated); !slices.Equal(c, []string{"sbx-osb-pvc-datasets", "sbx-osb-pvc-scratch"}) {
+	if c := h.p.snapshotOf(&h.p.volCreated); !slices.Equal(c, []string{"sbx-osb-pvc-datasets", "sbx-osb-pvc-scratch"}) {
 		t.Fatalf("created = %v", c)
 	}
 
 	// deleteOnSandboxTermination removes the one it applies to, and only that one.
 	h.do("DELETE", "/v1/sandboxes/"+sb.ID, nil, nil)
 
-	if rm := h.p.lists(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-scratch"}) {
+	if rm := h.p.snapshotOf(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-scratch"}) {
 		t.Fatalf("removed = %v, want only the deleteOnSandboxTermination volume", rm)
 	}
 }
@@ -171,7 +171,7 @@ func TestPreexistingPVCIsNeverDeleted(t *testing.T) {
 
 	h.do("DELETE", "/v1/sandboxes/"+sb.ID, nil, nil)
 
-	if c, rm := h.p.lists(&h.p.volCreated), h.p.lists(&h.p.volRemoved); len(c)+len(rm) != 0 {
+	if c, rm := h.p.snapshotOf(&h.p.volCreated), h.p.snapshotOf(&h.p.volRemoved); len(c)+len(rm) != 0 {
 		t.Fatalf("created %v, removed %v - a pre-existing volume was touched", c, rm)
 	}
 }
@@ -191,7 +191,7 @@ func TestMissingPVCWithoutCreateIsRefusedAndUndone(t *testing.T) {
 	}
 
 	// The first volume was created by this request and no sandbox will ever own it.
-	if rm := h.p.lists(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-fresh"}) {
+	if rm := h.p.snapshotOf(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-fresh"}) {
 		t.Fatalf("removed = %v, want the volume this refused request created", rm)
 	}
 

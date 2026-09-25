@@ -42,6 +42,7 @@ func (s *Server) snapshot(id string) (record, bool) {
 	c.Entrypoint = slices.Clone(r.Entrypoint)
 	c.Ports = slices.Clone(r.Ports)
 	c.OwnedVolumes = slices.Clone(r.OwnedVolumes)
+	c.Endpoints = slices.Clone(r.Endpoints)
 
 	return c, true
 }
@@ -59,11 +60,11 @@ func (s *Server) update(id string, f func(r *record)) (record, bool) {
 	}
 
 	f(r)
+	s.mu.Unlock()
 
-	if err := s.store.save(r); err != nil {
+	if err := s.persist(id); err != nil {
 		logs.Default.Error(id, "", "osb: could not persist the sandbox record: %v", err)
 	}
-	s.mu.Unlock()
 
 	return s.snapshot(id)
 }
@@ -72,7 +73,9 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (record, bool) {
 	id := r.PathValue("id")
 
 	rec, ok := s.snapshot(id)
-	if !validID(id) || !ok {
+
+	// An unclaimed pool member does not exist as far as any caller can tell.
+	if !validID(id) || !ok || rec.Pool != "" {
 		writeErr(w, http.StatusNotFound, "SANDBOX::NOT_FOUND",
 			fmt.Sprintf("no sandbox %q - ids look like osb-0123456789ab; GET /v1/sandboxes lists them", id))
 
@@ -85,7 +88,7 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (record, bool) {
 // unitsBySandbox asks the provider once for everything, so rendering a page of sandboxes is one
 // docker call rather than one per sandbox.
 func (s *Server) unitsBySandbox(ctx context.Context) (map[string][]provider.Unit, error) {
-	units, err := s.p.List(ctx, "")
+	units, err := s.lister.units(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -174,13 +177,15 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
+	units, err := s.unitsOf(r.Context(), rec.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, render(rec, units[rec.ID], true))
+	out := render(rec, units, true)
+	s.trace.mark(rec.ID, "GET answered "+out.Status.State)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -228,7 +233,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 
 	for _, id := range ids {
 		rec, ok := s.snapshot(id)
-		if !ok {
+		if !ok || rec.Pool != "" {
 			continue
 		}
 
@@ -317,6 +322,8 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 // remove tears a sandbox down: container, data volume and record. actor is who asked, for the
 // history: "osb" for a DELETE, "expiry" for the reaper.
 func (s *Server) remove(ctx context.Context, id, actor string) error {
+	defer s.trace.end(id)
+
 	s.mu.Lock()
 
 	r, ok := s.recs[id]
@@ -340,6 +347,7 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 	}
 
 	s.rt.Hold(id, false)
+	s.rt.Pin(id, false)
 
 	// The saved live policy goes with the sandbox, or a later sandbox reusing the name would
 	// start enforcing a stranger's rules.
@@ -349,7 +357,7 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 		}
 	}
 
-	units, err := s.p.List(ctx, id)
+	units, err := s.unitsOf(ctx, id)
 	if err != nil {
 		return fmt.Errorf("listing %s before removing it: %w", id, err)
 	}
@@ -377,14 +385,19 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 	// After the container: docker will not remove a volume something still mounts.
 	s.releaseClaims(ctx, id, owned)
 
+	// Under the record's persist lock, so a write already in flight lands before the file is
+	// removed rather than resurrecting it afterwards.
+	plk := s.persistLock(id)
+	plk.Lock()
 	s.mu.Lock()
 	delete(s.recs, id)
 	delete(s.provisioning, id)
+	s.mu.Unlock()
 
 	if err := s.store.remove(id); err != nil {
 		logs.Default.Error(id, "", "osb: could not delete the sandbox record: %v", err)
 	}
-	s.mu.Unlock()
+	plk.Unlock()
 
 	history.Append(history.Record{Kind: "event", Sandbox: id, Event: "removed", Actor: actor,
 		Message: "removed through the OpenSandbox API"})
@@ -439,13 +452,13 @@ func (s *Server) patchMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
+	units, err := s.unitsOf(r.Context(), updated.ID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, render(updated, units[updated.ID], true))
+	writeJSON(w, http.StatusOK, render(updated, units, true))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
@@ -612,21 +625,31 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	units, err := s.unitsBySandbox(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
-		return
+	eps := rec.Endpoints
+
+	// Recorded once execd first answered; before that - or for a record written by an sbx
+	// that did not keep them - docker is asked, about this sandbox only.
+	if len(eps) < len(rec.Ports) {
+		us, err := s.unitsOf(r.Context(), rec.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
+			return
+		}
+
+		if len(us) == 0 || len(us[0].Client) < len(rec.Ports) {
+			writeErr(w, http.StatusNotFound, "SANDBOX::NOT_READY",
+				fmt.Sprintf("%s has no container yet (state %s) - wait for Running", rec.ID, rec.State))
+
+			return
+		}
+
+		eps = nil
+		for _, c := range us[0].Client {
+			eps = append(eps, c.String())
+		}
 	}
 
-	us := units[rec.ID]
-	if len(us) == 0 || len(us[0].Client) < len(rec.Ports) {
-		writeErr(w, http.StatusNotFound, "SANDBOX::NOT_READY",
-			fmt.Sprintf("%s has no container yet (state %s) - wait for Running", rec.ID, rec.State))
-
-		return
-	}
-
-	addr := func(i int) string { return us[0].Client[i].String() }
+	addr := func(i int) string { return eps[i] }
 	auth := map[string]string{tokenHeader: rec.Token}
 
 	for i, p := range rec.Ports {
@@ -635,6 +658,7 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if p == execdPort {
+			s.trace.mark(rec.ID, "execd endpoint answered")
 			writeJSON(w, http.StatusOK, endpointJSON{Endpoint: addr(i), Headers: auth})
 		} else {
 			writeJSON(w, http.StatusOK, endpointJSON{Endpoint: addr(i)})
@@ -715,7 +739,7 @@ func (s *Server) diagnostics(kind string) http.HandlerFunc {
 }
 
 func (s *Server) containerLogs(ctx context.Context, id string, w io.Writer) string {
-	units, err := s.p.List(ctx, id)
+	units, err := s.unitsOf(ctx, id)
 	if err != nil {
 		return "could not list the container: " + err.Error()
 	}
@@ -794,3 +818,20 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 var errGone = errors.New("the sandbox was deleted while it was being created")
+
+// unitsOf is one sandbox's containers. With a provider that can look one up directly it is a
+// single inspect - milliseconds, where a list of every container grew with each one a burst
+// added, and a hundred of them at once queued behind each other for most of a second.
+func (s *Server) unitsOf(ctx context.Context, id string) ([]provider.Unit, error) {
+	g, ok := s.p.(provider.UnitGetter)
+	if !ok {
+		return s.p.List(ctx, id)
+	}
+
+	u, found, err := g.UnitOf(ctx, id, service)
+	if err != nil || !found {
+		return nil, err
+	}
+
+	return []provider.Unit{u}, nil
+}

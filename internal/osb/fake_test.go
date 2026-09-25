@@ -30,6 +30,13 @@ type fakeDocker struct {
 	paused  []string
 	slot    int
 
+	// missing images are not on the engine until pulled; pulls records every pull asked for.
+	missing map[string]bool
+	pulls   []string
+
+	// lists records the sandbox each List was filtered to ("" for all).
+	lists []string
+
 	exitOnStart bool // new containers are not running: the entrypoint exited
 	logs        string
 	arch        string
@@ -41,7 +48,6 @@ type fakeDocker struct {
 	commitErr  error
 	commitGate chan struct{} // when set, Commit waits for it to close
 	removedImg []string
-	pulls      []string
 	volumes    map[string]bool
 	volCreated []string
 	volRemoved []string
@@ -78,6 +84,8 @@ func (f *fakeDocker) Create(_ context.Context, sandbox string, slot, _ int, svc 
 func (f *fakeDocker) List(_ context.Context, sandbox string) ([]provider.Unit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	f.lists = append(f.lists, sandbox)
 
 	var out []provider.Unit
 
@@ -138,13 +146,26 @@ func (f *fakeDocker) VolumeRuns(context.Context, string, string, string) bool   
 func (f *fakeDocker) SeedFile(context.Context, string, string, string, string) error { return nil }
 func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) error    { return nil }
 
+func (f *fakeDocker) Pull(_ context.Context, image string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.pulls = append(f.pulls, image)
+	delete(f.missing, image)
+
+	return nil
+}
+
 func (f *fakeDocker) ImageInfo(_ context.Context, image string) (provider.ImageInfo, error) {
 	f.mu.Lock()
-	err := f.inspectErr[image]
-	f.mu.Unlock()
+	defer f.mu.Unlock()
 
-	if err != nil {
+	if err := f.inspectErr[image]; err != nil {
 		return provider.ImageInfo{}, err
+	}
+
+	if f.missing[image] {
+		return provider.ImageInfo{}, fmt.Errorf("no such image: %s", image)
 	}
 
 	return provider.ImageInfo{Cmd: []string{"python3"}, OS: "linux", Arch: f.arch}, nil
@@ -190,6 +211,13 @@ func (r *fakeRuntime) seen() string {
 func (r *fakeRuntime) Refresh(context.Context)                   { r.note("refresh") }
 func (r *fakeRuntime) Freeze(_ context.Context, id string) error { r.note("freeze " + id); return nil }
 func (r *fakeRuntime) Thaw(_ context.Context, id string) error   { r.note("thaw " + id); return nil }
+func (r *fakeRuntime) Pin(id string, pinned bool) {
+	if pinned {
+		r.note("pin " + id)
+	} else {
+		r.note("unpin " + id)
+	}
+}
 func (r *fakeRuntime) Hold(id string, held bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -237,7 +265,9 @@ func (h *harness) start(opts ...option) {
 		StateDir:     h.dir,
 		Version:      "test",
 		ReadyTimeout: 2 * time.Second,
-		Now:          h.clock,
+		// Short, so a test that keeps execd silent is not held for the production default.
+		CreateWait: 50 * time.Millisecond,
+		Now:        h.clock,
 		Ping: func(context.Context, string) error {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -409,15 +439,6 @@ func (h *harness) waitStateKeyed(id string, key []string) {
 	}
 }
 
-func (f *fakeDocker) Pull(_ context.Context, image string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.pulls = append(f.pulls, image)
-
-	return nil
-}
-
 func (f *fakeDocker) pulled() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -513,8 +534,8 @@ func (f *fakeDocker) RemoveVolume(_ context.Context, name string) error {
 	return nil
 }
 
-// lists returns a copy of one of the fake's recorded slices, under its lock.
-func (f *fakeDocker) lists(which *[]string) []string {
+// snapshotOf returns a copy of one of the fake's recorded slices, under its lock.
+func (f *fakeDocker) snapshotOf(which *[]string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

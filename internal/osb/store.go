@@ -51,6 +51,11 @@ type record struct {
 	// the caller asked to have fronted directly (extensions["sbx.ports"]).
 	Ports []int `json:"ports"`
 
+	// Endpoints are the addresses of Ports through the daemon, in the same order, recorded when
+	// the sandbox first answered. A container's slot - and so these - never changes, so the
+	// endpoint route answers from here instead of asking docker on every call.
+	Endpoints []string `json:"endpoints,omitempty"`
+
 	// Token is execd's access token. It is a credential for everything inside the sandbox,
 	// which is why this file is 0600.
 	Token string `json:"token"`
@@ -75,6 +80,9 @@ type record struct {
 	// OwnedVolumes are pvc volumes created for this sandbox with deleteOnSandboxTermination:
 	// removed with it. Never a volume that existed before the create.
 	OwnedVolumes []string `json:"ownedVolumes,omitempty"`
+	// Pool is the warm-pool key of a member nobody has claimed yet. Such a record is invisible
+	// to every API route; claiming it clears this.
+	Pool string `json:"pool,omitempty"`
 }
 
 func (r *record) transition(state, reason, message string, now time.Time) {

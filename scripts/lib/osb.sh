@@ -293,8 +293,11 @@ osb_teardown() {
     if [ -n "$OSB_DAEMON" ] && kill -0 "$OSB_DAEMON" 2>/dev/null; then
       "$OSB_HARNESS" sweep -url "$OSB_URL" -key "$OSB_KEY" -prefix osb- >&2
       kill -TERM "$OSB_DAEMON" 2>/dev/null
+      # Up to a minute: a daemon with warm pools (--osb-pool) removes its unclaimed members on
+      # the way out, and any still being made finish their docker run first. Killed sooner,
+      # it leaves them for the sweep below.
       n=0
-      while kill -0 "$OSB_DAEMON" 2>/dev/null && [ "$n" -lt 20 ]; do sleep 0.5; n=$((n + 1)); done
+      while kill -0 "$OSB_DAEMON" 2>/dev/null && [ "$n" -lt 120 ]; do sleep 0.5; n=$((n + 1)); done
       kill -KILL "$OSB_DAEMON" 2>/dev/null
     fi
 

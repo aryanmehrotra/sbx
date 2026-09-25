@@ -76,8 +76,8 @@ func tunnelBackends() []tunnelBackend {
 					"tunnel", "--no-autoupdate",
 
 					// cloudflared's own metrics listener otherwise takes the first free port
-					// of 20241-20245, and sbx hands out 20000-21199 (publicBase + slot*20,
-					// 60 slots) - so 20241-20245 is slot 12. Measured: with nothing on those
+					// of 20241-20245, and sbx hands out 20000-22559 (publicBase + slot*20,
+					// 128 slots) - so 20241-20245 is slot 12. Measured: with nothing on those
 					// ports, cloudflared binds 20241 and the daemon can no longer listen on
 					// it. `sbx url` would be taking a port out from under the daemon it
 					// depends on, and only when slot 12 happened to be unallocated - an
