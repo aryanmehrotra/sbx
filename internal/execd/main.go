@@ -69,6 +69,8 @@ func run(args []string, stderr io.Writer) int {
 		grace = d
 	}
 
+	shutdownGrace.Store(int64(grace))
+
 	// Read, then removed from our own environment, so no child - the entrypoint included -
 	// inherits the token.
 	token := os.Getenv(EnvAccessToken)
@@ -145,8 +147,11 @@ func run(args []string, stderr io.Writer) int {
 
 			// The grace keeps the API up for a moment, so a client that ran the command
 			// that ended the entrypoint can still read how it ended.
-			time.Sleep(grace)
-			shutdown(hs, grace)
+			// Read now, not at startup: a warm-pool claim can set it after execd started.
+			g := time.Duration(shutdownGrace.Load())
+
+			time.Sleep(g)
+			shutdown(hs, g)
 
 			return code
 		}

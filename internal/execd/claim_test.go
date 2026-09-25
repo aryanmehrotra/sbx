@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A warm-pool sandbox is started with a token only sbx serve knows. Claiming it hands it to one
@@ -73,4 +74,42 @@ func TestClaimRefusesAnUnkeyedServerAndABadBody(t *testing.T) {
 	st, _, body = s.do("POST", "/sbx/claim", map[string]any{"accessToken": "n", "envs": map[string]string{"A=B": "c"}},
 		AccessTokenHeader, "p")
 	wantError(t, st, body, http.StatusBadRequest, codeInvalidRequest)
+}
+
+// upstream's e2e suite sets EXECD_API_GRACE_SHUTDOWN on every sandbox it creates. From a claim it
+// becomes execd's grace - read at shutdown, not at start - and, as with `docker run -e`, stays
+// out of the environment commands see.
+func TestClaimAppliesTheShutdownGraceWithoutExportingIt(t *testing.T) {
+	old := shutdownGrace.Load()
+	t.Cleanup(func() { shutdownGrace.Store(old) })
+
+	s := newTestServer(t, Options{AccessToken: "p"})
+
+	bad := map[string]any{"accessToken": "n", "envs": map[string]string{EnvGraceShutdown: "soon"}}
+	st, _, body := s.do("POST", "/sbx/claim", bad, AccessTokenHeader, "p")
+	wantError(t, st, body, http.StatusBadRequest, codeInvalidRequest)
+
+	ok := map[string]any{"accessToken": "n", "envs": map[string]string{EnvGraceShutdown: "3s"}}
+	if st, _, body := s.do("POST", "/sbx/claim", ok, AccessTokenHeader, "p"); st != http.StatusNoContent {
+		t.Fatalf("claim: %d %s", st, body)
+	}
+
+	if got := time.Duration(shutdownGrace.Load()); got != 3*time.Second {
+		t.Fatalf("grace %s after the claim, want 3s", got)
+	}
+
+	st, _, data := s.do("POST", "/command", map[string]any{"command": "echo ${EXECD_API_GRACE_SHUTDOWN:-unset}"},
+		AccessTokenHeader, "n")
+	if st != http.StatusOK {
+		t.Fatalf("command: %d %s", st, data)
+	}
+
+	ex, err := parseExecution(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimSpace(ex.Text()); got != "unset" {
+		t.Fatalf("commands see EXECD_API_GRACE_SHUTDOWN=%q; it is execd's setting, not theirs", got)
+	}
 }
