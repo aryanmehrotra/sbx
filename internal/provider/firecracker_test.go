@@ -140,6 +140,8 @@ type fakeGuest struct {
 	failRekey  error
 	launcher   *fakeLauncher
 	onSeal     func(secret string)
+	onRekey    func(k fc.Rekey)
+	accept     string // when set, the only secret Seal accepts: what execd holds
 }
 
 func (g *fakeGuest) Available() bool { return g.available }
@@ -154,6 +156,10 @@ func (g *fakeGuest) Seal(_ context.Context, vm fc.GuestVM, secret string) error 
 
 	if secret == "" {
 		return errors.New("sealed without the control secret")
+	}
+
+	if g.accept != "" && secret != g.accept {
+		return errors.New("UNAUTHORIZED")
 	}
 
 	g.seals = append(g.seals, g.launcher.server(vm.Dir).State())
@@ -171,6 +177,10 @@ func (g *fakeGuest) Rekey(_ context.Context, vm fc.GuestVM, k fc.Rekey) error {
 
 	g.rekeys = append(g.rekeys, k)
 	g.rekeyState = append(g.rekeyState, g.launcher.server(vm.Dir).State())
+
+	if g.onRekey != nil {
+		g.onRekey(k)
+	}
 
 	return g.failRekey
 }
@@ -1323,5 +1333,47 @@ func TestCommitOfAFrozenVMLeavesItFrozen(t *testing.T) {
 		if s := r.l.server(r.p.dir(ref)); s == nil || s.State() != "Paused" {
 			t.Fatalf("guest=%v: a frozen VM came out of the commit running", guest)
 		}
+	}
+}
+
+// A re-key's new secret is on disk before execd is asked to take it, and a later Seal that the
+// recorded secret cannot open tries it: a process that died between execd accepting a re-key and
+// recording the answer must not leave a VM that can never be slept again.
+func TestAReKeysSecretIsRecordedBeforeItIsSent(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "l3", redis)
+
+	var pendingAtSend, sent string
+
+	r.g.onRekey = func(k fc.Rekey) {
+		sent = k.ControlSecret
+		pendingAtSend = r.vm(t, ref).PendingSecret
+	}
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if sent == "" || pendingAtSend != sent {
+		t.Fatalf("pending on disk at send = %q, sent %q", pendingAtSend, sent)
+	}
+
+	// The crash: execd holds the new secret, the record still names the old one as live.
+	vm := r.vm(t, ref)
+	held := vm.LiveSecret
+	vm.LiveSecret, vm.PendingSecret = "the-one-before", held
+
+	if err := r.p.save(vm); err != nil {
+		t.Fatal(err)
+	}
+
+	r.g.accept = held
+
+	if err := r.p.Stop(r.ctx, ref); err != nil {
+		t.Fatalf("a Seal that the pending secret opens failed: %v", err)
+	}
+
+	if got := r.vm(t, ref); got.LiveSecret != held || got.PendingSecret != "" || !got.SnapshotValid {
+		t.Fatalf("after the sleep: %+v", got)
 	}
 }

@@ -127,6 +127,11 @@ type fcVM struct {
 	Generation    uint64 `json:"generation"`
 	LiveSecret    string `json:"live_secret,omitempty"`
 
+	// PendingSecret is a re-key's new secret, recorded BEFORE the re-key is sent: a process that
+	// dies between execd accepting it and this record saying so leaves execd holding a secret the
+	// record would otherwise not know. Seal tries it when the live one is refused.
+	PendingSecret string `json:"pending_secret,omitempty"`
+
 	// SnapshotValid: vm.state + vm.mem describe the disk as it is now. See the file comment.
 	SnapshotValid bool `json:"snapshot_valid"`
 
@@ -693,7 +698,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 
 	// A fresh execd from the agent drive: it holds the boot secret again.
 	vm.Restored = false
-	vm.LiveSecret = ""
+	vm.LiveSecret, vm.PendingSecret = "", ""
 
 	return nil
 }
@@ -720,12 +725,53 @@ func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
 		"its next wake is a cold boot", vm.Ref, err), p.abandon(ctx, vm))
 }
 
+// seal asks execd to seal, with the secret it holds: the recorded one, or - when that is refused
+// and a re-key's answer was never recorded - the pending one. Bounded: a guest that stalls it is
+// vetoing its own sleep.
+func (p *fcProvider) seal(ctx context.Context, vm *fcVM) error {
+	ctx, cancel := context.WithTimeout(ctx, sealTimeout)
+	defer cancel()
+
+	err := p.guest.Seal(ctx, p.guestVM(vm), vm.secret())
+	if err == nil || vm.PendingSecret == "" || vm.PendingSecret == vm.secret() {
+		return err
+	}
+
+	if perr := p.guest.Seal(ctx, p.guestVM(vm), vm.PendingSecret); perr != nil {
+		return errors.Join(err, perr)
+	}
+
+	vm.LiveSecret, vm.PendingSecret = vm.PendingSecret, ""
+
+	return nil
+}
+
+// rekey gives execd a fresh control secret at vm.Generation, recording it as pending first.
+func (p *fcProvider) rekey(ctx context.Context, vm *fcVM) error {
+	next := randomHex(32)
+
+	vm.PendingSecret = next
+	if err := p.save(vm); err != nil {
+		return err
+	}
+
+	if err := p.guest.Rekey(ctx, p.guestVM(vm), fc.Rekey{
+		Secret: vm.secret(), Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: next,
+	}); err != nil {
+		return err
+	}
+
+	vm.LiveSecret, vm.PendingSecret = next, ""
+
+	return nil
+}
+
 // abandon kills a running VM whose execd can no longer be trusted to answer, and records that its
 // next wake is a cold boot from its disk. The caller holds the lock.
 func (p *fcProvider) abandon(ctx context.Context, vm *fcVM) error {
 	kerr := p.launch.Kill(context.WithoutCancel(ctx), p.dir(vm.Ref))
 
-	vm.SnapshotValid, vm.Restored, vm.LiveSecret = false, false, ""
+	vm.SnapshotValid, vm.Restored, vm.LiveSecret, vm.PendingSecret = false, false, "", ""
 
 	return errors.Join(kerr, p.save(vm))
 }
@@ -735,12 +781,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	c := p.client(vm.Ref)
 
 	if p.guest.Available() {
-		sctx, cancel := context.WithTimeout(ctx, sealTimeout)
-		err := p.guest.Seal(sctx, p.guestVM(vm), vm.secret())
-
-		cancel()
-
-		if err != nil {
+		if err := p.seal(ctx, vm); err != nil {
 			return fmt.Errorf("sealing execd before the snapshot: %w", err)
 		}
 	}
@@ -916,19 +957,13 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 		// been given its identity. A failure kills the VM rather than serve sealed or stale.
 		// The control secret rotates: execd refuses a re-key that keeps the one the snapshot
 		// holds, since every clone of that snapshot holds it too.
-		next := randomHex(32)
-
-		if err := p.guest.Rekey(ctx, p.guestVM(vm), fc.Rekey{
-			Secret: vm.secret(), Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: next,
-		}); err != nil {
+		if err := p.rekey(ctx, vm); err != nil {
 			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
 			_ = p.save(vm)
 
 			return fmt.Errorf("re-keying execd after the restore: %w - the VM was stopped rather "+
 				"than left serving with the snapshot's identity", err)
 		}
-
-		vm.LiveSecret = next
 	}
 
 	if err := p.save(vm); err != nil {
@@ -1455,12 +1490,7 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 			}
 		}
 
-		sctx, cancel := context.WithTimeout(ctx, sealTimeout)
-		err := p.guest.Seal(sctx, p.guestVM(vm), vm.secret())
-
-		cancel()
-
-		if err != nil {
+		if err := p.seal(ctx, vm); err != nil {
 			// Sealed or not, it cannot be trusted to serve: stopped, its next wake cold-boots.
 			return fcVM{}, errors.Join(fmt.Errorf("sealing execd before the snapshot: %w - the VM was "+
 				"stopped, and its next wake is a cold boot", err), p.abandon(ctx, vm))
@@ -1492,17 +1522,12 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 	}
 
 	if guest {
-		next := randomHex(32)
 		vm.Generation++
 
-		if rerr := p.guest.Rekey(ctx, p.guestVM(vm), fc.Rekey{
-			Secret: vm.secret(), Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: next,
-		}); rerr != nil {
+		if rerr := p.rekey(ctx, vm); rerr != nil {
 			return fcVM{}, errors.Join(err, fmt.Errorf("re-keying execd after the snapshot: %w - the VM "+
 				"was stopped rather than left sealed", rerr), p.abandon(ctx, vm))
 		}
-
-		vm.LiveSecret = next
 
 		if state == fc.StatePaused {
 			if perr := c.Pause(ctx); perr != nil && err == nil {
