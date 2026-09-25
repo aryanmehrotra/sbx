@@ -128,6 +128,9 @@ type daemon struct {
 	// API re-asserts its holds before the first discovery pass has run.
 	heldMu sync.RWMutex
 	held   map[string]bool
+
+	// scope is which sandboxes this daemon may touch at all - see scope.go. Empty is all.
+	scope Scope
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -158,14 +161,33 @@ func Serve(args []string) error {
 	// only thing the tunnel will carry.
 	front := fs.String("front", envOr("SBX_FRONT", ""), "carry these ports over the connect endpoint: 5432, db=5432,cache=6379, or db=10.0.4.7:3306 for a host this container can route to")
 	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
+
+	var only stringList
+	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
 	_ = fs.Parse(args)
+
+	if len(only) == 0 {
+		if v := os.Getenv("SBX_ONLY"); v != "" {
+			only = stringList{v}
+		}
+	}
+
+	scope, err := ParseScope(only)
+	if err != nil {
+		return err
+	}
 
 	// One per machine. A second copy binds nothing - every listener fails with "address
 	// already in use", logged once per port with no retry - while the process stays up
 	// looking healthy, and on exit it removes the first daemon's presence record. That is a
 	// normal accident: a supervised unit from deploy/ plus a manual `sbx serve &`, or two
 	// terminal tabs.
-	if running, ok := Running(); ok && running.PID != os.Getpid() {
+	//
+	// A scoped daemon is the exception, because it cannot fight: everything outside --only is
+	// invisible to it, so the listeners it wants are not the ones the machine's daemon holds.
+	// It also does not claim the presence record below - it is not the daemon `sbx create`
+	// should be told about.
+	if running, ok := Running(); ok && running.PID != os.Getpid() && len(scope) == 0 {
 		return fmt.Errorf("sbx serve is already running (pid %d, since %s). One per machine - "+
 			"it fronts every sandbox's ports.\n     Stop that one first, or leave it: it is "+
 			"already serving everything this would.",
@@ -221,6 +243,7 @@ func Serve(args []string) error {
 		stop:       map[string]context.CancelFunc{},
 		egress:     map[string]*egressProxy{},
 		egressSeen: map[string]int64{},
+		scope:      scope,
 	}
 
 	var connectSrv *http.Server
@@ -248,9 +271,12 @@ func Serve(args []string) error {
 		name = p.Name()
 	}
 
-	defer MarkRunning(name)()
+	if len(scope) == 0 {
+		defer MarkRunning(name)()
+	}
 
-	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, name, d.idle, InCluster())
+	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v · scope %s",
+		logs.Version, name, d.idle, InCluster(), scope)
 
 	if connectSrv != nil {
 		logs.Default.Info("", "", "connect endpoint on %s", connectSrv.Addr)
@@ -314,6 +340,20 @@ func (d *daemon) discover(ctx context.Context) {
 	if err != nil {
 		logs.Default.Error("", "", "discovery failed: %v", err)
 		return
+	}
+
+	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
+	// filters, correctAwake - ever holds a unit outside --only to act on.
+	if len(d.scope) > 0 {
+		in := found[:0:0]
+
+		for _, f := range found {
+			if d.scope.Match(f.Sandbox) {
+				in = append(in, f)
+			}
+		}
+
+		found = in
 	}
 
 	// Reserve the label column before anything below logs into it.

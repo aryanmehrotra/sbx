@@ -65,6 +65,12 @@ func (d *daemon) controlLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !d.refInScope(body.Ref) {
+		http.Error(w, outOfScope(body.Ref, d.scope), http.StatusForbidden)
+
+		return
+	}
+
 	p, status, msg := d.controlProvider("setting a limit")
 	if p == nil {
 		http.Error(w, msg, status)
@@ -109,6 +115,12 @@ func (d *daemon) controlRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !d.scope.Match(body.Sandbox) {
+		http.Error(w, outOfScope(body.Sandbox, d.scope), http.StatusForbidden)
+
+		return
+	}
+
 	p, status, msg := d.controlProvider("removing a sandbox")
 	if p == nil {
 		http.Error(w, msg, status)
@@ -143,6 +155,12 @@ func (d *daemon) controlLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !d.refInScope(ref) {
+		http.Error(w, outOfScope(ref, d.scope), http.StatusForbidden)
+
+		return
+	}
+
 	p, status, msg := d.controlProvider("reading logs")
 	if p == nil {
 		http.Error(w, msg, status)
@@ -173,6 +191,12 @@ func (d *daemon) actOnRef(w http.ResponseWriter, r *http.Request, verb string,
 
 	if body.Ref == "" {
 		http.Error(w, "which service: pass a ref", http.StatusBadRequest)
+
+		return
+	}
+
+	if !d.refInScope(body.Ref) {
+		http.Error(w, outOfScope(body.Ref, d.scope), http.StatusForbidden)
 
 		return
 	}
