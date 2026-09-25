@@ -45,6 +45,10 @@ type Launcher interface {
 	// Kill ends the process recorded for dir, if it is still the one that was started there.
 	// A process already gone is success: the caller wanted it gone.
 	Kill(ctx context.Context, dir string) error
+
+	// Alive reports whether the process recorded for dir is still the firecracker started there.
+	// It is what tells a VMM that is slow to answer its API from one that is gone.
+	Alive(dir string) bool
 }
 
 // ExecLauncher runs the real binary.
@@ -143,6 +147,13 @@ func (ExecLauncher) Kill(ctx context.Context, dir string) error {
 
 	return fmt.Errorf("firecracker pid %d did not exit after SIGKILL; it is stuck in the kernel "+
 		"(check `cat /proc/%d/stack` as root)", pid, pid)
+}
+
+// Alive is the recorded PID, checked to still be a firecracker serving this directory's socket.
+func (ExecLauncher) Alive(dir string) bool {
+	pid, err := ReadPID(dir)
+
+	return err == nil && ownsPID(pid, filepath.Join(dir, APISockName))
 }
 
 // ReadPID reads the PID file in dir.

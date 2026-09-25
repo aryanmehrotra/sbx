@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Call is one request the fake received.
@@ -35,6 +36,10 @@ type Server struct {
 
 	// Fail makes the next request to a path answer 400 with this fault_message, once.
 	Fail map[string]string
+
+	// Stall holds the next request to a path this long before answering, once: a VMM that is
+	// alive and slow, which is not the same as one that is gone.
+	Stall map[string]time.Duration
 
 	configured bool // anything pre-boot has been PUT
 	started    bool
@@ -61,6 +66,7 @@ func Start(sock string) (*Server, error) {
 
 	s := &Server{
 		Fail:   map[string]string{},
+		Stall:  map[string]time.Duration{},
 		drives: map[string]map[string]any{},
 		ifaces: map[string]map[string]any{},
 		ln:     ln,
@@ -134,6 +140,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.calls = append(s.calls, Call{Method: r.Method, Path: r.URL.Path, Body: body})
+
+	if d, ok := s.Stall[r.URL.Path]; ok {
+		delete(s.Stall, r.URL.Path)
+		time.Sleep(d)
+	}
 
 	if f, ok := s.Fail[r.URL.Path]; ok {
 		delete(s.Fail, r.URL.Path)

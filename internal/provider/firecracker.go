@@ -790,17 +790,30 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	return p.save(vm)
 }
 
-// running asks the VMM what it is doing. Unreachable is "" - asleep - not an error.
-func (p *fcProvider) running(ctx context.Context, ref string) string {
-	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+// describeTimeout bounds one "what are you doing" to the VMM.
+const describeTimeout = 500 * time.Millisecond
+
+// running asks the VMM what it is doing. No process is "" - asleep - and not an error. A process
+// that is alive and did not answer in time is an error: it is a VM under load, or a VMM stuck in
+// the kernel, and treating it as asleep is what made Stop and Start kill a live VM.
+func (p *fcProvider) running(ctx context.Context, ref string) (string, error) {
+	dctx, cancel := context.WithTimeout(ctx, describeTimeout)
 	defer cancel()
 
-	info, err := p.client(ref).Describe(ctx)
-	if err != nil {
-		return ""
-	}
+	info, err := p.client(ref).Describe(dctx)
 
-	return info.State
+	switch {
+	case err == nil:
+		return info.State, nil
+	case ctx.Err() != nil:
+		return "", ctx.Err()
+	case !p.launch.Alive(p.dir(ref)):
+		return "", nil
+	default:
+		return "", fmt.Errorf("the firecracker process for %s is alive but did not answer its API within %s "+
+			"(%v); it was left alone rather than treated as asleep - retry, and if it persists `sbx rm` "+
+			"the sandbox", ref, describeTimeout, err)
+	}
 }
 
 func (p *fcProvider) Start(ctx context.Context, ref string) error {
@@ -814,7 +827,12 @@ func (p *fcProvider) Start(ctx context.Context, ref string) error {
 		return err
 	}
 
-	switch p.running(ctx, ref) {
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	switch state {
 	case fc.StateRunning:
 		return nil
 	case fc.StatePaused:
@@ -935,7 +953,12 @@ func (p *fcProvider) Stop(ctx context.Context, ref string) error {
 		return err
 	}
 
-	switch p.running(ctx, ref) {
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	switch state {
 	case "":
 		// Already asleep - or died without a snapshot, which Start will find and cold-boot.
 		return p.launch.Kill(ctx, p.dir(ref))
@@ -952,7 +975,12 @@ func (p *fcProvider) Pause(ctx context.Context, ref string) error {
 	unlock := p.lock(ref)
 	defer unlock()
 
-	switch p.running(ctx, ref) {
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	switch state {
 	case fc.StatePaused:
 		return nil
 	case fc.StateRunning:
@@ -966,7 +994,12 @@ func (p *fcProvider) Unpause(ctx context.Context, ref string) error {
 	unlock := p.lock(ref)
 	defer unlock()
 
-	if p.running(ctx, ref) == fc.StatePaused {
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	if state == fc.StatePaused {
 		return p.client(ref).Resume(ctx)
 	}
 
@@ -982,7 +1015,11 @@ func (p *fcProvider) Healthy(ctx context.Context, ref string) (bool, bool) { ret
 
 func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	vm, err := p.load(ref)
-	if err != nil || len(vm.Ports) == 0 || p.running(ctx, ref) != fc.StateRunning {
+	if err != nil || len(vm.Ports) == 0 {
+		return false, false
+	}
+
+	if state, err := p.running(ctx, ref); err != nil || state != fc.StateRunning {
 		return false, false
 	}
 
@@ -1026,7 +1063,7 @@ func (p *fcProvider) waitServing(ctx context.Context, vm *fcVM, dir string) erro
 			return nil
 		}
 
-		if p.running(ctx, vm.Ref) == "" {
+		if state, err := p.running(ctx, vm.Ref); err == nil && state == "" {
 			return errors.New("the VM exited during boot")
 		}
 
@@ -1112,11 +1149,12 @@ func (p *fcProvider) List(ctx context.Context, sandbox string) ([]Unit, error) {
 			continue
 		}
 
-		state := p.running(ctx, vm.Ref)
+		// A VMM that is alive and slow is up, not asleep: reported running, so nothing wakes it.
+		state, serr := p.running(ctx, vm.Ref)
 
 		u := Unit{
 			Sandbox: vm.Sandbox, Service: vm.Service, Slot: vm.Slot, Ref: vm.Ref,
-			Instance: vm.Instance, Running: state == fc.StateRunning, Paused: state == fc.StatePaused,
+			Instance: vm.Instance, Running: state == fc.StateRunning || serr != nil, Paused: state == fc.StatePaused,
 			Index: vm.Index % blockSize, DependsOn: vm.DependsOn, Idle: vm.Idle, OnIdle: vm.OnIdle,
 		}
 
@@ -1350,7 +1388,12 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 		return nil
 	}
 
-	switch p.running(ctx, ref) {
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return err
+	}
+
+	switch state {
 	case fc.StateRunning, fc.StatePaused:
 		c := p.client(ref)
 

@@ -1185,3 +1185,45 @@ func TestConcurrentCreatesOfOneServiceKeepTheWinner(t *testing.T) {
 		t.Fatalf("the winner's VM is not intact: %+v", vm)
 	}
 }
+
+func (l *fakeLauncher) Alive(dir string) bool { return l.server(dir) != nil }
+
+// A VMM that is alive but slower than the API timeout is a VM under load, not an asleep one:
+// Stop and Start must refuse to act rather than kill it (Start's "stale process" clear) or skip
+// its snapshot (Stop's "already asleep").
+func TestASlowVMMIsNotTreatedAsAsleep(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "slow", redis)
+	dir := r.p.dir(ref)
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, op := range []struct {
+		name string
+		do   func() error
+	}{
+		{"stop", func() error { return r.p.Stop(r.ctx, ref) }},
+		{"start", func() error { return r.p.Start(r.ctx, ref) }},
+	} {
+		srv := r.l.server(dir)
+		srv.Stall["/"] = describeTimeout + 300*time.Millisecond
+		kills := r.l.kills
+
+		if err := op.do(); err == nil || !strings.Contains(err.Error(), "alive but did not answer") {
+			t.Fatalf("%s on a slow VMM = %v", op.name, err)
+		}
+
+		if r.l.server(dir) != srv || r.l.kills != kills {
+			t.Fatalf("%s killed a live VM it could not describe", op.name)
+		}
+	}
+
+	// And one that is gone is asleep, as before.
+	_ = r.l.Kill(r.ctx, dir)
+
+	if state, err := r.p.running(r.ctx, ref); state != "" || err != nil {
+		t.Fatalf("no process = %q, %v", state, err)
+	}
+}
