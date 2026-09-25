@@ -367,10 +367,23 @@ func (c *Conn) CloseWith(code int, reason string) error {
 }
 
 // CloseNow is CloseWith for a caller that must not wait behind a writer stalled on a client
-// that stopped reading: the close frame is sent only if the write lock is free, within a short
+// that stopped reading: the close frame is sent only if the write lock comes free within a short
 // bound, and the socket is closed regardless - which is what unblocks the stalled writer.
+//
+// A bound rather than a single TryLock: an ordinary write in flight holds the lock for
+// microseconds, and losing the close frame to one turns a deliberate close (a takeover's 4001)
+// into what the client can only read as a dropped connection.
 func (c *Conn) CloseNow(code int, reason string) {
-	if c.wmu.TryLock() {
+	deadline := time.Now().Add(200 * time.Millisecond)
+
+	locked := c.wmu.TryLock()
+	for !locked && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+
+		locked = c.wmu.TryLock()
+	}
+
+	if locked {
 		if !c.closed {
 			_ = c.conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
 			_, _ = c.conn.Write(frame(opClose, closePayload(code, reason)))
