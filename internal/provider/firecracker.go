@@ -716,12 +716,18 @@ func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
 		return nil
 	}
 
+	return errors.Join(fmt.Errorf("sleeping %s: %w - its VM was stopped without a usable snapshot, and "+
+		"its next wake is a cold boot", vm.Ref, err), p.abandon(ctx, vm))
+}
+
+// abandon kills a running VM whose execd can no longer be trusted to answer, and records that its
+// next wake is a cold boot from its disk. The caller holds the lock.
+func (p *fcProvider) abandon(ctx context.Context, vm *fcVM) error {
 	kerr := p.launch.Kill(context.WithoutCancel(ctx), p.dir(vm.Ref))
 
 	vm.SnapshotValid, vm.Restored, vm.LiveSecret = false, false, ""
 
-	return errors.Join(fmt.Errorf("sleeping %s: %w - its VM was stopped without a usable snapshot, and "+
-		"its next wake is a cold boot", vm.Ref, err), kerr, p.save(vm))
+	return errors.Join(kerr, p.save(vm))
 }
 
 func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
@@ -1400,29 +1406,12 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 		return err
 	}
 
+	// The record the snapshot is saved with: the identity execd holds inside it.
+	snap := *vm
+
 	switch state {
 	case fc.StateRunning, fc.StatePaused:
-		c := p.client(ref)
-
-		if err := c.Pause(ctx); err != nil {
-			return err
-		}
-
-		err := c.CreateSnapshot(ctx, fc.SnapshotCreate{SnapshotType: fc.SnapshotFull,
-			SnapshotPath: filepath.Join(dst, fc.StateName), MemFilePath: filepath.Join(dst, fc.MemName)})
-		if err == nil {
-			err = copyVM(false)
-		}
-
-		// A snapshot resets Firecracker's dirty bitmap; the next sleep must be Full.
-		vm.Restored = false
-		_ = p.save(vm)
-
-		if rerr := c.Resume(ctx); err == nil {
-			err = rerr
-		}
-
-		if err != nil {
+		if snap, err = p.commitLive(ctx, vm, state, dst, copyVM); err != nil {
 			return err
 		}
 	default:
@@ -1440,12 +1429,94 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 		return err
 	}
 
-	b, err := json.Marshal(fcSnapshot{VM: *vm, Dir: dir})
+	b, err := json.Marshal(fcSnapshot{VM: snap, Dir: dir})
 	if err != nil {
 		return err
 	}
 
 	return os.WriteFile(filepath.Join(dst, "snapshot.json"), b, 0o600)
+}
+
+// commitLive snapshots a VM that is up, into dst, and leaves it as it found it.
+//
+// execd is sealed first, exactly as for a sleep: the snapshot is a second copy of its identity,
+// and one taken unsealed would restore already serving with it. It is re-keyed after, with a fresh
+// control secret, so the running VM and the saved one never hold the same secret. A frozen VM
+// (on_idle: freeze) is thawed only for execd to answer the seal and is frozen again at the end;
+// without a guest agent it is never thawed at all. It returns the record the snapshot holds.
+func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string, copyVM func(bool) error) (fcVM, error) {
+	c := p.client(vm.Ref)
+	guest := p.guest.Available()
+
+	if guest {
+		if state == fc.StatePaused {
+			if err := c.Resume(ctx); err != nil {
+				return fcVM{}, err
+			}
+		}
+
+		sctx, cancel := context.WithTimeout(ctx, sealTimeout)
+		err := p.guest.Seal(sctx, p.guestVM(vm), vm.secret())
+
+		cancel()
+
+		if err != nil {
+			// Sealed or not, it cannot be trusted to serve: stopped, its next wake cold-boots.
+			return fcVM{}, errors.Join(fmt.Errorf("sealing execd before the snapshot: %w - the VM was "+
+				"stopped, and its next wake is a cold boot", err), p.abandon(ctx, vm))
+		}
+	}
+
+	if guest || state == fc.StateRunning {
+		if err := c.Pause(ctx); err != nil {
+			return fcVM{}, errors.Join(err, p.abandon(ctx, vm))
+		}
+	}
+
+	err := c.CreateSnapshot(ctx, fc.SnapshotCreate{SnapshotType: fc.SnapshotFull,
+		SnapshotPath: filepath.Join(dst, fc.StateName), MemFilePath: filepath.Join(dst, fc.MemName)})
+	if err == nil {
+		err = copyVM(false)
+	}
+
+	snap := *vm
+
+	// A snapshot resets Firecracker's dirty bitmap; the next sleep must be Full.
+	vm.Restored = false
+
+	// Running again only if it was running - or was thawed for the seal and must be re-keyed.
+	if guest || state == fc.StateRunning {
+		if rerr := c.Resume(ctx); rerr != nil {
+			return fcVM{}, errors.Join(err, rerr, p.abandon(ctx, vm))
+		}
+	}
+
+	if guest {
+		next := randomHex(32)
+		vm.Generation++
+
+		if rerr := p.guest.Rekey(ctx, p.guestVM(vm), fc.Rekey{
+			Secret: vm.secret(), Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: next,
+		}); rerr != nil {
+			return fcVM{}, errors.Join(err, fmt.Errorf("re-keying execd after the snapshot: %w - the VM "+
+				"was stopped rather than left sealed", rerr), p.abandon(ctx, vm))
+		}
+
+		vm.LiveSecret = next
+
+		if state == fc.StatePaused {
+			if perr := c.Pause(ctx); perr != nil && err == nil {
+				err = perr
+			}
+		}
+	}
+
+	if serr := p.save(vm); serr != nil {
+		// execd holds a secret this record does not: stopped, its next wake is a cold boot.
+		return fcVM{}, errors.Join(err, serr, p.abandon(ctx, vm))
+	}
+
+	return snap, err
 }
 
 // createFromSnapshot restores a saved VM as a new service - only where its paths and address

@@ -1256,3 +1256,72 @@ func TestADiffSnapshotNeverWritesThroughALeftoverFile(t *testing.T) {
 		t.Fatalf("the snapshot wrote through the leftover diff.mem: %q", b)
 	}
 }
+
+// Commit of a running VM seals execd before the snapshot, exactly as a sleep does, and re-keys it
+// after with a fresh secret: the saved VM holds the sealed identity, the running one a new one.
+func TestCommitOfARunningVMSealsAndReKeys(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "m5a", redis)
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	before := r.vm(t, ref)
+	seals, rekeys := len(r.g.seals), len(r.g.rekeys)
+
+	if err := r.p.Commit(r.ctx, ref, "m5a-snap"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.g.seals) != seals+1 || r.g.seals[seals] != "Running" {
+		t.Fatalf("seals = %v: the snapshot was taken with execd unsealed", r.g.seals)
+	}
+
+	if len(r.g.rekeys) != rekeys+1 || r.g.rekeyState[rekeys] != "Running" {
+		t.Fatalf("rekeys = %d (states %v): execd was left sealed", len(r.g.rekeys), r.g.rekeyState)
+	}
+
+	after := r.vm(t, ref)
+	if k := r.g.rekeys[rekeys]; k.Secret != before.secret() || k.ControlSecret == before.secret() ||
+		after.secret() != k.ControlSecret || k.Generation <= before.Generation {
+		t.Fatalf("rekey %+v; before %q gen %d, after %q", k, before.secret(), before.Generation, after.secret())
+	}
+
+	snap, ok := r.p.snapshotFor("m5a-snap")
+	if !ok || snap.VM.secret() != before.secret() {
+		t.Fatalf("the snapshot must hold the secret execd was sealed with: %+v", snap)
+	}
+
+	if s := r.l.server(r.p.dir(ref)); s == nil || s.State() != "Running" {
+		t.Fatal("not running after the commit")
+	}
+}
+
+// Commit of a frozen VM (on_idle: freeze) leaves it frozen, with a guest agent or without.
+func TestCommitOfAFrozenVMLeavesItFrozen(t *testing.T) {
+	for _, guest := range []bool{true, false} {
+		r := newRig(t)
+		if !guest {
+			r.p.guest = fc.NoGuest{}
+		}
+
+		ref := r.create(t, "m5b", redis)
+
+		if err := r.p.Start(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := r.p.Pause(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := r.p.Commit(r.ctx, ref, "m5b-snap"); err != nil {
+			t.Fatal(err)
+		}
+
+		if s := r.l.server(r.p.dir(ref)); s == nil || s.State() != "Paused" {
+			t.Fatalf("guest=%v: a frozen VM came out of the commit running", guest)
+		}
+	}
+}
