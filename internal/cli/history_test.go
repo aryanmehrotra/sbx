@@ -171,3 +171,31 @@ func TestDetailStaysQuietForTheDaemon(t *testing.T) {
 		}
 	}
 }
+
+// The usage line writes the flags after the name - `sbx history [sandbox] [--json]` - and Go's
+// flag package stops at the first non-flag. So `sbx history x --json` printed the table and
+// dropped --json without a word, and a script parsing it got text it could not read.
+func TestHistoryFlagsAfterTheSandboxName(t *testing.T) {
+	journal(t)
+
+	history.Append(history.Record{Kind: "event", Sandbox: "x", Event: "removed", Actor: "expiry"})
+	history.Append(history.Record{Kind: "event", Sandbox: "y", Event: "created", Actor: "osb"})
+
+	var buf bytes.Buffer
+	if err := History([]string{"x", "--json"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.TrimSpace(buf.String())
+	if !strings.HasPrefix(got, "{") || !strings.Contains(got, `"actor":"expiry"`) {
+		t.Fatalf("--json after the name was ignored:\n%s", got)
+	}
+
+	if strings.Contains(got, `"sandbox":"y"`) {
+		t.Fatalf("the name before the flag no longer filters:\n%s", got)
+	}
+
+	if err := History([]string{"x", "--json", "extra"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("a second name was accepted and silently ignored")
+	}
+}

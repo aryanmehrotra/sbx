@@ -227,12 +227,22 @@ func (d *dockerProvider) filterStatAddr(name string) (string, error) {
 	return "", fmt.Errorf("the egress filter's stat port is not published on loopback: %q", out)
 }
 
-// removeFilterContainer takes the sandbox's filter down. Called where the sandbox's containers
-// and its network are removed, so a filter never outlives what it was filtering for.
-func (d *dockerProvider) removeFilterContainer(sandbox string) {
+// removeFilterContainer takes the sandbox's filter down, and reports whether there was one.
+// Called where the sandbox's containers and its network are removed, so a filter never outlives
+// what it was filtering for.
+func (d *dockerProvider) removeFilterContainer(sandbox string) bool {
+	// Asked first because `docker rm -f` exits 0 for a container that does not exist, which
+	// made every rm of a sandbox without a filter report removing one.
+	if _, err := d.docker("inspect", "-f", "{{.Id}}", filterContainer(sandbox)); err != nil {
+		return false
+	}
+
 	if _, err := d.docker("rm", "-f", filterContainer(sandbox)); err == nil {
 		fmt.Printf("  removed the egress filter for %s\n", sandbox)
+		return true
 	}
+
+	return false
 }
 
 func newToken() (string, error) {

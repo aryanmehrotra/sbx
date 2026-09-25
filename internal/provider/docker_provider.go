@@ -1142,7 +1142,11 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	for _, u := range units {
-		if _, err := d.docker("rm", "-f", u.Ref); err != nil {
+		// -v takes the container's ANONYMOUS volumes with it - the ones an image's VOLUME
+		// instruction makes (redis /data, postgres PGDATA). Without it every rm left one behind
+		// holding that sandbox's data, under a name `sbx gc` cannot attribute. Named volumes,
+		// including the sandbox's own data volume below, are untouched by -v.
+		if _, err := d.docker("rm", "-f", "-v", u.Ref); err != nil {
 			return err
 		}
 
