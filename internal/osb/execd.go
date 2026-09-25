@@ -238,3 +238,24 @@ func isModuleRoot(dir string) bool {
 
 	return err == nil
 }
+
+// ErrPublishedOnly is AgentFile's answer when the only linux binary for this version is the one
+// inside the published activator image: a release build on a machine with no linux sbx and no
+// go toolchain. The caller that cannot pull an image fetches the release asset instead.
+var ErrPublishedOnly = errors.New("no local linux sbx binary; only the published release has one")
+
+// AgentFile is the file half of the agent resolution above, for a caller that needs the linux
+// sbx binary itself rather than a volume holding it - the Firecracker helper VM, which runs the
+// same version of sbx as the host. Same order, same env overrides, same cross-compile.
+func AgentFile(ctx context.Context, version, arch string) (string, error) {
+	src, err := newExecdResolver(version).find(ctx, arch)
+	if err != nil {
+		return "", err
+	}
+
+	if src.File == "" {
+		return "", ErrPublishedOnly
+	}
+
+	return src.File, nil
+}
