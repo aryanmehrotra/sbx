@@ -79,6 +79,7 @@ func TestHostVolumesBindOnlyUnderAllowedRoots(t *testing.T) {
 		{"outside", map[string]any{"name": "x", "host": map[string]any{"path": outside}, "mountPath": "/x"}, "VOLUME::HOST_PATH_NOT_ALLOWED"},
 		{"prefix is not a parent", map[string]any{"name": "x", "host": map[string]any{"path": sibling}, "mountPath": "/x"}, "VOLUME::HOST_PATH_NOT_ALLOWED"},
 		{"symlink out", map[string]any{"name": "x", "host": map[string]any{"path": root + "/escape"}, "mountPath": "/x"}, "VOLUME::HOST_PATH_NOT_ALLOWED"},
+		{"missing, under a symlink out", map[string]any{"name": "x", "host": map[string]any{"path": root + "/escape/new/dir"}, "mountPath": "/x"}, "VOLUME::HOST_PATH_NOT_ALLOWED"},
 		{"dotdot subPath", map[string]any{"name": "x", "host": map[string]any{"path": root}, "subPath": "../..", "mountPath": "/x"}, "VOLUME::INVALID_SUB_PATH"},
 		{"relative path", map[string]any{"name": "x", "host": map[string]any{"path": "work"}, "mountPath": "/x"}, "VOLUME::INVALID_HOST_PATH"},
 	}
@@ -92,6 +93,12 @@ func TestHostVolumesBindOnlyUnderAllowedRoots(t *testing.T) {
 
 	if _, err := os.Stat(sibling); err == nil {
 		t.Errorf("%s was created although it is outside the allowed root", sibling)
+	}
+
+	// Checking a path that does not exist yet must not create it first: through the symlink, that
+	// would make a directory outside the root before finding out it is outside the root.
+	if _, err := os.Stat(filepath.Join(outside, "new")); err == nil {
+		t.Errorf("%s/new was created through a symlink out of the allowed root", outside)
 	}
 }
 
@@ -261,5 +268,52 @@ func TestVolumesSurviveARestartWithoutASpec(t *testing.T) {
 
 	if rm := h.p.lists(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-scratch"}) {
 		t.Fatalf("owned volume after a restart: removed = %v", rm)
+	}
+}
+
+// A refused create leaves nothing behind: not a host directory made while validating a request
+// that a later check refused.
+func TestRefusedCreateMakesNoHostDirectory(t *testing.T) {
+	root, allow := hostRoot(t)
+	h := newHarness(t, allow)
+
+	b := withVolumes(map[string]any{"name": "work", "host": map[string]any{"path": root + "/fresh/work"}, "mountPath": "/work"})
+	b["timeout"] = 30 // refused after volumes are parsed
+
+	if resp := h.do("POST", "/v1/sandboxes", b, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create = %d, want 400", resp.StatusCode)
+	}
+
+	if _, err := os.Stat(root + "/fresh"); !os.IsNotExist(err) {
+		t.Fatalf("%s/fresh exists after a refused create: %v", root, err)
+	}
+}
+
+// Nor pvc volumes made for a create whose record could not be saved: no sandbox will ever own
+// them, so nothing would ever remove them.
+func TestUnsavedCreateRemovesTheVolumesItMade(t *testing.T) {
+	h := newHarness(t)
+
+	h.p.mu.Lock()
+	h.p.volumes = map[string]bool{"sbx-osb-pvc-kept": true}
+	h.p.mu.Unlock()
+
+	if err := os.Chmod(h.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.Chmod(h.dir, 0o700) })
+
+	resp := h.do("POST", "/v1/sandboxes", withVolumes(
+		map[string]any{"name": "a", "pvc": map[string]any{"claimName": "fresh"}, "mountPath": "/a"},
+		map[string]any{"name": "b", "pvc": map[string]any{"claimName": "kept"}, "mountPath": "/b"},
+	), nil)
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("create = %d, want 500 (the record could not be saved)", resp.StatusCode)
+	}
+
+	if rm := h.p.lists(&h.p.volRemoved); !slices.Equal(rm, []string{"sbx-osb-pvc-fresh"}) {
+		t.Fatalf("removed = %v, want only the volume this create made", rm)
 	}
 }

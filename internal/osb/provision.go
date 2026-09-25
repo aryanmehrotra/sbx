@@ -70,9 +70,20 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	owned, verr := s.ensureClaims(r.Context(), pl.claims)
+	// Side effects only from here on, once nothing in the request can still be refused - and
+	// each undone if a later step fails, since no sandbox will ever own what a failed create
+	// made, and so nothing would ever remove it.
+	created, owned, verr := s.ensureClaims(r.Context(), pl.claims)
 	if verr != nil {
 		writeErr(w, verr.status, verr.code, verr.msg)
+		return
+	}
+
+	rmDirs, verr := s.makeHostDirs(pl.volumes)
+	if verr != nil {
+		s.removeVolumes(r.Context(), created)
+		writeErr(w, verr.status, verr.code, verr.msg)
+
 		return
 	}
 
@@ -84,6 +95,9 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.save(&pl.rec); err != nil {
 		delete(s.recs, pl.rec.ID)
 		s.mu.Unlock()
+
+		s.removeVolumes(r.Context(), created)
+		rmDirs()
 
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR",
 			fmt.Sprintf("could not record the sandbox under %s: %v", s.store.dir, err))
