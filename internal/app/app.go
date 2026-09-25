@@ -39,6 +39,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/cli"
 	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -377,6 +378,9 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		return cli.Sleep(context.Background(), p, positional[0])
+
+	case "egress":
+		return runEgress(args)
 
 	case "add":
 		return runAdd(args)
@@ -1132,6 +1136,7 @@ While you work
   sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
   sbx wake   <sandbox> [--timeout 90s]          wake it now and wait until serving
   sbx sleep  <sandbox>                          park it now: stop every service, drop to 0 B
+  sbx egress <sandbox> [--allow H] [--deny H]   read or change its network policy while it runs
   sbx mcp    [--url URL] [--key KEY]           an MCP server on stdio: OpenSandbox tools for agents
 
 Data
@@ -1198,4 +1203,59 @@ func connectEndpoints(args []string) []daemon.Endpoint {
 	}
 
 	return out
+}
+
+// ruleFlag is --allow or --deny: each appends to one shared list, so the rules keep the order
+// they were typed in across both flags. Matching is first-match, and two flag sets would lose
+// exactly the order that decides the outcome.
+type ruleFlag struct {
+	action string
+	rules  *[]egress.Rule
+}
+
+func (r ruleFlag) String() string { return "" }
+
+func (r ruleFlag) Set(v string) error {
+	*r.rules = append(*r.rules, egress.Rule{Action: r.action, Target: v})
+
+	return nil
+}
+
+func runEgress(args []string) error {
+	fs := newFlagSet("egress")
+	kind, socket, ns, isolation := backendFlags(fs)
+
+	var (
+		ch     cli.EgressChange
+		remove multiFlag
+	)
+
+	fs.Var(ruleFlag{egress.ActionAllow, &ch.Rules}, "allow", "permit a host, *.wildcard, IP or CIDR (repeatable, kept in order)")
+	fs.Var(ruleFlag{egress.ActionDeny, &ch.Rules}, "deny", "refuse a host, *.wildcard, IP or CIDR (repeatable, kept in order)")
+	fs.Var(&remove, "remove", "drop the rule for this target (repeatable)")
+	def := fs.String("default", "", "what an unmatched destination gets: allow or deny")
+	reset := fs.Bool("reset", false, "go back to the policy the spec declared")
+	_ = fs.Bool("show", false, "print the policy in force (what no other flag does anyway)")
+	asJSON := fs.Bool("json", false, "print OpenSandbox's policy status, for something that parses")
+
+	positional, rest := splitPositional(args, 2)
+	_ = fs.Parse(rest)
+
+	if len(positional) < 1 {
+		return missing("egress", "sandbox name")
+	}
+
+	service := ""
+	if len(positional) > 1 {
+		service = positional[1]
+	}
+
+	ch.Remove, ch.Default, ch.Reset, ch.JSON = remove, *def, *reset, *asJSON
+
+	p, _, err := resolve(*kind, *socket, *ns, *isolation)
+	if err != nil {
+		return err
+	}
+
+	return cli.Egress(context.Background(), p, positional[0], service, ch)
 }

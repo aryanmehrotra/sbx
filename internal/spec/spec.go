@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/egress"
 )
 
 // Spec is the on-disk sandbox.json.
@@ -197,6 +199,10 @@ type Service struct {
 	//	        existing spec already gets
 	//	"deny"  no routed egress. It can still be reached, and can still talk to the
 	//	        rest of its own sandbox
+	//	"allow" open, but through the egress filter rather than a route of its own:
+	//	        HTTP and HTTPS reach anywhere, and the policy can be tightened on the
+	//	        running service (`sbx egress`) without recreating it. Other protocols have
+	//	        no way out, because the filter is the only door - see EgressPolicy
 	//
 	// Named for the intent, not the mechanism: docker does it with a bridge that has IP
 	// masquerade disabled, a cluster does it with a NetworkPolicy, and a backend that
@@ -216,6 +222,20 @@ type Service struct {
 	// allowed hosts too). An agent box that may reach an LLM API and its package registry, and
 	// nothing else, is the case this exists for.
 	EgressAllow []string `json:"egress_allow,omitempty"`
+
+	// EgressPolicy is the general form: OpenSandbox's NetworkPolicy, verbatim - a default action
+	// and ordered allow/deny rules on hosts, *.wildcards, IPs and CIDRs. Like EgressAllow it puts
+	// the service behind the filter on a bridge with no route out, so every rule is enforced -
+	// including a deny under a default of allow, since nothing leaves except through the filter.
+	// The price of that is the same as egress: "allow": a default-allow policy opens HTTP and
+	// HTTPS, not raw TCP.
+	//
+	// It is the policy the service STARTS with. `sbx egress` and the OpenSandbox networkpolicy
+	// API change it on the running service; `sbx egress --reset` comes back to this.
+	//
+	// Services of one sandbox share one filter, so two that declare a policy must declare the
+	// same one - the alternative is a filter enforcing a mixture nobody wrote.
+	EgressPolicy *egress.Policy `json:"egress_policy,omitempty"`
 
 	// CPU and Memory cap what one service may take, passed to the runtime verbatim:
 	// CPU is cores ("0.5", "2"), Memory is a size ("512m", "2g").
@@ -312,18 +332,17 @@ func (s Service) validate(name string) error {
 	// A typo in a security control must fail rather than silently leave egress open.
 	// "den" is not "deny", and the difference is a sandbox that can reach the internet.
 	switch s.Egress {
-	case "", EgressDeny:
+	case "", EgressDeny, EgressAllow:
 	default:
-		return fmt.Errorf("service %q: egress %q is not valid - the only value is %q",
-			name, s.Egress, EgressDeny)
+		return fmt.Errorf("service %q: egress %q is not valid - it is %q, or %q for open egress "+
+			"through the filter, or unset", name, s.Egress, EgressDeny, EgressAllow)
+	}
+
+	if err := s.validatePolicy(name); err != nil {
+		return err
 	}
 
 	if len(s.EgressAllow) > 0 {
-		if s.Egress == EgressDeny {
-			return fmt.Errorf("service %q: egress_allow and egress %q together deny even the "+
-				"allowed hosts - use one, not both", name, EgressDeny)
-		}
-
 		for _, h := range s.EgressAllow {
 			if strings.TrimSpace(h) == "" {
 				return fmt.Errorf("service %q: egress_allow has a blank host", name)
@@ -344,8 +363,105 @@ func (s Service) validate(name string) error {
 // IdleNever reports whether this service asked never to be auto-slept.
 func (s Service) IdleNever() bool { return s.Idle == "never" || s.Idle == "0" }
 
-// EgressDeny is the only egress value, because "allow" is the absence of the field.
-const EgressDeny = "deny"
+// EgressDeny and EgressAllow are the egress values. Unset is "whatever the backend does",
+// which is open with a route of its own; "allow" is open THROUGH the filter, so that it can be
+// narrowed later on the running service.
+const (
+	EgressDeny  = "deny"
+	EgressAllow = "allow"
+)
+
+// validatePolicy refuses the combinations that contradict each other. Each one is refused
+// rather than resolved by a precedence rule, because every resolution silently discards half of
+// what somebody wrote in a security control.
+func (s Service) validatePolicy(name string) error {
+	declared := 0
+
+	for _, set := range []bool{s.Egress != "", len(s.EgressAllow) > 0, s.EgressPolicy != nil} {
+		if set {
+			declared++
+		}
+	}
+
+	if declared > 1 {
+		return fmt.Errorf("service %q: egress, egress_allow and egress_policy each say the whole "+
+			"answer and they contradict - use one. An allow-list with exceptions, or open with "+
+			"some hosts denied, is an egress_policy", name)
+	}
+
+	if s.EgressPolicy != nil {
+		if _, err := s.EgressPolicy.Normalize(); err != nil {
+			return fmt.Errorf("service %q: egress_policy: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+// Filtered reports whether this service reaches the network only through the egress filter.
+func (s Service) Filtered() bool {
+	return len(s.EgressAllow) > 0 || s.EgressPolicy != nil || s.Egress == EgressAllow
+}
+
+// DeclaredPolicy is the egress policy the spec gives a filtered service to start with.
+func (s Service) DeclaredPolicy() egress.Policy {
+	switch {
+	case s.EgressPolicy != nil:
+		if p, err := s.EgressPolicy.Normalize(); err == nil {
+			return p
+		}
+
+		// validate refuses this before anything is created; deny is the answer that cannot
+		// leave anything open if a caller skipped it.
+		return egress.DenyAll()
+	case s.Egress == EgressAllow:
+		return egress.Policy{DefaultAction: egress.ActionAllow, Egress: []egress.Rule{}}
+	default:
+		return egress.FromAllowList(s.EgressAllow)
+	}
+}
+
+// checkEgressFilters refuses two services of one sandbox declaring different policies. They
+// share one bridge and so one filter, and a CONNECT carries nothing that says which container
+// opened it. Plain allow-lists are exempt: their union is what they have always meant.
+func (s *Spec) checkEgressFilters() error {
+	var (
+		first string
+		want  string
+	)
+
+	for _, name := range s.Names() {
+		svc := s.Services[name]
+		if !svc.Filtered() || len(svc.EgressAllow) > 0 {
+			continue
+		}
+
+		h := svc.DeclaredPolicy().Hash()
+
+		switch {
+		case first == "":
+			first, want = name, h
+		case h != want:
+			return fmt.Errorf("services %q and %q declare different egress policies, and the "+
+				"services of one sandbox share one egress filter - give them the same policy, "+
+				"or put them in separate sandboxes", first, name)
+		}
+	}
+
+	if first == "" {
+		return nil
+	}
+
+	for _, name := range s.Names() {
+		if len(s.Services[name].EgressAllow) > 0 {
+			return fmt.Errorf("services %q and %q share one egress filter, and one declares an "+
+				"egress_allow list while the other declares a policy - write the list as "+
+				"allow rules in the same egress_policy", first, name)
+		}
+	}
+
+	return nil
+}
 
 // LoadSpec reads and validates a sandbox.json.
 func LoadSpec(path string) (*Spec, error) {
@@ -415,6 +531,10 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 	}
 
 	if err := s.checkDependencies(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	if err := s.checkEgressFilters(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 

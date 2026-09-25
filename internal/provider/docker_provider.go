@@ -13,6 +13,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -272,7 +273,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 
 	// Before the container joins it, and only when something asks. Fails closed: a service
 	// that declared "deny" and could not get the network must not start with egress open.
-	if svc.Egress == spec.EgressDeny || len(svc.EgressAllow) > 0 {
+	if svc.Egress == spec.EgressDeny || svc.Filtered() {
 		if err := d.ensureEgressNetwork(sandbox); err != nil {
 			return err
 		}
@@ -336,7 +337,9 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	// An allow-list gets the no-NAT bridge too - direct egress denied - plus a filtering proxy
 	// on the gateway as its one way out. HTTP(S)_PROXY points ordinary clients at it; a client
 	// that ignores the proxy and dials out directly has no route, so the allow-list holds.
-	if len(svc.EgressAllow) > 0 {
+	if svc.Filtered() {
+		declared := svc.DeclaredPolicy()
+
 		gw, err := d.egressGateway(sandbox)
 		if err != nil {
 			return err
@@ -360,7 +363,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		proxyHost, stat := gw, ""
 
 		if err := bindable(gw); err != nil {
-			addr, cerr := d.ensureFilterContainer(sandbox, svc.EgressAllow)
+			addr, cerr := d.ensureFilterContainer(sandbox, declared)
 			if cerr != nil {
 				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", err, cerr)
 			}
@@ -373,16 +376,24 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 			args = append(args, "-e", k+"="+proxy)
 		}
 
+		policy, _ := json.Marshal(declared)
+
 		args = append(args,
-			"--label", labelEgressAllow+"="+strings.Join(svc.EgressAllow, ","),
+			"--label", labelEgressPolicy+"="+string(policy),
 			"--label", labelEgressGateway+"="+gw)
+
+		// Kept beside the policy for the daemons that predate it: one that reads only the
+		// list still filters an allow-list service instead of ignoring it.
+		if len(svc.EgressAllow) > 0 {
+			args = append(args, "--label", labelEgressAllow+"="+strings.Join(svc.EgressAllow, ","))
+		}
 
 		if stat != "" {
 			args = append(args, "--label", labelEgressStat+"="+stat)
 		}
 	}
 
-	if svc.Egress == spec.EgressDeny || len(svc.EgressAllow) > 0 {
+	if svc.Egress == spec.EgressDeny || svc.Filtered() {
 		args = append(args, "--network", egressNetwork(sandbox))
 
 		// The service's own name, on the network, as well as the container's.
@@ -1044,6 +1055,8 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 		if a := c.Labels[labelEgressAllow]; a != "" {
 			u.EgressAllow = strings.Split(a, ",")
 		}
+
+		u.EgressPolicy = c.Labels[labelEgressPolicy]
 
 		if dep := c.Labels[labelDependsOn]; dep != "" {
 			u.DependsOn = strings.Split(dep, ",")

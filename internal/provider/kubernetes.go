@@ -182,6 +182,16 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 			"enforced by some CNIs, so sbx will not pretend to have applied one", service)
 	}
 
+	// The same for a filtered service. Its filter lives on a docker bridge with no route out, and
+	// a pod has neither; creating it anyway would give it whatever egress the cluster allows
+	// while its spec says it is filtered.
+	if svc.Filtered() {
+		return fmt.Errorf("service %q declares an egress filter (egress_policy, egress_allow or "+
+			"egress: \"allow\"), which the kubernetes provider does not implement yet: the "+
+			"cluster answer is a NetworkPolicy and an egress gateway, so sbx will not pretend to "+
+			"have applied one. Use the docker provider for this sandbox", service)
+	}
+
 	// Refused rather than translated. A cluster's hostPath is a *node's* disk, not the laptop
 	// the spec was written on, so mounting one would satisfy the manifest and give the service
 	// a directory nobody asked for on a machine the author has never seen. The honest cluster

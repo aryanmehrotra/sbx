@@ -117,15 +117,23 @@ footnote.
 
 ## 2 · The egress filter becomes a network policy
 
-`egress_allow` today is a host suffix list, fixed when the service is created, enforced by a
-CONNECT proxy on a bridge with no route out. The mechanism is right — a filtering proxy in the
-data path, a component with a lifecycle — and the policy it can express is thin.
+`egress_policy` is OpenSandbox's network policy — ordered allow and deny rules on hosts,
+wildcards, IPs and CIDRs — enforced by a CONNECT proxy on a bridge with no route out, and
+changeable on the running service. The mechanism is right — a filtering proxy in the data path, a
+component with a lifecycle — and what it still cannot see is anything below the host.
+
+**Shipped, and off this table** (for the next release's notes): **live updates** — `sbx egress`
+and `daemon.EgressControl` change the policy of a running service with nothing recreated or
+restarted; and **CIDR and IP rules, allow and deny** — enforced for a client that dials an address
+directly too, because the no-NAT bridge leaves it no route and the proxy is the only door, measured
+from inside a real sandbox. The estimate said the bridge would have to enforce CIDRs; it already
+did, since nothing routed leaves it. The costs are in
+[DECISIONS.md](DECISIONS.md#a-live-egress-policy-is-held-by-the-filter-and-pushed-to-it) and
+[DECISIONS.md](DECISIONS.md#default-allow-is-enforced-by-the-same-door-and-it-costs-raw-tcp).
 
 | | | est |
 |---|---|---|
-| **Live updates** | change the list on a running service without recreating it. The filter is already a long-lived container with an activity hook; the list is the only thing frozen. Lets a box fetch its dependencies wide open, then lock down before untrusted work starts — which currently needs two sandboxes | 2–3 d |
 | **Matchers** | path, method, header and query predicates on a rule. Pure logic above `Permits()` | 2 d |
-| **CIDR allow and deny** | address rules for traffic that has no hostname to match on. Not a proxy change — the bridge has to enforce it, or a client that dials an IP directly walks around the list | 1 wk |
 | **A terminating mode, and credential brokering on top of it** | see below | 4–8 wk |
 
 ### Credential brokering is the one worth the money
@@ -159,7 +167,7 @@ needs it. Everything else is spliced on the SNI as it is today, undecrypted.
 | **A local Go API** | the daemon's own package, importable, so a test harness can drive sandboxes in-process instead of shelling out. **Local only** — see the exclusions below | 1–2 wk |
 | **Reusable volumes** | a named volume that outlives the sandbox that made it, single-writer, for a dependency cache several sandboxes take turns on. Docker volumes already do the storage; what is missing is the lease and the lifecycle | 2–3 wk |
 | **Snapshot retention** | an expiry and a keep-last-N on `sbx snapshot`, so a long-lived branch does not accumulate | 1 wk |
-| **`egress_allow` on kubernetes** | the field is docker-only. A cluster expresses it as a NetworkPolicy, natively | 1–2 wk |
+| **Egress filtering on kubernetes** | `egress_policy`, `egress_allow` and `egress: "allow"` are docker-only, and a cluster now refuses them rather than creating a pod they do not reach. A cluster expresses them as a NetworkPolicy plus an egress gateway | 1–2 wk |
 
 ---
 
