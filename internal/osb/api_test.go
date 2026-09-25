@@ -63,18 +63,24 @@ func TestNoKeyMeansNoAuthentication(t *testing.T) {
 	}
 }
 
+// Every endpoint the API hands out is a 127.0.0.1 listener on this machine, useless to a client
+// anywhere else, and server-proxy mode (which would carry them over the API's own port) is not
+// built. So a non-loopback address is refused whatever the key: it could only ever serve a
+// client that could not use what it was given.
 func TestCheckBindRefusesAnOpenNonLoopbackAPI(t *testing.T) {
 	for addr, key := range map[string]string{"127.0.0.1:8080": "", "localhost:8080": "", "[::1]:8080": "",
-		"0.0.0.0:8080": "k", ":8080": "k"} {
+		"127.0.0.1:9": "k"} {
 		if err := CheckBind(addr, key); err != nil {
 			t.Errorf("CheckBind(%q, %q) = %v, want ok", addr, key, err)
 		}
 	}
 
-	for _, addr := range []string{"0.0.0.0:8080", ":8080", "10.0.0.5:8080"} {
-		err := CheckBind(addr, "")
-		if err == nil || !strings.Contains(err.Error(), "--osb-key") {
-			t.Errorf("CheckBind(%q, \"\") = %v, want a refusal naming --osb-key", addr, err)
+	for _, addr := range []string{"0.0.0.0:8080", ":8080", "10.0.0.5:8080", "[::]:8080", "example.com:8080"} {
+		for _, key := range []string{"", "k"} {
+			err := CheckBind(addr, key)
+			if err == nil || !strings.Contains(err.Error(), "server-proxy") || !strings.Contains(err.Error(), "ssh -L") {
+				t.Errorf("CheckBind(%q, %q) = %v, want a refusal naming server-proxy mode and an ssh tunnel", addr, key, err)
+			}
 		}
 	}
 }
