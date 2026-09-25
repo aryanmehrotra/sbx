@@ -1191,8 +1191,11 @@ func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 		return false, false
 	}
 
+	// Asleep is nothing to ask, not a failing check: Create leaves every VM asleep, and a caller
+	// that probes right after it (the CLI's post-create wait) must not spin on a VM nobody woke.
+	// The wake path probes after Start, when the VM is running.
 	if state, err := p.running(ctx, ref); err != nil || state != fc.StateRunning {
-		return false, vm.Health != ""
+		return false, false
 	}
 
 	// A health command is the service's own word on whether it serves - a database that accepts

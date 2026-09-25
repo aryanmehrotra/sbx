@@ -1466,6 +1466,11 @@ func TestHealthRunsInsideTheVM(t *testing.T) {
 
 	ref := r.create(t, "s8", svc)
 
+	// Asleep, as every create leaves it: nothing to ask, so the CLI's post-create wait does not spin.
+	if serving, declared := r.p.Probe(r.ctx, ref); serving || declared {
+		t.Fatalf("an asleep VM probed %v, %v", serving, declared)
+	}
+
 	if err := r.p.Start(r.ctx, ref); err != nil {
 		t.Fatal(err)
 	}
