@@ -31,6 +31,15 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"--shell json is for anything that parses rather than sources.",
 		`eval "$(sbx env feature-x)"`,
 	},
+	"fc": {
+		"sbx fc backend | sbx fc vm status|start|stop|rm [--cpus N] [--memory GiB] [--disk GiB]",
+		"Firecracker microVMs on a host without /dev/kvm. `backend` says what a microVM would\n" +
+			"run on here and why: directly on Linux with KVM, in a helper VM on an Apple M3+ Mac\n" +
+			"with macOS 15+ (lima, else colima) or on Windows 11 (WSL2), or refused with the fix.\n" +
+			"`vm` manages that helper VM; `sbx serve --provider firecracker` and every sandbox\n" +
+			"command with --provider firecracker start it on demand, so you rarely need to.",
+		"sbx fc backend && sbx serve --provider firecracker",
+	},
 	"ready": {
 		"sbx ready <sandbox> [--timeout 90s]",
 		"Block until every service really answers, then exit 0. For CI, where the next step\n" +
