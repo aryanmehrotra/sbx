@@ -262,6 +262,31 @@ type Service struct {
 	// Not validated against a list of known names. Docker rejects an unknown capability at
 	// create with a better message than this could paraphrase, and the set differs by kernel.
 	CapAdd []string `json:"cap_add,omitempty"`
+
+	// Entrypoint replaces the image's ENTRYPOINT: the first element is the program, the rest its
+	// leading arguments, and Args follow them. Empty keeps the image's own.
+	//
+	// Args alone cannot express this - it only replaces CMD, which the image's ENTRYPOINT then
+	// receives as arguments - and wrapping a workload in a supervisor it did not ship with is
+	// exactly the case that needs the program itself replaced.
+	Entrypoint []string `json:"entrypoint,omitempty"`
+
+	// ReadOnlyVolumes mounts existing named volumes read-only: volume name -> absolute path.
+	//
+	// For tools sbx supplies that the image does not carry (the OpenSandbox agent, mounted at
+	// /opt/sbx). Named volumes rather than bind mounts because a bind mount of a host path
+	// depends on the container runtime's VM sharing that path, which on a Mac it may not - a
+	// volume lives on the runtime's side of that boundary by construction.
+	ReadOnlyVolumes map[string]string `json:"readonly_volumes,omitempty"`
+
+	// OnIdle is what going idle does: "" or "stop" stops the container (0 B, the default), and
+	// "freeze" pauses it instead - memory and running processes kept, no CPU, thawed in about
+	// 10 ms by the next connection.
+	//
+	// Freeze is the default for sandboxes created through the OpenSandbox API, whose contract
+	// is that a background process started in one request is still running at the next. Here it
+	// is opt-in, because it holds the memory, and holding nothing is the reason sbx exists.
+	OnIdle string `json:"on_idle,omitempty"`
 }
 
 func (s Service) validate(name string) error {
@@ -331,6 +356,25 @@ func (s Service) validate(name string) error {
 		}
 	}
 
+	switch s.OnIdle {
+	case "", OnIdleStop, OnIdleFreeze:
+	default:
+		return fmt.Errorf("service %q: on_idle %q is not valid - %q or %q", name, s.OnIdle,
+			OnIdleStop, OnIdleFreeze)
+	}
+
+	for vol, dest := range s.ReadOnlyVolumes {
+		if strings.TrimSpace(vol) == "" || strings.ContainsAny(vol, "/:") {
+			return fmt.Errorf("service %q: readonly volume %q is not a volume name - these are "+
+				"named volumes, not host paths (use mounts for a host directory)", name, vol)
+		}
+
+		if !strings.HasPrefix(dest, "/") {
+			return fmt.Errorf("service %q: readonly volume %q -> %q needs an absolute container path",
+				name, vol, dest)
+		}
+	}
+
 	if s.Idle != "" && !s.IdleNever() {
 		if _, err := time.ParseDuration(s.Idle); err != nil {
 			return fmt.Errorf("service %q: idle %q is not \"never\", \"0\", or a duration "+
@@ -346,6 +390,16 @@ func (s Service) IdleNever() bool { return s.Idle == "never" || s.Idle == "0" }
 
 // EgressDeny is the only egress value, because "allow" is the absence of the field.
 const EgressDeny = "deny"
+
+// The two things going idle can mean. See Service.OnIdle.
+const (
+	OnIdleStop   = "stop"
+	OnIdleFreeze = "freeze"
+)
+
+// Validate checks one service on its own, for callers that build a Service in code rather
+// than loading a sandbox.json - the OpenSandbox API does - and want the same refusals.
+func (s Service) Validate(name string) error { return s.validate(name) }
 
 // LoadSpec reads and validates a sandbox.json.
 func LoadSpec(path string) (*Spec, error) {

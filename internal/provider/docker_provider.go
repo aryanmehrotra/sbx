@@ -333,6 +333,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--label", labelIdle+"="+svc.Idle)
 	}
 
+	if svc.OnIdle == spec.OnIdleFreeze {
+		args = append(args, "--label", labelOnIdle+"="+spec.OnIdleFreeze)
+	}
+
 	// An allow-list gets the no-NAT bridge too - direct egress denied - plus a filtering proxy
 	// on the gateway as its one way out. HTTP(S)_PROXY points ordinary clients at it; a client
 	// that ignores the proxy and dials out directly has no route, so the allow-list holds.
@@ -482,7 +486,22 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "-v", abs+":"+svc.Mounts[hostPath])
 	}
 
+	for _, vol := range SortedKeys(svc.ReadOnlyVolumes) {
+		args = append(args, "-v", vol+":"+svc.ReadOnlyVolumes[vol]+":ro")
+	}
+
+	// --entrypoint takes one word, so the rest of Entrypoint goes after the image, ahead of
+	// Args - which is where docker would have put the image's own CMD.
+	if len(svc.Entrypoint) > 0 {
+		args = append(args, "--entrypoint", svc.Entrypoint[0])
+	}
+
 	args = append(args, svc.Image)
+
+	if len(svc.Entrypoint) > 1 {
+		args = append(args, svc.Entrypoint[1:]...)
+	}
+
 	args = append(args, svc.Args...)
 
 	_, err := d.docker(args...)
@@ -1035,6 +1054,8 @@ func (d *dockerProvider) List(ctx context.Context, sandbox string) ([]Unit, erro
 			Ref:           c.name(),
 			Instance:      c.ID,
 			Running:       c.State == "running",
+			Paused:        c.State == "paused",
+			OnIdle:        c.Labels[labelOnIdle],
 			Index:         (pairs[0].Public - publicBase) % blockSize,
 			EgressGateway: c.Labels[labelEgressGateway],
 			Idle:          c.Labels[labelIdle],

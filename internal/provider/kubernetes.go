@@ -201,6 +201,24 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 	// these are refused and others are not. Quietly emitting the field would produce either a
 	// pod that never schedules with an error naming a policy rather than the spec, or a
 	// capability granted on a shared cluster because a laptop's spec asked for it.
+	// A named volume on this machine means nothing to a cluster, and an empty PVC mounted in
+	// its place would look like it worked - the tools that were meant to be there would simply
+	// be missing, reported by whatever tried to exec them.
+	if len(svc.ReadOnlyVolumes) > 0 {
+		return fmt.Errorf("service %q declares readonly_volumes, which the kubernetes provider "+
+			"does not implement: a named volume is local to one docker daemon, and a cluster "+
+			"would need an init container copying from an image instead", service)
+	}
+
+	// Freezing keeps a workload's memory; a cluster can only scale it to zero, which throws the
+	// memory away. Doing that under the name "freeze" would kill the background process the
+	// setting exists to keep.
+	if svc.OnIdle == spec.OnIdleFreeze {
+		return fmt.Errorf("service %q declares on_idle %q, which the kubernetes provider cannot "+
+			"do: a pod cannot be frozen through the API, only scaled to zero, which discards its "+
+			"memory. Drop on_idle to have it stopped when idle", service, spec.OnIdleFreeze)
+	}
+
 	if len(svc.CapAdd) > 0 {
 		return fmt.Errorf("service %q declares cap_add, which the kubernetes provider does not "+
 			"implement: whether a pod may hold a capability is decided by the namespace's Pod "+
@@ -302,6 +320,11 @@ func (k *kubeProvider) deployment(name string, labels map[string]string, svc spe
 	container := map[string]any{
 		"name":  "app",
 		"image": svc.Image,
+	}
+
+	// A pod's `command` is docker's ENTRYPOINT, whole: no one-word limit to work around here.
+	if len(svc.Entrypoint) > 0 {
+		container["command"] = svc.Entrypoint
 	}
 
 	if len(svc.Args) > 0 {
