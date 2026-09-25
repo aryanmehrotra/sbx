@@ -285,11 +285,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-      - name: upstream tests/go, the v0.9.0 tier
+      - name: pre-pull the code interpreter image
+        # code_interpreter creates its sandboxes from the SDK's CodeInterpreterImage
+        # (opensandbox/code-interpreter:latest, ~2.5 GB) with a 60s ready timeout. Pulled
+        # here, the create's own pull is a manifest check; left to the create, a cold runner
+        # spends the timeout downloading and the test reads as a server that never came up.
+        run: docker pull -q opensandbox/code-interpreter:latest
+      - name: upstream tests/go, the v0.10.0 tier
         # The script builds sbx itself, fetches and verifies the pinned upstream, and gates on
         # its own exit status. On failure it prints where the daemon log and the raw
-        # go test -json stream were kept.
-        run: ./scripts/osb-conformance.sh --tier v0.9.0
+        # go test -json stream were kept. RUN_CODE_INTERPRETER_E2E is explicit so the
+        # code_interpreter file cannot quietly skip: an expectation allows no such skip.
+        env:
+          RUN_CODE_INTERPRETER_E2E: 'true'
+        run: ./scripts/osb-conformance.sh --tier v0.10.0
 
   # Snapshot and fork touch volumes, images and a stopped container's data directory, and
   # every one of those is a place where "it worked on my machine" has already been wrong
