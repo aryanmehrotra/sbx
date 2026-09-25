@@ -452,6 +452,55 @@ What bounds each path here:
 
 ---
 
+## A Firecracker microVM on a Mac, through the helper VM
+
+`--provider firecracker` from macOS: the sandbox is a Firecracker microVM inside a Linux helper
+VM with nested virtualisation; asleep is a snapshot on disk, a wake is `snapshot/load` + resume +
+an execd re-key over vsock, and every sleep after the first is a Diff folded into the base.
+
+```sh
+go build -o sbx . && SBX_FC_VM_DRIVER=colima FC_E2E_ROUNDS=12 scripts/fc-anywhere-e2e.sh
+```
+
+Apple M4, 16 GiB, macOS 26.4.1; helper VM: colima 0.10.1 profile `sbx-fc-e2e`, `--vm-type vz
+--nested-virtualization`, **2 vCPU / 2 GiB**, created by the script and deleted after it (two
+other colima VMs, 4 GiB and 3 GiB, running throughout). Firecracker v1.17.0, the CI 6.18 kernel,
+`nginx` template, 1 vCPU / 256 MiB guest. Measured 2026-09-26, one run of 12 rounds, each round a
+sleep, a wake, an awake request and an exec (those two alternating order) and a create + rm of a
+second sandbox (before or after the wake, alternating). All times are client-side, on the Mac:
+
+| | n | median | p95 |
+|---|---:|---:|---:|
+| **wake from snapshot → first byte** (TCP connect on the Mac, HTTP 200) | 12 | **212 ms** | 232 ms |
+| request to an awake sandbox → first byte | 12 | 6.7 ms | 21.6 ms |
+| `sbx exec` round trip (ssh into the helper VM + sbx + execd over vsock) | 12 | 715 ms | 829 ms |
+| `sbx sleep` (Seal, pause, Diff snapshot, merge) | 12 | 693 ms | 831 ms |
+| `sbx create` (image already pulled: export, ext4, cold boot, first port, Full snapshot) | 12 | 11.7 s | 14.3 s |
+
+Inside the helper VM, the provider alone (`SBX_FC_E2E=1`, `redis:7-alpine`, n=2, so read, not
+ranked): restore + re-key 282-304 ms, first byte 326-342 ms, exec over vsock 265-326 ms, stop as
+a Diff snapshot 75-84 ms, create 5.8 s.
+
+Where it goes:
+
+- **The Mac adds almost nothing to a wake.** 212 ms from the Mac against ~300 ms for the
+  provider's own Start in the VM (different workloads, so the same size, not a saving): the mirror
+  and the ssh tunnel are not what a wake waits on. The spike's 88 ms was a bare `/init` restored
+  and asked over vsock; here execd is re-keyed before the wake proxy lets a byte through, and the
+  workload's pages fault in under nested virtualisation (spike: ~250-300 µs per stage-2 fault).
+- **An exec is mostly process start-up and ssh.** In the VM an exec is ~300 ms - the vsock
+  handshake, execd's `/command` and a fork in a nested guest; the other ~400 ms is `sbx` starting
+  on the Mac and again in the VM over ssh.
+- **Before this was measured, every wake cost 2.27 s**: the provider reported its port probe as
+  undeclared, so the daemon waited a flat 2 s for the workload. A VM port has no proxy in front
+  of it, so an accepted connection is a listener and the check is now declared.
+
+Not measured: bare-metal Linux (the only place the ROADMAP's 4-28 ms can be confirmed or refuted),
+a Windows/WSL2 host, kata-fc on kubernetes, and concurrent restores (the spike's N≥5 collapse
+applies unchanged).
+
+---
+
 ## Against other platforms
 
 Vendor-documented figures, read August 2026, beside ours - useful context, not a controlled
