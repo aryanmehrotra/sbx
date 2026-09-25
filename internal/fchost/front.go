@@ -20,6 +20,7 @@ package fchost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -43,6 +46,12 @@ type EnsureOptions struct {
 
 	// OSB starts the in-VM OpenSandbox listener; see DaemonOptions.OSB.
 	OSB bool
+
+	// SetDaemon says OSBKey, Serve and OSB are what the in-VM daemon is to run with - `sbx serve`
+	// says so - and records them. Every other Ensure (a redirected command, Remote, `sbx fc vm
+	// start`) has no opinion and uses the recorded ones: a redirected `sbx create` must not restart
+	// the daemon without the --osb-key or --idle a running `sbx serve` gave it.
+	SetDaemon bool
 
 	// Binary finds the linux sbx to install. Defaults to osb.AgentFile for the host's own
 	// architecture: vz and WSL2 both run guests of the host's architecture only.
@@ -94,7 +103,53 @@ func (m *Manager) Ensure(ctx context.Context, opt EnsureOptions) error {
 		return err
 	}
 
-	return m.StartDaemon(ctx, DaemonOptions{Token: tok, OSBKey: opt.OSBKey, Serve: opt.Serve, Restart: changed, OSB: opt.OSB})
+	d := daemonConfig{OSBKey: opt.OSBKey, Serve: opt.Serve, OSB: opt.OSB}
+
+	if opt.SetDaemon {
+		if err := m.saveDaemonConfig(d); err != nil {
+			return err
+		}
+	} else if saved, ok := m.loadDaemonConfig(); ok {
+		d = saved
+	}
+
+	return m.StartDaemon(ctx, DaemonOptions{Token: tok, OSBKey: d.OSBKey, Serve: d.Serve, Restart: changed, OSB: d.OSB})
+}
+
+// daemonConfig is what `sbx serve` last asked the in-VM daemon to run with, kept host-side in the
+// state directory (0600: it can hold the OSB key) so an Ensure that has no opinion keeps it.
+type daemonConfig struct {
+	OSBKey string   `json:"osb_key,omitempty"`
+	Serve  []string `json:"serve,omitempty"`
+	OSB    bool     `json:"osb,omitempty"`
+}
+
+func (m *Manager) daemonConfigPath() string {
+	return filepath.Join(m.StateDir, "daemon-"+m.Config.Name+".json")
+}
+
+func (m *Manager) saveDaemonConfig(d daemonConfig) error {
+	if err := os.MkdirAll(m.StateDir, 0o700); err != nil {
+		return err
+	}
+
+	b, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(m.daemonConfigPath(), b, 0o600)
+}
+
+func (m *Manager) loadDaemonConfig() (daemonConfig, bool) {
+	b, err := os.ReadFile(m.daemonConfigPath())
+	if err != nil {
+		return daemonConfig{}, false
+	}
+
+	var d daemonConfig
+
+	return d, json.Unmarshal(b, &d) == nil
 }
 
 // FrontOptions is the host-side `sbx serve --provider firecracker`.
@@ -130,6 +185,7 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 	}
 
 	opt.EnsureOptions.OSB = opt.OSBAddr != ""
+	opt.EnsureOptions.SetDaemon = true
 
 	if !opt.skipEnsure {
 		if err := m.Ensure(ctx, opt.EnsureOptions); err != nil {

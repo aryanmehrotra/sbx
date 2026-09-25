@@ -36,6 +36,7 @@ const (
 	guestBinary      = "/usr/local/bin/sbx"
 	guestUnit        = "sbx-fc-serve"
 	guestEnvFile     = "/etc/sbx-fc/env"
+	guestSpecFile    = "/etc/sbx-fc/spec" // DaemonSpec of the running daemon
 )
 
 // Cmd is one external command.
@@ -430,6 +431,16 @@ func ServeArgv(extra []string, osb bool) []string {
 	return append(argv, extra...)
 }
 
+// DaemonSpec is what identifies a daemon's configuration: a hash of its environment file and its
+// command line. Hashed so the file holding it in the VM carries no secret.
+func DaemonSpec(env string, argv []string) string {
+	h := sha256.New()
+	_, _ = io.WriteString(h, env)
+	_, _ = io.WriteString(h, "\x00--\x00"+strings.Join(argv, "\x00"))
+
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // StartDaemon runs `sbx serve --provider firecracker` in the VM as a transient systemd unit:
 // supervised, restarted on failure, and with its secrets in a root-only environment file
 // rather than on a command line anyone in the VM can read with ps.
@@ -447,18 +458,27 @@ func (m *Manager) StartDaemon(ctx context.Context, opt DaemonOptions) error {
 		return fmt.Errorf("writing the helper VM daemon's environment: %w", err)
 	}
 
+	argv := ServeArgv(opt.Serve, opt.OSB)
+	spec := DaemonSpec(env, argv)
+
+	// Running, and running with exactly this environment and command line: nothing to do. Anything
+	// else - a new --osb-key, --idle or --only, a new token, new control ports - restarts it; a
+	// daemon that kept its old flags while every command believed the new ones was the bug.
 	if !opt.Restart {
-		if _, err := m.inVM(ctx, nil, "systemctl", "is-active", "--quiet", guestUnit); err == nil {
+		have, err := m.inVM(ctx, nil, "sh", "-c",
+			"systemctl is-active --quiet "+guestUnit+" && cat "+guestSpecFile)
+		if err == nil && strings.TrimSpace(have) == spec {
 			return nil
 		}
 	}
 
-	q := make([]string, 0, len(ServeArgv(opt.Serve, opt.OSB)))
-	for _, a := range ServeArgv(opt.Serve, opt.OSB) {
+	q := make([]string, 0, len(argv))
+	for _, a := range argv {
 		q = append(q, quote(a))
 	}
 
 	script := "systemctl stop " + guestUnit + " 2>/dev/null; systemctl reset-failed " + guestUnit + " 2>/dev/null; " +
+		"printf '%s\\n' " + spec + " > " + guestSpecFile + "; " +
 		"exec systemd-run --quiet --unit=" + guestUnit + " --collect -p Restart=on-failure " +
 		"-p EnvironmentFile=" + guestEnvFile + " " + strings.Join(q, " ")
 

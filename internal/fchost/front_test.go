@@ -219,10 +219,13 @@ func TestEnsureInstallsByContentAndRestartsOnlyOnChange(t *testing.T) {
 
 	find := func(context.Context) (string, error) { return bin, nil }
 
-	t.Run("same bytes already there, daemon active: nothing is copied or restarted", func(t *testing.T) {
-		r := (&fakeRunner{}).on("limactl list", runningLima, nil).
-			on("ssh", sum(payload)+"  /usr/local/bin/sbx\n", nil)
+	t.Run("same bytes already there, daemon active with this spec: nothing is copied or restarted", func(t *testing.T) {
+		r := (&fakeRunner{}).on("limactl list", runningLima, nil)
 		m := limaManager(t, r)
+
+		tok, _ := m.Token()
+		r.onContains("cat /etc/sbx-fc/spec", DaemonSpec("SBX_CONNECT_TOKEN="+tok+"\nHOME=/root\n", ServeArgv(nil, false))+"\n", nil).
+			on("ssh", sum(payload)+"  /usr/local/bin/sbx\n", nil)
 
 		if err := m.Ensure(context.Background(), EnsureOptions{Binary: find}); err != nil {
 			t.Fatal(err)
@@ -233,7 +236,7 @@ func TestEnsureInstallsByContentAndRestartsOnlyOnChange(t *testing.T) {
 			t.Fatalf("did work it did not need to:\n%s", all)
 		}
 
-		if !strings.Contains(all, "'systemctl' 'is-active' '--quiet' 'sbx-fc-serve'") {
+		if !strings.Contains(all, "systemctl is-active --quiet sbx-fc-serve && cat /etc/sbx-fc/spec") {
 			t.Fatalf("never checked the daemon:\n%s", all)
 		}
 	})
@@ -495,5 +498,52 @@ func TestEnsureSaysWhenNestedVirtDidNotTakeEffect(t *testing.T) {
 func TestServeRefusesOSBOnFirecracker(t *testing.T) {
 	if err := ServeMain("dev", []string{"--osb-addr", "127.0.0.1:18080"}); !errors.Is(err, provider.ErrOSBOnFirecracker) {
 		t.Fatalf("ServeMain --osb-addr = %v", err)
+	}
+}
+
+// The in-VM daemon is restarted when what it runs with changed, not only when the binary did: a
+// new --idle (or --osb-key, --only, token, control port) against the same bytes used to leave the
+// old daemon running with the old flags.
+func TestEnsureRestartsTheDaemonWhenItsFlagsChange(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "sbx")
+	payload := []byte("\x7fELF pretend linux sbx")
+
+	if err := os.WriteFile(bin, payload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	find := func(context.Context) (string, error) { return bin, nil }
+
+	r := (&fakeRunner{}).on("limactl list", runningLima, nil).
+		onContains("cat /etc/sbx-fc/spec", "the-spec-it-was-started-with\n", nil).
+		on("ssh", sum(payload)+"  /usr/local/bin/sbx\n", nil)
+	m := limaManager(t, r)
+
+	if err := m.Ensure(context.Background(), EnsureOptions{Binary: find, SetDaemon: true,
+		OSBKey: "k1", Serve: []string{"--idle", "2m"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	all := strings.Join(r.lines(), "\n")
+	if !strings.Contains(all, "systemd-run") || !strings.Contains(all, `'\''--idle'\'' '\''2m'\''`) {
+		t.Fatalf("a daemon running with other flags was not restarted with these:\n%s", all)
+	}
+
+	// A redirected command's Ensure has no opinion, and keeps what serve set.
+	r.calls, r.stdin = nil, nil
+
+	if err := m.Ensure(context.Background(), EnsureOptions{Binary: find}); err != nil {
+		t.Fatal(err)
+	}
+
+	all = strings.Join(r.lines(), "\n")
+	if !strings.Contains(all, `'\''--idle'\'' '\''2m'\''`) || !slices.ContainsFunc(r.stdin, func(s string) bool {
+		return strings.Contains(s, "SBX_OSB_KEY=k1\n")
+	}) {
+		t.Fatalf("a redirected Ensure dropped the daemon's key or flags:\nstdin %q\n%s", r.stdin, all)
+	}
+
+	if fi, err := os.Stat(m.daemonConfigPath()); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("daemon config: %v %v", fi, err)
 	}
 }

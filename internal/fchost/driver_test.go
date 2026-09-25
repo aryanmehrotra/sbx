@@ -24,14 +24,21 @@ type fakeRunner struct {
 }
 
 type answer struct {
-	prefix string
-	out    string
-	err    error
-	times  int // 0 = forever; otherwise used up after this many matches
+	prefix   string
+	contains string // when set, matched anywhere in the line instead of prefix
+	out      string
+	err      error
+	times    int // 0 = forever; otherwise used up after this many matches
 }
 
 func (f *fakeRunner) on(prefix, out string, err error) *fakeRunner {
 	f.answers = append(f.answers, answer{prefix: prefix, out: out, err: err})
+
+	return f
+}
+
+func (f *fakeRunner) onContains(sub, out string, err error) *fakeRunner {
+	f.answers = append(f.answers, answer{contains: sub, out: out, err: err})
 
 	return f
 }
@@ -57,7 +64,14 @@ func (f *fakeRunner) answer(c Cmd) (string, error) {
 
 	for i := range f.answers {
 		a := &f.answers[i]
-		if a.times < 0 || !strings.HasPrefix(line, a.prefix) {
+		switch {
+		case a.times < 0:
+			continue
+		case a.contains != "":
+			if !strings.Contains(line, a.contains) {
+				continue
+			}
+		case !strings.HasPrefix(line, a.prefix):
 			continue
 		}
 
