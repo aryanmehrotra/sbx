@@ -63,11 +63,6 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
 	}
 
-	if !loopbackOnly(addr) {
-		logs.Default.Warn("", "", "the OpenSandbox API on %s is reachable from other machines: "+
-			"the key and every request cross the network in the clear unless TLS is in front", addr)
-	}
-
 	return api, ln, nil
 }
 
