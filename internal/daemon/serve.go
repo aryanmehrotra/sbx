@@ -173,6 +173,9 @@ func Serve(args []string) error {
 	osbAddr := fs.String("osb-addr", envOr("SBX_OSB_ADDR", ""), "serve the OpenSandbox lifecycle API here, e.g. 127.0.0.1:8080; off unless set")
 	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY); needed for a non-loopback --osb-addr")
 
+	var pools stringList
+	fs.Var(&pools, "osb-pool", "keep warm OpenSandbox sandboxes of this image ready, IMAGE[=N] (default 8; repeatable): a matching create is answered from one in milliseconds")
+
 	var only stringList
 	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
 	_ = fs.Parse(args)
@@ -257,7 +260,7 @@ func Serve(args []string) error {
 		scope:      scope,
 	}
 
-	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, scope)
+	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, scope, pools)
 	if err != nil {
 		return err
 	}
