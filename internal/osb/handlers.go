@@ -87,7 +87,7 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (record, bool) {
 // unitsBySandbox asks the provider once for everything, so rendering a page of sandboxes is one
 // docker call rather than one per sandbox.
 func (s *Server) unitsBySandbox(ctx context.Context) (map[string][]provider.Unit, error) {
-	units, err := s.p.List(ctx, "")
+	units, err := s.lister.units(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -176,14 +176,13 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Filtered to this one: listing every container to render one grew with every sandbox.
-	units, err := s.p.List(r.Context(), rec.ID)
+	units, err := s.unitsBySandbox(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	out := render(rec, units, true)
+	out := render(rec, units[rec.ID], true)
 	s.trace.mark(rec.ID, "GET answered "+out.Status.State)
 	writeJSON(w, http.StatusOK, out)
 }

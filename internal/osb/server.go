@@ -144,6 +144,9 @@ type Server struct {
 	// trace times each create phase when SBX_OSB_TRACE is set.
 	trace *tracer
 
+	// lister shares one container list among the GETs and lists that arrive together.
+	lister *listCoalescer
+
 	pools      map[string]*pool
 	poolSem    chan struct{}
 	claimExecd func(ctx context.Context, addr, oldToken, newToken string, env map[string]string) error
@@ -254,6 +257,8 @@ func New(o Options) (*Server, error) {
 	if err := s.newPools(o.Pools); err != nil {
 		return nil, err
 	}
+
+	s.lister = &listCoalescer{list: func(ctx context.Context) ([]provider.Unit, error) { return s.p.List(ctx, "") }}
 
 	s.base, s.cancel = context.WithCancel(context.Background())
 

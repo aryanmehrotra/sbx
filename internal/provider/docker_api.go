@@ -29,6 +29,11 @@ func newDockerClient(ep dockerEndpoint) *dockerClient {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return ep.dial(ctx)
 			},
+			// Kept open for reuse, many of them. The default keeps two, so a burst of calls - a
+			// hundred creates each thawing a container - dialled a fresh connection for nearly
+			// every one, and on a VM-backed engine that dial crosses the VM's socket forward.
+			MaxIdleConnsPerHost: 64,
+			IdleConnTimeout:     90 * time.Second,
 		},
 		// Deliberately not zero: a hung docker socket must not wedge a wake forever.
 		Timeout: 60 * time.Second,
