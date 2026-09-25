@@ -6,14 +6,8 @@ package osb
 // a named volume once and is mounted read-only at /opt/sbx in every API sandbox, so the image
 // is used as it is - no rebuild, no layer, nothing the caller has to prepare.
 //
-// Where the binary comes from, in order:
-//
-//  1. $SBX_EXECD_BINARY - an explicit path, for anyone whose setup the rest guesses wrong.
-//  2. This process's own executable, when the host IS linux on the same architecture.
-//  3. A cross-compile of this module, when `go` is on PATH and the source is findable - the
-//     development path, where the version is "dev" and no published image matches it.
-//  4. The published activator image for this version, which carries the binary at
-//     /usr/local/bin/sbx for every release architecture.
+// Where the binary comes from is internal/agentbin's answer - the same search the microVM
+// provider uses - and this file only decides which volume it goes into.
 //
 // A volume filled from a FILE is named for the file's content, not just the version: a dev
 // build is "dev" every time it is rebuilt, and a volume keyed only on that would keep serving
@@ -21,27 +15,22 @@ package osb
 // images - keyed by content, never by age.
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/aryanmehrotra/sbx/internal/agentbin"
 )
 
 const (
 	execdPort   = 44772
 	execdMount  = "/opt/sbx"
 	execdBinary = "sbx"
-	modulePath  = "github.com/aryanmehrotra/sbx"
-	activator   = "ghcr.io/aryanmehrotra/sbx-activator"
 
 	// tokenEnv is the variable upstream execd reads its access token from
 	// (components/execd/pkg/flag/parser.go at release-1.1.0); sbx execd reads the same one.
@@ -88,46 +77,16 @@ func (e *execdResolver) resolve(ctx context.Context, arch string) (execdSource, 
 }
 
 func (e *execdResolver) find(ctx context.Context, arch string) (execdSource, error) {
-	if p := os.Getenv("SBX_EXECD_BINARY"); p != "" {
-		return e.fromFile(p)
+	src, err := agentbin.Locate(ctx, arch, e.version)
+	if err != nil {
+		return execdSource{}, err
 	}
 
-	if runtime.GOOS == "linux" && runtime.GOARCH == arch {
-		if self, err := os.Executable(); err == nil {
-			return e.fromFile(self)
-		}
+	if src.File != "" {
+		return e.fromFile(src.File)
 	}
 
-	var buildErr error
-
-	if gobin, err := exec.LookPath("go"); err == nil {
-		if src, ok := findSource(); ok {
-			out, err := e.crossCompile(ctx, gobin, src, arch)
-			if err == nil {
-				return e.fromFile(out)
-			}
-
-			buildErr = err
-		}
-	}
-
-	if e.version != "" && e.version != "dev" {
-		return execdSource{
-			Volume: volumeName(e.version),
-			Image:  activator + ":" + e.version,
-		}, nil
-	}
-
-	msg := fmt.Sprintf("no linux/%s sbx binary to run as the sandbox agent: this is a dev build "+
-		"(no published image matches it), go is not on PATH or the source was not found, and "+
-		"SBX_EXECD_BINARY is not set. Build one - `CGO_ENABLED=0 GOOS=linux GOARCH=%s go build -o "+
-		"sbx-linux-%s .` in the sbx checkout - and set SBX_EXECD_BINARY to it", arch, arch, arch)
-
-	if buildErr != nil {
-		msg += fmt.Sprintf(" (the cross-compile was tried and failed: %v)", buildErr)
-	}
-
-	return execdSource{}, errors.New(msg)
+	return execdSource{Volume: volumeName(e.version), Image: src.Image}, nil
 }
 
 func (e *execdResolver) fromFile(path string) (execdSource, error) {
@@ -158,83 +117,4 @@ func volumeName(key string) string {
 	}, key)
 
 	return "sbx-execd-" + key
-}
-
-// crossCompile builds this module for linux into ~/.sbx/execd, statically, so it runs in any
-// image - including one with no libc.
-func (e *execdResolver) crossCompile(ctx context.Context, gobin, src, arch string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	out := filepath.Join(home, ".sbx", "execd", "linux-"+arch, "sbx")
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		return "", err
-	}
-
-	cmd := exec.CommandContext(ctx, gobin, "build", "-trimpath",
-		"-ldflags", "-s -w -X main.version="+e.version, "-o", out, ".")
-	cmd.Dir = src
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch)
-
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build in %s: %w: %s", src, err, strings.TrimSpace(string(b)))
-	}
-
-	return out, nil
-}
-
-// findSource looks for this module's checkout: $SBX_SOURCE_DIR, then upward from the
-// executable (a `go build -o sbx .` binary sits in the checkout), then upward from the working
-// directory (which is where `go test` runs).
-func findSource() (string, bool) {
-	var starts []string
-
-	if d := os.Getenv("SBX_SOURCE_DIR"); d != "" {
-		starts = append(starts, d)
-	}
-
-	if self, err := os.Executable(); err == nil {
-		starts = append(starts, filepath.Dir(self))
-	}
-
-	if wd, err := os.Getwd(); err == nil {
-		starts = append(starts, wd)
-	}
-
-	for _, s := range starts {
-		for dir := s; ; dir = filepath.Dir(dir) {
-			if isModuleRoot(dir) {
-				return dir, true
-			}
-
-			if filepath.Dir(dir) == dir {
-				break
-			}
-		}
-	}
-
-	return "", false
-}
-
-func isModuleRoot(dir string) bool {
-	f, err := os.Open(filepath.Join(dir, "go.mod"))
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	if !sc.Scan() {
-		return false
-	}
-
-	if strings.TrimSpace(sc.Text()) != "module "+modulePath {
-		return false
-	}
-
-	_, err = os.Stat(filepath.Join(dir, "main.go"))
-
-	return err == nil
 }

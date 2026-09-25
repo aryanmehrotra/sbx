@@ -605,3 +605,88 @@ existed before its caller did, and a secret minted ahead of the caller can be sh
 of a snapshot carries it. The round trip is the price (docs/BENCHMARKS.md). What a member may
 serve is a whitelist of request fields; anything else, including a field this sbx does not know,
 takes the cold path rather than being dropped by a member made without it.
+---
+
+### One host probe decides the microVM path, and a Mac is sent to a helper VM, not refused
+
+`sbx doctor`, `--provider firecracker` and the helper-VM layer (sbx inside a nested-virtualisation
+Linux VM on macOS and Windows) all ask "can Firecracker run here, and how". They get one answer from
+`internal/fc/hostcap`: a probe that only reads (the `KVM_GET_API_VERSION` ioctl on `/dev/kvm`,
+DMI and cpuinfo for "this Linux is itself a guest", `sysctl` for the Mac's chip and macOS version,
+`mkfs.ext4` on PATH) and a pure `Decide` returning **direct**, **helper-vm**, **kata-runtimeclass** or
+**refused** with a reason and a next step. Two copies of that logic would disagree the day one learned
+about a new chip, and doctor approving a machine the provider then refuses is the failure
+"Isolation fails closed, and says why" exists to prevent.
+
+The ROADMAP's option A was "refused on darwin". It became "helper-vm on a Mac that can nest", because
+that answer is true and the refusal was not: an M3+ on macOS 15+ runs Firecracker unmodified inside a
+Linux VM (spike, measured). The provider hands the decision to `HelperVMProvider`; a build without
+that layer says it is missing rather than claiming the machine cannot. The Mac check parses the CPU
+brand string instead of asking Virtualization.framework, because asking needs cgo, and the static
+binary is half of what people install this for.
+
+### A microVM's root filesystem comes from docker export, not from layers
+
+The ROADMAP budgeted four weeks for pulling layers and applying them in userspace, honouring `.wh.`
+whiteouts. `docker create` + `docker export` against the engine the host already has returns the
+filesystem **already flattened** - the engine applied the whiteouts when it assembled the container
+- with the engine's credentials, mirrors and platform selection. So there are no whiteouts to
+honour, and a test fails if an engine ever exports one. A registry client in a zero-dependency module
+would be a second copy of all of that.
+
+The ext4 is built by `mkfs.ext4 -d`, shelled out like tunnels are. Owners are the trap: extracting a
+tar as a non-root user makes every file yours, and postgres refuses a data directory it does not
+own. e2fsprogs 1.47.1+ reads the tar directly and keeps them; older mkfs (Ubuntu 24.04 ships 1.47.0)
+gets an extracted tree only when sbx is root, and otherwise the build is **refused** with both ways
+out. The cache is keyed by the image ID, a content hash - a new image under an old tag rebuilds, an
+unchanged one never does - per "A built image is keyed by its content".
+
+Found against a real engine, not predicted: a `--format` template naming `.Config.Entrypoint`
+fails on `alpine:3`, which has none. `Inspect` decodes the whole object instead.
+
+### The image rootfs holds the image; the agent rides on its own drive
+
+Injecting `/opt/sbx/sbx` and an init into the image's ext4 would make every cached rootfs depend on
+the sbx binary's hash, so rebuilding sbx - every dev build - would rebuild every image. Instead each
+VM gets a small read-only **agent drive** (`vda`: `/sbx` and a 0600 `/init.json` with the entrypoint and
+environment) that the kernel boots as root; `sbx fc-init` mounts the image (`vdb`), bind-mounts the
+agent at `/opt/sbx/sbx`, switches root and becomes execd. It is an initramfs with a filesystem
+instead of a cpio, so it costs no guest RAM. The rootfs is cloned per VM with `FICLONE` where the
+filesystem can (btrfs, XFS) and a sparse copy where it cannot (ext4): 57 ms for a 256 MiB file
+holding 3 MiB on APFS; the e2e test logs which one a Linux host got.
+
+### A snapshot is invalid from the moment its VM runs
+
+A Firecracker snapshot is memory plus device state, and it is only correct against the disk as it
+was when it was taken. Resume it and the guest writes; its page cache and its filesystem move on
+together, and the snapshot now describes the past. If that VM dies without being slept - a host
+reboot, a crash, a workload that exits and takes PID 1 with it - restoring the old memory over the
+newer disk gives the guest a page cache that disagrees with its ext4, which is corruption, silently.
+
+So `SnapshotValid` is written false, and fsync'd, **before** every resume, and true only after the
+next snapshot completes. A Start that finds it false cold-boots against the disk as it is: a power
+loss, which ext4's journal recovers from. A load that *fails* never ran the guest, so it restores the
+flag. The same reasoning picks the snapshot type: a Diff is only correct on top of the memory file
+this process was loaded from, so it is taken only then - never after a cold boot, and never after a
+`sbx snapshot`, which resets Firecracker's dirty bitmap - and it is folded into the base by
+`SEEK_DATA` extents, because a page the guest dirtied to all zeroes is data, and a non-zero scan would
+restore what was under it.
+
+### A firecracker snapshot restores only as itself
+
+The VM state names its drives by host path, and the guest's IP was set by the kernel at first boot
+and lives in its memory. So `sbx snapshot` on firecracker restores as the same sandbox and service
+in the same slot, and refuses anything else by name. Anywhere else would be a fork: two VMs with the
+parent's execd token and every key userspace made before the snapshot (the spike measured the token
+identical in every clone at N=2..50). Forking needs per-clone drive paths (a jailer or mount
+namespace) and the guest agent's re-key; until both exist it is refused, not approximated.
+
+### Guest networking is arithmetic, and has no way out
+
+Each sandbox gets a bridge, `sbxfc<slot>` on `10.231.<slot>.0/24`, and each service a tap and the
+address `.<port index + 2>`. Computed, never leased, because Create, the daemon's Start and a restore
+after a reboot can each be a different sbx process and all must agree without talking. sbx writes
+no iptables rule, so nothing masquerades and nothing leaves - the no-NAT model `egress: "deny"`
+already uses - and `egress_allow`/`egress_policy` are refused until the filter listens on a VM bridge.
+Between bridges the host routes only if `ip_forward` is on and FORWARD allows it; docker sets that
+policy to DROP, and `sbx doctor` shows `ip_forward` rather than sbx writing a rule to be sure.

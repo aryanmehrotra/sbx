@@ -27,11 +27,11 @@ believe they own the lifecycle, and disagree while you debug something else.
             │       │    Provider interface    │       │
             │       │  Create Start Stop Probe │       │
             │       │  List Exec Logs Copy     │       │
-            │       └──────┬────────────┬──────┘       │
-            │              │            │              │
-            │       ┌──────▼─────┐ ┌────▼────────┐     │
-            │       │   docker   │ │ kubernetes  │     │
-            │       └────────────┘ └─────────────┘     │
+            │       └──┬─────────┬──────────┬──┘       │
+            │          │         │          │          │
+            │     ┌────▼───┐ ┌───▼──────┐ ┌─▼─────────┐│
+            │     │ docker │ │kubernetes│ │firecracker││
+            │     └────────┘ └──────────┘ └───────────┘│
             │                                          │
    ┌────────▼────────┐                        ┌────────▼────────┐
    │   sbx serve     │                        │  tunnel backend │
@@ -41,7 +41,7 @@ believe they own the lifecycle, and disagree while you debug something else.
                                                * opt-in only
 ```
 
-One spec. One binary. Two backends.
+One spec. One binary. Three backends.
 
 ---
 
@@ -164,17 +164,66 @@ sbx create my-branch --provider kubernetes  # the same spec, a cluster
 
 Everything the spec declares maps onto both; nothing in `sandbox.json` names a backend:
 
-| | docker | kubernetes |
-|---|---|---|
-| address | `127.0.0.1:20002` | `sbx-x-pg.sbx.svc:5432` |
-| wake | `docker start` | scale → 1 |
-| sleep | `docker stop` | scale → 0 |
-| health | HEALTHCHECK | readinessProbe |
-| storage | named volume | PVC |
-| isolation | `--runtime` | `runtimeClassName` |
+| | docker | kubernetes | firecracker |
+|---|---|---|---|
+| address | `127.0.0.1:20002` | `sbx-x-pg.sbx.svc:5432` | `127.0.0.1:20002`, upstream the guest's tap IP |
+| wake | `docker start` | scale → 1 | snapshot load + resume |
+| sleep | `docker stop` | scale → 0 | snapshot (Diff) + kill the VMM |
+| health | HEALTHCHECK | readinessProbe | first port accepts (declared=false until the guest agent runs checks) |
+| storage | named volume | PVC | the VM's own ext4 root, cloned per VM |
+| isolation | `--runtime` | `runtimeClassName` | a guest kernel, always |
 
 The right-hand column is why the provider is an interface, not a flag: the wake policy above
 doesn't know which it drives.
+
+---
+
+## MicroVM: firecracker
+
+`--provider firecracker` makes each service a Firecracker VM whose sleeping state is a snapshot
+on disk, so a wake brings memory and running processes back rather than a cold process against a
+warm disk (ROADMAP §1). Linux with `/dev/kvm` only; everywhere else the path is decided by
+`internal/fc/hostcap`, which `sbx doctor`, the provider and the helper-VM layer all share.
+
+```
+  hostcap.Probe → Decide ─┬─ direct ─────────── fcProvider (this machine)
+                          ├─ helper-vm ──────── HelperVMProvider hook (macOS, Windows)
+                          ├─ kata-runtimeclass ─ --provider kubernetes --isolation kata
+                          └─ refused ────────── reason + the one thing to change
+
+  <state>/fc/                                  SBX_FC_STATE, default ~/.sbx/fc
+    artifacts/firecracker-v1.17.0-<arch>-<sha>/  pinned by sha256, .built + atomic rename
+    artifacts/vmlinux-6.18.48-<arch>-<sha>/
+    rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID
+    vms/<hash of ref>/                         0700, one per service; the socket path fits 108 bytes
+      vm.json  api.sock  vsock.sock  console.log  vmm.log  firecracker.pid  lock
+      agent.ext4 (vda, ro: /sbx + /init.json)  rootfs.ext4 (vdb, rw, reflink or sparse copy)
+      vm.state  vm.mem                         the asleep state
+    snapshots/<name>/                          sbx snapshot: memory + both drives
+```
+
+| verb | what happens |
+|---|---|
+| Create | build/reuse the rootfs, clone it, write the agent drive, cold boot, wait for the first port, **Seal**, Pause, Full snapshot, kill |
+| Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override` and `network_overrides`, **Rekey** before returning |
+| Stop | **Seal**, Pause, Diff snapshot if this process was restored (else Full), kill, fold the Diff into `vm.mem` by extent, mark valid |
+| a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk instead of restoring stale memory over it |
+
+The guest is PID 1 `sbx fc-init` on the agent drive: it mounts the image root, gives it proc, sys, dev,
+devpts and the agent at `/opt/sbx/sbx`, switches root and execs `sbx execd --vsock-port 44772 -- <entrypoint>`.
+The guest's address comes from the kernel command line (`ip=`, `CONFIG_IP_PNP=y` in the pinned kernel).
+
+**The guest seam.** Everything the lifecycle needs from inside the VM is `fc.Guest` - `Dial`, `Seal`,
+`Rekey`, `Available` - assigned through `fc.NewGuest`. The shipped `fc.NoGuest` refuses all four; with
+it the provider sleeps and wakes (same identity, nothing to re-key) and refuses exec, copy and
+forking. The vsock work (`internal/fcvsock`, `internal/execdctl`) implements it; the daemon's
+`GuestDialer` adapts `fcProvider.DialGuestPort`. Until then the wake proxy dials `Upstream` - the
+guest's tap address - over TCP, which a direct Linux host can reach.
+
+Nothing in the provider assumes it is the process that started a VM or the one facing the user:
+every fact is in `vm.json` or answered by the API socket, and every operation takes the VM's
+flock. That is what lets `sbx create` boot a VM that `sbx serve` later sleeps, and what lets the same
+code run inside the helper VM.
 
 ---
 

@@ -41,6 +41,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/daemon"
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execd"
+	"github.com/aryanmehrotra/sbx/internal/fc/guestinit"
 	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -120,7 +121,7 @@ var templates fs.FS
 // Every command that touches a backend takes these, so a sandbox can be created on this
 // laptop and the identical spec realised in a cluster without editing anything.
 func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string) {
-	kind = fs.String("provider", cmp.Or(os.Getenv("SBX_PROVIDER_KIND"), "docker"), "docker | kubernetes")
+	kind = fs.String("provider", cmp.Or(os.Getenv("SBX_PROVIDER_KIND"), "docker"), "docker | kubernetes | firecracker")
 	socket = fs.String("socket", "", "docker endpoint; defaults to DOCKER_HOST, then the active docker context")
 	namespace = fs.String("namespace", cmp.Or(os.Getenv("SBX_NAMESPACE"), "sbx"), "kubernetes namespace")
 	isolation = fs.String("isolation", cmp.Or(os.Getenv("SBX_ISOLATION"), string(provider.IsolationContainer)),
@@ -148,6 +149,7 @@ func resolve(kind, socket, namespace, isolation string) (provider.Provider, prov
 // os.Exit stays in main().
 func Main(ver string, examples embed.FS, argv []string) int {
 	version = ver
+	provider.Version = ver
 	templates = examples
 
 	if len(argv) < 2 {
@@ -162,6 +164,12 @@ func Main(ver string, examples embed.FS, argv []string) int {
 	// the help on purpose - nobody types it; `sbx serve` puts it in a container's entrypoint.
 	if argv[1] == "execd" {
 		return execd.Main(argv[2:])
+	}
+
+	// fc-init is PID 1 inside a Firecracker VM, before execd exists: it mounts the image root and
+	// becomes execd. Same reasons as execd for being here, and likewise left out of the help.
+	if argv[1] == "fc-init" {
+		return guestinit.Main(argv[2:])
 	}
 
 	logs.Version = version
