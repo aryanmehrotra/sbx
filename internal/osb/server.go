@@ -88,6 +88,11 @@ type Options struct {
 
 	// EgressStatus maps an Egress error to its HTTP status (daemon.EgressHTTPStatus).
 	EgressStatus func(error) int
+
+	// HostPaths are the roots a `host` volume may bind from (--osb-host-paths). Empty refuses
+	// every host volume: a bind mount is the sandbox writing to this machine's disk, and which
+	// part of it is the operator's call, never a default.
+	HostPaths []string
 }
 
 // EgressAPI is the live policy of a sandbox's egress filter. *daemon.EgressControl implements
@@ -126,8 +131,15 @@ type Server struct {
 	base   context.Context
 	cancel context.CancelFunc
 
+	hostPaths []string
+
 	mu   sync.Mutex
 	recs map[string]*record
+
+	// snaps and tpls are the snapshot and template records, under the same lock as recs: a
+	// delete of one checks the others for users.
+	snaps map[string]*snapshotRecord
+	tpls  map[string]*templateRecord
 
 	// provisioning cancels an in-flight create, so a DELETE during Pending stops it.
 	provisioning map[string]context.CancelFunc
@@ -217,6 +229,25 @@ func New(o Options) (*Server, error) {
 		s.recs[r.ID] = r
 	}
 
+	if err := CheckHostPaths(o.HostPaths); err != nil {
+		return nil, err
+	}
+
+	for _, p := range o.HostPaths {
+		s.hostPaths = append(s.hostPaths, filepath.Clean(p))
+	}
+
+	var loadErrs []error
+
+	s.snaps, errs = readDir[snapshotRecord](s.snapDir(), snapIDPattern)
+	loadErrs = append(loadErrs, errs...)
+	s.tpls, errs = readDir[templateRecord](s.tplDir(), tplIDPattern)
+	loadErrs = append(loadErrs, errs...)
+
+	for _, err := range loadErrs {
+		logs.Default.Warn("", "", "osb: %v", err)
+	}
+
 	return s, nil
 }
 
@@ -249,6 +280,9 @@ func (s *Server) Run(ctx context.Context) {
 // restarts, and a paused sandbox must not be thawed by the first request after an upgrade) and
 // readiness waits for sandboxes that were still Pending.
 func (s *Server) recover(ctx context.Context) {
+	s.recoverSnapshots(ctx)
+	s.recoverTemplates()
+
 	s.mu.Lock()
 
 	var pending []*record
@@ -334,21 +368,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
 	mux.HandleFunc("/v1/sandboxes/{id}/egress/policy", s.sidecarPolicy)
 
-	// Declared, and refused with the release that brings them. A client probing for snapshot
-	// support gets a precise "not yet", which is something it can report; a 404 would read as
-	// a misconfigured base URL.
-	for _, route := range []struct{ pattern, what string }{
-		{"/v1/snapshots", "snapshots"},
-		{"/v1/snapshots/{sid}", "snapshots"},
-		{"/v1/sandboxes/{id}/snapshots", "snapshots"},
-		{"/v1/templates", "templates"},
-		{"/v1/templates/{tid}", "templates"},
-	} {
-		what := route.what
-		mux.HandleFunc(route.pattern, func(w http.ResponseWriter, _ *http.Request) {
-			notYet(w, what, "v0.10.0")
-		})
-	}
+	mux.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
+	mux.HandleFunc("GET /v1/snapshots", s.listSnapshots)
+	mux.HandleFunc("GET /v1/snapshots/{sid}", s.getSnapshot)
+	mux.HandleFunc("DELETE /v1/snapshots/{sid}", s.deleteSnapshot)
+
+	mux.HandleFunc("POST /v1/templates", s.createTemplate)
+	mux.HandleFunc("GET /v1/templates", s.listTemplates)
+	mux.HandleFunc("GET /v1/templates/{tid}", s.getTemplate)
+	mux.HandleFunc("DELETE /v1/templates/{tid}", s.deleteTemplate)
 
 	return s.withRequestID(s.authed(jsonFallbacks(mux)))
 }

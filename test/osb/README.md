@@ -71,7 +71,7 @@ Every `Getenv` in `tests/go` and the SDK at the pinned commit, and what the scri
 | `OPENSANDBOX_URL` | `e2e_test.go` (default `http://localhost:8080`) | the server URL |
 | `OPENSANDBOX_API_KEY` | `e2e_test.go`, two of its three tests - `TestE2E_FullLifecycle` sends **no key** | the key |
 | `RUN_CODE_INTERPRETER_E2E` | `code_interpreter` and one `scenario_agent` test skip unless `true` | `true` unless already set |
-| `OPENSANDBOX_TEST_HOST_VOLUME_DIR` / `OPENSANDBOX_TEST_PVC_NAME` | `volume` | passed through |
+| `OPENSANDBOX_TEST_HOST_VOLUME_DIR` / `OPENSANDBOX_TEST_PVC_NAME` | `volume` | the host dir: a fresh one under `~/.cache/sbx` (a VM-backed engine shares `$HOME`, not `/tmp`), removed afterwards, unless already set - and either way the ONLY root passed to `--osb-host-paths`. The PVC name is passed through; its `sbx-osb-pvc-*` volume is removed on teardown if the run created it |
 | `OPENSANDBOX_TEST_REDIS_URL` | `pool` (Redis-backed tests skip without it) | passed through |
 | `OPENSANDBOX_CREDENTIAL_VAULT_E2E_TARGET_HOST` / `_TARGET_IP` / `_SANDBOX_IMAGE` / `_LABEL_KEY` / `_LABEL_VALUE` | `credential_vault` (skips without `_TARGET_IP`) | passed through |
 | `LLM_ENDPOINT` / `LLM_MODEL` | `scenario_agent` (skips without an endpoint) | passed through |

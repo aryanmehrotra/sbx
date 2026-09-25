@@ -45,3 +45,30 @@ func TestCapAddSurvivesASpecRoundTrip(t *testing.T) {
 		t.Fatalf("cap_add = %v, want both entries in order", got)
 	}
 }
+
+func TestKubernetesRefusesVolumeMounts(t *testing.T) {
+	k := &kubeProvider{namespace: "sbx"}
+
+	err := k.Create(context.Background(), "sb", 0, 0, "svc", spec.Service{
+		Image: "alpine:3.20", Ports: []int{80},
+		VolumeMounts: []spec.VolumeMount{{Volume: "sbx-osb-pvc-x", Target: "/data"}},
+	}, nil, "", IsolationContainer)
+	if err == nil || !strings.Contains(err.Error(), "volume_mounts") {
+		t.Fatalf("a docker named volume was accepted by the cluster provider: %v", err)
+	}
+}
+
+func TestMountOptionIsDockersMountSyntax(t *testing.T) {
+	cases := map[string]spec.VolumeMount{
+		"type=volume,src=sbx-osb-pvc-a,dst=/data":                             {Volume: "sbx-osb-pvc-a", Target: "/data"},
+		"type=volume,src=sbx-osb-pvc-a,dst=/data,volume-subpath=x/y,readonly": {Volume: "sbx-osb-pvc-a", Target: "/data", SubPath: "x/y", ReadOnly: true},
+		"type=bind,src=/Users/me/work,dst=/work":                              {Host: "/Users/me/work", Target: "/work"},
+		"type=bind,src=/Users/me/work,dst=/work,readonly":                     {Host: "/Users/me/work", Target: "/work", ReadOnly: true},
+	}
+
+	for want, m := range cases {
+		if got := mountOption(m); got != want {
+			t.Errorf("mountOption(%+v) = %q, want %q", m, got, want)
+		}
+	}
+}

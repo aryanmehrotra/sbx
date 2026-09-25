@@ -88,6 +88,7 @@ script that already knows a port.
 | `volume` | | One container path to persist. What makes sleeping safe |
 | `mounts` | | Host directories bound read-write, `host: /container`. Your disk, visible to both - a source tree, a dump, fixtures a test run leaves behind. Docker only; a cluster refuses, because a hostPath is a node's disk rather than yours |
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
+| `volume_mounts` | | Named volumes or host directories with options `mounts` lacks: `[{"volume": "sbx-osb-pvc-data", "target": "/data", "sub_path": "train", "read_only": true}]` or `{"host": "/abs/dir", ...}`. Set by the OpenSandbox API for `volumes`; a spec usually wants `volume` or `mounts`. Docker only (`--mount`, so a host path the engine cannot see is refused rather than created empty in its VM); a cluster refuses |
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `depends_on` | | Services that must be serving before this one starts - at creation, and on every wake |
 | `optional` | | Not created unless `--optional` - but still reserves its ports |

@@ -166,6 +166,61 @@ re-seeds a seeded database.
 The fork keeps its own `volume` declaration, rather than assuming the image carries the data —
 that assumption is exactly the one `docker commit` gets wrong.
 
+### An API snapshot is the container, because that is where its state is
+
+The rule above - a snapshot is the volume - follows from where a spec sandbox keeps its state:
+`volume` is the field that makes sleeping safe, so that is where the data is. A sandbox created
+through the OpenSandbox API has no such volume. Its image is somebody's `python:3.11`, and
+everything the caller did - `pip install`, a cloned repo, a file an agent wrote - is in the
+container's writable layer. Copying a volume would snapshot nothing.
+
+So `POST /sandboxes/{id}/snapshots` is `docker commit` of the sandbox's one container, to
+`sbx-osb-snap:<snapshot id>`. It is the same rule, applied to a different place: snapshot what
+holds the state. Upstream's docker runtime does the same (a commit to its own repository, tagged
+with the id), which is the reference for behaviour here.
+
+- **Consistency is docker's pause.** `docker commit` pauses the container for the copy and
+  resumes it after, which is the "may temporarily pause the sandbox" the spec allows. sbx does not
+  add its own freeze around it: the daemon holds idle freezes and API pauses as state of its own,
+  and a second pauser would have to agree with it about who thaws. A sandbox frozen by the idle
+  policy is committed frozen and stays frozen.
+- **What is not in it, said plainly.** Memory and processes (a fork starts cold, as `sbx fork`
+  does), and every `host` or `pvc` volume - those are the caller's storage, not the sandbox's, and
+  upstream leaves them out too. The execd volume at `/opt/sbx` is a mount, so it is not in the
+  image either, and a fork mounts its own.
+- **A fork is a new sandbox.** New id, new execd token, the snapshot's image with no pull (it
+  exists on this engine only), and `tail -f /dev/null` when no entrypoint is given - the spec's
+  default, and necessary: a committed image's ENTRYPOINT is the execd wrapper the source ran
+  under. The committed image does carry the source's environment, token included; the fork's own
+  token overrides it, and the image never leaves the engine that made it.
+- **Its lifetime is the API's.** Not `sbx-snap-*`, which `sbx gc --snapshots` sweeps as the CLI's:
+  an API snapshot is meant to outlive its sandbox until someone `DELETE`s it. A delete is refused
+  while a sandbox or a template still runs on it, rather than forcing `docker rmi` and leaving a
+  sandbox on an untagged image nobody's record names.
+
+A template, in the same spirit, is what upstream's templates are *for* - a fixed workload to start
+many sandboxes from by id - without the part sbx does not have (a microVM image published to S3):
+an image or a snapshot id, plus the entrypoint and limits. Fields that only mean something to that
+build (`readiness`, a `disk` size) are refused rather than stored and ignored.
+
+### Volumes on the API: host paths are the operator's to allow, and claims are namespaced
+
+`host` volumes are a sandbox writing to this machine's disk, so none are allowed until the operator
+lists roots with `sbx serve --osb-host-paths`. A path is checked as written and again after
+following symlinks - a link inside an allowed root that points at `/` passes a string check and
+escapes at mount time - and the directory is created as the user running sbx, not by docker as
+root. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
+it creates it inside the runtime's VM, where the caller's files are not. Refused is the useful
+failure.
+
+`pvc` is a docker named volume, as upstream's docker runtime makes it - but named
+`sbx-osb-pvc-<claimName>`, where upstream uses the claim name verbatim. Verbatim would let any API
+caller mount any volume on the engine by naming it: another sandbox's database, the execd volume,
+something that has nothing to do with sbx. `deleteOnSandboxTermination` removes only a volume that
+create made, never one that already existed, and `sbx gc` never treats these as orphans - they are
+a caller's storage with no sandbox to be orphaned from. A cluster answers 501 until a
+PersistentVolumeClaim, whose storage class and size are the operator's decisions, is built.
+
 ### Capabilities are negotiated, not stubbed - and sbx does not reach around a provider
 
 The obvious way to add snapshot support is four new methods on the core `Provider` interface —

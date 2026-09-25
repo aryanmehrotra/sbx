@@ -220,6 +220,14 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 			"would need an init container copying from an image instead", service)
 	}
 
+	// A docker named volume or a laptop directory, neither of which a cluster can see. The
+	// cluster answer to a `pvc` volume is a real PersistentVolumeClaim, which is not built yet.
+	if len(svc.VolumeMounts) > 0 {
+		return fmt.Errorf("service %q declares volume_mounts, which the kubernetes provider does "+
+			"not implement yet: a named volume is local to one docker daemon and a host path is a "+
+			"node's disk; a cluster needs a PersistentVolumeClaim instead", service)
+	}
+
 	// Freezing keeps a workload's memory; a cluster can only scale it to zero, which throws the
 	// memory away. Doing that under the name "freeze" would kill the background process the
 	// setting exists to keep.

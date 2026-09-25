@@ -33,6 +33,20 @@ type fakeDocker struct {
 	exitOnStart bool // new containers are not running: the entrypoint exited
 	logs        string
 	arch        string
+
+	// Snapshots and named volumes.
+	images     map[string]bool
+	commits    []string // "ref -> image"
+	changes    []string // docker commit --change values, all commits
+	commitErr  error
+	commitGate chan struct{} // when set, Commit waits for it to close
+	removedImg []string
+	pulls      []string
+	volumes    map[string]bool
+	volCreated []string
+	volRemoved []string
+	volErr     error
+	inspectErr map[string]error // ImageInfo fails for these images
 }
 
 func newFakeDocker() *fakeDocker {
@@ -120,12 +134,19 @@ func (f *fakeDocker) Probe(context.Context, string) (bool, bool)                
 func (f *fakeDocker) Exec(context.Context, string, []string) (string, error)         { return "", nil }
 func (f *fakeDocker) ExecTTY(context.Context, string, []string) error                { return nil }
 func (f *fakeDocker) Copy(context.Context, string, string, string) error             { return nil }
-func (f *fakeDocker) Pull(context.Context, string) error                             { return nil }
 func (f *fakeDocker) VolumeRuns(context.Context, string, string, string) bool        { return true }
 func (f *fakeDocker) SeedFile(context.Context, string, string, string, string) error { return nil }
 func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) error    { return nil }
 
-func (f *fakeDocker) ImageInfo(context.Context, string) (provider.ImageInfo, error) {
+func (f *fakeDocker) ImageInfo(_ context.Context, image string) (provider.ImageInfo, error) {
+	f.mu.Lock()
+	err := f.inspectErr[image]
+	f.mu.Unlock()
+
+	if err != nil {
+		return provider.ImageInfo{}, err
+	}
+
 	return provider.ImageInfo{Cmd: []string{"python3"}, OS: "linux", Arch: f.arch}, nil
 }
 
@@ -386,4 +407,116 @@ func (h *harness) waitStateKeyed(id string, key []string) {
 
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func (f *fakeDocker) Pull(_ context.Context, image string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.pulls = append(f.pulls, image)
+
+	return nil
+}
+
+func (f *fakeDocker) pulled() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.pulls...)
+}
+
+func (f *fakeDocker) Commit(_ context.Context, ref, image string, changes ...string) error {
+	f.mu.Lock()
+	gate, err := f.commitGate, f.commitErr
+	f.mu.Unlock()
+
+	if gate != nil {
+		<-gate
+	}
+
+	if err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.images == nil {
+		f.images = map[string]bool{}
+	}
+
+	f.images[image] = true
+	f.commits = append(f.commits, ref+" -> "+image)
+	f.changes = append(f.changes, changes...)
+
+	return nil
+}
+
+func (f *fakeDocker) Images(_ context.Context, prefix string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var out []string
+
+	for img := range f.images {
+		if strings.HasPrefix(img, prefix) {
+			out = append(out, img)
+		}
+	}
+
+	return out, nil
+}
+
+func (f *fakeDocker) CopyVolume(context.Context, string, string) error { return nil }
+func (f *fakeDocker) VolumeFor(sandbox, svc string) string {
+	return "sbx-" + sandbox + "-" + svc + "-data"
+}
+
+func (f *fakeDocker) RemoveImage(_ context.Context, image string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.images, image)
+	f.removedImg = append(f.removedImg, image)
+
+	return nil
+}
+
+func (f *fakeDocker) VolumeExists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.volumes[name], f.volErr
+}
+
+func (f *fakeDocker) CreateVolume(_ context.Context, name string, _ map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.volumes == nil {
+		f.volumes = map[string]bool{}
+	}
+
+	f.volumes[name] = true
+	f.volCreated = append(f.volCreated, name)
+
+	return nil
+}
+
+func (f *fakeDocker) RemoveVolume(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.volumes, name)
+	f.volRemoved = append(f.volRemoved, name)
+
+	return nil
+}
+
+// lists returns a copy of one of the fake's recorded slices, under its lock.
+func (f *fakeDocker) lists(which *[]string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), (*which)...)
 }

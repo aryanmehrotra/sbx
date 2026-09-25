@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -299,6 +300,15 @@ type Service struct {
 	// volume lives on the runtime's side of that boundary by construction.
 	ReadOnlyVolumes map[string]string `json:"readonly_volumes,omitempty"`
 
+	// VolumeMounts attaches storage the caller named - a named volume or a host directory -
+	// with the options `mounts` cannot express: read-only, and a subdirectory of a volume.
+	//
+	// It exists for the OpenSandbox API's `volumes`, where a caller asks for exactly this and
+	// the server has already decided the request is allowed (host paths only under roots the
+	// operator listed, volumes only in the API's own namespace). A spec author wants `volume`
+	// or `mounts` instead; this carries no policy of its own beyond "the mount is well formed".
+	VolumeMounts []VolumeMount `json:"volume_mounts,omitempty"`
+
 	// OnIdle is what going idle does: "" or "stop" stops the container (0 B, the default), and
 	// "freeze" pauses it instead - memory and running processes kept, no CPU, thawed in about
 	// 10 ms by the next connection.
@@ -394,10 +404,57 @@ func (s Service) validate(name string) error {
 		}
 	}
 
+	for i, m := range s.VolumeMounts {
+		if err := m.validate(); err != nil {
+			return fmt.Errorf("service %q: volume_mounts[%d]: %w", name, i, err)
+		}
+	}
+
 	if s.Idle != "" && !s.IdleNever() {
 		if _, err := time.ParseDuration(s.Idle); err != nil {
 			return fmt.Errorf("service %q: idle %q is not \"never\", \"0\", or a duration "+
 				"like \"30m\": %w", name, s.Idle, err)
+		}
+	}
+
+	return nil
+}
+
+// VolumeMount is one entry of volume_mounts: exactly one of Volume (a named volume) or Host (an
+// absolute host directory), mounted at Target.
+type VolumeMount struct {
+	Volume string `json:"volume,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Target string `json:"target"`
+
+	// SubPath mounts a directory inside the volume rather than its root. Named volumes only: a
+	// host path already names whatever directory it wants.
+	SubPath  string `json:"sub_path,omitempty"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+func (m VolumeMount) validate() error {
+	switch {
+	case (m.Volume == "") == (m.Host == ""):
+		return errors.New("needs exactly one of volume (a named volume) or host (a directory)")
+	case m.Volume != "" && strings.ContainsAny(m.Volume, "/:"):
+		return fmt.Errorf("volume %q is not a volume name - use host for a directory", m.Volume)
+	case m.Host != "" && !strings.HasPrefix(m.Host, "/"):
+		return fmt.Errorf("host %q must be absolute", m.Host)
+	case m.Host != "" && m.SubPath != "":
+		return errors.New("sub_path is for named volumes; put the subdirectory in host instead")
+	case !strings.HasPrefix(m.Target, "/"):
+		return fmt.Errorf("target %q must be an absolute container path", m.Target)
+	case m.SubPath != "" && (strings.HasPrefix(m.SubPath, "/") || slices.Contains(strings.Split(m.SubPath, "/"), "..")):
+		return fmt.Errorf("sub_path %q must be relative and must not contain '..'", m.SubPath)
+	}
+
+	// Docker's --mount is a CSV list, so a comma inside a value would be read as the start of
+	// another option - a path that silently becomes a different mount.
+	for _, v := range []string{m.Volume, m.Host, m.Target, m.SubPath} {
+		if strings.ContainsAny(v, ",\"\n\x00") {
+			return fmt.Errorf("%q contains a comma, quote or control character, which a mount "+
+				"option cannot carry", v)
 		}
 	}
 

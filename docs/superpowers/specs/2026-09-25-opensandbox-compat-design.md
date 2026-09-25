@@ -79,12 +79,12 @@ it.
 | `DELETE` | `Stopping` → rm → `Terminated` |
 | `metadata` PATCH | stored in state file and as labels |
 | `endpoints/{port}` | above |
-| `snapshots` | `sbx snapshot` (filesystem); `snapshotId` on create = fork |
-| `templates` | a template is a named snapshot + spec |
+| `snapshots` | `docker commit` of the sandbox container to `sbx-osb-snap:<id>` (paused by docker for the copy); `snapshotId` on create = fork: new id, new token, no pull, default entrypoint `tail -f /dev/null`. Volumes are not in it. DECISIONS: "An API snapshot is the container" |
+| `templates` | an image or a snapshot id + entrypoint/cpu/memory; "building" = pull + inspect here; `templateId` needs `timeout`. `readiness` and `resourceLimits.disk` refused; `publish`/`format` echoed, unused |
 | `networkpolicy` | the egress filter, **live-updatable**, FQDN + wildcard + CIDR |
 | `diagnostics/logs|events` | provider logs + sbx history events, plain text |
 | `metrics/events` | accepted and recorded in history |
-| volumes `host` / `pvc` | bind mount (allow-listed roots via `--osb-host-paths`) / named volume |
+| volumes `host` / `pvc` | bind mount only under `--osb-host-paths` roots (none by default; symlinks resolved) / docker volume `sbx-osb-pvc-<claimName>` - namespaced, unlike upstream. `createIfNotExists`, `deleteOnSandboxTermination` (only for a volume this create made), `subPath`, `readOnly`; storage hints ignored as the spec says. Kubernetes: 501 |
 | `volumes.ossfs` | refused: 400 with a message naming the backend (Alibaba OSS, out of scope) |
 | `resourceLimits` | existing cpu/memory limits |
 | `platform` | image platform on pull; mismatch refused |

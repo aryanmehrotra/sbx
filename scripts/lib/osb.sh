@@ -39,6 +39,8 @@ OSB_PREEXISTING=""
 OSB_KEEP_WORK=0
 OSB_IDLE=""   # passed to sbx serve --idle when set (the bench's wake-from-frozen)
 OSB_REAL_HOME="$HOME"
+OSB_HOSTVOL=""         # a host-volume root this run made, removed on teardown
+OSB_PREEXISTING_PVC="" # sbx-osb-pvc-* volumes that were there before the run
 
 osb_say() { printf '%s\n' "$*" >&2; }
 osb_die() { printf 'osb: %s\n' "$*" >&2; exit 1; }
@@ -163,6 +165,11 @@ osb_resolve_docker() {
     osb_die "no docker engine answering at $OSB_DOCKER_HOST"
 }
 
+osb_pvc_volumes() {
+  DOCKER_HOST="$OSB_DOCKER_HOST" docker volume ls --format '{{.Name}}' --filter name=sbx-osb-pvc- 2>/dev/null |
+    grep '^sbx-osb-pvc-' | sort -u
+}
+
 osb_sbx_sandboxes() {
   DOCKER_HOST="$OSB_DOCKER_HOST" docker ps -a --filter label=sbx.sandbox \
     --format '{{.Label "sbx.sandbox"}}' 2>/dev/null | sort -u
@@ -200,6 +207,21 @@ $(printf '%s\n' "$OSB_PREEXISTING" | head -10 | sed 's/^/       /')
   fi
 
   [ -n "$OSB_IDLE" ] && set -- "$@" --idle "$OSB_IDLE"
+
+  # Host volumes are off unless a root is allowed, so upstream's volume tests would skip. The
+  # directory they bind is allowed - and nothing else. Made under the real HOME rather than
+  # /tmp (upstream's default): a VM-backed engine (colima, Docker Desktop) shares the home
+  # directory, and a path it cannot see is refused by the bind rather than faked inside the VM.
+  if [ -z "${OPENSANDBOX_TEST_HOST_VOLUME_DIR:-}" ]; then
+    mkdir -p "$OSB_REAL_HOME/.cache/sbx" || osb_die "cannot create $OSB_REAL_HOME/.cache/sbx"
+    OSB_HOSTVOL="$(mktemp -d "$OSB_REAL_HOME/.cache/sbx/osb-hostvol.XXXXXX")" || osb_die "no host volume dir"
+    export OPENSANDBOX_TEST_HOST_VOLUME_DIR="$OSB_HOSTVOL/host-volume-test"
+  fi
+  set -- "$@" --osb-host-paths "$OPENSANDBOX_TEST_HOST_VOLUME_DIR"
+
+  # pvc volumes outlive their sandboxes by design; the ones this run creates are removed on
+  # teardown, and only those.
+  OSB_PREEXISTING_PVC="$(osb_pvc_volumes)"
 
   # exec, so $! is sbx itself rather than a subshell that a TERM would leave it orphaned by.
   ( osb_daemon_vars; exec "$OSB_SBX" "$@" ) >"$OSB_WORK/daemon.log" 2>&1 &
@@ -287,7 +309,15 @@ osb_teardown() {
 
     left="$(osb_sbx_sandboxes | grep '^osb-')"
     [ -z "$left" ] || osb_say "WARNING: still present after teardown: $left"
+
+    for n in $(osb_pvc_volumes); do
+      if printf '%s\n' "$OSB_PREEXISTING_PVC" | grep -qx "$n"; then continue; fi
+      DOCKER_HOST="$OSB_DOCKER_HOST" docker volume rm "$n" >/dev/null 2>&1 ||
+        osb_say "  could not remove volume $n; remove it with: DOCKER_HOST=$OSB_DOCKER_HOST docker volume rm $n"
+    done
   fi
+
+  [ -n "$OSB_HOSTVOL" ] && rm -rf "$OSB_HOSTVOL"
 
   if [ -n "$OSB_WORK" ] && [ -d "$OSB_WORK" ]; then
     # Binaries are rebuilt every run and are most of the size; the logs are the point.
