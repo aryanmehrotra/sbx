@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -55,7 +56,10 @@ type Options struct {
 // Server is the execd HTTP API. Build it with New, serve it with any http.Server, and Close it
 // to kill what it started.
 type Server struct {
-	token []byte
+	// token is swapped once, by a warm-pool claim, while requests are being served.
+	token   atomic.Pointer[[]byte]
+	claimed atomic.Bool
+
 	procs *procs
 	log   *log.Logger
 	mux   *http.ServeMux
@@ -74,7 +78,6 @@ type Server struct {
 // New builds a Server. It fails only when the output directory cannot be made.
 func New(o Options) (*Server, error) {
 	s := &Server{
-		token:       []byte(o.AccessToken),
 		procs:       newProcs(o.Reap),
 		log:         o.Logger,
 		commands:    map[string]*command{},
@@ -100,6 +103,12 @@ func New(o Options) (*Server, error) {
 	} else if err := os.MkdirAll(s.outputDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create output directory %s: %w", s.outputDir, err)
 	}
+
+	tok := []byte(o.AccessToken)
+	s.token.Store(&tok)
+
+	// A server with no token was never a pool member, so there is nothing to claim.
+	s.claimed.Store(len(tok) == 0)
 
 	s.routes()
 
@@ -158,6 +167,8 @@ func (s *Server) routes() {
 	m.Handle("GET /ping", recoverer(s.log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})))
+
+	handle("POST /sbx/claim", s.claim)
 
 	handle("POST /command", s.runCommand)
 	handle("DELETE /command", s.interrupt)
@@ -225,12 +236,12 @@ func (s *Server) guard(h http.HandlerFunc) http.Handler {
 	inner := recoverer(s.log, h)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.token) > 0 {
+		if tok := *s.token.Load(); len(tok) > 0 {
 			got := r.Header.Get(AccessTokenHeader)
 			// Constant time, so the token cannot be recovered a byte at a time from how long a
 			// wrong guess takes. Upstream compares with != ; this is the one place sbx is
 			// stricter on purpose.
-			if got == "" || subtle.ConstantTimeCompare([]byte(got), s.token) != 1 {
+			if got == "" || subtle.ConstantTimeCompare([]byte(got), tok) != 1 {
 				writeError(w, http.StatusUnauthorized, codeUnauthorized,
 					"invalid or missing header "+AccessTokenHeader+
 						"; use the token returned with this sandbox's execd endpoint")
