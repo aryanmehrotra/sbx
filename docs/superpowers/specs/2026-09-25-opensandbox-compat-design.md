@@ -118,9 +118,9 @@ is client-side. A server-side warm pool is in scope (below) because it is what m
 | tag | adds | conformance files that must pass |
 |---|---|---|
 | v0.9.0 | lifecycle core, execd core, expiry/renew, pause/resume, endpoints, metadata, diagnostics | `sandbox`, `command`, `filesystem`, `manager`, `lifecycle_metrics`, `error_handling`, `concurrent`, `streaming_timeout` |
-| v0.10.0 | snapshots, templates, networkpolicy + live egress + CIDR, volumes, code interpreter, pty, `/proxy` | + `volume`, `egress_env`, `code_interpreter` (`RUN_CODE_INTERPRETER_E2E=true`) |
-| v0.11.0 | isolated sessions, credential vault (TLS-terminating egress), warm pool, server proxy mode, secure access, renew-on-access | + `isolated_session`, `credential_vault`, `pool` |
-| v0.12.0 | `sbx mcp` (stdio), public Go package, ComputeSDK provider, benchmarks vs upstream | everything not needing an LLM endpoint |
+| v0.10.0 | snapshots, templates, networkpolicy + live egress + CIDR, volumes, code interpreter, pty, `/proxy`, **warm pool behind create** | + `volume`, `egress_env`, `code_interpreter` (`RUN_CODE_INTERPRETER_E2E=true`) |
+| v0.11.0 | isolated sessions, credential vault (TLS-terminating egress), server proxy mode, secure access, renew-on-access | + `isolated_session`, `credential_vault`, `pool` |
+| v0.12.0 | `sbx mcp` (stdio), public Go package, `@computesdk/sbx` provider passing their `test-utils` suite, their Burst-TTI harness run locally | everything not needing an LLM endpoint |
 
 ## Testing
 
@@ -146,3 +146,18 @@ through the API; zero deps; `-race` clean; all existing e2e scripts.
   reason).
 - Freezing instead of stopping on idle holds memory. It is the default only for API sandboxes,
   whose contract (running processes survive) needs it.
+
+## Speed target (ComputeSDK Burst TTI)
+
+ComputeSDK ranks 38 hosted providers on **TTI = `create()` → first successful `runCommand('node -v')`,
+100 sandboxes launched at once**, from a CI VM over the internet. Leader on 2026-09-25: isorun,
+**44 ms median / 49 ms p95**; e2b 1238 ms; daytona 341 ms
+(`computesdk/benchmarks` `results/burst_tti/latest.json`).
+
+Every sandbox in that test is new, so wake-on-connect does not help and `docker run` (hundreds of
+ms) cannot win. What can: a **warm pool** — N containers per (image, limits) already created,
+execd answering, then frozen. `create()` claims one, rewrites its identity (id, token, env) through
+execd, thaws it and returns `Running`; the pool refills behind it. Target, measured locally with
+their harness against `sbx serve`: **median < 44 ms at burst 100**. A local result is not a
+leaderboard entry — their runner needs a reachable hosted endpoint, which is the operator's
+decision, not this design's.
