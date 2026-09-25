@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/hostinfo"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"slices"
@@ -197,6 +198,8 @@ func Doctor(ctx context.Context) Report {
 		Detail:  "daemon experimental=" + orUnknown(exp),
 		Meaning: "sbx checkpoint / resume is unavailable; sleeping and forking keep the disk, not the process",
 	})
+
+	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(hostcap.Probe(), readIPForward())...)
 
 	kubectlOK, kubectlWhere := have("kubectl")
 	rep.Capabilities = append(rep.Capabilities, Capability{
