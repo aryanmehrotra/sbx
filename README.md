@@ -79,6 +79,10 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 | **Give an agent sandbox tools over MCP** | `claude mcp add sbx -- sbx mcp` — create, run, read and write files in a sandbox, the same 19 tools OpenSandbox's MCP server has → [AGENTS](docs/AGENTS.md) |
 | **Change what a box may reach while it runs** | `sbx egress <box> --deny '*.example.com' --allow 10.0.0.0/8` — domain, wildcard and CIDR rules, applied live without a restart |
 
+The OpenSandbox API always requires a key, loopback included: `sbx serve --osb-addr` generates
+one into `~/.sbx/osb/key`, `sbx mcp` reads it from there, and the SDKs take it as
+`export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"` - see [SECURITY.md](SECURITY.md) for why.
+
 **Scale it up**
 | | |
 |---|---|

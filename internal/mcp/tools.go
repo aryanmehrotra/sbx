@@ -99,7 +99,8 @@ func (s *Sandboxes) explain(err error) error {
 	switch osbclient.StatusOf(err) {
 	case 401, 403:
 		return fmt.Errorf("%w\nthe server refused the API key: start `sbx mcp` with --key or "+
-			"SBX_OSB_KEY set to the key the server was started with", err)
+			"SBX_OSB_KEY set to the key the server was started with (a local sbx serve with no --osb-key "+
+			"generated one in ~/.sbx/osb/key)", err)
 	case 404:
 		return fmt.Errorf("%w\nno such sandbox: sandbox_list shows the ones that exist", err)
 	}

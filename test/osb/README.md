@@ -86,4 +86,4 @@ Upstream's CI runs the same suite with `OPENSANDBOX_INSECURE_SERVER=YES` for its
 - `TestSandbox_PauseAndResume` and `TestManager_PauseAndResume` call `t.Skip` unconditionally
   at the pinned commit; `expectations` allows exactly that message.
 - `TestE2E_FullLifecycle` (`e2e_test.go`, tier v0.12.0) creates its client with an empty key,
-  so it needs a daemon started with `--no-key`.
+  so it needs a daemon started with `--no-key` (which passes sbx `--osb-insecure-no-key`).

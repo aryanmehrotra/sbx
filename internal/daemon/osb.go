@@ -22,6 +22,11 @@ func (d *daemon) openSandboxAPI(addr, key string, scope Scope) (*osb.Server, net
 		key = os.Getenv("SBX_OSB_KEY")
 	}
 
+	key, err := d.osbKey(addr, key)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if d.provider == nil {
 		return nil, nil, fmt.Errorf("--osb-addr needs a container runtime to create sandboxes in, "+
 			"and this daemon has none: %v", d.startupErr)

@@ -382,7 +382,7 @@ func (s *Server) authed(next http.Handler) http.Handler {
 
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.key)) != 1 {
 			writeErr(w, http.StatusUnauthorized, "INVALID_API_KEY",
-				"authentication credentials are invalid: check the key this sbx serve was started with (--osb-key or SBX_OSB_KEY)")
+				"authentication credentials are invalid: check the key this sbx serve was started with (--osb-key, SBX_OSB_KEY, or the one it generated in ~/.sbx/osb/key)")
 
 			return
 		}
