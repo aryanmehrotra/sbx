@@ -424,11 +424,18 @@ image (as upstream's docker runtime does) and holds the create's answer until Ru
 | burst 100, run 2 | **pool** | 100 | 100 | **412.6** | 482.9 | 504.7 | **95.57** |
 | burst 100, run 3 | **pool** | 100 | 100 | **432.3** | 517.5 | 520.5 | **95.34** |
 | burst 100, run 4 | cold | 100 | 100 | 46720.4 | 79832.1 | 80213.3 | 0.00 |
+| burst 1 × 10, re-key every claim | **pool** | 10 | 10 | 13.7 | 41.2 | 41.2 | 99.76 |
+| burst 1 × 10, same run | cold | 10 | 10 | 207.5 | 356.0 | 356.0 | 97.34 |
+| burst 100, re-key every claim | **pool** | 100 | 100 | 472.1 | 566.9 | 573.2 | 94.89 |
 
 Runs 1-4 alternate cold/pool/pool/cold, each against a fresh daemon. The two cold runs differ by
 6x - the second followed two pool runs that had just made and removed 200 containers - so the
 cold burst is *not resolvable* beyond "seconds to tens of seconds"; what is resolvable is that
 all 100 succeed where 09f3db2 had 60 slots. The two pool runs agree within 20 ms.
+
+The last three rows are after every claim re-keys execd (runs 2-3 re-keyed only when the create
+carried env). At one at a time the difference is inside the spread (5.7-41.2 ms): not resolvable.
+At 100 it is ~40-60 ms of median, one round trip through the wake port per claim.
 
 What bounds each path here:
 
