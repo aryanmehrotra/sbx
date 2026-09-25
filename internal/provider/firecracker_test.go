@@ -1447,10 +1447,11 @@ func TestSnapshotNamesDoNotCollide(t *testing.T) {
 	}
 }
 
-// health is run, not accepted and ignored: inside the VM, through /bin/sh as docker's CMD-SHELL,
-// and its exit status is the answer. Without a guest agent to run it, the create is refused by
-// name.
-func TestHealthRunsInsideTheVM(t *testing.T) {
+// health is run, not accepted and ignored: inside the VM, through /bin/sh as docker's CMD-SHELL.
+// Create waits for it before the snapshot every wake restores, so a SNAPSHOT wake does not run it
+// again (the workload is resumed serving, and the exec cost most of a wake); a COLD boot does.
+// Without a guest agent to run it, the create is refused by name.
+func TestHealthRunsAtCreateAndColdBootNotOnASnapshotWake(t *testing.T) {
 	r := newRig(t)
 
 	svc := redis
@@ -1458,35 +1459,52 @@ func TestHealthRunsInsideTheVM(t *testing.T) {
 
 	var ran []string
 
-	fail := error(&ExitError{Code: 1})
+	runs, failFirst := 0, 2
 	r.p.healthExec = func(_ context.Context, _ string, argv []string) (string, error) {
+		runs++
 		ran = argv
-		return "", fail
+
+		if runs <= failFirst {
+			return "", &ExitError{Code: 1}
+		}
+
+		return "", nil
 	}
+	r.p.probeDial = func(context.Context, string) (net.Conn, error) { c, s := net.Pipe(); _ = s.Close(); return c, nil }
 
 	ref := r.create(t, "s8", svc)
+
+	if runs != failFirst+1 || strings.Join(ran, " ") != "/bin/sh -c redis-cli ping" {
+		t.Fatalf("create ran health %d times (%q); want it polled until it passed, before the snapshot", runs, ran)
+	}
 
 	// Asleep, as every create leaves it: nothing to ask, so the CLI's post-create wait does not spin.
 	if serving, declared := r.p.Probe(r.ctx, ref); serving || declared {
 		t.Fatalf("an asleep VM probed %v, %v", serving, declared)
 	}
 
+	// A snapshot wake: the workload is resumed serving; health is not run again.
 	if err := r.p.Start(r.ctx, ref); err != nil {
 		t.Fatal(err)
 	}
 
-	if serving, declared := r.p.Healthy(r.ctx, ref); serving || !declared {
-		t.Fatalf("a failing health command = %v, %v", serving, declared)
+	before := runs
+
+	if serving, declared := r.p.Probe(r.ctx, ref); !serving || !declared || runs != before {
+		t.Fatalf("snapshot wake: %v, %v, and health ran %d more times", serving, declared, runs-before)
 	}
 
-	if strings.Join(ran, " ") != "/bin/sh -c redis-cli ping" {
-		t.Fatalf("ran %q", ran)
+	// A VM that died awake cold-boots: its processes start from nothing, so health is the answer.
+	_ = r.l.Kill(r.ctx, r.p.dir(ref))
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
 	}
 
-	fail = nil
+	failFirst = runs + 1 // the next run fails
 
-	if serving, declared := r.p.Probe(r.ctx, ref); !serving || !declared {
-		t.Fatalf("a passing health command = %v, %v", serving, declared)
+	if serving, declared := r.p.Probe(r.ctx, ref); serving || !declared || runs != before+1 {
+		t.Fatalf("cold boot: %v, %v, health ran %d times", serving, declared, runs-before)
 	}
 
 	r2 := newRig(t)

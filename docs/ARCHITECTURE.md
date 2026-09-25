@@ -190,7 +190,7 @@ Everything the spec declares maps onto both; nothing in `sandbox.json` names a b
 | address | `127.0.0.1:20002` | `sbx-x-pg.sbx.svc:5432` | `127.0.0.1:20002`, upstream the guest's tap IP |
 | wake | `docker start` | scale → 1 | snapshot load + resume |
 | sleep | `docker stop` | scale → 0 | snapshot (Diff) + kill the VMM |
-| health | HEALTHCHECK | readinessProbe | the spec's `health`, run by execd over vsock (`/bin/sh -c`); without one, the guest's first port accepting |
+| health | HEALTHCHECK | readinessProbe | the spec's `health`, run by execd over vsock (`/bin/sh -c`) at create (before the snapshot) and after a cold boot; a snapshot wake dials the first port only |
 | storage | named volume | PVC | the VM's own ext4 root, cloned per VM |
 | isolation | `--runtime` | `runtimeClassName` | a guest kernel, always |
 

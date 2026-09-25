@@ -736,6 +736,14 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return fmt.Errorf("%s booted but never served: %w\n%s", ref, err, p.consoleTail(dir, 20))
 	}
 
+	// The snapshot every wake restores must be of a workload that SERVES, not one whose port is
+	// merely open: its health command passes here, once, so no wake has to run it again.
+	if svc.Health != "" {
+		if err := p.waitHealth(bctx, ref, svc.Health); err != nil {
+			return fmt.Errorf("%s booted but never became healthy: %w\n%s", ref, err, p.consoleTail(dir, 20))
+		}
+	}
+
 	release()
 
 	if err := p.sleep(ctx, vm); err != nil {
@@ -1180,6 +1188,37 @@ func (p *fcProvider) Unpause(ctx context.Context, ref string) error {
 // server behind it exists, but here nothing sits in front of the guest's own TCP stack - an
 // accepted connection is a listener. Undeclared, the daemon would wait a flat 2 s on every wake
 // of a snapshot whose workload answers in milliseconds.
+// runHealth runs a health command once in the guest.
+func (p *fcProvider) runHealth(ctx context.Context, ref, command string) error {
+	run := p.healthExec
+	if run == nil {
+		run = p.Exec
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
+	defer cancel()
+
+	_, err := run(ctx, ref, []string{"/bin/sh", "-c", command})
+
+	return err
+}
+
+// waitHealth polls command until it passes or ctx ends.
+func (p *fcProvider) waitHealth(ctx context.Context, ref, command string) error {
+	for {
+		err := p.runHealth(ctx, ref, command)
+		if err == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the health command %q never passed: %w", command, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 // healthTimeout bounds one run of a service's health command, as docker's --health-timeout does.
 const healthTimeout = 5 * time.Second
 
@@ -1199,20 +1238,20 @@ func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	}
 
 	// A health command is the service's own word on whether it serves - a database that accepts
-	// before it can answer a query is the reason the spec has one - so when there is one it is
-	// what counts, run the way docker runs a CMD-SHELL check: through /bin/sh in the guest.
-	if vm.Health != "" {
-		run := p.healthExec
-		if run == nil {
-			run = p.Exec
-		}
+	// before it can answer a query is the reason the spec has one - so it is what counts after a
+	// cold boot, run the way docker runs a CMD-SHELL check: through /bin/sh in the guest.
+	//
+	// Not after a snapshot restore. Create snapshots only once the command has passed, so a
+	// restored VM is that serving workload resumed mid-flight, not a process starting up; running
+	// the command again was an exec round trip on every wake (measured 177-336 ms of a 340-585 ms
+	// wake through the helper VM) to re-ask a question the snapshot already answered. The port
+	// dial below still confirms the guest is reachable.
+	if vm.Health != "" && !vm.Restored {
+		return p.runHealth(ctx, ref, vm.Health) == nil, true
+	}
 
-		hctx, cancel := context.WithTimeout(ctx, healthTimeout)
-		defer cancel()
-
-		_, err := run(hctx, ref, []string{"/bin/sh", "-c", vm.Health})
-
-		return err == nil, true
+	if len(vm.Ports) == 0 {
+		return true, true // restored, health passed before the snapshot, and nothing to dial
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)

@@ -109,7 +109,7 @@ The same file, with a VM underneath. What changes:
 | `image` | Booted as the VM's root filesystem (`docker export` → ext4, cached by image ID). A name from `sbx snapshot` restores that VM - memory included - as the same sandbox and service in the same slot only |
 | `cpu` | Whole vCPUs, rounded up, 1 or even (Firecracker's rule): `"0.5"` is 1, `"3"` is 4. Default 1 |
 | `memory` | The guest's RAM, default `256m` - and the size of its snapshot on disk while it sleeps. Both fixed at creation; changing them live is refused |
-| `health` | Run inside the VM by the guest agent (execd, over vsock), through `/bin/sh -c` as docker's `CMD-SHELL` is, with a 5 s timeout; its exit status is whether the service serves. With no health command, readiness is the guest's first port accepting |
+| `health` | Run inside the VM by the guest agent (execd, over vsock), through `/bin/sh -c` as docker's `CMD-SHELL` is, with a 5 s timeout. Create waits for it to pass before the snapshot every wake restores, and a cold boot runs it again; a snapshot wake does not, because the workload comes back already serving. With no health command, readiness is the guest's first port accepting |
 | `egress` | Only `"deny"` (or unset, which means the same here): a VM bridge has no NAT |
 | the image's `USER` | **Refused unless root**: everything in the VM runs as root (fc-init and execd do not switch users yet), and running a non-root image as root would quietly drop the boundary it asked for |
 | `volume` | Nothing extra to do: the VM's root filesystem is already its own and persists across sleep |
