@@ -1,0 +1,320 @@
+//go:build unix
+
+package execd
+
+import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// Error codes are upstream's (components/execd/pkg/web/model/error.go), so a client that
+// switches on them behaves the same against either daemon.
+const (
+	codeInvalidRequest  = "INVALID_REQUEST_BODY"
+	codeMissingQuery    = "MISSING_QUERY"
+	codeRuntimeError    = "RUNTIME_ERROR"
+	codeInvalidFile     = "INVALID_FILE"
+	codeInvalidContent  = "INVALID_FILE_CONTENT"
+	codeInvalidMetadata = "INVALID_FILE_METADATA"
+	codeFileNotFound    = "FILE_NOT_FOUND"
+	codeContextNotFound = "CONTEXT_NOT_FOUND"
+	codeSessionNotFound = "SESSION_NOT_FOUND"
+	codeNotSupported    = "NOT_SUPPORTED"
+	codeUnauthorized    = "UNAUTHORIZED"
+	codeNotFound        = "NOT_FOUND"
+	codeRangeInvalid    = "RANGE_NOT_SATISFIABLE"
+)
+
+// Options configures a Server. The zero value serves without authentication, does not reap,
+// and keeps background output under the system temp directory.
+type Options struct {
+	// AccessToken, when non-empty, must be presented in X-EXECD-ACCESS-TOKEN.
+	AccessToken string
+
+	// Reap makes the server the only caller of wait4 in the process, so it also reaps
+	// orphans. Only for PID 1 or a subreaper; see procs.
+	Reap bool
+
+	// OutputDir holds background commands' output. Empty means a fresh private directory
+	// under os.TempDir, removed by Close.
+	OutputDir string
+
+	// Logger receives one line per notable event. Nil means the standard logger.
+	Logger *log.Logger
+}
+
+// Server is the execd HTTP API. Build it with New, serve it with any http.Server, and Close it
+// to kill what it started.
+type Server struct {
+	token []byte
+	procs *procs
+	log   *log.Logger
+	mux   *http.ServeMux
+
+	outputDir     string
+	ownsOutputDir bool
+
+	mu       sync.Mutex
+	commands map[string]*command
+	sessions map[string]*session
+
+	stopJanitor chan struct{}
+	closeOnce   sync.Once
+}
+
+// New builds a Server. It fails only when the output directory cannot be made.
+func New(o Options) (*Server, error) {
+	s := &Server{
+		token:       []byte(o.AccessToken),
+		procs:       newProcs(o.Reap),
+		log:         o.Logger,
+		commands:    map[string]*command{},
+		sessions:    map[string]*session{},
+		stopJanitor: make(chan struct{}),
+	}
+
+	if s.log == nil {
+		s.log = log.New(os.Stderr, "execd: ", log.LstdFlags)
+	}
+
+	s.outputDir = o.OutputDir
+	if s.outputDir == "" {
+		// Private (0700) and per process, so another user in the sandbox cannot read a
+		// command's output and a restarted execd never trips over an old one's files.
+		dir, err := os.MkdirTemp("", "sbx-execd-")
+		if err != nil {
+			return nil, fmt.Errorf("create the directory for background command output under %s: %w "+
+				"(set TMPDIR to a writable directory)", os.TempDir(), err)
+		}
+
+		s.outputDir, s.ownsOutputDir = dir, true
+	} else if err := os.MkdirAll(s.outputDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create output directory %s: %w", s.outputDir, err)
+	}
+
+	s.routes()
+
+	go s.janitor(time.Hour, commandRetention)
+
+	return s, nil
+}
+
+// Close kills every command and session the server started and stops its background work. It
+// does not stop an http.Server serving it; that is the caller's.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		close(s.stopJanitor)
+
+		s.mu.Lock()
+		var groups []int
+
+		for _, c := range s.commands {
+			if pgid := c.runningGroup(); pgid > 0 {
+				groups = append(groups, pgid)
+			}
+		}
+
+		for _, ss := range s.sessions {
+			if pgid := ss.currentGroup(); pgid > 0 {
+				groups = append(groups, pgid)
+			}
+		}
+		s.mu.Unlock()
+
+		for _, g := range groups {
+			_ = signalGroup(g, syscall.SIGKILL)
+		}
+
+		s.procs.close()
+
+		if s.ownsOutputDir {
+			_ = os.RemoveAll(s.outputDir)
+		}
+	})
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) routes() {
+	m := http.NewServeMux()
+
+	handle := func(pattern string, h http.HandlerFunc) {
+		m.Handle(pattern, s.guard(h))
+	}
+
+	// /ping answers without the token, as upstream does: it is the liveness probe, and the
+	// thing probing it (sbx serve, a load balancer) is not necessarily holding the token.
+	m.Handle("GET /ping", recoverer(s.log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	handle("POST /command", s.runCommand)
+	handle("DELETE /command", s.interrupt)
+	// /command/status/{id} and /command/{id}/logs overlap for the path /command/status/logs,
+	// and ServeMux refuses to register two patterns where neither is more specific. One
+	// pattern, told apart by hand.
+	handle("GET /command/{a}/{b}", s.commandSubresource)
+
+	handle("POST /session", s.createSession)
+	handle("POST /session/{sessionId}/run", s.runInSession)
+	handle("DELETE /session/{sessionId}", s.deleteSession)
+
+	handle("GET /files/info", s.filesInfo)
+	handle("DELETE /files", s.removeFiles)
+	handle("POST /files/permissions", s.chmodFiles)
+	handle("POST /files/mv", s.moveFiles)
+	handle("GET /files/search", s.searchFiles)
+	handle("POST /files/replace", s.replaceContent)
+	handle("POST /files/upload", s.uploadFiles)
+	handle("GET /files/download", s.downloadFile)
+
+	handle("GET /directories/list", s.listDirectory)
+	handle("POST /directories", s.makeDirs)
+	handle("DELETE /directories", s.removeDirs)
+
+	handle("GET /metrics", s.metrics)
+	handle("GET /metrics/watch", s.watchMetrics)
+
+	// Parts of the API a later release adds. They answer 501 with the spec's error shape, not
+	// 404: a 404 reads as "you have the path wrong", and a client should instead learn that
+	// this daemon knows the endpoint and does not do it yet.
+	for pattern, release := range notYet {
+		handle(pattern, notImplemented(pattern, release))
+	}
+
+	handle("/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, codeNotFound,
+			fmt.Sprintf("%s %s is not an execd endpoint; the API is specs/execd-api.yaml in OpenSandbox release-1.1.0",
+				r.Method, r.URL.Path))
+	})
+
+	s.mux = m
+}
+
+// notYet maps each unimplemented prefix to the sbx release that implements it, per the release
+// table in docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md.
+var notYet = map[string]string{
+	"/code":         "v0.10.0 (code interpreter)",
+	"/code/":        "v0.10.0 (code interpreter)",
+	"/pty":          "v0.10.0 (pty)",
+	"/pty/":         "v0.10.0 (pty)",
+	"/proxy/":       "v0.10.0 (port proxy)",
+	"/v1/isolated/": "v0.11.0 (isolated sessions)",
+}
+
+func notImplemented(pattern, release string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotImplemented, codeNotSupported,
+			fmt.Sprintf("%s %s is not supported by this sbx execd yet; sbx %s adds it", r.Method, r.URL.Path, release))
+	}
+}
+
+// guard is authentication plus panic recovery, in front of every endpoint but /ping.
+func (s *Server) guard(h http.HandlerFunc) http.Handler {
+	inner := recoverer(s.log, h)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.token) > 0 {
+			got := r.Header.Get(AccessTokenHeader)
+			// Constant time, so the token cannot be recovered a byte at a time from how long a
+			// wrong guess takes. Upstream compares with != ; this is the one place sbx is
+			// stricter on purpose.
+			if got == "" || subtle.ConstantTimeCompare([]byte(got), s.token) != 1 {
+				writeError(w, http.StatusUnauthorized, codeUnauthorized,
+					"invalid or missing header "+AccessTokenHeader+
+						"; use the token returned with this sandbox's execd endpoint")
+
+				return
+			}
+		}
+
+		inner.ServeHTTP(w, r)
+	})
+}
+
+// recoverer turns a panic in a handler into a 500 instead of a dropped connection. A handler
+// that has already started streaming cannot change its status, so there the connection is
+// simply ended - which the client sees as a truncated stream, the honest description.
+func recoverer(l *log.Logger, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tw := &trackingWriter{ResponseWriter: w}
+
+		defer func() {
+			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler {
+					panic(v)
+				}
+
+				l.Printf("panic serving %s %s: %v", r.Method, r.URL.Path, v)
+
+				if !tw.wrote {
+					writeError(tw, http.StatusInternalServerError, codeRuntimeError,
+						fmt.Sprintf("execd failed while serving %s %s: %v; this is a bug in sbx execd", r.Method, r.URL.Path, v))
+				}
+			}
+		}()
+
+		h.ServeHTTP(tw, r)
+	})
+}
+
+// trackingWriter remembers whether headers went out, for recoverer.
+type trackingWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *trackingWriter) WriteHeader(code int) {
+	t.wrote = true
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *trackingWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach Flush on the real writer.
+func (t *trackingWriter) Unwrap() http.ResponseWriter {
+	return t.ResponseWriter
+}
+
+type errorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, errorBody{Code: code, Message: message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		status = http.StatusInternalServerError
+		b, _ = json.Marshal(errorBody{Code: codeRuntimeError, Message: "encode response: " + err.Error()})
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
+}
+
+// newID is 32 hex characters, the shape of upstream's ids (a UUID without dashes).
+func newID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+
+	return hex.EncodeToString(b[:])
+}
