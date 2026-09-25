@@ -465,17 +465,60 @@ go build -o sbx . && SBX_FC_VM_DRIVER=colima FC_E2E_ROUNDS=12 scripts/fc-anywher
 Apple M4, 16 GiB, macOS 26.4.1; helper VM: colima 0.10.1 profile `sbx-fc-e2e`, `--vm-type vz
 --nested-virtualization`, **2 vCPU / 2 GiB**, created by the script and deleted after it (two
 other colima VMs, 4 GiB and 3 GiB, running throughout). Firecracker v1.17.0, the CI 6.18 kernel,
-`nginx` template, 1 vCPU / 256 MiB guest. Measured 2026-09-26, one run of 12 rounds, each round a
+`nginx` template (it declares a `health` command), 1 vCPU / 256 MiB guest. Re-measured 2026-09-26 at
+b21492f, one run of 12 rounds, each round a
 sleep, a wake, an awake request and an exec (those two alternating order) and a create + rm of a
 second sandbox (before or after the wake, alternating). All times are client-side, on the Mac:
 
 | | n | median | p95 |
 |---|---:|---:|---:|
-| **wake from snapshot → first byte** (TCP connect on the Mac, HTTP 200) | 12 | **212 ms** | 232 ms |
-| request to an awake sandbox → first byte | 12 | 6.7 ms | 21.6 ms |
-| `sbx exec` round trip (ssh into the helper VM + sbx + execd over vsock) | 12 | 715 ms | 829 ms |
-| `sbx sleep` (Seal, pause, Diff snapshot, merge) | 12 | 693 ms | 831 ms |
-| `sbx create` (image already pulled: export, ext4, cold boot, first port, Full snapshot) | 12 | 11.7 s | 14.3 s |
+| **wake from snapshot → first byte** (TCP connect on the Mac, HTTP 200) | 12 | **216 ms** | 256 ms |
+| request to an awake sandbox → first byte | 12 | 8.3 ms | 9.5 ms |
+| `sbx exec` round trip (ssh into the helper VM + sbx + execd over vsock) | 12 | 725 ms | 908 ms |
+| `sbx sleep` (Seal, pause, Diff snapshot, merge) | 12 | 680 ms | 811 ms |
+| `sbx create` (image already pulled: export, ext4, cold boot, health, Full snapshot) | 12 | 11.5 s | 14.3 s |
+
+**A regression, measured and fixed.** Between the first run (212 ms, before the spec's `health` ran
+inside the VM) and b21492f, the wake median was **394 ms** (n=10, p95 577 ms): the daemon's
+readiness probe ran the health command through execd on every wake. A traced build put each phase
+in the in-VM daemon's log (n=6): snapshot load 3.5-10 ms, execd re-key 139-217 ms, **health
+177-336 ms**, woke in 340-585 ms. A snapshot is of a workload already serving, so the command now
+runs at create (before the snapshot) and after a cold boot only, and a snapshot wake dials the
+first port.
+
+The wake after the fix, by phase, from the same traced build (in the VM daemon's log, n=15; the Mac
+saw first byte at a median 244 ms, p95 301 ms, n=12, in that traced run):
+
+| wake phase (in the helper VM) | median | p95 |
+|---|---:|---:|
+| snapshot load + resume | 11.5 ms | 16.1 ms |
+| execd re-key over vsock | 170.4 ms | 203.5 ms |
+| readiness probe (first port) | 10.7 ms | 20.8 ms |
+| **daemon: woke** | **206 ms** | 252 ms |
+
+The re-key is now most of a wake: a vsock dial and handshake into a guest whose pages are still
+faulting in under nested virtualisation.
+
+And a create, by phase, inside the provider (traced, n=4, `nginx`, image already pulled; the
+client-side totals for these four were 7.2, 14.1, 14.2 and 14.1 s):
+
+| create phase | median | range |
+|---|---:|---:|
+| checks, lock, artifact lookup | 2.1 ms | 1.7-3.9 ms |
+| root filesystem (cached by image ID) + agent binary | 50 ms | 45-73 ms |
+| clone the root filesystem into the VM directory | 2.30 s | 2.16-2.35 s |
+| agent drive (ext4 with `/sbx` + `/init.json`) + record | 93 ms | 71-139 ms |
+| cold boot (launch, configure, InstanceStart) | 108 ms | 87-141 ms |
+| boot to first port accepting | 2.41 s | 2.38-2.68 s |
+| health command passing | 144 ms | 132-152 ms |
+| Seal, pause, Full snapshot, kill | 632 ms | 483-793 ms |
+| **sum inside the provider** | **~5.7 s** | |
+
+The rest of the 11.5 s median - 1.5-8.5 s per create here - is outside the provider: ssh into the
+helper VM, the in-VM CLI and its docker calls, and the redirect. It was not split further; the
+first create in a run was 7.2 s and the next three 14.1-14.2 s, which is the part to look at
+next. A 2.3 s clone is a byte copy, not a reflink (which is near-instant); which one ran is recorded
+as `clone` in each VM's `vm.json` and was not read for this run.
 
 Inside the helper VM, the provider alone (`SBX_FC_E2E=1`, `redis:7-alpine`, n=2, so read, not
 ranked): restore + re-key 282-304 ms, first byte 326-342 ms, exec over vsock 265-326 ms, stop as
@@ -483,9 +526,8 @@ a Diff snapshot 75-84 ms, create 5.8 s.
 
 Where it goes:
 
-- **The Mac adds almost nothing to a wake.** 212 ms from the Mac against ~300 ms for the
-  provider's own Start in the VM (different workloads, so the same size, not a saving): the mirror
-  and the ssh tunnel are not what a wake waits on. The spike's 88 ms was a bare `/init` restored
+- **The Mac adds little to a wake.** 216 ms from the Mac against 206 ms for the daemon's own wake
+  in the VM: the mirror and the ssh tunnel are not what a wake waits on. The spike's 88 ms was a bare `/init` restored
   and asked over vsock; here execd is re-keyed before the wake proxy lets a byte through, and the
   workload's pages fault in under nested virtualisation (spike: ~250-300 µs per stage-2 fault).
 - **An exec is mostly process start-up and ssh.** In the VM an exec is ~300 ms - the vsock
