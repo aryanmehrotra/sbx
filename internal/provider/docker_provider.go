@@ -30,11 +30,16 @@ import (
 	"time"
 )
 
+// maxSlots is how many sandboxes one engine can hold. 128, up from 60: a warm pool plus a burst
+// of a hundred creates (ComputeSDK's Burst TTI) needs more than 60 at once. The ceiling is
+// the backing range, which must stay below Linux's default ephemeral ports (32768+) or an
+// outgoing connection can take a port docker is about to publish: 30000 + 128*20 = 32560.
+// Public ports then run 20000-22559.
 const (
 	publicBase  = 20000
 	backingBase = 30000
 	blockSize   = 20
-	maxSlots    = 60
+	maxSlots    = 128
 )
 
 type dockerProvider struct {

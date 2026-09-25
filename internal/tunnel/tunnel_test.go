@@ -128,7 +128,7 @@ func TestCloudflaredControlPlaneIsNotTheTunnelURL(t *testing.T) {
 }
 
 // cloudflared's metrics listener takes the first free port of 20241-20245, and sbx hands out
-// 20000-21199 - so the default lands inside slot 12 and the daemon can no longer bind it.
+// 20000-22559 - so the default lands inside slot 12 and the daemon can no longer bind it.
 // Measured before the fix: cloudflared LISTEN on 127.0.0.1:20241, and net.Listen on it failed
 // with "address already in use". Pinned here because the collision is invisible until the day
 // slot 12 is the one being allocated.
@@ -142,7 +142,7 @@ func TestCloudflaredDoesNotBindInsideTheSandboxPortRange(t *testing.T) {
 
 		if !strings.Contains(args, "--metrics 127.0.0.1:0") {
 			t.Errorf("cloudflared is started without --metrics 127.0.0.1:0, so its metrics "+
-				"server can take a port sbx allocates (20000-21199): %s", args)
+				"server can take a port sbx allocates (20000-22559): %s", args)
 		}
 	}
 }
