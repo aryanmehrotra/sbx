@@ -175,3 +175,51 @@ decision, not this design's.
 Hosting needs a machine where sbx can reach a container runtime (a docker socket or a Kubernetes
 API). ZopCloud's shared VM pool runs services as containers with no documented way to mount one;
 that, and creating the project there, are the operator's call.
+
+## Amendments (2026-09-26)
+
+Where the build departed from the text above. The text is left as written so the departure is
+visible; this section is what is true.
+
+### Provider capabilities actually added
+
+"Unchanged interface + Pauser capability" undercounted. The core `Provider` interface is still
+unchanged; the optional capabilities the API needed are:
+
+| capability | what it is for | kubernetes |
+|---|---|---|
+| `Pauser` | `pause`/`resume` and freeze-on-idle: `docker pause`, memory kept | not implemented |
+| `Injector` | put execd into an arbitrary image: seed a named volume once, mount it read-only at `/opt/sbx`, read the image's entrypoint and platform | not implemented (needs an init container) |
+| `NamedVolumes` | `pvc` volumes as namespaced docker volumes (`sbx-osb-pvc-<claim>`) | not implemented (a PVC's class and size are the operator's) |
+| `Snapshotter.Commit(ctx, ref, image, changes...)` | gained `changes` (`docker commit --change`), so a snapshot image does not carry the source sandbox's execd token in its `ENV` | n/a (no Snapshotter) |
+| `EgressPreflighter` | ask once, before anything is created, whether this host can enforce an egress policy, so a refusal leaves no half-made sandbox | n/a |
+| `Puller` | already existed (prewarm); the API pulls through it | refuses |
+
+### Kubernetes: the API is docker-only until an Injector exists
+
+The lifecycle table's "k8s: scale to 0 (filesystem only), reported honestly" never shipped. Every
+API sandbox needs execd inside an image sbx did not build, and the kubernetes provider has no
+`Injector`, so `POST /v1/sandboxes` answers 501 `SANDBOX::API_NOT_SUPPORTED` naming the reason.
+`pause` would be refused by name in any case: a scale-to-zero discards the memory, and calling it a
+pause is the stub the capability pattern exists to avoid. Kubernetes becomes an API backend when an
+init-container `Injector` is built; `sandbox.json` sandboxes on a cluster are unaffected.
+
+### Metadata is not written as labels
+
+"Stored in state file and as labels" is only the first half. Docker labels are fixed when a
+container is created, so a label copy would be stale after the first `PATCH` - and recreating a
+container to relabel it is a restart the caller did not ask for. Metadata, expiry, the token, the
+held-pause flag and the pvc volumes a sandbox owns live in `~/.sbx/osb/<id>.json` only. Labels carry
+what docker's own view needs (sandbox, service, slot, ports, idle policy) and nothing the API edits.
+
+### Built beyond the Shape
+
+| component | why it exists |
+|---|---|
+| egress control (`internal/egress`, the filter container, live policy push) | `networkpolicy` with FQDN, wildcard and CIDR rules, updatable without recreating the container; deny rules are real because the bridge has no NAT |
+| spec fields `entrypoint`, `cap_add`, `on_idle`, `egress_policy` | what an API sandbox needs, expressed as ordinary provider-neutral spec rather than API-only plumbing. `readonly_volumes` and `volume_mounts` started as spec fields and are now in-memory only (`json:"-"`): as sandbox.json fields they let a spec mount any named volume, sidestepping the API's namespacing |
+| `internal/jupyter`, `internal/wsclient`, `internal/wsserver` | execd's `/code` (the Jupyter kernel protocol over WebSocket) and `/pty`, standard library only |
+| `internal/mcp`, `internal/osbclient` | an MCP server over stdio for agents, speaking the OpenSandbox contract through a small client of its own |
+| `sbx serve --only` (`internal/daemon/scope.go`) | fences a second daemon to a prefix (`--only osb-`), so a conformance run beside a live stack never fronts, sleeps or reaps it |
+| `internal/slotlock` | a machine-wide lock around slot choice; concurrent creates otherwise picked the same slot and three of four failed at `docker run` |
+| health start interval | API sandboxes check health every 60s with a 1s start interval, not every 5s - 12x fewer runc execs (DECISIONS.md) |

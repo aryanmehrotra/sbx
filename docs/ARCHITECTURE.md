@@ -7,41 +7,62 @@ Everything here follows from one rule:
 Anything else that can start one eventually leaves one running — then two components each
 believe they own the lifecycle, and disagree while you debug something else.
 
+### The exceptions, named
+
+The OpenSandbox API is a lifecycle API, so it cannot keep the rule whole. Each place it bends is
+listed here, and each is either an explicit request from the caller or bounded by the daemon:
+
+| what starts or stops a sandbox | why it is allowed | who then owns it |
+|---|---|---|
+| API `pause` | the caller asked for a freeze that traffic must not undo; the daemon **holds** it | the hold, until `resume` |
+| API `resume` | the caller asked; it releases the hold and thaws | the daemon again |
+| API `DELETE`, and the expiry reaper | the sandbox's `timeout` is the caller's; removal is the end of it, not a start | nobody — it is gone |
+| API `POST .../snapshots` | `docker commit` pauses a running container for the copy (crash-consistent) and thaws it | the daemon; a stopped one is committed without being started |
+| warm-pool members | created running ahead of any caller and **pinned**: the reaper leaves them alone until a claim | the daemon, from the claim on — pinning ends and the idle clock starts then |
+| `create` (CLI or API) | a new container is started once, to be made; asking is starting | the daemon, from its first idle check |
+
+Anything not in this table that starts or stops a container is a bug against the rule.
+
 ---
 
 ## The pieces
 
 ```
-                    ┌──────────────────────────┐
-                    │      sandbox.json        │  ← the only thing a repo commits
-                    │  services · health · env │
-                    └────────────┬─────────────┘
-                                 │ read by
-                    ┌────────────▼─────────────┐
-            ┌───────┤        sbx (CLI)         ├───────┐
-            │       │ create env ready exec    │       │
-            │       │ logs cp url list rm      │       │
-            │       └────────────┬─────────────┘       │
-            │                    │                     │
-            │       ┌────────────▼─────────────┐       │
-            │       │    Provider interface    │       │
-            │       │  Create Start Stop Probe │       │
-            │       │  List Exec Logs Copy     │       │
-            │       └──────┬────────────┬──────┘       │
-            │              │            │              │
-            │       ┌──────▼─────┐ ┌────▼────────┐     │
-            │       │   docker   │ │ kubernetes  │     │
-            │       └────────────┘ └─────────────┘     │
-            │                                          │
-   ┌────────▼────────┐                        ┌────────▼────────┐
-   │   sbx serve     │                        │  tunnel backend │
-   │  owns the ports │                        │  cloudflared /  │
-   │  wakes & sleeps │                        │  ngrok / ssh*   │
-   └─────────────────┘                        └─────────────────┘
-                                               * opt-in only
+                    ┌──────────────────────────┐   ┌──────────────────────────┐
+                    │      sandbox.json        │   │  OpenSandbox SDK / HTTP  │
+                    │  services · health · env │   │  POST /v1/sandboxes ...  │
+                    └────────────┬─────────────┘   └────────────┬─────────────┘
+                                 │ read by                      │ served by
+                    ┌────────────▼─────────────┐   ┌────────────▼─────────────┐
+            ┌───────┤        sbx (CLI)         │   │  osb: lifecycle API      │
+            │       │ create env ready exec    │   │  (in sbx serve)          │
+            │       │ logs cp url list rm      │   │  records · expiry ·      │
+            │       └────────────┬─────────────┘   │  warm pool · volumes     │
+            │                    │                 └──┬──────────────────┬────┘
+            │                    │ ┌──────────────────┘                  │
+            │       ┌────────────▼─▼───────────┐                         │ Hold · Pin
+            │       │    Provider interface    │                         │ Freeze · Thaw
+            │       │  Create Start Stop Probe │                         │ Refresh
+            │       │  List Exec Logs Copy     │                         │
+            │       │  + optional: Injector    │                         │
+            │       │  Pauser Snapshotter      │                         │
+            │       │  NamedVolumes Puller ... │                         │
+            │       └──────┬────────────┬──────┘                         │
+            │              │            │                                │
+            │       ┌──────▼─────┐ ┌────▼────────┐                       │
+            │       │   docker   │ │ kubernetes  │  ← no Injector:       │
+            │       └────────────┘ └─────────────┘    the API is 501     │
+            │                                                            │
+   ┌────────▼────────┐                                                   │
+   │   sbx serve     │◀──────────────────────────────────────────────────┘
+   │  owns the ports │
+   │  wakes & sleeps │        tunnel backend (cloudflared / ngrok / ssh):
+   │  freezes idle   │        opt-in only, shelled out to by `sbx url`
+   │  API sandboxes  │
+   └─────────────────┘
 ```
 
-One spec. One binary. Two backends.
+One spec. One binary. Two backends — and one API in front of the first of them.
 
 ---
 
@@ -178,12 +199,56 @@ doesn't know which it drives.
 
 ---
 
+## The OpenSandbox API
+
+`sbx serve --osb-addr` also answers OpenSandbox's lifecycle API. An API sandbox is an ordinary sbx
+sandbox named by its id (`osb-` + 12 hex) with one service, and the daemon wakes and idles it like
+any other. What the API adds is around it, not instead of it:
+
+```
+   SDK ──▶ osb (sbx serve)                         one API sandbox
+           │                                      ┌──────────────────────────────────┐
+           │ create: pull · place execd ─────────▶│ /opt/sbx  ← execd volume, ro     │
+           │         (Injector) · docker run      │ sbx execd --addr :44772 -- <cmd> │
+           │                                      │   /command /files /code /pty     │
+           │ records: ~/.sbx/osb/<id>.json        │   /proxy  (execd is PID 1)       │
+           │   token · expiry · metadata ·        │ <cmd>  ← the caller's entrypoint │
+           │   owned pvc volumes                  └───────────────▲──────────────────┘
+           │                                                      │
+           │ pause ──▶ Freeze + HOLD  (traffic cannot thaw it)    │ wake port, fronted
+           │ resume ─▶ Thaw  (hold released)                      │ by the daemon
+           │                                                      │
+           └────────────────────────▶ daemon ─────────────────────┘
+                                        idle: FREEZE (docker pause, memory kept,
+                                              ~10 ms thaw on the next byte) — the
+                                              API default; extensions["sbx.idle"]=
+                                              "sleep" stops it to 0 B instead
+                                        pool: members wait running and PINNED,
+                                              re-keyed on claim, then idle as usual
+```
+
+- **execd is injected, not baked.** The binary is copied once into a named volume and mounted
+  read-only at `/opt/sbx` in any image the caller names — `Injector`, which only docker
+  implements. A cluster would need an init container, so the API answers 501 there rather than
+  pretending (`pause` would be a scale-to-zero that loses the memory, and is refused by name).
+- **A held pause is not an idle freeze.** Both are `docker pause`. The idle one is the daemon's and
+  the next byte undoes it; the held one is the caller's, reported as `Paused`, and refuses traffic
+  until `resume`. The hold is re-asserted from the record when the daemon restarts.
+- **Freeze-on-idle is the API default** because upstream's contract is that a background process
+  started in one request is still running at the next; `sandbox.json` keeps stop-on-idle, since
+  holding memory is the opposite of why sbx exists.
+- **What the API remembers lives in its record file**, never in labels: docker labels are fixed at
+  create, and metadata, expiry and holds change.
+
+---
+
 ## What is deliberately not here
+
 
 | | why |
 |---|---|
 | `sbx start` / `sbx stop` | the rule at the top |
 | A tunnel implementation | Cloudflare delegates theirs too; we shell out |
 | Preview URLs in cluster mode | that is an Ingress, and it already exists |
-| Code interpreters | a language runtime product, not a sandbox one |
+| A code-interpreter runtime | execd's `/code` drives the Jupyter an image already runs (`opensandbox/code-interpreter`); sbx ships no kernels |
 | Multi-tenant hardening | `--isolation gvisor\|kata` is declarable; operating it is yours |
