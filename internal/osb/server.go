@@ -76,6 +76,10 @@ type Options struct {
 	Ping      func(ctx context.Context, hostport string) error
 	Execd     func(ctx context.Context, arch string) (execdSource, error)
 	LockSlots func() func()
+
+	// NewID mints sandbox ids; it must return osb-<12 hex>. A test sharing an engine with other
+	// API sandboxes uses it to give its own a prefix it can scope a daemon to.
+	NewID func() string
 }
 
 // Server is the API. Create one with New; mount Handler; run Run for expiry.
@@ -93,6 +97,7 @@ type Server struct {
 	ping      func(ctx context.Context, hostport string) error
 	execd     func(ctx context.Context, arch string) (execdSource, error)
 	lockSlots func() func()
+	newID     func() string
 
 	// base outlives any one request: provisioning continues after the create call has
 	// returned its 202, which is the whole point of Pending.
@@ -167,6 +172,11 @@ func New(o Options) (*Server, error) {
 
 	if s.lockSlots == nil {
 		s.lockSlots = slotlock.Lock
+	}
+
+	s.newID = o.NewID
+	if s.newID == nil {
+		s.newID = newID
 	}
 
 	s.base, s.cancel = context.WithCancel(context.Background())

@@ -229,7 +229,7 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 
 	pl.env = req.Env
 	pl.rec = record{
-		ID:               newID(),
+		ID:               s.newID(),
 		Image:            strings.TrimSpace(req.Image.URI),
 		Entrypoint:       slices.Clone(req.Entrypoint),
 		Metadata:         maps.Clone(req.Metadata),
