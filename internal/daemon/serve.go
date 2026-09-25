@@ -181,7 +181,7 @@ func Serve(args []string) error {
 	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY); needed for a non-loopback --osb-addr")
 
 	var pools stringList
-	fs.Var(&pools, "osb-pool", "keep warm OpenSandbox sandboxes of this image ready, IMAGE[=N] (default 8; repeatable): a matching create is answered from one in milliseconds")
+	fs.Var(&pools, "osb-pool", "keep warm OpenSandbox sandboxes of this image ready, IMAGE[=N] (default 8; repeatable; or $SBX_OSB_POOL, comma-separated): a matching create is answered from one in milliseconds")
 
 	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim")
 
@@ -192,6 +192,15 @@ func Serve(args []string) error {
 	if len(only) == 0 {
 		if v := os.Getenv("SBX_ONLY"); v != "" {
 			only = stringList{v}
+		}
+	}
+
+	// Comma-separated, as --only is: an image reference never contains a comma.
+	if len(pools) == 0 {
+		for _, v := range strings.Split(os.Getenv("SBX_OSB_POOL"), ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				pools = append(pools, v)
+			}
 		}
 	}
 
