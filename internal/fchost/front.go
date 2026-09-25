@@ -51,6 +51,10 @@ func (m *Manager) Ensure(ctx context.Context, opt EnsureOptions) error {
 		return err
 	}
 
+	if err := m.Provision(ctx); err != nil {
+		return err
+	}
+
 	find := opt.Binary
 	if find == nil {
 		find = func(ctx context.Context) (string, error) {

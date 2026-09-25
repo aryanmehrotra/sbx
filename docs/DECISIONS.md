@@ -113,8 +113,9 @@ VMM there would cost cgo and the static binary, and still resume nothing (ROADMA
 **The VM tool is shelled out**, for the reason tunnels are: lima and colima already solve the
 VM, and `go.mod` stays empty. Every command names the instance, and the name must start with
 `sbx-`, so nothing sbx runs can reach colima's `default` profile. colima's start can repoint the
-*global* docker context, so sbx starts it with the containerd runtime and puts the context back
-regardless.
+*global* docker context - and the docker runtime is the one it needs, because the provider builds
+each rootfs through a docker engine - so sbx records the context before every colima start and
+puts it back after, even when the start failed. lima and WSL get docker installed inside instead.
 
 **The rest of sbx is not reimplemented against the VM - it is run in it.** `create`, `list`,
 `env`, `exec`, `logs`, `rm` and the rest execute unchanged in the VM, with the exit status

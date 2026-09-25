@@ -273,14 +273,16 @@ func (colima) ParseState(out, name string) (State, error) {
 
 func (colima) CreateArgv(Config) []string { return nil }
 
-// StartArgv uses the containerd runtime so colima creates no docker context for this VM at
-// all, and no port forwarder, for the same reason lima gets its ignore rules.
+// StartArgv uses the docker runtime because the firecracker provider builds each rootfs through a
+// docker engine (`docker export`), and no port forwarder, for the same reason lima gets its ignore
+// rules. The docker runtime is also what makes colima repoint the global docker context on start,
+// which is why every colima start runs under Manager.guardDockerContext.
 func (colima) StartArgv(c Config) []string {
 	return []string{
 		"colima", "start", "--profile", c.Name,
 		"--vm-type", "vz", "--nested-virtualization",
 		"--cpus", strconv.Itoa(c.CPUs), "--memory", gib(c.MemoryGiB), "--disk", strconv.Itoa(c.DiskGiB),
-		"--runtime", "containerd", "--port-forwarder", "none",
+		"--runtime", "docker", "--port-forwarder", "none",
 	}
 }
 

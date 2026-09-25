@@ -430,3 +430,40 @@ func (r runnerFunc) Run(ctx context.Context, c Cmd) error {
 
 	return r.fakeRunner.Run(ctx, c)
 }
+
+// The in-VM provider builds each rootfs through a docker engine and needs /dev/kvm; the VM is
+// checked for both, and docker installed when missing, before any sbx is put in it.
+func TestEnsureProvisionsDockerAndChecksKVMFirst(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "sbx")
+	_ = os.WriteFile(bin, []byte("x"), 0o755)
+
+	r := (&fakeRunner{}).on("limactl list", runningLima, nil).on("ssh", "", nil)
+	m := limaManager(t, r)
+
+	if err := m.Ensure(context.Background(), EnsureOptions{Binary: func(context.Context) (string, error) { return bin, nil }}); err != nil {
+		t.Fatal(err)
+	}
+
+	all := r.lines()
+
+	prov := slices.IndexFunc(all, func(l string) bool { return strings.Contains(l, "apt-get install -y -q docker.io e2fsprogs") })
+	inst := slices.IndexFunc(all, func(l string) bool { return strings.Contains(l, "cat > /usr/local/bin/sbx.new") })
+
+	if prov < 0 || inst < 0 || prov > inst {
+		t.Fatalf("provisioning at %d, install at %d:\n%s", prov, inst, strings.Join(all, "\n"))
+	}
+
+	if !strings.Contains(all[prov], "[ -c /dev/kvm ]") {
+		t.Error("provisioning does not check /dev/kvm inside the VM")
+	}
+}
+
+func TestEnsureSaysWhenNestedVirtDidNotTakeEffect(t *testing.T) {
+	r := (&fakeRunner{}).on("limactl list", runningLima, nil).on("ssh", "", exitErr(t, 3))
+	m := limaManager(t, r)
+
+	err := m.Ensure(context.Background(), EnsureOptions{Binary: func(context.Context) (string, error) { return "/x", nil }})
+	if err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
+		t.Fatalf("got %v", err)
+	}
+}

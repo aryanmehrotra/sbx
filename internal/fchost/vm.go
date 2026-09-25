@@ -208,9 +208,8 @@ func (m *Manager) loud(ctx context.Context, argv []string) error {
 // guardDockerContext puts the global docker context back after a colima start.
 //
 // colima switches it to its own profile on start, and that context is global: every docker
-// command in every terminal on this Mac would silently go to the helper VM afterwards. The
-// containerd runtime should avoid the switch; this is the belt to that pair of braces, and it
-// runs even when the start failed, because a half-started colima can switch it too.
+// command in every terminal on this Mac would silently go to the helper VM afterwards. It runs
+// even when the start failed, because a half-started colima can have switched it already.
 func (m *Manager) guardDockerContext(ctx context.Context, fn func() error) error {
 	if !m.Driver.SwitchesDockerContext() {
 		return fn()
@@ -551,4 +550,36 @@ func (r StatusReport) JSON() string {
 	b, _ := json.Marshal(r)
 
 	return string(b)
+}
+
+// provisionScript is what the VM needs before the firecracker provider can run in it: /dev/kvm
+// (checked, never faked - exit 3 says nested virtualisation did not take effect), and a docker
+// engine plus e2fsprogs, which is how the provider turns an image into an ext4 root. Installed
+// only when missing, so a warm VM pays one `command -v` and one `docker info`.
+const provisionScript = `set -e
+[ -c /dev/kvm ] || exit 3
+if ! command -v docker >/dev/null 2>&1 || ! command -v mkfs.ext4 >/dev/null 2>&1; then
+  command -v apt-get >/dev/null 2>&1 || { echo "the helper VM has no docker and no apt-get to install it" >&2; exit 4; }
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -q >/dev/null && apt-get install -y -q docker.io e2fsprogs >/dev/null
+fi
+systemctl enable --now docker >/dev/null 2>&1 || true
+docker info >/dev/null`
+
+// Provision makes the VM able to run microVMs, or says precisely why it cannot.
+func (m *Manager) Provision(ctx context.Context) error {
+	_, err := m.inVM(ctx, nil, "sh", "-c", provisionScript)
+
+	var exit *exec.ExitError
+
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &exit) && exit.ExitCode() == 3:
+		return fmt.Errorf("no /dev/kvm inside the helper VM %s: nested virtualisation did not take effect. "+
+			"`sbx fc vm rm --yes` and start again; if it persists, check `sbx fc backend` and that %s supports "+
+			"nested virtualisation on this machine", m.Config.Name, m.Driver.Name())
+	default:
+		return fmt.Errorf("preparing the helper VM (docker, e2fsprogs): %w", err)
+	}
 }
