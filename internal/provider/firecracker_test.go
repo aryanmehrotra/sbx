@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1548,5 +1549,57 @@ func TestANonRootImageUserIsRefused(t *testing.T) {
 		if tc.ok != (err == nil) || (!tc.ok && !strings.Contains(err.Error(), "USER")) {
 			t.Errorf("USER %q: %v", tc.user, err)
 		}
+	}
+}
+
+// slowLaunch counts VMMs launching at once.
+type slowLaunch struct {
+	*fakeLauncher
+	inFlight, most atomic.Int32
+}
+
+func (s *slowLaunch) Launch(ctx context.Context, spec fc.LaunchSpec) (int, error) {
+	n := s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+
+	for m := s.most.Load(); n > m && !s.most.CompareAndSwap(m, n); m = s.most.Load() {
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	return s.fakeLauncher.Launch(ctx, spec)
+}
+
+// A fleet woken at once restores no more VMs together than the cap allows.
+func TestWakesAreCappedByTheBootSlots(t *testing.T) {
+	r := newRig(t)
+
+	var refs []string
+	for _, sb := range []string{"w1", "w2", "w3"} {
+		refs = append(refs, r.create(t, sb, redis))
+	}
+
+	sl := &slowLaunch{fakeLauncher: r.l}
+	r.p.launch = sl
+	r.p.boots = make(chan struct{}, 1)
+
+	var wg sync.WaitGroup
+
+	for _, ref := range refs {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			if err := r.p.Start(r.ctx, ref); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if most := sl.most.Load(); most != 1 {
+		t.Fatalf("%d VMs restored at once with one boot slot", most)
 	}
 }

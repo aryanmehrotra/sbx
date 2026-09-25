@@ -178,6 +178,11 @@ type fcProvider struct {
 	bridgeCheck func() fc.BridgeIsolation
 	warn        io.Writer
 
+	// boots caps how many VMs restore or cold-boot at once: each is a burst of page faults and a
+	// vCPU spinning up, and a fleet woken together (a host reboot, a burst of connections) would
+	// otherwise contend so hard that every wake is slow. Sized to the host's CPUs; nil is no cap.
+	boots chan struct{}
+
 	mu    sync.Mutex
 	locks map[string]*refLock
 }
@@ -219,6 +224,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		},
 		launch:      fc.ExecLauncher{},
 		bridgeCheck: fc.HostBridgeIsolation,
+		boots:       make(chan struct{}, max(1, runtime.NumCPU())),
 		bootTimeout: 60 * time.Second,
 		locks:       map[string]*refLock{},
 	}
@@ -712,6 +718,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return err
 	}
 
+	release, err := p.bootSlot(ctx)
+	if err != nil {
+		return err
+	}
+
+	defer release() // safe twice: released early below once the VM serves
+
 	if err := p.coldBoot(ctx, vm); err != nil {
 		return err
 	}
@@ -722,6 +735,8 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	if err := p.ready(bctx, vm, dir); err != nil {
 		return fmt.Errorf("%s booted but never served: %w\n%s", ref, err, p.consoleTail(dir, 20))
 	}
+
+	release()
 
 	if err := p.sleep(ctx, vm); err != nil {
 		return err
@@ -981,6 +996,12 @@ func (p *fcProvider) Start(ctx context.Context, ref string) error {
 	// A VMM that is up but not started, or a stale process: clear it before a new one binds.
 	_ = p.launch.Kill(ctx, dir)
 
+	release, err := p.bootSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if !vm.SnapshotValid {
 		fmt.Fprintf(os.Stderr, "  %s: cold boot - its last snapshot no longer matches its disk "+
 			"(it stopped without being slept)\n", ref)
@@ -993,6 +1014,22 @@ func (p *fcProvider) Start(ctx context.Context, ref string) error {
 	}
 
 	return p.restore(ctx, vm)
+}
+
+// bootSlot waits for one of p.boots, or ctx. The release is safe to call more than once.
+func (p *fcProvider) bootSlot(ctx context.Context) (func(), error) {
+	if p.boots == nil {
+		return func() {}, nil
+	}
+
+	select {
+	case p.boots <- struct{}{}:
+		var once sync.Once
+
+		return func() { once.Do(func() { <-p.boots }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // restore loads the snapshot and resumes it. The caller holds the lock.
