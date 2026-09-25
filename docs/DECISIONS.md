@@ -277,9 +277,48 @@ the point of the API is that clients written for OpenSandbox — its five SDKs, 
 server, and the agents built on them — run against a machine you already have. What did not
 change is the line itself: the API takes **one operator key**, the same "is this yours" posture as
 the connect token, compared in constant time; there are no per-user keys, no tenants and no
-quotas, and upstream's key-to-namespace multi-tenancy is deliberately not implemented. It binds
-loopback by default and refuses any other address without `--osb-key`. A team that wants
-identities puts a gateway in front, exactly as this section already says.
+quotas, and upstream's key-to-namespace multi-tenancy is deliberately not implemented. A team that
+wants identities puts a gateway in front, exactly as this section already says.
+
+*Corrected in v0.9.1.* v0.9.0 bound loopback by default **with no key there**, on the premise that
+being on this machine answers "is this yours". It does not on a VM-backed engine - see "Loopback
+is not a trust boundary on a VM-backed engine" below - so the key is now required on loopback too
+(generated when not given), and a non-loopback `--osb-addr` is refused outright until
+server-proxy mode exists.
+
+### Loopback is not a trust boundary on a VM-backed engine
+
+colima and Docker Desktop run containers inside a VM whose gateway forwards to the host's
+`127.0.0.1`. Measured on colima: a host `nc -l 127.0.0.1 18999` answered a `docker run alpine
+wget` at `host.lima.internal`, `host.docker.internal` and `192.168.5.2` alike. Docker Desktop
+does the same through `host.docker.internal`. So "bound to loopback" keeps other *machines* out
+and keeps nothing on the engine out - including sandboxes, which exist to run code nobody vetted.
+
+v0.9.0 treated loopback as private and served the OpenSandbox API there with no key. Any container
+could list sandboxes, read each one's execd token from its endpoint and run commands in any of
+them. What follows from taking the reach seriously:
+
+- **A key is always required.** Given with `--osb-key`/`SBX_OSB_KEY`, or generated once into
+  `~/.sbx/osb/key` (0600, directory 0700) and reused; the log says where, never what. `sbx mcp`
+  reads that file, for a loopback `--url` only. Keyless is `--osb-insecure-no-key`: typed, never
+  defaulted, loopback only, and warned about on every start.
+- **Nothing a sandbox holds may authorise anything beyond that sandbox's own execd.** execd's
+  token must be in the container, so the egress sidecar route - which changes the sandbox's own
+  filter - has a separate credential, stored only in the API's 0600 record and handed out only
+  to a caller that already has the key.
+- **Non-loopback is refused, not keyed.** The endpoints the API returns are 127.0.0.1 listeners,
+  useless to a remote client; serving them needs server-proxy mode, which is not built. Until it
+  is, reach a remote machine's API through `ssh -L`, and its sandboxes through `sbx connect`.
+- **An API sandbox has exactly one daemon.** Containers the API creates carry `sbx.osb`, and an
+  unscoped daemon that does not serve the API leaves them alone, so the machine's own daemon
+  cannot thaw a sandbox the API paused.
+
+**Rejected: telling containers apart by source address.** On colima all three of those routes
+arrive at the host listener from `127.0.0.1` (measured: the peer address was `127.0.0.1:<port>`
+for each), so the API cannot see who is calling - the premise that failed in the first place.
+
+**Rejected: a unix socket instead of TCP.** It would keep containers out, but every OpenSandbox SDK
+speaks HTTP to a host and port; an API they cannot reach is not the compatibility this exists for.
 
 **"Hosted Postgres, operated for you" stays in the use-something-else table permanently.** Neon
 is the answer there and always will be — not because sbx cannot branch and scale to zero, but
@@ -465,6 +504,12 @@ The token is not decoration. That listener is on every interface the container h
 sandbox's own bridge, so without it the workload could rewrite its own policy. It is generated per
 filter container and carried as a label, which is readable by whoever can `docker inspect` - who
 can already do anything to the container.
+
+The OpenSandbox API's own door to the same policy - the sidecar-shaped route behind
+`endpoints/18080` - follows the same rule with a credential of its own. v0.9.0 accepted execd's
+token there, and execd's token is in the sandbox's environment by necessity, so the workload could
+rewrite its own policy. Since v0.9.1 each sandbox has a separate egress credential, kept only in the
+API's 0600 record and handed out only to a caller holding the API key.
 
 **Only replace crosses the wire.** Merge, remove and reset are computed by the caller from a `GET`,
 and the `PUT` carries `If-Match` with the hash it read. Two writers - the CLI and the OpenSandbox API
