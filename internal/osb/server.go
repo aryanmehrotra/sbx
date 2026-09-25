@@ -64,6 +64,12 @@ type Options struct {
 	// loopback address.
 	Key string
 
+	// Owner is written on every container this API creates, as the sbx.osb label: which daemon
+	// made it. Its presence is what matters - a daemon that does not serve the API leaves labelled
+	// containers alone - and the value says whose they are to a person reading docker inspect.
+	// Empty is "sbx-serve".
+	Owner string
+
 	// StateDir holds one file per sandbox. Default ~/.sbx/osb.
 	StateDir string
 
@@ -145,6 +151,7 @@ type Server struct {
 	p       provider.Provider
 	rt      Runtime
 	key     string
+	owner   string
 	store   store
 	version string
 
@@ -229,6 +236,7 @@ func New(o Options) (*Server, error) {
 		p:            o.Provider,
 		rt:           o.Runtime,
 		key:          o.Key,
+		owner:        o.Owner,
 		store:        store{dir: o.StateDir},
 		version:      o.Version,
 		readyTimeout: o.ReadyTimeout,
@@ -317,6 +325,13 @@ func New(o Options) (*Server, error) {
 
 	for _, r := range recs {
 		s.recs[r.ID] = r
+
+		// Here, synchronously, and not only in Run: the daemon binds its listeners on its first
+		// discovery, and Run is a goroutine racing it. A hold that arrived after the listener
+		// would leave a window where a connection thaws a sandbox the API still says is Paused.
+		if r.PausedByAPI {
+			s.rt.Hold(r.ID, true)
+		}
 	}
 
 	if err := CheckHostPaths(o.HostPaths); err != nil {
@@ -538,7 +553,7 @@ func (s *Server) authed(next http.Handler) http.Handler {
 
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.key)) != 1 {
 			writeErr(w, http.StatusUnauthorized, "INVALID_API_KEY",
-				"authentication credentials are invalid: check the key this sbx serve was started with (--osb-key or SBX_OSB_KEY)")
+				"authentication credentials are invalid: check the key this sbx serve was started with (--osb-key, SBX_OSB_KEY, or the one it generated in ~/.sbx/osb/key)")
 
 			return
 		}
@@ -626,11 +641,14 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
-// CheckBind refuses an address that would expose an unauthenticated API. Loopback with no key
-// is the default posture - "is this yours" is answered by being on this machine - and anything
-// else needs the key, the same line the connect endpoint draws.
-func CheckBind(addr, key string) error {
-	host, _, err := net.SplitHostPort(addr)
+// CheckBind refuses any address but loopback, key or no key. The endpoints this API hands out
+// are 127.0.0.1 listeners on this machine, so a client on another one would be given addresses
+// it cannot dial; carrying them over the API's own port is server-proxy mode, which is not
+// built. Until it is, a non-loopback bind would only put the key and every request on the
+// network for a client that could not use the answer. key is kept for the callers' sake: the
+// key is required separately (see the daemon's osbKey), and loopback is never a reason to drop it.
+func CheckBind(addr, _ string) error {
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("--osb-addr %q is not host:port - try 127.0.0.1:8080", addr)
 	}
@@ -638,10 +656,13 @@ func CheckBind(addr, key string) error {
 	ip := net.ParseIP(host)
 	loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
 
-	if !loopback && key == "" {
-		return fmt.Errorf("--osb-addr %s is reachable from other machines, and without a key "+
-			"anyone who can reach it could create and run sandboxes here. Bind 127.0.0.1, or "+
-			"pass --osb-key (or set SBX_OSB_KEY) so OPEN-SANDBOX-API-KEY is required", addr)
+	if !loopback {
+		return fmt.Errorf("--osb-addr %s is not a loopback address, and sbx does not serve the "+
+			"OpenSandbox API off this machine yet: the sandbox endpoints it hands out are "+
+			"127.0.0.1 listeners here, and server-proxy mode, which would carry them, is not "+
+			"built. Bind 127.0.0.1:%s and reach it from another machine through a tunnel - "+
+			"`ssh -L %s:127.0.0.1:%s <this host>` for the API, plus `sbx connect` to a "+
+			"`sbx serve --connect-addr` here for the sandbox endpoints", addr, port, port, port)
 	}
 
 	return nil

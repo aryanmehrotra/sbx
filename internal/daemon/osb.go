@@ -38,6 +38,11 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		key = os.Getenv("SBX_OSB_KEY")
 	}
 
+	key, err := d.osbKey(addr, key)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if d.provider == nil {
 		return nil, nil, fmt.Errorf("--osb-addr needs a container runtime to create sandboxes in, "+
 			"and this daemon has none: %v", d.startupErr)
@@ -58,6 +63,7 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		Provider:     d.provider,
 		Runtime:      d,
 		Key:          key,
+		Owner:        "sbx-serve:" + scope.String(),
 		Version:      logs.Version,
 		ReadyTimeout: d.ready + 30*time.Second,
 		Egress:       d.Egress(),
@@ -75,10 +81,7 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
 	}
 
-	if !loopbackOnly(addr) {
-		logs.Default.Warn("", "", "the OpenSandbox API on %s is reachable from other machines: "+
-			"the key and every request cross the network in the clear unless TLS is in front", addr)
-	}
+	d.servesOSB = true
 
 	return api, ln, nil
 }

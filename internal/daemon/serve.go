@@ -148,6 +148,14 @@ type daemon struct {
 
 	// scope is which sandboxes this daemon may touch at all - see scope.go. Empty is all.
 	scope Scope
+
+	// osbNoKey is --osb-insecure-no-key: serve the OpenSandbox API with no key at all. Only ever
+	// typed, never defaulted - see osb/key.go for why loopback is not enough on its own.
+	osbNoKey bool
+
+	// servesOSB is set when this daemon serves --osb-addr. An unscoped daemon without it leaves
+	// containers the API created (label sbx.osb) to the daemon that does - see scope.go.
+	servesOSB bool
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -181,8 +189,9 @@ func Serve(args []string) error {
 
 	// The OpenSandbox lifecycle API. Off unless asked for, loopback unless keyed - see osb.
 	// The key is never a flag default, because flag defaults are printed by --help.
+	osbNoKey := fs.Bool("osb-insecure-no-key", false, "serve --osb-addr with no key at all (loopback only). Any container on a VM-backed engine can reach the host loopback, so this lets every sandbox drive the API")
 	osbAddr := fs.String("osb-addr", envOr("SBX_OSB_ADDR", ""), "serve the OpenSandbox lifecycle API here, e.g. 127.0.0.1:8080; off unless set")
-	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY); needed for a non-loopback --osb-addr")
+	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY, else one generated into ~/.sbx/osb/key)")
 	osbHostPaths := fs.String("osb-host-paths", envOr("SBX_OSB_HOST_PATHS", ""), "comma-separated host directories an OpenSandbox host volume may bind from; none unless set")
 
 	var pools stringList
@@ -281,6 +290,7 @@ func Serve(args []string) error {
 		egress:     map[string]*egressProxy{},
 		egressSeen: map[string]int64{},
 		scope:      scope,
+		osbNoKey:   *osbNoKey,
 	}
 
 	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, splitPaths(*osbHostPaths), scope, pools, *poolFreeze)
@@ -410,12 +420,13 @@ func (d *daemon) discover(ctx context.Context) {
 	}
 
 	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
-	// filters, correctAwake - ever holds a unit outside --only to act on.
-	if len(d.scope) > 0 {
+	// filters, correctAwake - ever holds a unit outside --only, or an API sandbox this daemon
+	// does not own, to act on.
+	if len(d.scope) > 0 || !d.servesOSB {
 		in := found[:0:0]
 
 		for _, f := range found {
-			if d.scope.Match(f.Sandbox) {
+			if d.adopts(f) {
 				in = append(in, f)
 			}
 		}

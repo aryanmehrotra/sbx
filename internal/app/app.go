@@ -347,6 +347,10 @@ func dispatch(cmd string, args []string) error {
 			return missing(cmd, "sandbox name")
 		}
 
+		if err := refuseAPIPaused(cmd, positional[0]); err != nil {
+			return err
+		}
+
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
 		if err != nil {
 			return err
@@ -369,6 +373,10 @@ func dispatch(cmd string, args []string) error {
 			return missing(cmd, "sandbox name")
 		}
 
+		if err := refuseAPIPaused(cmd, positional[0]); err != nil {
+			return err
+		}
+
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
 		if err != nil {
 			return err
@@ -384,6 +392,10 @@ func dispatch(cmd string, args []string) error {
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
+		}
+
+		if err := refuseAPIPaused(cmd, positional[0]); err != nil {
+			return err
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)

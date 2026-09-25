@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/aryanmehrotra/sbx/internal/osb"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
@@ -115,7 +116,7 @@ func (d *daemon) controlRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !d.scope.Match(body.Sandbox) {
+	if !d.sandboxInScope(body.Sandbox) {
 		http.Error(w, outOfScope(body.Sandbox, d.scope), http.StatusForbidden)
 
 		return
@@ -197,6 +198,14 @@ func (d *daemon) actOnRef(w http.ResponseWriter, r *http.Request, verb string,
 
 	if !d.refInScope(body.Ref) {
 		http.Error(w, outOfScope(body.Ref, d.scope), http.StatusForbidden)
+
+		return
+	}
+
+	// A sandbox paused through the OpenSandbox API is the API's to release: a stop here loses
+	// the memory the pause kept, and a start thaws what the API still reports Paused.
+	if sandbox, held := d.refHeld(body.Ref); held {
+		http.Error(w, osb.HeldRefusal(verb, sandbox), http.StatusConflict)
 
 		return
 	}

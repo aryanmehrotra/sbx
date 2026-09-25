@@ -44,6 +44,7 @@ const (
 	labelIdle          = "sbx.idle"           // per-service idle override, when set
 	labelDependsOn     = "sbx.dependsOn"      // comma-joined depends_on, so wake can follow it
 	labelOnIdle        = "sbx.onIdle"         // "freeze" when idle should pause rather than stop
+	labelOSB           = "sbx.osb"            // set on containers the OpenSandbox API created: whose they are
 
 	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
 	// names rather than risking a silently rejected manifest.
@@ -129,6 +130,10 @@ type Unit struct {
 	// OnIdle is what the daemon does to this unit when it goes quiet: "" stops it (the default,
 	// and what every sandbox from a sandbox.json gets), "freeze" pauses it. See spec.Service.OnIdle.
 	OnIdle string
+
+	// OSB is the sbx.osb label: non-empty on a container created through the OpenSandbox API. A
+	// daemon that does not serve the API, and was not scoped to include them, leaves these alone.
+	OSB string
 }
 
 // EgressProxyPort is where a sandbox's egress filter listens on its no-NAT bridge gateway. The

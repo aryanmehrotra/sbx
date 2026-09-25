@@ -595,6 +595,15 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 // createContainer allocates the slot and creates the container under the machine's slot lock,
 // then checks the sandbox was not deleted while that was happening.
 func (s *Server) createContainer(ctx context.Context, id string, svc spec.Service) error {
+	// Labelled as the API's, so that a daemon which does not serve the API - the machine's own
+	// unscoped one - never fronts, sleeps, reaps or wakes it (daemon/scope.go). Before the
+	// slot-picker branch below, which returns early: every create path must carry it, pool
+	// members included, or the fence has a hole exactly where the burst traffic goes.
+	svc.OSBOwner = s.owner
+	if svc.OSBOwner == "" {
+		svc.OSBOwner = "sbx-serve"
+	}
+
 	if picker, ok := s.p.(provider.SlotPicker); ok {
 		return s.createPicked(ctx, id, svc, picker)
 	}
