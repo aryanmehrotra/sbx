@@ -1,12 +1,11 @@
 package daemon
 
 import (
+	"context"
 	"net"
 	"net/http"
-	"slices"
-	"sort"
+	"os"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -15,11 +14,18 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// egressProxy is one running egress.Filter: the listener on a sandbox's bridge gateway and the
-// allow-list it was started with, so a changed list can be spotted and the proxy restarted.
+// egressProxy is one running egress.Filter: the listener on a sandbox's bridge gateway, the
+// filter behind it, and what it was started for - so a live change can be applied to it in
+// place, and a sandbox that went away can be told apart from one whose policy changed.
 type egressProxy struct {
-	allow string
-	ln    net.Listener
+	sandbox string
+	ln      net.Listener
+	filter  *egress.Filter
+
+	// declared is the policy the sandbox's spec gives it, and savedAt the modification time of
+	// the live copy last read from disk - how watchEgress notices a change the CLI made.
+	declared egress.Policy
+	savedAt  time.Time
 
 	// lastTouch is when this proxy last stamped its sandbox awake, as UnixNano.
 	//
@@ -30,22 +36,80 @@ type egressProxy struct {
 	lastTouch atomic.Int64
 }
 
-// due reports whether enough time has passed to walk the unit map again, and claims the slot if
-// so. The CAS is what makes two concurrent streams cost one walk rather than two.
+// Egress is the daemon's egress policy API. Writes through it reach the filters this daemon
+// hosts at once, and container filters over their control endpoint.
+func (d *daemon) Egress() *EgressControl { return d.egressControl() }
 
-// reconcileEgress keeps exactly one filtering proxy running per sandbox that declared an egress
-// allow-list, bound to that sandbox's no-NAT bridge gateway - the one address a container on the
-// bridge can reach, and the only way out, since the bridge denies the direct route. Started when
-// the sandbox appears, stopped when it is gone, restarted if the list changed. Services that
-// share a sandbox share its bridge and so its proxy, with the union of their allow-lists.
+func (d *daemon) egressControl() *EgressControl {
+	d.egressOnce.Do(func() {
+		d.egressCtl = NewEgressControl(d.provider, d.egressDir)
+		d.egressCtl.apply = d.applyEgress
+	})
+
+	return d.egressCtl
+}
+
+// applyEgress swaps the policy of the filter this daemon hosts on gw, if it hosts one.
+func (d *daemon) applyEgress(gw string, p egress.Policy) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	proxy, ok := d.egress[gw]
+	if !ok {
+		return false
+	}
+
+	if err := proxy.filter.SetPolicy(p); err != nil {
+		logs.Default.Warn(proxy.sandbox, "", "egress policy refused: %v", err)
+		return false
+	}
+
+	logs.Default.Info(proxy.sandbox, "", "egress policy changed live: %s (%s)", p.Mode(), p.Hash())
+
+	return true
+}
+
+// effectivePolicy is what a hosted filter for sandbox should enforce: the live policy saved on
+// this host if there is one made against the same declaration, else the declaration.
+func (d *daemon) effectivePolicy(sandbox string, declared egress.Policy) (egress.Policy, time.Time) {
+	c := d.egressControl()
+
+	path, err := c.path(sandbox)
+	if err != nil {
+		return declared, time.Time{}
+	}
+
+	st, err := os.Stat(path)
+	if err != nil {
+		return declared, time.Time{}
+	}
+
+	if s, ok := c.load(sandbox); ok && s.Declared == declared.Hash() {
+		return s.Policy, st.ModTime()
+	}
+
+	return declared, st.ModTime()
+}
+
+// reconcileEgress keeps exactly one filtering proxy running per sandbox that is filtered and
+// whose filter this machine can host, bound to that sandbox's no-NAT bridge gateway - the one
+// address a container on the bridge can reach, and the only way out, since the bridge denies the
+// direct route. Started when the sandbox appears, stopped when it is gone. A changed policy is
+// applied to the running filter in place, never by restarting it: a restart would drop every
+// tunnel open through it, and "change the policy without recreating anything" is the point.
 //
-// It is off the wake path: a sandbox with no allow-list gets none of this, and the proxy runs on
-// its own listener, never touching the byte-splice the wake numbers are measured on.
+// It is off the wake path: a sandbox with no filter gets none of this, and the proxy runs on its
+// own listener, never touching the byte-splice the wake numbers are measured on.
 func (d *daemon) reconcileEgress(found []provider.Unit) {
-	lists := map[string][]string{} // gateway -> union of allow-lists
+	type want struct {
+		sandbox string
+		units   []provider.Unit
+	}
+
+	wants := map[string]*want{} // gateway -> the filtered units behind it
 
 	for _, u := range found {
-		if len(u.EgressAllow) == 0 || u.EgressGateway == "" {
+		if u.EgressGateway == "" {
 			continue
 		}
 
@@ -57,34 +121,56 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 			continue
 		}
 
-		for _, h := range u.EgressAllow {
-			if !slices.Contains(lists[u.EgressGateway], h) {
-				lists[u.EgressGateway] = append(lists[u.EgressGateway], h)
-			}
+		w := wants[u.EgressGateway]
+		if w == nil {
+			w = &want{sandbox: u.Sandbox}
+			wants[u.EgressGateway] = w
 		}
+
+		w.units = append(w.units, u)
 	}
 
-	desired := map[string]string{}
+	type desired struct {
+		sandbox  string
+		declared egress.Policy
+		policy   egress.Policy
+		savedAt  time.Time
+	}
 
-	for gw, l := range lists {
-		sort.Strings(l)
-		desired[gw] = strings.Join(l, ",")
+	next := map[string]desired{}
+
+	for gw, w := range wants {
+		declared := provider.DeclaredPolicy(w.units)
+		p, at := d.effectivePolicy(w.sandbox, declared)
+		next[gw] = desired{sandbox: w.sandbox, declared: declared, policy: p, savedAt: at}
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Stop proxies whose sandbox is gone, or whose allow-list changed (it will be recreated
-	// below with the new one).
 	for gw, p := range d.egress {
-		if desired[gw] != p.allow {
+		want, ok := next[gw]
+
+		// Gone, or the gateway now belongs to a different sandbox: that is a new filter, not a
+		// policy change, and the old one must not keep serving under the new name.
+		if !ok || want.sandbox != p.sandbox {
 			_ = p.ln.Close()
 			delete(d.egress, gw)
+
+			continue
+		}
+
+		p.declared, p.savedAt = want.declared, want.savedAt
+
+		if p.filter.Policy().Hash() != want.policy.Hash() {
+			if err := p.filter.SetPolicy(want.policy); err == nil {
+				logs.Default.Info(p.sandbox, "", "egress policy now %s (%s)", want.policy.Mode(), want.policy.Hash())
+			}
 		}
 	}
 
 	// Start the ones that should be running and are not.
-	for gw, allow := range desired {
+	for gw, want := range next {
 		if _, ok := d.egress[gw]; ok {
 			continue
 		}
@@ -97,15 +183,97 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 			continue
 		}
 
-		filter := egress.New(lists[gw])
+		filter := egress.NewPolicy(want.policy)
 		filter.OnActivity = func() { d.touchEgress(gw) }
 		srv := &http.Server{Handler: filter}
 		go func() { _ = srv.Serve(ln) }()
 
-		d.egress[gw] = &egressProxy{allow: allow, ln: ln}
-		logs.Default.Info("", "", "egress allow-list active on %s: %s", addr, allow)
+		d.egress[gw] = &egressProxy{sandbox: want.sandbox, ln: ln, filter: filter,
+			declared: want.declared, savedAt: want.savedAt}
+		logs.Default.Info(want.sandbox, "", "egress filter on %s: %s (%s)", addr, want.policy.Mode(), want.policy.Hash())
 	}
 }
+
+// watchEgress applies a live policy written by another process - `sbx egress` - to the filters
+// this daemon hosts, within a second rather than on the next discovery tick. One stat per hosted
+// filter per second: nothing, next to what the filter itself costs.
+func (d *daemon) watchEgress(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		d.mu.Lock()
+		type check struct {
+			sandbox  string
+			declared egress.Policy
+			savedAt  time.Time
+		}
+
+		var checks []check
+
+		for _, p := range d.egress {
+			checks = append(checks, check{p.sandbox, p.declared, p.savedAt})
+		}
+		d.mu.Unlock()
+
+		for _, c := range checks {
+			if _, at := d.effectivePolicy(c.sandbox, c.declared); !at.Equal(c.savedAt) {
+				d.refreshHosted(c.sandbox)
+			}
+		}
+	}
+}
+
+// refreshHosted re-reads a hosted sandbox's policy and applies it if it changed.
+func (d *daemon) refreshHosted(sandbox string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for _, p := range d.egress {
+		if p.sandbox != sandbox {
+			continue
+		}
+
+		want, at := d.effectivePolicy(sandbox, p.declared)
+		p.savedAt = at
+
+		if p.filter.Policy().Hash() != want.Hash() && p.filter.SetPolicy(want) == nil {
+			logs.Default.Info(sandbox, "", "egress policy changed live: %s (%s)", want.Mode(), want.Hash())
+		}
+	}
+}
+
+// syncEgress pushes saved live policies to container filters that have drifted from them. Only
+// sandboxes with a saved policy are asked, so a machine where nobody has changed a policy live
+// pays nothing for this.
+func (d *daemon) syncEgress(ctx context.Context, found []provider.Unit) {
+	seen := map[string]bool{}
+
+	for _, u := range found {
+		if u.EgressStat == "" || seen[u.Sandbox] {
+			continue
+		}
+
+		seen[u.Sandbox] = true
+
+		if _, ok := d.egressControl().load(u.Sandbox); !ok {
+			continue
+		}
+
+		if err := d.egressControl().Sync(ctx, u.Sandbox); err != nil {
+			logs.Default.Debug(u.Sandbox, "", "egress policy sync: %v", err)
+		}
+	}
+}
+
+// due reports whether enough time has passed to walk the unit map again, and claims the slot if
+// so. The CAS is what makes two concurrent streams cost one walk rather than two.
 func (p *egressProxy) due(now int64) bool {
 	last := p.lastTouch.Load()
 	if now-last < int64(time.Second) {

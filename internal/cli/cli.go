@@ -1245,6 +1245,12 @@ func Remove(ctx context.Context, p provider.Provider, sandbox string) error {
 		return err
 	}
 
+	// A live egress policy belongs to this sandbox, not to its name: a new sandbox created
+	// under the same name starts from its own spec, not from this one's exceptions.
+	if err := daemon.NewEgressControl(p, "").Forget(sandbox); err != nil {
+		fmt.Printf("  (could not remove the saved egress policy: %v)\n", err)
+	}
+
 	fmt.Printf("sandbox %q destroyed\n", sandbox)
 
 	return nil

@@ -116,6 +116,12 @@ type daemon struct {
 	// like traffic and nothing with a filter would ever sleep - the same bug this feature
 	// exists to fix, running the other way.
 	egressSeen map[string]int64
+
+	// egressCtl is the policy API, built on first use so a daemon constructed as a literal
+	// (tests, selftest) gets one too. egressDir overrides where live policies are kept.
+	egressOnce sync.Once
+	egressCtl  *EgressControl
+	egressDir  string
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -270,6 +276,8 @@ func Serve(args []string) error {
 func (d *daemon) run(ctx context.Context) {
 	d.discover(ctx)
 
+	go d.watchEgress(ctx)
+
 	discovery := time.NewTicker(d.refresh)
 	defer discovery.Stop()
 
@@ -395,6 +403,10 @@ func (d *daemon) discover(ctx context.Context) {
 	// invisible from here - so ask it, once a tick, when it last carried a permitted byte, and
 	// stamp the sandbox if the answer moved. Same signal, fetched rather than observed.
 	d.scrapeEgress(ctx, found)
+
+	// A container filter replaced or restarted from an older copy is told the live policy
+	// again. Only sandboxes somebody changed live are asked.
+	d.syncEgress(ctx, found)
 }
 
 // correctAwake revokes a belief the provider contradicts.
