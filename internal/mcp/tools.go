@@ -818,6 +818,11 @@ func (s *Sandboxes) endpoint(ctx context.Context, call *Call) (any, error) {
 	return map[string]any{"endpoint": ep.Endpoint, "headers": headers, "origin": optStr(ep.Origin)}, nil
 }
 
+// idWait bounds how long a cancelled command_run keeps its stream open waiting for the command's
+// id, so that it can interrupt it. execd sends the id first, so this is only reached when execd
+// has stalled - and then there is nothing to interrupt by name anyway.
+const idWait = 5 * time.Second
+
 func (s *Sandboxes) run(ctx context.Context, call *Call) (any, error) {
 	var a struct {
 		SandboxID        string  `json:"sandbox_id"`
@@ -845,16 +850,52 @@ func (s *Sandboxes) run(ctx context.Context, call *Call) (any, error) {
 
 	var events float64
 
-	err = ex.StreamCommand(ctx, req, func(ev osbclient.Event) error {
+	// The stream is not tied to ctx. A cancel that arrives after execd has started the command
+	// but before its init event has been read would otherwise drop the stream with the id
+	// unread, and upstream execd does not stop a command whose reader went away. So on cancel
+	// the stream is kept until the id is known (or idWait passes), and only then dropped.
+	sctx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	defer stop()
+
+	idKnown := make(chan struct{})
+	streamed := make(chan struct{})
+
+	go func() {
+		select {
+		case <-streamed:
+			return
+		case <-ctx.Done():
+		}
+
+		t := time.NewTimer(idWait)
+		defer t.Stop()
+
+		select {
+		case <-idKnown:
+		case <-streamed:
+		case <-t.C:
+		}
+
+		stop()
+	}()
+
+	err = ex.StreamCommand(sctx, req, func(ev osbclient.Event) error {
+		hadID := x.ID != nil
 		x.Apply(ev)
 
-		if ev.Type == "stdout" || ev.Type == "stderr" {
+		if !hadID && x.ID != nil {
+			close(idKnown)
+		}
+
+		if ctx.Err() == nil && (ev.Type == "stdout" || ev.Type == "stderr") {
 			events++
 			call.Progress(events, 0, clipLine(ev.Text))
 		}
 
 		return nil
 	})
+
+	close(streamed)
 
 	if ctx.Err() != nil && x.ID != nil && !a.Background {
 		// The client cancelled. Stopping the command is what cancelling a command means; left

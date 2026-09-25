@@ -50,6 +50,8 @@ type Server struct {
 	sandboxes map[string]*sandbox
 	requests  []Request
 	running   map[string]chan struct{} // command id -> closed on interrupt
+	changed   chan struct{}            // closed and replaced whenever requests or running change
+	hold      chan struct{}            // non-nil: commands wait on it before sending their id
 }
 
 // Request is one call the fake received, for assertions.
@@ -78,7 +80,7 @@ type file struct {
 
 // New starts a fake. Close it when done.
 func New() *Server {
-	s := &Server{sandboxes: map[string]*sandbox{}, running: map[string]chan struct{}{}}
+	s := &Server{sandboxes: map[string]*sandbox{}, running: map[string]chan struct{}{}, changed: make(chan struct{})}
 	s.lifecycle = httptest.NewServer(http.HandlerFunc(s.serveLifecycle))
 	s.execd = httptest.NewServer(http.HandlerFunc(s.serveExecd))
 	s.URL = s.lifecycle.URL
@@ -93,6 +95,7 @@ func (s *Server) Close() {
 		close(ch)
 		delete(s.running, id)
 	}
+	s.notifyLocked()
 	s.mu.Unlock()
 
 	s.lifecycle.CloseClientConnections()
@@ -208,6 +211,84 @@ func (s *Server) Running() int {
 	return len(s.running)
 }
 
+// HoldCommands makes every command accepted from now on wait, before it sends the init event that
+// carries its id, until release is called. It opens the window in which execd has started a
+// command and the client does not yet know how to interrupt it.
+func (s *Server) HoldCommands() (release func()) {
+	ch := make(chan struct{})
+
+	s.mu.Lock()
+	s.hold = ch
+	s.mu.Unlock()
+
+	var once sync.Once
+
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.hold = nil
+			s.mu.Unlock()
+			close(ch)
+		})
+	}
+}
+
+// WaitRunning blocks until exactly n foreground commands are blocked in the fake, or d passes.
+// It reports whether the count was reached.
+func (s *Server) WaitRunning(d time.Duration, n int) bool {
+	return s.waitUntil(d, func() bool { return len(s.running) == n })
+}
+
+// WaitFor blocks until the fake has received a request whose method matches and whose path ends
+// with suffix, or d passes. A test asserting that a call was made after something else it can
+// observe must wait for the call itself: the other thing may be seen first.
+func (s *Server) WaitFor(d time.Duration, method, suffix string) (Request, bool) {
+	var got Request
+
+	ok := s.waitUntil(d, func() bool {
+		for i := len(s.requests) - 1; i >= 0; i-- {
+			if r := s.requests[i]; r.Method == method && strings.HasSuffix(r.Path, suffix) {
+				got = r
+				return true
+			}
+		}
+
+		return false
+	})
+
+	return got, ok
+}
+
+// waitUntil evaluates cond under the lock each time the fake's state changes, until it holds or
+// d passes.
+func (s *Server) waitUntil(d time.Duration, cond func() bool) bool {
+	timeout := time.NewTimer(d)
+	defer timeout.Stop()
+
+	for {
+		s.mu.Lock()
+		if cond() {
+			s.mu.Unlock()
+			return true
+		}
+
+		changed := s.changed
+		s.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-timeout.C:
+			return false
+		}
+	}
+}
+
+// notifyLocked wakes every waitUntil. The caller holds s.mu.
+func (s *Server) notifyLocked() {
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
 func (s *Server) record(r *http.Request) []byte {
 	body, _ := io.ReadAll(r.Body)
 
@@ -215,6 +296,7 @@ func (s *Server) record(r *http.Request) []byte {
 	s.requests = append(s.requests, Request{
 		Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), Header: r.Header.Clone(), Body: body,
 	})
+	s.notifyLocked()
 	s.mu.Unlock()
 
 	return body
@@ -511,6 +593,7 @@ func (s *Server) serveExecd(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			close(ch)
 			delete(s.running, q.Get("id"))
+			s.notifyLocked()
 		}
 		s.mu.Unlock()
 
@@ -764,6 +847,23 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request, body []byte) {
 		}
 	}
 
+	s.mu.Lock()
+	hold := s.hold
+	s.mu.Unlock()
+
+	if hold != nil {
+		// The command has started; its id has not reached the client yet.
+		if fl != nil {
+			fl.Flush()
+		}
+
+		select {
+		case <-hold:
+		case <-r.Context().Done():
+			return
+		}
+	}
+
 	emit(map[string]any{"type": "init", "text": cmdID, "timestamp": ts()})
 
 	if req.Background {
@@ -806,6 +906,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request, body []byte) {
 
 			s.mu.Lock()
 			s.running[cmdID] = ch
+			s.notifyLocked()
 			s.mu.Unlock()
 
 			select {
@@ -818,6 +919,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request, body []byte) {
 			case <-r.Context().Done():
 				s.mu.Lock()
 				delete(s.running, cmdID)
+				s.notifyLocked()
 				s.mu.Unlock()
 
 				return
