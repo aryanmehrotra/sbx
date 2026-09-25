@@ -671,7 +671,11 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	env := fc.MergeEnv(rfs.Config.Env, svc.Env, keys)
 	// execd reads both and removes them from its own environment before it starts anything,
-	// so the workload never inherits either.
+	// so the workload does not inherit either. That keeps them out of `env` and logs; it does
+	// not hide them from root in the guest, which can read /proc/1/environ and /init.json on
+	// the agent drive. Harmless by construction (SECURITY.md): each is this guest's own, control
+	// is reachable only over vsock from the host, the control secret rotates at every restore,
+	// and a fork of a VM is refused.
 	env = append(env, "EXECD_ACCESS_TOKEN="+vm.AccessToken, "EXECD_CONTROL_SECRET="+vm.ControlSecret)
 
 	init := fc.InitConfig{

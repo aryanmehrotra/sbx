@@ -106,6 +106,12 @@ threat model is not "untrusted users share one daemon".**
     turns it on) one sandbox's VMs can reach another's unless the policy is `DROP`, which docker
     sets but sbx neither sets nor owns. `sbx doctor` checks it (`vm bridges isolated`), and every
     create warns when it is not confirmed.
+- **In a microVM, the guest's root can read execd's own secrets** - the access token and the
+  boot control secret, from `/proc/1/environ` and `/init.json` on the agent drive. execd strips
+  them from what it starts, which keeps them out of `env` and logs, not from root. They are
+  harmless there by construction: each belongs to that guest alone, control is reachable only
+  over vsock from the host, the control secret is rotated at every restore and every snapshot
+  (the running VM and a saved one never share it), and forking a VM is refused.
 - **`egress: "deny"` is coarse.** It removes routed egress by putting the service on a bridge
   with IP masquerade disabled. It is not a filtering firewall: it cannot allow one domain and
   deny another, and it is enforced by docker's networking rather than by anything sbx
