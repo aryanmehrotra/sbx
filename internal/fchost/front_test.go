@@ -324,6 +324,10 @@ func TestProviderKind(t *testing.T) {
 		{[]string{"demo", "--provider=firecracker"}, "docker", "firecracker"},
 		{[]string{"demo", "-provider", "docker"}, "firecracker", "docker"},
 		{[]string{"demo"}, "firecracker", "firecracker"},
+		// The alias provider.For accepts is the same provider here too.
+		{[]string{"demo", "--provider", "fc"}, "", "firecracker"},
+		{[]string{"demo"}, "fc", "firecracker"},
+		{[]string{"demo", "--provider=k8s"}, "", "kubernetes"},
 		// After -- it is the sandboxed command's flag, not sbx's.
 		{[]string{"demo", "db", "--", "tool", "--provider", "firecracker"}, "", ""},
 	}
@@ -337,6 +341,10 @@ func TestProviderKind(t *testing.T) {
 	none := env("")
 	if !Wants("create", []string{"x", "--provider", "firecracker"}, none) || !Wants("serve", []string{"--provider=firecracker"}, none) {
 		t.Error("create and serve with firecracker must be handled")
+	}
+
+	if !Wants("create", []string{"x", "--provider", "fc"}, none) || !Wants("serve", []string{"--provider=fc"}, none) {
+		t.Error("--provider fc skipped the helper VM")
 	}
 
 	if Wants("create", []string{"x"}, none) || Wants("ui", []string{"--provider", "firecracker"}, none) ||

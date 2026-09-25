@@ -36,7 +36,25 @@ var redirected = map[string]bool{
 
 // ProviderKind is the provider a command line asks for: --provider, else SBX_PROVIDER_KIND.
 // It stops at "--", after which arguments belong to the command being run in the sandbox.
+// Aliases come back canonical (fc is firecracker, k8s is kubernetes), because every caller
+// compares the answer to one name: `--provider fc` used to reach provider.For, which accepts the
+// alias, without ever being redirected into the helper VM.
 func ProviderKind(args []string, getenv func(string) string) string {
+	return canonicalKind(rawProviderKind(args, getenv))
+}
+
+func canonicalKind(k string) string {
+	switch k {
+	case "fc":
+		return Firecracker
+	case "k8s":
+		return "kubernetes"
+	default:
+		return k
+	}
+}
+
+func rawProviderKind(args []string, getenv func(string) string) string {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
