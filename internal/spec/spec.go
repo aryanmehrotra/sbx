@@ -140,6 +140,16 @@ type Service struct {
 	// whose readiness is worth catching quickly.
 	HealthInterval string `json:"health_interval,omitempty"`
 
+	// HealthStartInterval is how often the check runs during the start period, where it differs
+	// from HealthInterval: quick while the service is coming up, so the first healthy report
+	// lands in about a second, and HealthInterval once it is up. Empty is HealthInterval
+	// throughout. Docker applies it only on an engine with API 1.44 or later; an older one gets
+	// HealthInterval throughout.
+	//
+	// Set by the OpenSandbox API, not a sandbox.json field: at one runc exec per check per
+	// sandbox, the steady interval is what a machine full of sandboxes pays for.
+	HealthStartInterval string `json:"-"`
+
 	Env  map[string]string `json:"env,omitempty"`
 	Args []string          `json:"args,omitempty"`
 
@@ -345,6 +355,10 @@ func (s Service) validate(name string) error {
 
 	if err := checkInterval(s.HealthInterval); err != nil {
 		return fmt.Errorf("service %q: health_interval %w", name, err)
+	}
+
+	if err := checkInterval(s.HealthStartInterval); err != nil {
+		return fmt.Errorf("service %q: health start interval %w", name, err)
 	}
 
 	for _, p := range s.Ports {

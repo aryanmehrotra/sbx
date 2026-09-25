@@ -568,3 +568,34 @@ against the address rules and dials the one it checked, so a permitted name cann
 denied range. And it refuses its own loopback and link-local unless a rule names them: upstream
 enforces inside the sandbox's namespace, where `127.0.0.1` is the sandbox; sbx's filter is on the
 host or beside the box, where `127.0.0.1` is somebody's docker socket.
+
+### An API sandbox's health check runs once a minute, and quickly only while it starts
+
+Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes
+used to declare, that is 0.2 execs a second per sandbox, forever - 20 a second at 100 sandboxes -
+for an answer almost nothing waits on: the wake path runs the same command itself (`Probe`) rather
+than waiting for docker's verdict, and a create reports Running on execd's own `/ping` through the
+wake port. What does read docker's status is the idle clock, which will not start until a unit has
+been seen healthy once, so that first report has to arrive promptly after a start and nothing after
+it has to be fresh.
+
+So the check runs every 60s, with `--health-start-interval 1s` inside the 60s start period. Docker
+uses the start interval only until the first healthy result, so a sandbox pays one exec about a
+second after each start and then one a minute. The flag needs Engine API 1.44 (Docker 25); sbx asks
+the engine's version once and leaves it off on an older one, which then reports healthy on docker's
+own schedule inside the start period rather than refusing the create.
+
+Measured on the osb colima engine (Docker 29.2.1, API 1.53), 10 containers per arm running
+together, `docker events` counting `exec_start`:
+
+| | first 60s | next 60s | first check after start |
+|---|---|---|---|
+| before: `--health-interval 5s` | 116 execs (1.93/s) | 118 (1.96/s) | ~5 s |
+| after: `60s` + start interval `1s` | 10 (0.16/s) | 10 (0.16/s) | 1.4 s |
+
+12x fewer execs, and the first healthy report sooner rather than later.
+
+**Rejected: drop the docker health check once execd has answered through the wake port.** A
+container's health config is fixed at create, so dropping it means recreating the container - or
+never declaring one, and then the wake path has nothing to run and falls back to sleeping two
+seconds and hoping, which is exactly what declaring it avoided.

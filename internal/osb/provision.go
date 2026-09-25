@@ -475,14 +475,21 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		// two seconds and hoping - the fallback it takes for a service with no health check.
 		// httpcheck is sbx's own, so it works in an image with no curl or wget; it does need
 		// /bin/sh, because docker runs a health command through one.
-		Health:         execdMount + "/" + execdBinary + " httpcheck http://127.0.0.1:" + strconv.Itoa(execdPort) + "/ping",
-		HealthInterval: "5s",
-		CPU:            pl.cpu,
-		Memory:         pl.memory,
-		GPUs:           pl.gpus,
-		OnIdle:         pl.onIdle,
-		EgressPolicy:   pl.egressPolicy,
-		VolumeMounts:   pl.volumes,
+		//
+		// Every check is a runc exec, so the interval is paid per sandbox for as long as it
+		// runs: every 5s was 20 execs a second at 100 sandboxes. The wake path runs this command
+		// itself (Probe) rather than waiting on docker's verdict, and Running waits on execd's
+		// own /ping, so docker's status only has to arrive once, promptly, after a start - which
+		// the start interval gives - and can then be refreshed once a minute. See DECISIONS.md.
+		Health:              execdMount + "/" + execdBinary + " httpcheck http://127.0.0.1:" + strconv.Itoa(execdPort) + "/ping",
+		HealthInterval:      "60s",
+		HealthStartInterval: "1s",
+		CPU:                 pl.cpu,
+		Memory:              pl.memory,
+		GPUs:                pl.gpus,
+		OnIdle:              pl.onIdle,
+		EgressPolicy:        pl.egressPolicy,
+		VolumeMounts:        pl.volumes,
 	}
 
 	if err := svc.Validate(service); err != nil {

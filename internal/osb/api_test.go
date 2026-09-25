@@ -147,6 +147,12 @@ func TestCreateIsPendingThenRunning(t *testing.T) {
 		t.Errorf("execd volume not mounted read-only at /opt/sbx: %v", svc.ReadOnlyVolumes)
 	}
 
+	// One runc exec per check per sandbox: quick while execd comes up, then once a minute - the
+	// wake path runs the check itself and does not wait on docker's.
+	if svc.HealthInterval != "60s" || svc.HealthStartInterval != "1s" {
+		t.Errorf("health every %q, %q while starting; want 60s, 1s", svc.HealthInterval, svc.HealthStartInterval)
+	}
+
 	if svc.Env["FOO"] != "bar" || len(svc.Env[tokenEnv]) < 32 {
 		t.Errorf("env %v: want the caller's plus a minted %s", svc.Env, tokenEnv)
 	}
