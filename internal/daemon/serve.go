@@ -23,6 +23,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 	"strings"
 )
 
@@ -122,6 +123,20 @@ type daemon struct {
 	egressOnce sync.Once
 	egressCtl  *EgressControl
 	egressDir  string
+
+	// discovering serialises discover(). The ticker was its only caller until the OpenSandbox
+	// API began asking for a pass right after it creates a sandbox; two passes interleaving
+	// would each see the new unit as unknown and both bind its port.
+	discovering sync.Mutex
+
+	// held are sandboxes paused on purpose through the API. Kept here rather than on the unit
+	// because a hold must cover units the daemon has not discovered yet - after a restart, the
+	// API re-asserts its holds before the first discovery pass has run.
+	heldMu sync.RWMutex
+	held   map[string]bool
+
+	// scope is which sandboxes this daemon may touch at all - see scope.go. Empty is all.
+	scope Scope
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -152,14 +167,38 @@ func Serve(args []string) error {
 	// only thing the tunnel will carry.
 	front := fs.String("front", envOr("SBX_FRONT", ""), "carry these ports over the connect endpoint: 5432, db=5432,cache=6379, or db=10.0.4.7:3306 for a host this container can route to")
 	behindProxy := fs.Bool("behind-proxy", false, "something in front of this terminates TLS, so a non-loopback address is safe")
+
+	// The OpenSandbox lifecycle API. Off unless asked for, loopback unless keyed - see osb.
+	// The key is never a flag default, because flag defaults are printed by --help.
+	osbAddr := fs.String("osb-addr", envOr("SBX_OSB_ADDR", ""), "serve the OpenSandbox lifecycle API here, e.g. 127.0.0.1:8080; off unless set")
+	osbKey := fs.String("osb-key", "", "require this OPEN-SANDBOX-API-KEY (default $SBX_OSB_KEY); needed for a non-loopback --osb-addr")
+
+	var only stringList
+	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
 	_ = fs.Parse(args)
+
+	if len(only) == 0 {
+		if v := os.Getenv("SBX_ONLY"); v != "" {
+			only = stringList{v}
+		}
+	}
+
+	scope, err := ParseScope(only)
+	if err != nil {
+		return err
+	}
 
 	// One per machine. A second copy binds nothing - every listener fails with "address
 	// already in use", logged once per port with no retry - while the process stays up
 	// looking healthy, and on exit it removes the first daemon's presence record. That is a
 	// normal accident: a supervised unit from deploy/ plus a manual `sbx serve &`, or two
 	// terminal tabs.
-	if running, ok := Running(); ok && running.PID != os.Getpid() {
+	//
+	// A scoped daemon is the exception, because it cannot fight: everything outside --only is
+	// invisible to it, so the listeners it wants are not the ones the machine's daemon holds.
+	// It also does not claim the presence record below - it is not the daemon `sbx create`
+	// should be told about.
+	if running, ok := Running(); ok && running.PID != os.Getpid() && len(scope) == 0 {
 		return fmt.Errorf("sbx serve is already running (pid %d, since %s). One per machine - "+
 			"it fronts every sandbox's ports.\n     Stop that one first, or leave it: it is "+
 			"already serving everything this would.",
@@ -215,6 +254,12 @@ func Serve(args []string) error {
 		stop:       map[string]context.CancelFunc{},
 		egress:     map[string]*egressProxy{},
 		egressSeen: map[string]int64{},
+		scope:      scope,
+	}
+
+	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, scope)
+	if err != nil {
+		return err
 	}
 
 	var connectSrv *http.Server
@@ -242,9 +287,12 @@ func Serve(args []string) error {
 		name = p.Name()
 	}
 
-	defer MarkRunning(name)()
+	if len(scope) == 0 {
+		defer MarkRunning(name)()
+	}
 
-	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v", logs.Version, name, d.idle, InCluster())
+	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v · scope %s",
+		logs.Version, name, d.idle, InCluster(), scope)
 
 	if connectSrv != nil {
 		logs.Default.Info("", "", "connect endpoint on %s", connectSrv.Addr)
@@ -256,6 +304,25 @@ func Serve(args []string) error {
 		}()
 
 		defer func() { _ = connectSrv.Close() }()
+	}
+
+	if api != nil {
+		srv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+
+		logs.Default.Info("", "", "OpenSandbox API on http://%s/v1", osbLn.Addr())
+
+		go func() {
+			if err := srv.Serve(osbLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logs.Default.Error("", "", "OpenSandbox API stopped: %v", err)
+			}
+		}()
+
+		go api.Run(ctx)
+
+		defer func() {
+			_ = srv.Close()
+			api.Close()
+		}()
 	}
 
 	if startupErr == nil {
@@ -303,10 +370,27 @@ func (d *daemon) run(ctx context.Context) {
 // discover reconciles the live sandbox set with the units being served. New sandboxes get
 // listeners; removed ones get theirs closed.
 func (d *daemon) discover(ctx context.Context) {
+	d.discovering.Lock()
+	defer d.discovering.Unlock()
+
 	found, err := d.provider.List(ctx, "")
 	if err != nil {
 		logs.Default.Error("", "", "discovery failed: %v", err)
 		return
+	}
+
+	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
+	// filters, correctAwake - ever holds a unit outside --only to act on.
+	if len(d.scope) > 0 {
+		in := found[:0:0]
+
+		for _, f := range found {
+			if d.scope.Match(f.Sandbox) {
+				in = append(in, f)
+			}
+		}
+
+		found = in
 	}
 
 	// Reserve the label column before anything below logs into it.
@@ -352,6 +436,9 @@ func (d *daemon) discover(ctx context.Context) {
 		u.dependsOn = f.DependsOn
 		u.egressGateway = f.EgressGateway
 		u.peers = d.peersOf
+		u.freezeOnIdle = f.OnIdle == spec.OnIdleFreeze
+		u.frozen = f.Paused
+		u.held.Store(d.isHeld(f.Sandbox))
 
 		uctx, ucancel := context.WithCancel(ctx)
 
@@ -435,7 +522,19 @@ func (d *daemon) correctAwake(f provider.Unit) {
 	u := d.units[f.Ref]
 	d.mu.Unlock()
 
-	if u == nil || !u.isAwake() {
+	if u == nil {
+		return
+	}
+
+	// Frozen or stopped decides which verb wakes it, and a pause done outside sbx (`docker
+	// pause`) is otherwise invisible until a Start is refused. Synced whenever no wake is in
+	// flight, awake or not - it is a fact about the container, not a belief about serving.
+	if f.Paused != u.isFrozen() && u.waking.TryLock() {
+		u.setFrozen(f.Paused)
+		u.waking.Unlock()
+	}
+
+	if !u.isAwake() {
 		return
 	}
 
@@ -448,6 +547,8 @@ func (d *daemon) correctAwake(f provider.Unit) {
 	if !u.isAwake() {
 		return
 	}
+
+	u.setFrozen(f.Paused)
 
 	u.setAwake(false)
 	logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; will be started on demand")

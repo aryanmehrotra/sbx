@@ -43,6 +43,7 @@ const (
 	labelEgressToken   = "sbx.egress.token"   // the secret a container filter's control endpoint requires
 	labelIdle          = "sbx.idle"           // per-service idle override, when set
 	labelDependsOn     = "sbx.dependsOn"      // comma-joined depends_on, so wake can follow it
+	labelOnIdle        = "sbx.onIdle"         // "freeze" when idle should pause rather than stop
 
 	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
 	// names rather than risking a silently rejected manifest.
@@ -118,6 +119,16 @@ type Unit struct {
 	// Idle is a per-service idle override ("never", "0", or a duration), empty for the global
 	// default. It lets the daemon keep a box awake while an agent works inside it with no traffic.
 	Idle string
+
+	// Paused is true when the workload is frozen in place - processes and memory kept, no CPU -
+	// rather than stopped. Running is false for a paused unit, because nothing it holds can
+	// answer; Paused is what tells the wake path to thaw it instead of starting it, since a
+	// runtime asked to start a frozen workload refuses.
+	Paused bool
+
+	// OnIdle is what the daemon does to this unit when it goes quiet: "" stops it (the default,
+	// and what every sandbox from a sandbox.json gets), "freeze" pauses it. See spec.Service.OnIdle.
+	OnIdle string
 }
 
 // EgressProxyPort is where a sandbox's egress filter listens on its no-NAT bridge gateway. The
@@ -316,6 +327,86 @@ func CheckpointerFor(p Provider) (Checkpointer, error) {
 	}
 
 	return c, nil
+}
+
+// Pauser freezes a running unit in place and thaws it again: processes, open files and memory
+// are kept, and it uses no CPU while frozen.
+//
+// Named for what the user wants - "stop it costing CPU without losing what it was doing" - not
+// for how docker does it (the cgroup freezer, behind `docker pause`). It is not Checkpointer: a
+// checkpoint survives the container, a pause does not survive a reboot, and a pause needs no
+// CRIU and costs about 10 ms either way.
+//
+// Kubernetes does not implement it. A pod cannot be frozen through the API - scaling to zero
+// throws the memory away - and calling that "pause" would be the stub this file exists to avoid.
+type Pauser interface {
+	// Pause freezes a running unit. Pausing one that is already paused is success.
+	Pause(ctx context.Context, ref string) error
+
+	// Unpause thaws a paused unit. Thawing one that is not paused is success: the caller wants
+	// it running, and a unit that was never frozen is as thawed as it gets. A unit that is
+	// STOPPED is not thawed by this - the wake path finds that out on its next dial and starts it.
+	Unpause(ctx context.Context, ref string) error
+}
+
+// PauserFor returns the provider's pause support, or a refusal naming the backend.
+func PauserFor(p Provider) (Pauser, error) {
+	pa, ok := p.(Pauser)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot pause a sandbox: freezing a workload with "+
+			"its memory kept is not something it can do natively (scaling to zero discards the "+
+			"memory), and sbx will not call that a pause", p.Name())
+	}
+
+	return pa, nil
+}
+
+// ImageInfo is what an image says it runs, and on what.
+type ImageInfo struct {
+	Entrypoint []string
+	Cmd        []string
+	OS         string
+	Arch       string // GOARCH spelling: amd64, arm64
+}
+
+// Injector runs a program sbx supplies inside an image that does not carry it.
+//
+// This is how a sandbox created through the OpenSandbox API gets its agent (`sbx execd`) into
+// `python:3.11-slim`, or any other image the caller names: the binary goes into a named volume
+// once, the volume is mounted read-only into every sandbox that needs it, and the image itself is
+// never modified or rebuilt.
+//
+// Optional like the rest. A cluster would do this with an init container copying from an image
+// it can pull, which is a different mechanism with a different trust story - the kubernetes
+// provider does not implement it, and API sandboxes are refused there with that reason.
+type Injector interface {
+	// ImageInfo reads an image's default command and platform. The image must be present.
+	ImageInfo(ctx context.Context, image string) (ImageInfo, error)
+
+	// VolumeRuns reports whether volume already holds an executable at name that runs inside
+	// image - the check is to run it, because a file that is present but built for the wrong
+	// architecture is the failure this exists to catch.
+	VolumeRuns(ctx context.Context, volume, name, image string) bool
+
+	// SeedFile creates volume if needed and copies hostPath into it as name, executable. image
+	// is any image present locally; it is only used as the container the copy goes through,
+	// and is never started.
+	SeedFile(ctx context.Context, volume, name, hostPath, image string) error
+
+	// SeedFromImage creates volume if needed and fills it with the contents of dir in image.
+	SeedFromImage(ctx context.Context, volume, image, dir string) error
+}
+
+// InjectorFor returns the provider's injection support, or a refusal naming the backend.
+func InjectorFor(p Provider) (Injector, error) {
+	in, ok := p.(Injector)
+	if !ok {
+		return nil, fmt.Errorf("the %s provider cannot run sbx's agent inside an arbitrary image: "+
+			"on a cluster that is an init container copying from a pullable image, which sbx "+
+			"does not create for you yet - use the docker provider for OpenSandbox API sandboxes", p.Name())
+	}
+
+	return in, nil
 }
 
 // Artifact is something a sandbox left behind.
