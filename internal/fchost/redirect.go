@@ -80,6 +80,10 @@ func Wants(cmd string, args []string, getenv func(string) string) bool {
 	return (redirected[cmd] || cmd == "serve") && ProviderKind(args, getenv) == Firecracker
 }
 
+// readOnly are the redirected commands that only look: they report a stopped helper VM instead of
+// starting it.
+var readOnly = map[string]bool{"list": true, "env": true, "logs": true}
+
 // GuestArgv is the command run inside the VM. The provider goes in the environment rather than
 // as a flag, because appending --provider to `exec`'s argv would hand it to the command being
 // executed, and prepending it would land before the sandbox name some commands read first.
@@ -127,6 +131,28 @@ func Redirect(ctx context.Context, version, cmd string, args []string) (handled 
 func (m *Manager) redirect(ctx context.Context, version, cmd string, args []string,
 	stdin io.Reader, stdout, stderr io.Writer,
 ) int {
+	// A read-only command never starts the VM for its answer: a stopped helper VM holds no running
+	// sandbox, and booting a 2 GiB VM to say so is the wrong trade.
+	if readOnly[cmd] {
+		st, err := m.Status(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "sbx: %v\n", err)
+
+			return 1
+		}
+
+		if st != Running {
+			fmt.Fprintf(stderr, "sbx: the helper VM %s is %s, so no microVM sandbox is running; "+
+				"`sbx fc vm start` (or any create) starts it\n", m.Config.Name, st)
+
+			if cmd == "list" {
+				return 0
+			}
+
+			return 1
+		}
+	}
+
 	// Started on demand, and brought up to this build after an upgrade. A running VM this build
 	// already ensured costs one listing and one stat: re-hashing the binary on every `sbx list`
 	// would put a round trip into the VM on each one.

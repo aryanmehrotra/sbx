@@ -448,7 +448,8 @@ func TestRedirectStartsAStoppedVMFirst(t *testing.T) {
 		}
 	}}
 
-	code := m.redirect(context.Background(), "dev", "list", nil, strings.NewReader(""), io.Discard, io.Discard)
+	// create, not list: a read-only command reports a stopped VM rather than starting it.
+	code := m.redirect(context.Background(), "dev", "create", []string{"demo"}, strings.NewReader(""), io.Discard, io.Discard)
 
 	all := strings.Join(r.lines(), "\n")
 	if code != 0 || !strings.Contains(all, "limactl start --tty=false sbx-fc") || !strings.Contains(all, "systemd-run") {
@@ -556,5 +557,29 @@ func TestEnsureRestartsTheDaemonWhenItsFlagsChange(t *testing.T) {
 
 	if fi, err := os.Stat(m.daemonConfigPath()); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("daemon config: %v %v", fi, err)
+	}
+}
+
+// `sbx list/env/logs --provider firecracker` against a stopped helper VM say so; they do not boot
+// a 2 GiB VM to report that nothing is running in it.
+func TestReadOnlyCommandsDoNotStartTheHelperVM(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		code int
+	}{{"list", 0}, {"env", 1}, {"logs", 1}} {
+		r := (&fakeRunner{}).on("limactl list", `{"name":"sbx-fc","status":"Stopped"}`, nil)
+		m := limaManager(t, r)
+
+		var stderr bytes.Buffer
+
+		code := m.redirect(context.Background(), "dev", tc.cmd, []string{"demo"}, strings.NewReader(""), io.Discard, &stderr)
+
+		if code != tc.code || !strings.Contains(stderr.String(), "is stopped") {
+			t.Errorf("%s: exit %d, stderr %q", tc.cmd, code, stderr.String())
+		}
+
+		if all := strings.Join(r.lines(), "\n"); strings.Contains(all, "limactl start") || strings.Contains(all, "ssh") {
+			t.Errorf("%s started or entered the helper VM:\n%s", tc.cmd, all)
+		}
 	}
 }
