@@ -169,7 +169,7 @@ type fcProvider struct {
 	probeDial func(ctx context.Context, addr string) (net.Conn, error)
 
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*refLock
 }
 
 func stateRoot() (string, error) {
@@ -209,7 +209,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		},
 		launch:      fc.ExecLauncher{},
 		bootTimeout: 60 * time.Second,
-		locks:       map[string]*sync.Mutex{},
+		locks:       map[string]*refLock{},
 	}
 
 	p.agent = p.findAgent
@@ -235,14 +235,24 @@ func (p *fcProvider) dir(ref string) string {
 	return filepath.Join(p.root, "vms", hex.EncodeToString(h[:8]))
 }
 
+// refLock is one ref's mutex and how many callers hold or wait for it. Counted so the entry goes
+// when the last one leaves: a long-lived daemon that creates and removes services all day must not
+// keep a mutex for every name it ever saw.
+type refLock struct {
+	sync.Mutex
+	n int
+}
+
 func (p *fcProvider) lock(ref string) func() {
 	p.mu.Lock()
 
 	l, ok := p.locks[ref]
 	if !ok {
-		l = &sync.Mutex{}
+		l = &refLock{}
 		p.locks[ref] = l
 	}
+
+	l.n++
 
 	p.mu.Unlock()
 	l.Lock()
@@ -250,7 +260,16 @@ func (p *fcProvider) lock(ref string) func() {
 	// And across processes: `sbx serve` sleeping a VM while `sbx rm` removes it.
 	unlock := fileLock(filepath.Join(p.dir(ref), fc.LockFileName))
 
-	return func() { unlock(); l.Unlock() }
+	return func() {
+		unlock()
+		l.Unlock()
+
+		p.mu.Lock()
+		if l.n--; l.n == 0 {
+			delete(p.locks, ref)
+		}
+		p.mu.Unlock()
+	}
 }
 
 func (p *fcProvider) load(ref string) (*fcVM, error) {
@@ -537,10 +556,20 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	// A failure from here on leaves nothing behind: a half-made VM directory would be listed
 	// as a service that can never start.
 	ok := false
+
+	var made *fcVM // once set, coldBoot may have made its tap and bridge
+
 	defer func() {
-		if !ok {
-			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
-			_ = os.RemoveAll(dir)
+		if ok {
+			return
+		}
+
+		ctx := context.WithoutCancel(ctx)
+		_ = p.launch.Kill(ctx, dir)
+		_ = os.RemoveAll(dir)
+
+		if made != nil {
+			p.releaseNet(ctx, made)
 		}
 	}()
 
@@ -599,6 +628,8 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	if err := vm.addr().Valid(); err != nil {
 		return err
 	}
+
+	made = vm
 
 	keys := make([]string, 0, len(svc.Env))
 	for k := range svc.Env {
@@ -1226,6 +1257,25 @@ func (p *fcProvider) List(ctx context.Context, sandbox string) ([]Unit, error) {
 	return units, nil
 }
 
+// releaseNet undoes what a failed Create's boot made on the host: the VM's tap, and its slot's
+// bridge when no other VM is in that slot. Best effort - the create is failing already.
+func (p *fcProvider) releaseNet(ctx context.Context, vm *fcVM) {
+	_ = p.net.RemoveTap(ctx, vm.addr())
+
+	vms, err := p.all()
+	if err != nil {
+		return
+	}
+
+	for _, o := range vms {
+		if o.Slot == vm.Slot && o.Ref != vm.Ref {
+			return
+		}
+	}
+
+	_ = p.net.RemoveBridge(ctx, vm.Slot)
+}
+
 func (p *fcProvider) Remove(ctx context.Context, sandbox string) error {
 	vms, err := p.all()
 	if err != nil {
@@ -1371,8 +1421,30 @@ func (p *fcProvider) SetLimits(_ context.Context, ref string, _ Limits) error {
 // filesystem together - which is the one thing `sbx snapshot` cannot give on docker. It is kept
 // under <state>/snapshots/<image>/, and restoring it is creating a service whose image names it.
 
+// snapshotDir is where Commit writes image: a readable name plus a hash of the exact one, because
+// the readable part alone folds "a/b:c" and "a_b_c" into one directory and a Commit of either
+// would overwrite the other's snapshot.
 func (p *fcProvider) snapshotDir(image string) string {
+	h := sha256.Sum256([]byte(image))
+
+	return p.legacySnapshotDir(image) + "-" + hex.EncodeToString(h[:6])
+}
+
+// legacySnapshotDir is the name before the hash (v0.10), still read so those snapshots restore.
+func (p *fcProvider) legacySnapshotDir(image string) string {
 	return filepath.Join(p.root, "snapshots", strings.NewReplacer("/", "_", ":", "_").Replace(image))
+}
+
+// savedSnapshotDir is the directory holding image's snapshot: the hashed one, or a v0.10 one whose
+// name file says it is exactly this image and not another that folds to the same name.
+func (p *fcProvider) savedSnapshotDir(image string) (string, bool) {
+	for _, d := range []string{p.snapshotDir(image), p.legacySnapshotDir(image)} {
+		if name, ok := p.snapshotByDir(d); ok && name == image {
+			return d, true
+		}
+	}
+
+	return "", false
 }
 
 type fcSnapshot struct {
@@ -1381,7 +1453,12 @@ type fcSnapshot struct {
 }
 
 func (p *fcProvider) snapshotFor(image string) (*fcSnapshot, bool) {
-	b, err := os.ReadFile(filepath.Join(p.snapshotDir(image), "snapshot.json"))
+	dir, ok := p.savedSnapshotDir(image)
+	if !ok {
+		return nil, false
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "snapshot.json"))
 	if err != nil {
 		return nil, false
 	}
@@ -1565,7 +1642,10 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 	}
 
 	// Create holds the lock and removes dir if this fails.
-	src := p.snapshotDir(image)
+	src, ok := p.savedSnapshotDir(image)
+	if !ok {
+		return fmt.Errorf("the firecracker snapshot %s is gone", image)
+	}
 
 	for _, f := range []string{fc.RootfsName, "agent.ext4", fc.StateName, fc.MemName} {
 		if _, err := fc.CloneFile(filepath.Join(src, f), filepath.Join(dir, f)); err != nil {
@@ -1623,7 +1703,12 @@ func (p *fcProvider) snapshotByDir(dir string) (string, bool) {
 }
 
 func (p *fcProvider) RemoveImage(_ context.Context, image string) error {
-	return os.RemoveAll(p.snapshotDir(image))
+	dir, ok := p.savedSnapshotDir(image)
+	if !ok {
+		return nil
+	}
+
+	return os.RemoveAll(dir)
 }
 
 // VolumeFor is empty: a VM's data is its root filesystem, which Commit already saves with the

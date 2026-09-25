@@ -240,7 +240,7 @@ func newRig(t *testing.T) *rig {
 		},
 		bootTimeout: time.Second,
 		portsFree:   func(int) bool { return true },
-		locks:       map[string]*sync.Mutex{},
+		locks:       map[string]*refLock{},
 	}
 
 	return r
@@ -1375,5 +1375,73 @@ func TestAReKeysSecretIsRecordedBeforeItIsSent(t *testing.T) {
 
 	if got := r.vm(t, ref); got.LiveSecret != held || got.PendingSecret != "" || !got.SnapshotValid {
 		t.Fatalf("after the sleep: %+v", got)
+	}
+}
+
+// A Create that fails after its boot made a tap and a bridge takes them with it.
+func TestAFailedCreateRemovesItsTapAndBridge(t *testing.T) {
+	r := newRig(t)
+	r.p.ready = func(context.Context, *fcVM, string) error { return errors.New("never served") }
+
+	slot, err := r.p.AllocSlot(r.ctx, "l5")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eps := r.p.Endpoints("l5", "cache", slot, 0, redis.Ports)
+	if err := r.p.Create(r.ctx, "l5", slot, 0, "cache", redis, eps, "", IsolationContainer); err == nil {
+		t.Fatal("create succeeded")
+	}
+
+	if len(r.n.taps) != 0 || len(r.n.bridges) != 0 {
+		t.Fatalf("left behind: taps %v, bridges %v", r.n.taps, r.n.bridges)
+	}
+}
+
+// The per-ref mutexes go when nobody holds them: a daemon does not keep one per name ever seen.
+func TestTheLockTableDoesNotGrow(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "l5b", redis)
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.p.Stop(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.p.Remove(r.ctx, "l5b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := len(r.p.locks); n != 0 {
+		t.Fatalf("%d lock entries remain", n)
+	}
+}
+
+// Two image names that fold to the same readable directory name are two snapshots, and a v0.10
+// snapshot under the old name still restores - but only for the exact name it was saved as.
+func TestSnapshotNamesDoNotCollide(t *testing.T) {
+	r := newRig(t)
+
+	if a, b := r.p.snapshotDir("a/b:c"), r.p.snapshotDir("a_b_c"); a == b {
+		t.Fatalf("both are %s", a)
+	}
+
+	legacy := r.p.legacySnapshotDir("x/y:1")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = os.WriteFile(filepath.Join(legacy, "name"), []byte("x/y:1\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(legacy, "snapshot.json"), []byte(`{"vm":{"ref":"old"}}`), 0o600)
+
+	if s, ok := r.p.snapshotFor("x/y:1"); !ok || s.VM.Ref != "old" {
+		t.Fatal("a v0.10 snapshot no longer restores")
+	}
+
+	if _, ok := r.p.snapshotFor("x_y_1"); ok {
+		t.Fatal("another image that folds to the same name found the snapshot")
 	}
 }
