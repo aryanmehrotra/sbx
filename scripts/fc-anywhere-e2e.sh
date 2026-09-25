@@ -10,6 +10,11 @@
 # a fake daemon; this is the only thing that proves a real VM, a real Firecracker and a real
 # wake.
 #
+# Then it sleeps and wakes that sandbox FC_E2E_ROUNDS times (default 10) - a Diff snapshot, a
+# restore and an execd re-key each time - timing the wake to first byte, an awake request and an
+# exec round trip, with a create of a second sandbox interleaved, and prints median/p95 (also
+# appended to $FC_E2E_RESULTS when that is set).
+#
 # Heavy: a VM create is a download and about a minute, and the VM holds 2 GiB while it runs.
 # It uses its own VM name (sbx-fc-e2e) so a helper VM somebody already uses is never touched,
 # and it refuses to start if that name exists, so it only ever deletes what it made.
@@ -22,6 +27,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SBX="$ROOT/sbx"
 WORK="$(mktemp -d)"
 NAME="e2e-fc-$$"
+ROUNDS="${FC_E2E_ROUNDS:-10}"
 
 export SBX_FC_VM_NAME="${SBX_FC_VM_NAME:-sbx-fc-e2e}"
 export SBX_PROVIDER_KIND=firecracker
@@ -52,7 +58,9 @@ front_pid=""
 
 cleanup() {
   [ -n "$front_pid" ] && kill "$front_pid" 2>/dev/null && wait "$front_pid" 2>/dev/null
-  "$SBX" rm "$NAME" >/dev/null 2>&1 || true
+  # Only against a running VM: a redirected command starts the helper VM on demand, which from
+  # here would recreate the thing this is about to delete.
+  if "$SBX" fc vm status | grep -q ': running'; then "$SBX" rm "$NAME" >/dev/null 2>&1 || true; fi
   "$SBX" fc vm rm --yes >/dev/null 2>&1 || true
 
   if "$SBX" fc vm status | grep -q ': absent$'; then ok "helper VM removed"; else bad "helper VM $SBX_FC_VM_NAME is still there"; fi
@@ -118,5 +126,84 @@ out=$("$SBX" exec "$NAME" nginx nginx -v 2>&1)
 if printf '%s' "$out" | grep -q 'nginx version'; then ok "sbx exec: $out"; else bad "sbx exec" "$out"; fi
 
 if "$SBX" logs "$NAME" nginx --tail 5 >/dev/null 2>&1; then ok "sbx logs"; else bad "sbx logs failed"; fi
+
+out=$("$SBX" exec "$NAME" nginx cat /etc/hostname 2>&1)
+if [ "$out" = nginx ]; then ok "sbx exec over vsock sees the guest's hostname"; else bad "sbx exec cat /etc/hostname" "$out"; fi
+
+echo "== sleep (Diff snapshot) and wake (restore + re-key), $ROUNDS rounds"
+# Each round sleeps the sandbox, wakes it with a TCP connect from the Mac and times the first
+# byte, then times an awake request and an exec round trip - those two in alternating order
+# (CONTRIBUTING: interleave and alternate). A create of a second sandbox (and its rm) is
+# interleaved into every round, before or after the wake, alternating.
+for k in create sleep wake warm exec; do : >"$WORK/$k.ms"; done
+
+now_ms() { perl -MTime::HiRes=time -e 'printf "%.1f", time*1000'; }
+sub_ms() { perl -e "printf '%.1f', $1 - $2"; }
+s_to_ms() { perl -e "printf '%.1f', $1 * 1000"; }
+
+create_round() {
+  local n="$NAME-c$1" t0 t1
+  t0=$(now_ms)
+  if "$SBX" create "$n" --template nginx >"$WORK/create-$1.log" 2>&1; then
+    t1=$(now_ms); sub_ms "$t1" "$t0" >>"$WORK/create.ms"; echo >>"$WORK/create.ms"
+  else
+    bad "round $1: create $n" "$(tail -3 "$WORK/create-$1.log")"
+  fi
+  "$SBX" rm "$n" >/dev/null 2>&1 || bad "round $1: rm $n"
+}
+
+warm() {
+  local w; w=$(curl -s -o /dev/null -w '%{time_starttransfer}' --max-time 10 "http://127.0.0.1:$WEB_PORT/")
+  s_to_ms "$w" >>"$WORK/warm.ms"; echo >>"$WORK/warm.ms"
+}
+
+execrt() {
+  local a b o
+  a=$(now_ms); o=$("$SBX" exec "$NAME" nginx true 2>&1); b=$(now_ms)
+  if [ -z "$o" ]; then sub_ms "$b" "$a" >>"$WORK/exec.ms"; echo >>"$WORK/exec.ms"; else bad "round $1: exec" "$o"; fi
+}
+
+wake_round() {
+  local t0 t1 fb
+  t0=$(now_ms)
+  "$SBX" sleep "$NAME" >"$WORK/sleep-$1.log" 2>&1 || { bad "round $1: sbx sleep" "$(tail -3 "$WORK/sleep-$1.log")"; return; }
+  t1=$(now_ms); sub_ms "$t1" "$t0" >>"$WORK/sleep.ms"; echo >>"$WORK/sleep.ms"
+
+  # `sbx sleep` stops the VM from outside the daemon, which notices on its next refresh (15s
+  # by default). A connect before that is spliced to a guest address with nothing behind it and waits
+  # out an ARP timeout before the daemon wakes it - a cost of this test's shortcut, not of a wake.
+  sleep 16
+
+  fb=$(curl -s -o /dev/null -w '%{http_code} %{time_starttransfer}' --max-time 60 "http://127.0.0.1:$WEB_PORT/")
+  if [ "${fb%% *}" = 200 ]; then
+    s_to_ms "${fb#* }" >>"$WORK/wake.ms"; echo >>"$WORK/wake.ms"
+  else
+    bad "round $1: wake answered ${fb%% *}"
+  fi
+
+  if [ $(( $1 % 2 )) -eq 1 ]; then warm; execrt "$1"; else execrt "$1"; warm; fi
+}
+
+for i in $(seq 1 "$ROUNDS"); do
+  if [ $(( i % 2 )) -eq 1 ]; then wake_round "$i"; create_round "$i"; else create_round "$i"; wake_round "$i"; fi
+done
+
+# Median and p95 (nearest rank), in ms.
+stats() {
+  sort -n "$1" | awk 'NF {v[++n]=$1} END {
+    if (n == 0) { print "n=0"; exit }
+    m = (n % 2) ? v[(n+1)/2] : (v[n/2] + v[n/2+1]) / 2
+    r = int(0.95 * n + 0.999999); if (r < 1) r = 1
+    printf "n=%d median=%.1f p95=%.1f ms\n", n, m, v[r] }'
+}
+
+for k in create sleep wake warm exec; do
+  line="$k: $(stats "$WORK/$k.ms")"
+  echo "  $line"
+  if [ -n "${FC_E2E_RESULTS:-}" ]; then echo "$line" >>"$FC_E2E_RESULTS"; fi
+done
+
+n_wake=$(grep -c . "$WORK/wake.ms")
+if [ "$n_wake" -eq "$ROUNDS" ]; then ok "$ROUNDS/$ROUNDS wakes from a snapshot answered HTTP 200"; else bad "$n_wake/$ROUNDS wakes answered"; fi
 
 if "$SBX" rm "$NAME" >/dev/null 2>&1; then ok "sbx rm"; else bad "sbx rm failed"; fi
