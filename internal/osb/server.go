@@ -74,12 +74,14 @@ type Options struct {
 	ReadyTimeout time.Duration
 
 	// CreateWait is how long a create holds its response for the sandbox to become Running
-	// before answering Pending. Zero means 10s; negative answers at once.
+	// before answering Pending. Zero means 20s; negative answers at once.
 	//
 	// Held because every OpenSandbox SDK polls GET every two seconds until Running: a sandbox
 	// ready at 300 ms but answered Pending cost its caller a whole interval, which is where most
 	// of a 4 s create went. Bounded because a first pull of a large image takes minutes, and a
-	// request held that long trips the client's own timeout.
+	// request held that long trips the client's own timeout - the Go SDK's default is 30 s.
+	// 20 s covers a cold burst of a hundred on a 3-CPU colima (p95 ~16 s measured), where 10 s
+	// left the slowest tenth answered Pending and waiting out a further 2 s poll.
 	CreateWait time.Duration
 
 	// ReapEvery is how often expiry is checked.
@@ -161,6 +163,9 @@ type Server struct {
 	// lister shares one container list among the GETs and lists that arrive together.
 	lister *listCoalescer
 
+	// images shares image inspects between the creates of a burst - see imagecache.go.
+	images imageCache
+
 	// saveMu orders the writes of each record - see persist.go.
 	saveMu [persistStripes]sync.Mutex
 
@@ -234,7 +239,7 @@ func New(o Options) (*Server, error) {
 	}
 
 	if s.createWait == 0 {
-		s.createWait = 10 * time.Second
+		s.createWait = 20 * time.Second
 	}
 
 	if s.reapEvery <= 0 {

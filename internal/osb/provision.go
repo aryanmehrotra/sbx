@@ -349,7 +349,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 	// tag that is already here still asks the registry for its manifest - 2.8-3.2 s per create
 	// on colima, measured, most of a cold create - and learns nothing unless the tag moved,
 	// which is what an explicit `docker pull` on this machine is for.
-	info, err := inj.ImageInfo(ctx, pl.rec.Image)
+	info, err := s.images.info(ctx, pl.rec.Image, inj.ImageInfo)
 	if err != nil {
 		if pu, ok := s.p.(provider.Puller); ok {
 			if err := pu.Pull(ctx, pl.rec.Image); err != nil {
@@ -361,7 +361,9 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 
 			s.trace.mark(id, "image pulled")
 
-			info, err = inj.ImageInfo(ctx, pl.rec.Image)
+			s.images.forget(pl.rec.Image)
+
+			info, err = s.images.info(ctx, pl.rec.Image, inj.ImageInfo)
 		}
 
 		if err != nil {
