@@ -111,3 +111,33 @@ func IsTerminal(f *os.File) bool {
 
 	return ioctl(f.Fd(), ioctlGetTermios, &t) == nil
 }
+
+// RawTerminal hands f over to a terminal on the far side of a connection - a pty inside a
+// sandbox - and returns what puts it back. Unlike the dashboard's raw mode, reads block for a
+// whole byte (VMIN 1, VTIME 0: a zero-byte read would read as end of input and end the session)
+// and output processing is off, because the remote pty already turned \n into \r\n.
+func RawTerminal(f *os.File) (func(), error) {
+	fd := f.Fd()
+
+	old, err := makeRaw(fd)
+	if err != nil {
+		return nil, err
+	}
+
+	raw := old.termios
+	_ = ioctl(fd, ioctlGetTermios, &raw)
+
+	raw.Oflag &^= syscall.OPOST
+	raw.Cc[syscall.VMIN] = 1
+	raw.Cc[syscall.VTIME] = 0
+
+	if err := ioctl(fd, ioctlSetTermios, &raw); err != nil {
+		_ = restore(fd, old)
+		return nil, err
+	}
+
+	return func() { _ = restore(fd, old) }, nil
+}
+
+// Size is f's rows and columns, or 24x80 when it will not say.
+func Size(f *os.File) (rows, cols int) { return size(f.Fd()) }

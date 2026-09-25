@@ -139,6 +139,7 @@ type fakeGuest struct {
 	failSeal   error
 	failRekey  error
 	launcher   *fakeLauncher
+	onSeal     func(secret string)
 }
 
 func (g *fakeGuest) Available() bool { return g.available }
@@ -156,6 +157,10 @@ func (g *fakeGuest) Seal(_ context.Context, vm fc.GuestVM, secret string) error 
 	}
 
 	g.seals = append(g.seals, g.launcher.server(vm.Dir).State())
+
+	if g.onSeal != nil {
+		g.onSeal(secret)
+	}
 
 	return g.failSeal
 }
@@ -395,12 +400,15 @@ func TestWakeRestoresAndRekeysAndSleepTakesADiff(t *testing.T) {
 		t.Fatalf("network_overrides = %v", ovs)
 	}
 
-	// Re-keyed before Start returned, on a resumed VM, with the next generation and the
-	// identity every process agrees on.
+	// Re-keyed before Start returned, on a resumed VM, with the next generation, the access
+	// token every process agrees on, authorised by the secret the snapshot holds (the boot one)
+	// and rotating it: execd refuses a re-key that keeps the secret every clone shares.
 	vm := r.vm(t, ref)
 	if len(r.g.rekeys) != 1 || r.g.rekeyState[0] != "Running" || r.g.rekeys[0].Generation != 1 ||
-		r.g.rekeys[0].AccessToken != vm.AccessToken || r.g.rekeys[0].ControlSecret != vm.ControlSecret {
-		t.Fatalf("rekeys = %+v in states %v", r.g.rekeys, r.g.rekeyState)
+		r.g.rekeys[0].AccessToken != vm.AccessToken || r.g.rekeys[0].Secret != vm.ControlSecret ||
+		r.g.rekeys[0].ControlSecret == vm.ControlSecret || len(r.g.rekeys[0].ControlSecret) < 32 ||
+		vm.LiveSecret != r.g.rekeys[0].ControlSecret {
+		t.Fatalf("rekeys = %+v in states %v, live secret %q", r.g.rekeys, r.g.rekeyState, vm.LiveSecret)
 	}
 
 	if vm.SnapshotValid || !vm.Restored {
@@ -845,7 +853,7 @@ func TestSelectionFollowsHostcap(t *testing.T) {
 	t.Cleanup(func() { probeHost, HelperVMProvider = saved, savedHelper })
 
 	probeHost = func() hostcap.Report {
-		return hostcap.Report{OS: "darwin", Arch: "arm64", Nested: true, NestedHint: "Apple M4, macOS 26.4"}
+		return hostcap.Report{OS: "darwin", Arch: "arm64", CPUBrand: "Apple M4", OSVersion: "26.4.1", Nested: true, NestedHint: "Apple M4, macOS 26.4.1"}
 	}
 
 	HelperVMProvider = nil
@@ -877,5 +885,60 @@ func TestSelectionFollowsHostcap(t *testing.T) {
 
 	if _, err := For("nope", "", ""); err == nil || !strings.Contains(err.Error(), "firecracker") {
 		t.Fatalf("unknown provider message does not list firecracker: %v", err)
+	}
+}
+
+// The control secret execd holds moves on at every re-key, and every later Seal and Rekey must
+// present the one it holds now - the snapshot's - or execd answers UNAUTHORIZED and the VM can
+// never be slept or woken again. A cold boot is back to the secret baked into the agent drive.
+func TestTheControlSecretFollowsExecd(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "t9", redis)
+	boot := r.vm(t, ref).ControlSecret
+
+	var secrets []string
+
+	r.g.onSeal = func(s string) { secrets = append(secrets, s) }
+
+	for range 2 {
+		if err := r.p.Start(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := r.p.Stop(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(r.g.rekeys) != 2 {
+		t.Fatalf("rekeys = %+v", r.g.rekeys)
+	}
+
+	first, second := r.g.rekeys[0], r.g.rekeys[1]
+	if first.Secret != boot || second.Secret != first.ControlSecret || second.ControlSecret == first.ControlSecret {
+		t.Fatalf("re-key chain broken: boot %q, then %+v, then %+v", boot, first, second)
+	}
+
+	if !slices.Equal(secrets, []string{first.ControlSecret, second.ControlSecret}) {
+		t.Fatalf("seals presented %q, want each wake's rotated secret", secrets)
+	}
+
+	// Dies awake: the next Start cold-boots, and that execd holds the boot secret again.
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = r.l.Kill(r.ctx, r.p.dir(ref))
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.p.Stop(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if last := secrets[len(secrets)-1]; last != boot {
+		t.Fatalf("after a cold boot the seal presented %q, want the boot secret", last)
 	}
 }

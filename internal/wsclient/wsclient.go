@@ -93,6 +93,11 @@ type Options struct {
 	TLSConfig *tls.Config
 	// MaxMessage caps a reassembled message; zero means DefaultMaxMessage.
 	MaxMessage int64
+
+	// NetDial opens the underlying stream in place of a TCP connect to the URL's host - for a
+	// server reached some other way, such as execd over a Firecracker vsock device. The URL's
+	// host is then only what the Host header says.
+	NetDial func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // Conn is one client connection. Reads must come from a single goroutine; writes, Ping and Close
@@ -136,9 +141,12 @@ func Dial(ctx context.Context, rawURL string, opt Options) (*Conn, error) {
 		hostPort = net.JoinHostPort(u.Hostname(), port)
 	}
 
-	var d net.Dialer
+	dial := opt.NetDial
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
 
-	conn, err := d.DialContext(ctx, "tcp", hostPort)
+	conn, err := dial(ctx, "tcp", hostPort)
 	if err != nil {
 		return nil, fmt.Errorf("websocket: connect %s: %w", hostPort, err)
 	}

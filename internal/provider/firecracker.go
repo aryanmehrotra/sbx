@@ -50,10 +50,10 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
-// HelperVMProvider is where the helper-VM layer (sbx serve inside a nested-virtualisation Linux
-// VM, for macOS and Windows) plugs in. hostcap decides the path; this build carries the direct
-// one, and until the helper layer assigns this, a helper-vm decision is reported as the one
-// thing missing rather than as "this machine cannot".
+// HelperVMProvider is where the helper-VM layer (internal/fchost: sbx inside a nested-virtualisation
+// Linux VM, for macOS and Windows) plugs in, from its init. hostcap decides the path; a build
+// without that layer reports a helper-vm decision as the one thing missing rather than as "this
+// machine cannot".
 var HelperVMProvider func(d hostcap.Decision) (Provider, error)
 
 // probeHost is hostcap.Probe; a variable so the selection path is tested for every host shape.
@@ -112,10 +112,13 @@ type fcVM struct {
 	Created   time.Time `json:"created"`
 
 	// Identity the guest agent holds. On disk because every process that wakes this VM must
-	// hand the same token back to it; 0600 like the rest of the directory.
+	// hand the same token back to it; 0600 like the rest of the directory. ControlSecret is the
+	// boot secret, baked into the agent drive; LiveSecret is the one execd holds now (running,
+	// or captured in the snapshot), which every re-key rotates. Empty means the boot secret.
 	AccessToken   string `json:"access_token"`
 	ControlSecret string `json:"control_secret"`
 	Generation    uint64 `json:"generation"`
+	LiveSecret    string `json:"live_secret,omitempty"`
 
 	// SnapshotValid: vm.state + vm.mem describe the disk as it is now. See the file comment.
 	SnapshotValid bool `json:"snapshot_valid"`
@@ -287,6 +290,15 @@ func (p *fcProvider) save(vm *fcVM) error {
 }
 
 func (vm *fcVM) addr() fc.Addr { return fc.Addr{Slot: vm.Slot, Index: vm.Index} }
+
+// secret is the control secret execd holds now.
+func (vm *fcVM) secret() string {
+	if vm.LiveSecret != "" {
+		return vm.LiveSecret
+	}
+
+	return vm.ControlSecret
+}
 
 func (p *fcProvider) guestVM(vm *fcVM) fc.GuestVM {
 	dir := p.dir(vm.Ref)
@@ -632,7 +644,9 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		}
 	}
 
+	// A fresh execd from the agent drive: it holds the boot secret again.
 	vm.Restored = false
+	vm.LiveSecret = ""
 
 	return nil
 }
@@ -643,7 +657,7 @@ func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
 	c := p.client(vm.Ref)
 
 	if p.guest.Available() {
-		if err := p.guest.Seal(ctx, p.guestVM(vm), vm.ControlSecret); err != nil {
+		if err := p.guest.Seal(ctx, p.guestVM(vm), vm.secret()); err != nil {
 			return fmt.Errorf("sealing execd before the snapshot: %w - the VM is still running", err)
 		}
 	}
@@ -788,8 +802,12 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 	if p.guest.Available() {
 		// Before returning, so the wake proxy never passes a request to an execd that has not
 		// been given its identity. A failure kills the VM rather than serve sealed or stale.
+		// The control secret rotates: execd refuses a re-key that keeps the one the snapshot
+		// holds, since every clone of that snapshot holds it too.
+		next := randomHex(32)
+
 		if err := p.guest.Rekey(ctx, p.guestVM(vm), fc.Rekey{
-			Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: vm.ControlSecret,
+			Secret: vm.secret(), Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: next,
 		}); err != nil {
 			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
 			_ = p.save(vm)
@@ -797,9 +815,19 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 			return fmt.Errorf("re-keying execd after the restore: %w - the VM was stopped rather "+
 				"than left serving with the snapshot's identity", err)
 		}
+
+		vm.LiveSecret = next
 	}
 
-	return p.save(vm)
+	if err := p.save(vm); err != nil {
+		// execd now holds a secret this record does not: left running, it could never be
+		// sealed again. Stopped, its next wake is a cold boot with the boot secret.
+		_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
+
+		return fmt.Errorf("recording the restored VM: %w - it was stopped", err)
+	}
+
+	return nil
 }
 
 func (p *fcProvider) revalidate(vm *fcVM, cause error) error {
@@ -1040,32 +1068,6 @@ func (p *fcProvider) Remove(ctx context.Context, sandbox string) error {
 // errNoGuest is every operation that needs the guest agent before it is wired.
 func errNoGuest(op string) error {
 	return fmt.Errorf("the firecracker provider cannot %s yet: %w", op, fc.ErrGuestUnavailable)
-}
-
-// Exec, ExecTTY and Copy go through execd over vsock - the guest seam. Until it is wired they
-// are refused, never approximated: there is no `docker exec` underneath to fall back on.
-func (p *fcProvider) Exec(context.Context, string, []string) (string, error) {
-	return "", errNoGuest("run a command inside a VM")
-}
-
-func (p *fcProvider) ExecTTY(context.Context, string, []string) error {
-	return errNoGuest("open a terminal inside a VM")
-}
-
-func (p *fcProvider) Copy(context.Context, string, string, string) error {
-	return errNoGuest("copy files in or out of a VM")
-}
-
-// DialGuestPort opens a stream to a port inside a VM over the guest channel. It is what the
-// daemon's GuestDialer seam (osb/fc-vsock) adapts to; see docs/ARCHITECTURE.md. Until then the
-// daemon dials Upstream - the guest's tap address - over TCP, which works on a direct Linux host.
-func (p *fcProvider) DialGuestPort(ctx context.Context, sandbox, service string, port int) (net.Conn, error) {
-	vm, err := p.load(containerName(sandbox, service))
-	if err != nil {
-		return nil, err
-	}
-
-	return p.guest.Dial(ctx, p.guestVM(vm), port)
 }
 
 // Logs is the serial console: the kernel, fc-init, execd and the workload, in one stream,

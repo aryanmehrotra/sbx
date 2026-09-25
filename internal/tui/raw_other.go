@@ -24,3 +24,9 @@ const supported = false
 // IsTerminal cannot be answered without a console API here, so it says no and the caller
 // takes its non-interactive path.
 func IsTerminal(*os.File) bool { return false }
+
+// RawTerminal is refused here; see the file comment.
+func RawTerminal(*os.File) (func(), error) { return nil, errUnsupported }
+
+// Size is the fallback 24x80.
+func Size(*os.File) (rows, cols int) { return 24, 80 }
