@@ -39,6 +39,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/cli"
 	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/execd"
 	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -152,6 +153,14 @@ func Main(ver string, examples embed.FS, argv []string) int {
 		usage(os.Stderr)
 
 		return 2
+	}
+
+	// execd runs inside a sandbox, usually as PID 1, and is dispatched before anything else
+	// here: it must not write sbx's journal into the container's filesystem, and its exit
+	// status is its child's, which the error path below would flatten to 1. It is left out of
+	// the help on purpose - nobody types it; `sbx serve` puts it in a container's entrypoint.
+	if argv[1] == "execd" {
+		return execd.Main(argv[2:])
 	}
 
 	logs.Version = version
