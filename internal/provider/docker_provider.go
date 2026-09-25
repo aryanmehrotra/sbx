@@ -269,6 +269,10 @@ func label(name string) string { return "{{index .Config.Labels \"" + name + "\"
 func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, service string,
 	svc spec.Service, eps []Endpoint, specDir string, iso Isolation,
 ) error {
+	if err := dockerRefuses(iso); err != nil {
+		return err
+	}
+
 	cn := containerName(sandbox, service)
 
 	// Before the container joins it, and only when something asks. Fails closed: a service
@@ -572,6 +576,18 @@ func (d *dockerProvider) ensureEgressNetwork(sandbox string) error {
 		}
 
 		return fmt.Errorf("service declared egress deny and the network could not be created: %w", err)
+	}
+
+	return nil
+}
+
+// dockerRefuses is the isolation docker cannot provide at all. A microVM per container is not a
+// runtime docker can be handed; running the sandbox as a plain container instead would be
+// exactly the silent downgrade DECISIONS forbids.
+func dockerRefuses(iso Isolation) error {
+	if iso == IsolationFirecracker {
+		return fmt.Errorf("--isolation firecracker is not something docker can run: use --provider firecracker " +
+			"for a microVM on this machine, or --provider kubernetes on a cluster with the kata-fc RuntimeClass")
 	}
 
 	return nil

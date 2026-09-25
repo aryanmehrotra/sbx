@@ -121,11 +121,11 @@ var templates fs.FS
 // Every command that touches a backend takes these, so a sandbox can be created on this
 // laptop and the identical spec realised in a cluster without editing anything.
 func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string) {
-	kind = fs.String("provider", cmp.Or(os.Getenv("SBX_PROVIDER_KIND"), "docker"), "docker | kubernetes")
+	kind = fs.String("provider", cmp.Or(os.Getenv("SBX_PROVIDER_KIND"), "docker"), "docker | kubernetes | firecracker")
 	socket = fs.String("socket", "", "docker endpoint; defaults to DOCKER_HOST, then the active docker context")
 	namespace = fs.String("namespace", cmp.Or(os.Getenv("SBX_NAMESPACE"), "sbx"), "kubernetes namespace")
 	isolation = fs.String("isolation", cmp.Or(os.Getenv("SBX_ISOLATION"), string(provider.IsolationContainer)),
-		"container | gvisor | kata")
+		"container | gvisor | kata | firecracker (kubernetes: the kata-fc RuntimeClass)")
 
 	return kind, socket, namespace, isolation
 }
@@ -134,7 +134,7 @@ func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string)
 func resolve(kind, socket, namespace, isolation string) (provider.Provider, provider.Isolation, error) {
 	iso := provider.Isolation(isolation)
 	if !iso.Valid() {
-		return nil, "", fmt.Errorf("unknown isolation %q (want container, gvisor or kata)", isolation)
+		return nil, "", fmt.Errorf("unknown isolation %q (want container, gvisor, kata or firecracker)", isolation)
 	}
 
 	p, err := provider.For(kind, socket, namespace)

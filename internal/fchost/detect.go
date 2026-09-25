@@ -29,6 +29,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Kind is which backend a microVM would use here. The names match the hostcap package the
@@ -101,19 +103,10 @@ func Host() Probe {
 	}
 }
 
-// RuntimeClassEnv names the kata-fc RuntimeClass when a cluster installed it under another name.
-const RuntimeClassEnv = "SBX_KATA_FC_RUNTIMECLASS"
-
-// DefaultRuntimeClass is the handler name kata-deploy registers for Firecracker.
-const DefaultRuntimeClass = "kata-fc"
-
-// RuntimeClass is the RuntimeClass `--isolation firecracker` asks a cluster for.
+// RuntimeClass is the RuntimeClass `--isolation firecracker` asks a cluster for. The provider
+// owns the name, because it is the one that puts it in the pod spec.
 func RuntimeClass(getenv func(string) string) string {
-	if v := strings.TrimSpace(getenv(RuntimeClassEnv)); v != "" {
-		return v
-	}
-
-	return DefaultRuntimeClass
+	return provider.FirecrackerRuntimeClass(getenv)
 }
 
 // ForProvider is Detect for a provider kind: kubernetes never runs a VMM on this machine, so
