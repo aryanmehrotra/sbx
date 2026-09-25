@@ -698,14 +698,44 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 	return nil
 }
 
+// sealTimeout bounds execd's answer to Seal. A guest that stalls it is vetoing its own sleep.
+const sealTimeout = 10 * time.Second
+
 // sleep snapshots a running VM and ends its process. The caller holds the lock.
+//
+// Whatever fails, the VM does not stay up. After a Seal execd answers nobody until re-keyed, and a
+// Start that finds the process running (or paused) only resumes it, so a VM left behind by a
+// failed sleep would be up and permanently deaf. And a Seal that fails or times out is the guest
+// refusing to be slept - PID 1 is the workload's to stall - which must not let it pin host
+// memory. So a failure kills the VMM: the record already says SnapshotValid=false for a running
+// VM, so the next wake cold-boots it from its disk. Memory is lost; the disk and the service are
+// not.
 func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
+	err := p.snapshotAndEnd(ctx, vm)
+	if err == nil {
+		return nil
+	}
+
+	kerr := p.launch.Kill(context.WithoutCancel(ctx), p.dir(vm.Ref))
+
+	vm.SnapshotValid, vm.Restored, vm.LiveSecret = false, false, ""
+
+	return errors.Join(fmt.Errorf("sleeping %s: %w - its VM was stopped without a usable snapshot, and "+
+		"its next wake is a cold boot", vm.Ref, err), kerr, p.save(vm))
+}
+
+func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	dir := p.dir(vm.Ref)
 	c := p.client(vm.Ref)
 
 	if p.guest.Available() {
-		if err := p.guest.Seal(ctx, p.guestVM(vm), vm.secret()); err != nil {
-			return fmt.Errorf("sealing execd before the snapshot: %w - the VM is still running", err)
+		sctx, cancel := context.WithTimeout(ctx, sealTimeout)
+		err := p.guest.Seal(sctx, p.guestVM(vm), vm.secret())
+
+		cancel()
+
+		if err != nil {
+			return fmt.Errorf("sealing execd before the snapshot: %w", err)
 		}
 	}
 

@@ -565,22 +565,52 @@ func TestARekeyFailureStopsTheVM(t *testing.T) {
 	}
 }
 
-func TestASealFailureLeavesTheVMRunning(t *testing.T) {
-	r := newRig(t)
-	ref := r.create(t, "t7", redis)
+// A sleep that fails anywhere after execd was asked to seal must not leave the VM up: sealed, it
+// answers nobody, and a Start that finds it running or paused only resumes it. A Seal that fails
+// (or stalls) is the guest vetoing its own sleep, which must not pin host memory either. Each
+// kills the VMM, and the next wake cold-boots from the disk.
+func TestAFailedSleepStopsTheVMAndTheNextWakeColdBoots(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(r *rig, dir string)
+	}{
+		{"seal", func(r *rig, _ string) { r.g.failSeal = errors.New("execd busy") }},
+		{"pause", func(r *rig, dir string) { r.l.server(dir).Fail["/vm"] = "pause failed" }},
+		{"snapshot", func(r *rig, dir string) { r.l.server(dir).Fail["/snapshot/create"] = "disk full" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			ref := r.create(t, "t7", redis)
+			dir := r.p.dir(ref)
 
-	if err := r.p.Start(r.ctx, ref); err != nil {
-		t.Fatal(err)
-	}
+			if err := r.p.Start(r.ctx, ref); err != nil {
+				t.Fatal(err)
+			}
 
-	r.g.failSeal = errors.New("execd busy")
+			tc.fail(r, dir)
 
-	if err := r.p.Stop(r.ctx, ref); err == nil || !strings.Contains(err.Error(), "still running") {
-		t.Fatalf("err = %v", err)
-	}
+			if err := r.p.Stop(r.ctx, ref); err == nil || !strings.Contains(err.Error(), "cold boot") {
+				t.Fatalf("Stop = %v, want the failure and what it means", err)
+			}
 
-	if s := r.l.server(r.p.dir(ref)); s == nil || s.State() != "Running" {
-		t.Fatal("an unsealed VM was snapshotted or killed")
+			if r.l.server(dir) != nil {
+				t.Fatal("a VM whose sleep failed is still up")
+			}
+
+			r.g.failSeal = nil
+
+			if err := r.p.Start(r.ctx, ref); err != nil {
+				t.Fatal(err)
+			}
+
+			if vm := r.vm(t, ref); vm.Restored || vm.LiveSecret != "" {
+				t.Fatalf("the wake resumed the old VM instead of cold-booting: %+v", vm)
+			}
+
+			if s := r.l.server(dir); s == nil || s.State() != "Running" {
+				t.Fatal("not running after the wake")
+			}
+		})
 	}
 }
 
