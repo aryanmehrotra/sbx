@@ -14,8 +14,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -228,4 +230,51 @@ func nodeVersion(ctx context.Context, sb *opensandbox.Sandbox) error {
 	}
 
 	return nil
+}
+
+// awaitPool polls sbx's pool status until every pool is full and nothing is being made, for up
+// to five minutes. A server without the route (not sbx, or no pools) returns at once.
+func awaitPool(t target) {
+	deadline := time.Now().Add(5 * time.Minute)
+	url := t.cfg.GetBaseURL()
+	url = strings.TrimSuffix(strings.TrimSuffix(url, "/"), "/v1") + "/sbx/v1/pool"
+
+	for {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("OPEN-SANDBOX-API-KEY", t.cfg.GetAPIKey())
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bench: pool status: %v\n", err)
+			return
+		}
+
+		var st []struct {
+			Image                string
+			Size, Ready, Filling int
+		}
+
+		ok := resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil
+		resp.Body.Close()
+
+		if !ok {
+			return
+		}
+
+		full := true
+		for _, p := range st {
+			full = full && p.Ready >= p.Size && p.Filling == 0
+		}
+
+		if full {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			fmt.Fprintf(os.Stderr, "bench: pools still not full after 5m: %+v\n", st)
+			return
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
 }

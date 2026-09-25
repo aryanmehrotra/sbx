@@ -114,6 +114,8 @@ func main() {
 		"image node:22-slim unless -image is given; 0 runs the lifecycle metrics instead")
 	burstModes := flag.String("burst-modes", "default", "comma-separated burst modes, interleaved and rotated per round: "+
 		"default (whatever the server does), cold (extensions sbx.pool=off: never from a warm pool)")
+	waitPool := flag.Bool("wait-pool", false, "before each burst round, wait until the server's warm pools (sbx's GET /sbx/v1/pool) are full, "+
+		"so a round measures a full pool rather than one still refilling from the last")
 	settle := flag.Duration("settle", 0, "wait this long before each burst round, so a pool refill or the last "+
 		"round's deletes are not measured")
 	flag.Parse()
@@ -155,7 +157,13 @@ func main() {
 			}
 		}
 
-		runBurst(ts[0], img, *burst, *rounds, modes, func() { time.Sleep(*settle) }, os.Stdout)
+		runBurst(ts[0], img, *burst, *rounds, modes, func() {
+			time.Sleep(*settle)
+
+			if *waitPool {
+				awaitPool(ts[0])
+			}
+		}, os.Stdout)
 
 		return
 	}
