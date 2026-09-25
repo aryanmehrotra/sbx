@@ -48,6 +48,7 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		Provider:     d.provider,
 		Runtime:      d,
 		Key:          key,
+		Owner:        "sbx-serve:" + scope.String(),
 		Version:      logs.Version,
 		ReadyTimeout: d.ready + 30*time.Second,
 		Egress:       d.Egress(),
@@ -62,6 +63,8 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 	if err != nil {
 		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
 	}
+
+	d.servesOSB = true
 
 	return api, ln, nil
 }

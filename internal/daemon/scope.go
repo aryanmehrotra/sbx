@@ -13,9 +13,13 @@ package daemon
 // on another engine. The default is the whole engine, as it always was.
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
+	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Scope is a set of sandbox-name patterns. Empty matches everything.
@@ -82,16 +86,86 @@ func (s Scope) String() string {
 // refs the daemon adopted qualify when a scope is set: a ref is a container name, and working
 // out its sandbox from the name would be a guess the control API must not make.
 func (d *daemon) refInScope(ref string) bool {
-	if len(d.scope) == 0 {
+	if len(d.scope) == 0 && d.servesOSB {
 		return true
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	_, ok := d.units[ref]
+	d.mu.Unlock()
 
-	return ok
+	if ok || len(d.scope) > 0 {
+		return ok
+	}
+
+	// Unscoped, and not the API's daemon: anything but an API sandbox is ours, adopted yet or
+	// not. Asked of the provider rather than read from the name, for the reason above.
+	return !d.osbOwned(func(u provider.Unit) bool { return u.Ref == ref })
+}
+
+// sandboxInScope is refInScope for a sandbox name: the scope, and - for an unscoped daemon that
+// does not serve the API - not a sandbox the API created.
+func (d *daemon) sandboxInScope(sandbox string) bool {
+	if !d.scope.Match(sandbox) {
+		return false
+	}
+
+	if len(d.scope) > 0 || d.servesOSB {
+		return true
+	}
+
+	// Adopted is ours by definition: discover already applied adopts to it.
+	d.mu.Lock()
+	for _, u := range d.units {
+		if u.sandbox == sandbox {
+			d.mu.Unlock()
+			return true
+		}
+	}
+	d.mu.Unlock()
+
+	return !d.osbOwned(func(u provider.Unit) bool { return u.Sandbox == sandbox })
+}
+
+// adopts is the one test of whether a discovered unit is this daemon's: inside --only, and not a
+// container the OpenSandbox API created unless this daemon serves that API or was scoped to it.
+//
+// The second half exists because the machine's own daemon is unscoped. Beside a second daemon
+// serving --osb-addr - the documented way to run the API next to a live stack - it adopted the
+// API's containers too: fronted them on ports the API's daemon also wanted, froze or stopped them
+// on its own idle clock, and knew nothing of their API pauses, so it would wake a Paused sandbox
+// on the first connection. Now an API sandbox has exactly one daemon.
+func (d *daemon) adopts(u provider.Unit) bool {
+	if !d.scope.Match(u.Sandbox) {
+		return false
+	}
+
+	return u.OSB == "" || d.servesOSB || len(d.scope) > 0
+}
+
+// osbOwned reports whether any unit matching pick is an API sandbox. A provider that cannot be
+// asked answers "yes": refusing a control call is recoverable, acting on another daemon's
+// sandbox is not.
+func (d *daemon) osbOwned(pick func(provider.Unit) bool) bool {
+	if d.provider == nil {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	units, err := d.provider.List(ctx, "")
+	if err != nil {
+		return true
+	}
+
+	for _, u := range units {
+		if pick(u) && u.OSB != "" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // stringList is a repeatable flag.

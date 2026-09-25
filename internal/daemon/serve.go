@@ -145,6 +145,10 @@ type daemon struct {
 	// osbNoKey is --osb-insecure-no-key: serve the OpenSandbox API with no key at all. Only ever
 	// typed, never defaulted - see osb/key.go for why loopback is not enough on its own.
 	osbNoKey bool
+
+	// servesOSB is set when this daemon serves --osb-addr. An unscoped daemon without it leaves
+	// containers the API created (label sbx.osb) to the daemon that does - see scope.go.
+	servesOSB bool
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -395,12 +399,13 @@ func (d *daemon) discover(ctx context.Context) {
 	}
 
 	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
-	// filters, correctAwake - ever holds a unit outside --only to act on.
-	if len(d.scope) > 0 {
+	// filters, correctAwake - ever holds a unit outside --only, or an API sandbox this daemon
+	// does not own, to act on.
+	if len(d.scope) > 0 || !d.servesOSB {
 		in := found[:0:0]
 
 		for _, f := range found {
-			if d.scope.Match(f.Sandbox) {
+			if d.adopts(f) {
 				in = append(in, f)
 			}
 		}

@@ -504,6 +504,13 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 // createContainer allocates the slot and creates the container under the machine's slot lock,
 // then checks the sandbox was not deleted while that was happening.
 func (s *Server) createContainer(ctx context.Context, id string, svc spec.Service) error {
+	// Labelled as the API's, so that a daemon which does not serve the API - the machine's own
+	// unscoped one - never fronts, sleeps, reaps or wakes it (daemon/scope.go).
+	svc.OSBOwner = s.owner
+	if svc.OSBOwner == "" {
+		svc.OSBOwner = "sbx-serve"
+	}
+
 	// Released as soon as the container exists (it then holds the slot for everyone to see),
 	// and on every other path by the defer - once either way.
 	var once sync.Once

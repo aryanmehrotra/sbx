@@ -60,6 +60,12 @@ type Options struct {
 	// loopback address.
 	Key string
 
+	// Owner is written on every container this API creates, as the sbx.osb label: which daemon
+	// made it. Its presence is what matters - a daemon that does not serve the API leaves labelled
+	// containers alone - and the value says whose they are to a person reading docker inspect.
+	// Empty is "sbx-serve".
+	Owner string
+
 	// StateDir holds one file per sandbox. Default ~/.sbx/osb.
 	StateDir string
 
@@ -111,6 +117,7 @@ type Server struct {
 	p       provider.Provider
 	rt      Runtime
 	key     string
+	owner   string
 	store   store
 	version string
 
@@ -171,6 +178,7 @@ func New(o Options) (*Server, error) {
 		p:            o.Provider,
 		rt:           o.Runtime,
 		key:          o.Key,
+		owner:        o.Owner,
 		store:        store{dir: o.StateDir},
 		version:      o.Version,
 		readyTimeout: o.ReadyTimeout,

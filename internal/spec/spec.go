@@ -317,6 +317,11 @@ type Service struct {
 	// is that a background process started in one request is still running at the next. Here it
 	// is opt-in, because it holds the memory, and holding nothing is the reason sbx exists.
 	OnIdle string `json:"on_idle,omitempty"`
+
+	// OSBOwner marks a container created through the OpenSandbox API (label sbx.osb), naming the
+	// daemon that created it. Never read from a spec file: it is what lets a daemon that does not
+	// serve the API leave API sandboxes alone, so a spec must not be able to claim or shed it.
+	OSBOwner string `json:"-"`
 }
 
 func (s Service) validate(name string) error {

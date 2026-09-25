@@ -240,6 +240,11 @@ func TestDockerOpenSandboxLifecycle(t *testing.T) {
 
 	waitFor("Running", 120*time.Second)
 
+	// Labelled as the API's on the real engine, so the machine's own daemon leaves it alone.
+	if got := dockerCLI(t, "inspect", "--format", `{{index .Config.Labels "sbx.osb"}}`, container); got == "" {
+		t.Fatalf("%s has no sbx.osb label", container)
+	}
+
 	// Running only says execd answered on the wake port - not that THIS daemon owns it. Another
 	// listener on that port (another engine's daemon) answers too, and then nothing below is
 	// testing the daemon under test. Say so here rather than as a freeze timeout.
