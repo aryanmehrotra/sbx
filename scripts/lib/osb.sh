@@ -204,6 +204,12 @@ $(printf '%s\n' "$OSB_PREEXISTING" | head -10 | sed 's/^/       /')
   if [ "$key_args" = 1 ]; then
     OSB_KEY="osb-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     set -- "$@" --osb-key "$OSB_KEY"
+  elif osb_daemon_env "$OSB_SBX" serve --osb-insecure-no-key --harness-probe-undefined 2>&1 |
+    grep -q "not defined: -harness-probe-undefined"; then
+    # Since v0.9.1 a daemon with no --osb-key generates a key and requires it: loopback is
+    # reachable from every container on a VM-backed engine. Keyless is an explicit flag; an
+    # older sbx has no such flag and was keyless on loopback anyway, so it is left as it was.
+    set -- "$@" --osb-insecure-no-key
   fi
 
   [ -n "$OSB_IDLE" ] && set -- "$@" --idle "$OSB_IDLE"

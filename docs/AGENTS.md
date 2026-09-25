@@ -215,8 +215,8 @@ It is a client of the OpenSandbox HTTP API, not of sbx's internals: point it at
 `sbx serve --osb-addr` or at a real OpenSandbox server and it behaves the same.
 
 ```sh
-sbx serve --osb-addr 127.0.0.1:8080 &     # the OpenSandbox API, next to the daemon
-claude mcp add sbx -- sbx mcp             # Claude Code
+sbx serve --osb-addr 127.0.0.1:8080 &     # the OpenSandbox API; its key goes in ~/.sbx/osb/key
+claude mcp add sbx -- sbx mcp             # Claude Code - reads that key file itself
 claude mcp add sbx -e SBX_OSB_KEY="$KEY" -- sbx mcp --url https://osb.example.dev
 ```
 
@@ -228,15 +228,23 @@ Cursor, or anything else that reads an `mcpServers` block:
     "sbx": {
       "command": "sbx",
       "args": ["mcp"],
-      "env": { "SBX_OSB_URL": "http://127.0.0.1:8080", "SBX_OSB_KEY": "" }
+      "env": { "SBX_OSB_URL": "http://127.0.0.1:8080" }
     }
   }
 }
 ```
 
 `--url` falls back to `SBX_OSB_URL`, then `OPEN_SANDBOX_DOMAIN`, then `http://127.0.0.1:8080`;
-`--key` to `SBX_OSB_KEY`, then `OPEN_SANDBOX_API_KEY`. The second name in each pair is the one
-upstream's server reads, so swapping `opensandbox-mcp` for `sbx mcp` needs no other change.
+`--key` to `SBX_OSB_KEY`, then `OPEN_SANDBOX_API_KEY`, then - for a loopback `--url` only - the
+key `sbx serve` generated in `~/.sbx/osb/key`. The second name in each pair is the one
+upstream's server reads, so swapping `opensandbox-mcp` for `sbx mcp` needs no other change. The
+key file is never sent to a server that is not on this machine.
+
+`sbx serve --osb-addr` always requires a key, loopback included: on colima and Docker Desktop
+every container reaches the host's `127.0.0.1` through the VM's gateway, so loopback does not
+keep sandboxes away from the API. Pass `--osb-key` (or `SBX_OSB_KEY`) to choose it; otherwise
+one is generated once and reused. `--osb-insecure-no-key` turns it off, loopback only, and says
+why that is dangerous every time it starts.
 
 | group | tools |
 |---|---|
