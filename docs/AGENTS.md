@@ -204,6 +204,63 @@ sbx gc                                 # what dead sandboxes left. Lists; --forc
 
 ---
 
+## From an MCP client: `sbx mcp`
+
+Everything above is a CLI an agent shells out to. An agent whose harness speaks the Model
+Context Protocol can have the sandbox as tools instead: `sbx mcp` is an MCP server on stdin and
+stdout that offers **the same nineteen tools as OpenSandbox's own MCP server** — same names, same
+arguments, same result fields — so a prompt or a config written for one works with the other.
+
+It is a client of the OpenSandbox HTTP API, not of sbx's internals: point it at
+`sbx serve --osb-addr` or at a real OpenSandbox server and it behaves the same.
+
+```sh
+sbx serve --osb-addr 127.0.0.1:8080 &     # the OpenSandbox API, next to the daemon
+claude mcp add sbx -- sbx mcp             # Claude Code
+claude mcp add sbx -e SBX_OSB_KEY="$KEY" -- sbx mcp --url https://osb.example.dev
+```
+
+Cursor, or anything else that reads an `mcpServers` block:
+
+```json
+{
+  "mcpServers": {
+    "sbx": {
+      "command": "sbx",
+      "args": ["mcp"],
+      "env": { "SBX_OSB_URL": "http://127.0.0.1:8080", "SBX_OSB_KEY": "" }
+    }
+  }
+}
+```
+
+`--url` falls back to `SBX_OSB_URL`, then `OPEN_SANDBOX_DOMAIN`, then `http://127.0.0.1:8080`;
+`--key` to `SBX_OSB_KEY`, then `OPEN_SANDBOX_API_KEY`. The second name in each pair is the one
+upstream's server reads, so swapping `opensandbox-mcp` for `sbx mcp` needs no other change.
+
+| group | tools |
+|---|---|
+| sandbox | `sandbox_create` `sandbox_connect` `sandbox_kill` `sandbox_get_info` `sandbox_list` `sandbox_renew` `sandbox_healthcheck` `sandbox_get_metrics` `sandbox_get_endpoint` |
+| commands | `command_run` `command_interrupt` |
+| files | `file_read` `file_write` `file_delete` `file_search` `file_create_directories` `file_delete_directories` `file_move` `file_replace_contents` |
+
+Where it differs from upstream's server, on purpose:
+
+- **Any `sandbox_id` works in any tool.** Upstream refuses an id it did not create or connect to
+  in this session unless the call passes `connect_if_missing`; sbx resolves it on demand, so
+  "list, then run a command in one" is two calls, not three and an error. The argument is still
+  accepted.
+- **Cancelling `command_run` stops the command.** The client's cancel reaches the sandbox as an
+  interrupt, rather than leaving the command running with nobody reading it.
+- **`file_read` / `file_write` take `utf-8` or `latin-1`.** Go's standard library carries no
+  other codecs; for anything else, `iconv` through `command_run`.
+
+It speaks MCP `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`, answers `ping` and
+cancellation while a tool is running, reports `sandbox_create` and `command_run` progress to a
+client that asks for it, and writes nothing to stdout but protocol — its own log is on stderr.
+
+---
+
 ## Machine-readable surfaces
 
 An agent should parse these rather than the human tables:

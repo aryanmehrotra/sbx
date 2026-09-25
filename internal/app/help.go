@@ -51,6 +51,16 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"the idle policy for one transition.",
 		"sbx sleep agent-42",
 	},
+	"mcp": {
+		"sbx mcp [--url http://127.0.0.1:8080] [--key KEY]",
+		"A Model Context Protocol server on stdin/stdout, for Claude Code, Cursor and any other\n" +
+			"MCP client. It offers the same tools as OpenSandbox's MCP server - sandbox_create,\n" +
+			"command_run, file_read, file_write and the rest - and speaks OpenSandbox's HTTP API,\n" +
+			"so it drives `sbx serve --osb-addr` or a real OpenSandbox server alike.\n" +
+			"--url defaults to $SBX_OSB_URL, then $OPEN_SANDBOX_DOMAIN; --key to $SBX_OSB_KEY,\n" +
+			"then $OPEN_SANDBOX_API_KEY - upstream's names, so an existing config carries over.",
+		"claude mcp add sbx -- sbx mcp",
+	},
 	"with": {
 		"sbx with <sandbox> [--template T | --spec F] [--keep] [--timeout 90s] -- <command>",
 		"Run a command against an ephemeral sandbox: create it, wait until it serves, run the\n" +

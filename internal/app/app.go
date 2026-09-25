@@ -211,7 +211,7 @@ func Main(ver string, examples embed.FS, argv []string) int {
 func record(cmd string, argv []string, err error) {
 	switch cmd {
 	case "list", "env", "history", "doctor", "templates", "validate", "ready", "logs",
-		"version", "--version", "-v", "help", "--help", "-h", "ui":
+		"version", "--version", "-v", "help", "--help", "-h", "ui", "mcp":
 		return
 	}
 
@@ -909,6 +909,9 @@ func dispatch(cmd string, args []string) error {
 			Remote:   len(watch) > 0,
 		}, os.Stdout)
 
+	case "mcp":
+		return runMCP(args)
+
 	case "history":
 		// No provider and no daemon: this reads a file. Asking what happened to a sandbox
 		// has to work when docker is down, which is one of the times people ask.
@@ -1129,6 +1132,7 @@ While you work
   sbx ready  <sandbox> [--timeout 90s]          block until it is really serving. For CI
   sbx wake   <sandbox> [--timeout 90s]          wake it now and wait until serving
   sbx sleep  <sandbox>                          park it now: stop every service, drop to 0 B
+  sbx mcp    [--url URL] [--key KEY]           an MCP server on stdio: OpenSandbox tools for agents
 
 Data
   sbx snapshot <sandbox> <name>                 save every service's filesystem
