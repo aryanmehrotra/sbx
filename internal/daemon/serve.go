@@ -432,7 +432,7 @@ func (d *daemon) discover(ctx context.Context) {
 			continue
 		}
 
-		legs := legsOf(f)
+		legs := legsOf(d.provider, f)
 		if len(legs) == 0 {
 			// A unit with nothing to front is not something to guess about: fronting the
 			// wrong port would splice a caller into silence.
@@ -630,14 +630,29 @@ func reapEvery(idle time.Duration) time.Duration {
 	return every
 }
 
-func legsOf(u provider.Unit) []leg {
+// legsOf builds the legs a unit is fronted on. A provider that reaches its workloads other than
+// by TCP (provider.GuestDialer) supplies the dialer here; every other provider - docker,
+// kubernetes - gets the TCP path it always had.
+func legsOf(p provider.Provider, u provider.Unit) []leg {
 	n := min(len(u.Listen), len(u.Upstream))
+
+	gd, _ := p.(provider.GuestDialer)
 
 	legs := make([]leg, 0, n)
 	for i := range n {
 		// Resolved here, once, rather than on every connection through it.
 		lg := leg{Listen: u.Listen[i], Upstream: u.Upstream[i]}
-		lg.resolve()
+
+		if gd != nil {
+			if dial, ok := gd.GuestDialer(u.Sandbox, u.Service, u.Upstream[i].Port); ok && dial != nil {
+				lg.dialer = dial
+			}
+		}
+
+		// A leg with a dialer has no TCP address to pin.
+		if lg.dialer == nil {
+			lg.resolve()
+		}
 
 		legs = append(legs, lg)
 	}
