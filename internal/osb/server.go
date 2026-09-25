@@ -156,6 +156,9 @@ type Server struct {
 	// lister shares one container list among the GETs and lists that arrive together.
 	lister *listCoalescer
 
+	// saveMu orders the writes of each record - see persist.go.
+	saveMu [persistStripes]sync.Mutex
+
 	pools      map[string]*pool
 	poolSem    chan struct{}
 	poolFreeze bool

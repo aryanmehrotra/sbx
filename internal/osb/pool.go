@@ -271,22 +271,25 @@ func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, erro
 	r.CreatedAt = now
 	r.ExpiresAt = pl.rec.ExpiresAt
 	r.transition(stateRunning, "", "", now)
+	s.mu.Unlock()
 
-	if err := s.store.save(r); err != nil {
+	if err := s.persist(m.id); err != nil {
 		// Not claimed, then: a sandbox whose expiry and token live only in memory would come
 		// back after a restart as a pool member, and be removed with the caller's work in it.
-		r.Pool = "reclaim-failed"
+		// Hidden again at once; the caller discards it.
+		s.mu.Lock()
+		if r, ok := s.recs[m.id]; ok {
+			r.Pool = "claim-failed"
+		}
 		s.mu.Unlock()
 
 		return record{}, fmt.Errorf("recording the claim under %s: %w", s.store.dir, err)
 	}
 
-	s.mu.Unlock()
-
 	// The caller's now, so the caller's idle policy - with its clock starting here.
 	s.rt.Pin(m.id, false)
 
-	history.Append(history.Record{Kind: "event", Sandbox: m.id, Event: "created", Actor: "osb",
+	s.history(history.Record{Kind: "event", Sandbox: m.id, Event: "created", Actor: "osb",
 		Message: "image " + pl.rec.Image + " (from the warm pool)"})
 
 	rec, _ := s.snapshot(m.id)
@@ -423,8 +426,10 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 
 	s.mu.Lock()
 	s.recs[id] = &pl.rec
+	s.mu.Unlock()
 
-	if err := s.store.save(&pl.rec); err != nil {
+	if err := s.persist(id); err != nil {
+		s.mu.Lock()
 		delete(s.recs, id)
 		s.mu.Unlock()
 		logs.Default.Error(id, service, "osb: pool %s: could not record a member under %s: %v",
@@ -434,6 +439,8 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 	}
 
 	mctx, cancel := context.WithCancel(ctx)
+
+	s.mu.Lock()
 	s.provisioning[id] = cancel
 	s.mu.Unlock()
 

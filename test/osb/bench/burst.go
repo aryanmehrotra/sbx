@@ -112,6 +112,10 @@ func score(med, p95, p99 time.Duration, rate float64) float64 {
 // burstOnce launches n creates at once, behind a start gate so they really are concurrent, and
 // deletes every sandbox afterwards whether or not it succeeded.
 func burstOnce(t target, image string, n int, ext map[string]string) ([]time.Duration, []string) {
+	// The split of each TTI into create() and the command, reported alongside so a regression
+	// says which half moved.
+	var creates, cmds []time.Duration
+
 	var (
 		mu   sync.Mutex
 		tti  []time.Duration
@@ -134,6 +138,8 @@ func burstOnce(t target, image string, n int, ext map[string]string) ([]time.Dur
 
 			start := time.Now()
 
+			var created time.Duration
+
 			sb, err := opensandbox.CreateSandbox(ctx, t.cfg, opensandbox.SandboxCreateOptions{
 				Image:      image,
 				Extensions: ext,
@@ -142,6 +148,8 @@ func burstOnce(t target, image string, n int, ext map[string]string) ([]time.Dur
 				mu.Lock()
 				sbs = append(sbs, sb)
 				mu.Unlock()
+
+				created = time.Since(start)
 
 				err = nodeVersion(ctx, sb)
 			}
@@ -157,6 +165,8 @@ func burstOnce(t target, image string, n int, ext map[string]string) ([]time.Dur
 			}
 
 			tti = append(tti, d)
+			creates = append(creates, created)
+			cmds = append(cmds, d-created)
 		}()
 	}
 
@@ -185,6 +195,13 @@ func burstOnce(t target, image string, n int, ext map[string]string) ([]time.Dur
 	}
 
 	wg.Wait()
+
+	if len(creates) > 0 {
+		sort.Slice(creates, func(a, b int) bool { return creates[a] < creates[b] })
+		sort.Slice(cmds, func(a, b int) bool { return cmds[a] < cmds[b] })
+		fmt.Fprintf(os.Stderr, "  split: create() median %s ms p95 %s ms; node -v median %s ms p95 %s ms\n",
+			ms(pct(creates, 50)), ms(pct(creates, 95)), ms(pct(cmds, 50)), ms(pct(cmds, 95)))
+	}
 
 	return tti, errs
 }

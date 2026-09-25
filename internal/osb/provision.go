@@ -61,11 +61,15 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.recs[pl.rec.ID] = &pl.rec
+	accepted := pl.rec // &pl.rec is the live record from the next line on
 
-	if err := s.store.save(&pl.rec); err != nil {
-		delete(s.recs, pl.rec.ID)
+	s.mu.Lock()
+	s.recs[accepted.ID] = &pl.rec
+	s.mu.Unlock()
+
+	if err := s.persist(accepted.ID); err != nil {
+		s.mu.Lock()
+		delete(s.recs, accepted.ID)
 		s.mu.Unlock()
 
 		writeErr(w, http.StatusInternalServerError, "SANDBOX::INTERNAL_ERROR",
@@ -74,15 +78,16 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.trace.begin(pl.rec.ID)
+	s.trace.begin(accepted.ID)
 
 	ctx, cancel := context.WithCancel(s.base)
-	s.provisioning[pl.rec.ID] = cancel
-	accepted := pl.rec // copied under the lock: &pl.rec is the live record from here on
+
+	s.mu.Lock()
+	s.provisioning[accepted.ID] = cancel
 	s.mu.Unlock()
 
-	history.Append(history.Record{Kind: "event", Sandbox: pl.rec.ID, Event: "created", Actor: "osb",
-		Message: "image " + pl.rec.Image})
+	s.history(history.Record{Kind: "event", Sandbox: accepted.ID, Event: "created", Actor: "osb",
+		Message: "image " + accepted.Image})
 
 	done := make(chan struct{})
 

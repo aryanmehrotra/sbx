@@ -59,11 +59,11 @@ func (s *Server) update(id string, f func(r *record)) (record, bool) {
 	}
 
 	f(r)
+	s.mu.Unlock()
 
-	if err := s.store.save(r); err != nil {
+	if err := s.persist(id); err != nil {
 		logs.Default.Error(id, "", "osb: could not persist the sandbox record: %v", err)
 	}
-	s.mu.Unlock()
 
 	return s.snapshot(id)
 }
@@ -380,14 +380,19 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 		}
 	}
 
+	// Under the record's persist lock, so a write already in flight lands before the file is
+	// removed rather than resurrecting it afterwards.
+	plk := s.persistLock(id)
+	plk.Lock()
 	s.mu.Lock()
 	delete(s.recs, id)
 	delete(s.provisioning, id)
+	s.mu.Unlock()
 
 	if err := s.store.remove(id); err != nil {
 		logs.Default.Error(id, "", "osb: could not delete the sandbox record: %v", err)
 	}
-	s.mu.Unlock()
+	plk.Unlock()
 
 	history.Append(history.Record{Kind: "event", Sandbox: id, Event: "removed", Actor: actor,
 		Message: "removed through the OpenSandbox API"})
