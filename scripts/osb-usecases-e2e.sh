@@ -79,13 +79,15 @@ stop_daemon() {
   OSB_DAEMON=""
 }
 
-# restart_daemon IDLE SCOPE - the same address and key, so an SDK client holding the URL
-# carries on, which is part of what "survives a restart" means.
+# restart_daemon IDLE SCOPE [FLAG...] - the same address and key, so an SDK client holding the
+# URL carries on, which is part of what "survives a restart" means. Any further flags are the
+# daemon's own, for a case that needs one (--osb-pool).
 restart_daemon() {
   local idle=$1 scope=$2 n=0
+  shift 2
   stop_daemon
   set -- serve --osb-addr "${OSB_URL#http://}" --osb-key "$OSB_KEY" \
-    --osb-host-paths "$OPENSANDBOX_TEST_HOST_VOLUME_DIR" --idle "$idle" --only "$scope"
+    --osb-host-paths "$OPENSANDBOX_TEST_HOST_VOLUME_DIR" --idle "$idle" --only "$scope" "$@"
   ( osb_daemon_vars; exec "$OSB_SBX" "$@" ) >>"$OSB_WORK/daemon.log" 2>&1 &
   OSB_DAEMON=$!
 
@@ -371,11 +373,18 @@ fi
 
 # ── 15. the warm pool ─────────────────────────────────────────────────────────
 if want pool; then
-  head_ pool "--osb-pool: a create served from a warm container"
-  if "$OSB_SBX" serve --help 2>&1 | grep -q -- '--osb-pool'; then
-    fail pool "this sbx has --osb-pool but no case exercises it yet; add one"
+  head_ pool "--osb-pool: creates served from warm members, re-keyed; a volume goes cold"
+  # `serve --help` is prose and names only some flags, so ask the flag parser: a flag this sbx
+  # does not have is "not defined", one it has and was given no value "needs an argument".
+  if "$OSB_SBX" serve --osb-pool 2>&1 | grep -q 'flag provided but not defined'; then
+    skip pool "this sbx has no --osb-pool"
   else
-    skip pool "this sbx has no --osb-pool (it lands in a later merge); rerun after it does"
+    pool_image="python:3.11-slim"
+    pool_n=3
+    restart_daemon 10m "$SCOPE" --osb-pool "$pool_image=$pool_n" --osb-pool-freeze
+    if use pool -n "$pool_n" -image "$pool_image" -history "$OSB_WORK/home/history.jsonl"; then pass pool; else fail pool; fi
+    # Without the pool: the restart drains the members nobody claimed.
+    restart_daemon 10m "$SCOPE"
   fi
 fi
 

@@ -90,6 +90,7 @@ var cases = map[string]struct {
 	"poke":        {casePoke, []string{"id"}},
 	"kill":        {caseKill, []string{"id"}},
 	"concurrent":  {caseConcurrent, []string{"n"}},
+	"pool":        {casePool, []string{"n", "history"}},
 }
 
 func main() {
