@@ -749,6 +749,13 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 		// A Diff over the base this process was loaded from: only what it dirtied.
 		diff := filepath.Join(dir, fc.DiffMemName)
 
+		// Never write into a file that is already there: a diff.mem left by an earlier failed
+		// merge carries stale pages the merge would fold in as if this sleep had dirtied them, and
+		// anything at that name - a symlink included - is not this snapshot's to follow.
+		if err := os.Remove(diff); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
 		if err := c.CreateSnapshot(ctx, fc.SnapshotCreate{SnapshotType: fc.SnapshotDiff,
 			SnapshotPath: state + ".new", MemFilePath: diff}); err != nil {
 			return err

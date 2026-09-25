@@ -1227,3 +1227,32 @@ func TestASlowVMMIsNotTreatedAsAsleep(t *testing.T) {
 		t.Fatalf("no process = %q, %v", state, err)
 	}
 }
+
+// A Diff snapshot is written to a fresh diff.mem: whatever an earlier failed sleep left at that
+// name - here a symlink out of the VM directory - is removed first, never written through.
+func TestADiffSnapshotNeverWritesThroughALeftoverFile(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "l6", redis)
+	dir := r.p.dir(ref)
+
+	if err := r.p.Start(r.ctx, ref); err != nil { // restored, so the next sleep is a Diff
+		t.Fatal(err)
+	}
+
+	outside := filepath.Join(r.root, "outside")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(outside, filepath.Join(dir, fc.DiffMemName)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.p.Stop(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	if b, _ := os.ReadFile(outside); string(b) != "keep" {
+		t.Fatalf("the snapshot wrote through the leftover diff.mem: %q", b)
+	}
+}
