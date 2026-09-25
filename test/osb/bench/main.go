@@ -110,6 +110,12 @@ func main() {
 	serverIdle := flag.Duration("server-idle", 0,
 		"the server's idle window (sbx serve --idle); when set, each sandbox is left alone 5s past it "+
 			"and then timed waking from the idle freeze. 0 skips the measurement")
+	burst := flag.Int("burst", 0, "ComputeSDK Burst TTI mode: this many concurrent create -> runCommand('node -v') per round, "+
+		"image node:22-slim unless -image is given; 0 runs the lifecycle metrics instead")
+	burstModes := flag.String("burst-modes", "default", "comma-separated burst modes, interleaved and rotated per round: "+
+		"default (whatever the server does), cold (extensions sbx.pool=off: never from a warm pool)")
+	settle := flag.Duration("settle", 0, "wait this long before each burst round, so a pool refill or the last "+
+		"round's deletes are not measured")
 	flag.Parse()
 
 	// Past the window by a margin, so the reaper has certainly acted: the reaper ticks on a
@@ -122,6 +128,36 @@ func main() {
 	if len(ts) == 0 {
 		fmt.Fprintln(os.Stderr, "bench: at least one -target name=http://host:port is required")
 		os.Exit(2)
+	}
+
+	if *burst > 0 {
+		if len(ts) != 1 {
+			fmt.Fprintln(os.Stderr, "bench: -burst takes exactly one -target")
+			os.Exit(2)
+		}
+
+		img := *image
+		if !imageSet() {
+			img = "node:22-slim"
+		}
+
+		var modes []burstMode
+
+		for _, name := range strings.Split(*burstModes, ",") {
+			switch name = strings.TrimSpace(name); name {
+			case "default":
+				modes = append(modes, burstMode{name: name})
+			case "cold":
+				modes = append(modes, burstMode{name: name, ext: map[string]string{"sbx.pool": "off"}})
+			default:
+				fmt.Fprintf(os.Stderr, "bench: unknown burst mode %q - default or cold\n", name)
+				os.Exit(2)
+			}
+		}
+
+		runBurst(ts[0], img, *burst, *rounds, modes, func() { time.Sleep(*settle) }, os.Stdout)
+
+		return
 	}
 
 	cfg := config{image: *image, rtt: *rtt, size: *size, idleWait: idleWait}
@@ -350,3 +386,17 @@ func pct(sorted []time.Duration, p int) time.Duration {
 }
 
 func ms(d time.Duration) string { return fmt.Sprintf("%.1f", float64(d)/float64(time.Millisecond)) }
+
+// imageSet reports whether -image was given, so burst mode can default to ComputeSDK's image
+// without overriding an explicit choice.
+func imageSet() bool {
+	set := false
+
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "image" {
+			set = true
+		}
+	})
+
+	return set
+}
