@@ -88,3 +88,24 @@ func TestEventWriterStopsAfterAFailedWrite(t *testing.T) {
 		t.Fatalf("errors %v / %v after %d writes, want the first error repeated without another write", first, second, fw.n)
 	}
 }
+
+// unwrapOnly hides Flush behind Unwrap, the way execd's panic-recovering writer does.
+type unwrapOnly struct{ w http.ResponseWriter }
+
+func (u *unwrapOnly) Header() http.Header         { return u.w.Header() }
+func (u *unwrapOnly) Write(p []byte) (int, error) { return u.w.Write(p) }
+func (u *unwrapOnly) WriteHeader(code int)        { u.w.WriteHeader(code) }
+func (u *unwrapOnly) Unwrap() http.ResponseWriter { return u.w }
+
+// A wrapper that is not itself a Flusher must not stop events from being flushed: without the
+// flush a whole cell's output would arrive at once when it finished.
+func TestEventWriterFlushesThroughAWrapper(t *testing.T) {
+	rec := httptest.NewRecorder()
+	ew := NewEventWriter(&unwrapOnly{w: rec})
+
+	ew.Emit(Event{Type: EventInit, Text: "x"})
+
+	if !rec.Flushed {
+		t.Fatal("event not flushed through a writer that only offers Unwrap")
+	}
+}

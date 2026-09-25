@@ -128,9 +128,9 @@ func (ew *EventWriter) Write(e Event) error {
 		return err
 	}
 
-	if f, ok := ew.w.(http.Flusher); ok {
-		f.Flush()
-	}
+	// Through ResponseController rather than a Flusher assertion: execd wraps the writer to
+	// recover panics, and the wrapper offers Unwrap, not Flush.
+	_ = http.NewResponseController(ew.w).Flush()
 
 	return nil
 }
