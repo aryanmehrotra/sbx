@@ -233,7 +233,6 @@ func TestCreateRefusesWhatItCannotDo(t *testing.T) {
 		{"short timeout", with("timeout", 30), 400, "SANDBOX::INVALID_PARAMETER", "60"},
 		{"snapshot", with("snapshotId", "snap_1"), 501, "SANDBOX::API_NOT_SUPPORTED", "v0.10.0"},
 		{"template", with("templateId", "t1"), 501, "SANDBOX::API_NOT_SUPPORTED", "v0.10.0"},
-		{"deny policy", with("networkPolicy", map[string]any{"defaultAction": "deny"}), 501, "SANDBOX::API_NOT_SUPPORTED", "networkPolicy"},
 		{"ossfs", with("volumes", []any{map[string]any{"name": "o", "ossfs": map[string]any{}}}), 400, "VOLUME::INVALID_BACKEND", "Alibaba"},
 		{"host volume", with("volumes", []any{map[string]any{"name": "h", "host": map[string]any{"path": "/x"}}}), 501, "SANDBOX::API_NOT_SUPPORTED", "volumes"},
 		{"bad metadata", with("metadata", map[string]string{"bad key": "v"}), 400, "SANDBOX::INVALID_METADATA_LABEL", "bad key"},
@@ -681,8 +680,6 @@ func TestUnimplementedGroupsAnswer501WithTheRelease(t *testing.T) {
 		{"GET", "/v1/templates"},
 		{"POST", "/v1/templates"},
 		{"GET", "/v1/templates/t"},
-		{"GET", "/v1/sandboxes/osb-000000000000/networkpolicy"},
-		{"PATCH", "/v1/sandboxes/osb-000000000000/networkpolicy"},
 	} {
 		resp := h.do(r[0], r[1], nil, nil)
 		if resp.StatusCode != 501 {

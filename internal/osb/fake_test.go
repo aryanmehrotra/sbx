@@ -187,6 +187,7 @@ type harness struct {
 	http *httptest.Server
 	p    *fakeDocker
 	rt   *fakeRuntime
+	eg   *fakeEgress
 	dir  string
 
 	mu      sync.Mutex
@@ -200,7 +201,7 @@ func newHarness(t *testing.T, opts ...option) *harness {
 	t.Helper()
 	t.Setenv("SBX_HISTORY", filepath.Join(t.TempDir(), "history.jsonl"))
 
-	h := &harness{t: t, p: newFakeDocker(), rt: &fakeRuntime{}, dir: t.TempDir(),
+	h := &harness{t: t, p: newFakeDocker(), rt: &fakeRuntime{}, eg: &fakeEgress{}, dir: t.TempDir(),
 		now: time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)}
 
 	h.start(opts...)
@@ -225,7 +226,9 @@ func (h *harness) start(opts ...option) {
 		Execd: func(context.Context, string) (execdSource, error) {
 			return execdSource{Volume: "sbx-execd-test", File: "/dev/null"}, nil
 		},
-		LockSlots: func() func() { return func() {} },
+		LockSlots:    func() func() { return func() {} },
+		Egress:       h.eg,
+		EgressStatus: fakeEgressStatus,
 	}
 
 	for _, f := range opts {
@@ -362,3 +365,25 @@ func (h *harness) waitState(id string, states ...string) sandboxJSON {
 }
 
 var errNotYet = errors.New("execd not listening yet")
+
+// waitStateKeyed waits for Running on a server that requires the API key.
+func (h *harness) waitStateKeyed(id string, key []string) {
+	h.t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		var sb sandboxJSON
+		h.do("GET", "/v1/sandboxes/"+id, nil, &sb, key...)
+
+		if sb.Status.State == stateRunning {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%s stayed %s", id, sb.Status.State)
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+}

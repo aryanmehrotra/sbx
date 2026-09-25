@@ -339,6 +339,14 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 
 	s.rt.Hold(id, false)
 
+	// The saved live policy goes with the sandbox, or a later sandbox reusing the name would
+	// start enforcing a stranger's rules.
+	if s.egress != nil {
+		if err := s.egress.Forget(id); err != nil {
+			logs.Default.Warn(id, service, "osb: could not forget the saved egress policy: %v", err)
+		}
+	}
+
 	units, err := s.p.List(ctx, id)
 	if err != nil {
 		return fmt.Errorf("listing %s before removing it: %w", id, err)
@@ -588,6 +596,14 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 
 	if q.Has("expires") {
 		notYet(w, "signed endpoints", "v0.11.0")
+		return
+	}
+
+	// 18080 is where upstream's egress sidecar listens. sbx's filter is not in the sandbox, so
+	// the endpoint is this API's own sidecar-shaped route - unless the caller declared 18080 as
+	// a port of their own.
+	if port == egressPort && !slices.Contains(rec.Ports, egressPort) {
+		s.egressEndpoint(w, r, rec)
 		return
 	}
 

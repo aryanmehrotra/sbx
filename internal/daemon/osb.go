@@ -44,6 +44,8 @@ func (d *daemon) openSandboxAPI(addr, key string, scope Scope) (*osb.Server, net
 		Key:          key,
 		Version:      logs.Version,
 		ReadyTimeout: d.ready + 30*time.Second,
+		Egress:       d.Egress(),
+		EgressStatus: EgressHTTPStatus,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -61,3 +63,6 @@ func (d *daemon) openSandboxAPI(addr, key string, scope Scope) (*osb.Server, net
 
 	return api, ln, nil
 }
+
+// The daemon's EgressControl is what the API's networkpolicy routes drive.
+var _ osb.EgressAPI = (*EgressControl)(nil)

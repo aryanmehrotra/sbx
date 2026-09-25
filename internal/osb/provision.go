@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -34,6 +35,9 @@ type plan struct {
 	memory string
 	gpus   string
 	onIdle string
+
+	// egressPolicy is the networkPolicy the sandbox starts with; nil is no filter at all.
+	egressPolicy *egress.Policy
 }
 
 // create validates synchronously and provisions in the background: 202 with Pending, then
@@ -126,8 +130,18 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		return later("renew-on-access (extensions[\"access.renew.extend.seconds\"])", "v0.11.0")
 	}
 
-	if !allowAll(req.NetworkPolicy) {
-		return later("networkPolicy rules", "v0.10.0")
+	policy, err := createPolicy(req.NetworkPolicy)
+	if err != nil {
+		var refused *egress.Error
+		if errors.As(err, &refused) {
+			return plan{}, http.StatusBadRequest, "SANDBOX::" + refused.Code, refused.Message
+		}
+
+		return bad("networkPolicy: %v", err)
+	}
+
+	if policy != nil && s.egress == nil {
+		return later("networkPolicy (this sbx serve has no egress control)", "a daemon with egress control")
 	}
 
 	for _, raw := range req.Volumes {
@@ -177,7 +191,7 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		}
 	}
 
-	pl := plan{onIdle: spec.OnIdleFreeze}
+	pl := plan{onIdle: spec.OnIdleFreeze, egressPolicy: policy}
 
 	for k, v := range req.ResourceLimits {
 		switch k {
@@ -255,26 +269,6 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 func present(raw json.RawMessage) bool {
 	t := strings.TrimSpace(string(raw))
 	return t != "" && t != "null" && t != "{}"
-}
-
-// allowAll reports whether a network policy asks for nothing sbx does not already do. An absent
-// or empty policy is allow-all by the spec's own definition ("If omitted or empty, the sidecar
-// starts in allow-all mode"), and so is defaultAction allow with no rules.
-func allowAll(raw json.RawMessage) bool {
-	if !present(raw) {
-		return true
-	}
-
-	var np struct {
-		DefaultAction string            `json:"defaultAction"`
-		Egress        []json.RawMessage `json:"egress"`
-	}
-
-	if err := json.Unmarshal(raw, &np); err != nil {
-		return false
-	}
-
-	return (np.DefaultAction == "" || np.DefaultAction == "allow") && len(np.Egress) == 0
 }
 
 // provision does the slow part: pull, place execd, create, wait for /ping.
@@ -361,11 +355,23 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		Memory:         pl.memory,
 		GPUs:           pl.gpus,
 		OnIdle:         pl.onIdle,
+		EgressPolicy:   pl.egressPolicy,
 	}
 
 	if err := svc.Validate(service); err != nil {
 		fail("invalid_request", err.Error())
 		return
+	}
+
+	// Asked before anything is created: whether this machine can run the filter is a property
+	// of the host, and finding out at `docker run` would leave a half-made sandbox behind.
+	if svc.Filtered() {
+		if pf, ok := s.p.(provider.EgressPreflighter); ok {
+			if err := pf.EgressPreflight(ctx, id); err != nil {
+				fail("egress_unavailable", err.Error())
+				return
+			}
+		}
 	}
 
 	if err := s.createContainer(ctx, id, svc); err != nil {

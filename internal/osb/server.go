@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/slotlock"
@@ -80,6 +81,24 @@ type Options struct {
 	// NewID mints sandbox ids; it must return osb-<12 hex>. A test sharing an engine with other
 	// API sandboxes uses it to give its own a prefix it can scope a daemon to.
 	NewID func() string
+
+	// Egress changes a running sandbox's egress policy - the daemon's EgressControl. Nil means
+	// this server cannot, and the networkpolicy routes and create-time rules say so with 501.
+	Egress EgressAPI
+
+	// EgressStatus maps an Egress error to its HTTP status (daemon.EgressHTTPStatus).
+	EgressStatus func(error) int
+}
+
+// EgressAPI is the live policy of a sandbox's egress filter. *daemon.EgressControl implements
+// it; it is an interface only because this package cannot import the daemon that imports it.
+type EgressAPI interface {
+	GetPolicy(ctx context.Context, sandbox, service string) (egress.Status, error)
+	SetPolicy(ctx context.Context, sandbox, service string, p egress.Policy) (egress.Status, error)
+	PatchPolicy(ctx context.Context, sandbox, service string, rules []egress.Rule) (egress.Status, error)
+	DeleteRules(ctx context.Context, sandbox, service string, targets []string) (egress.Status, error)
+	Handler(sandbox string) http.Handler
+	Forget(sandbox string) error
 }
 
 // Server is the API. Create one with New; mount Handler; run Run for expiry.
@@ -98,6 +117,9 @@ type Server struct {
 	execd     func(ctx context.Context, arch string) (execdSource, error)
 	lockSlots func() func()
 	newID     func() string
+
+	egress       EgressAPI
+	egressStatus func(error) int
 
 	// base outlives any one request: provisioning continues after the create call has
 	// returned its 202, which is the whole point of Pending.
@@ -172,6 +194,11 @@ func New(o Options) (*Server, error) {
 
 	if s.lockSlots == nil {
 		s.lockSlots = slotlock.Lock
+	}
+
+	s.egress, s.egressStatus = o.Egress, o.EgressStatus
+	if s.egressStatus == nil {
+		s.egressStatus = func(error) int { return http.StatusInternalServerError }
 	}
 
 	s.newID = o.NewID
@@ -301,6 +328,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sandboxes/{id}/diagnostics/events", s.diagnostics("events"))
 	mux.HandleFunc("POST /v1/metrics/events", s.metrics)
 
+	mux.HandleFunc("GET /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
+	mux.HandleFunc("PUT /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
+	mux.HandleFunc("PATCH /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
+	mux.HandleFunc("/v1/sandboxes/{id}/egress/policy", s.sidecarPolicy)
+
 	// Declared, and refused with the release that brings them. A client probing for snapshot
 	// support gets a precise "not yet", which is something it can report; a 404 would read as
 	// a misconfigured base URL.
@@ -310,7 +343,6 @@ func (s *Server) Handler() http.Handler {
 		{"/v1/sandboxes/{id}/snapshots", "snapshots"},
 		{"/v1/templates", "templates"},
 		{"/v1/templates/{tid}", "templates"},
-		{"/v1/sandboxes/{id}/networkpolicy", "network policies"},
 	} {
 		what := route.what
 		mux.HandleFunc(route.pattern, func(w http.ResponseWriter, _ *http.Request) {
@@ -325,7 +357,11 @@ func (s *Server) Handler() http.Handler {
 // directly, X-API-Key in their server-proxy mode.
 func (s *Server) authed(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.key == "" || (r.Method == http.MethodGet && r.URL.Path == "/health") {
+		// The sidecar-style policy route carries its own per-sandbox credential instead - the SDK
+		// sends only the endpoint's headers there, not the API key - and checks it itself.
+		sidecar := r.Header.Get(egressAuthHeader) != "" && isSidecarPath(r.URL.Path)
+
+		if s.key == "" || sidecar || (r.Method == http.MethodGet && r.URL.Path == "/health") {
 			next.ServeHTTP(w, r)
 			return
 		}
