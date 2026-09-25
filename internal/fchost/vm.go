@@ -409,15 +409,25 @@ type DaemonOptions struct {
 
 	// Restart forces a restart of a daemon already running - after a new binary went in.
 	Restart bool
+
+	// OSB serves the OpenSandbox API on the VM's loopback. Off unless asked for: sbx serve on
+	// this host refuses --osb-addr with firecracker (provider.ErrOSBOnFirecracker), so nothing asks
+	// for it today, and a listener nobody asked for is attack surface.
+	OSB bool
 }
 
-// ServeArgv is the in-VM daemon's command line.
-func ServeArgv(extra []string) []string {
-	return append([]string{
+// ServeArgv is the in-VM daemon's command line. --osb-addr only when osb is asked for.
+func ServeArgv(extra []string, osb bool) []string {
+	argv := []string{
 		guestBinary, "serve", "--provider", "firecracker",
 		"--connect-addr", "127.0.0.1:" + strconv.Itoa(GuestConnectPort),
-		"--osb-addr", "127.0.0.1:" + strconv.Itoa(GuestOSBPort),
-	}, extra...)
+	}
+
+	if osb {
+		argv = append(argv, "--osb-addr", "127.0.0.1:"+strconv.Itoa(GuestOSBPort))
+	}
+
+	return append(argv, extra...)
 }
 
 // StartDaemon runs `sbx serve --provider firecracker` in the VM as a transient systemd unit:
@@ -443,8 +453,8 @@ func (m *Manager) StartDaemon(ctx context.Context, opt DaemonOptions) error {
 		}
 	}
 
-	q := make([]string, 0, len(ServeArgv(opt.Serve)))
-	for _, a := range ServeArgv(opt.Serve) {
+	q := make([]string, 0, len(ServeArgv(opt.Serve, opt.OSB)))
+	for _, a := range ServeArgv(opt.Serve, opt.OSB) {
 		q = append(q, quote(a))
 	}
 

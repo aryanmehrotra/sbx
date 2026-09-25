@@ -10,8 +10,10 @@ package fchost
 //     this machine's loopback at the SAME number the in-VM `sbx env` prints, and carries each
 //     connection over the existing WebSocket tunnel. A TCP connect on the Mac reaches the in-VM
 //     daemon's listener, which is what wakes the microVM. Connect-to-wake survives the hop.
-//   - OSB (22981 in the VM) is reverse-proxied at --osb-addr, so the OpenSandbox API answers on
-//     the Mac exactly where a docker-backed `sbx serve --osb-addr` would.
+//   - OSB (22981 in the VM) can be reverse-proxied at --osb-addr, but is not today: an OpenSandbox
+//     API sandbox needs sbx's agent mounted into it as a volume, which a microVM cannot take yet,
+//     so ServeMain refuses --osb-addr (provider.ErrOSBOnFirecracker) and the in-VM daemon is
+//     started without an OSB listener. The proxy below is kept for when it can.
 //
 // The rest of the CLI (create, list, env, exec, logs, rm, ...) is redirected into the VM by
 // Redirect, so it needs none of this - which is why this file is small.
@@ -38,6 +40,9 @@ type EnsureOptions struct {
 	Version string
 	OSBKey  string
 	Serve   []string
+
+	// OSB starts the in-VM OpenSandbox listener; see DaemonOptions.OSB.
+	OSB bool
 
 	// Binary finds the linux sbx to install. Defaults to osb.AgentFile for the host's own
 	// architecture: vz and WSL2 both run guests of the host's architecture only.
@@ -89,7 +94,7 @@ func (m *Manager) Ensure(ctx context.Context, opt EnsureOptions) error {
 		return err
 	}
 
-	return m.StartDaemon(ctx, DaemonOptions{Token: tok, OSBKey: opt.OSBKey, Serve: opt.Serve, Restart: changed})
+	return m.StartDaemon(ctx, DaemonOptions{Token: tok, OSBKey: opt.OSBKey, Serve: opt.Serve, Restart: changed, OSB: opt.OSB})
 }
 
 // FrontOptions is the host-side `sbx serve --provider firecracker`.
@@ -119,6 +124,8 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 		return fmt.Errorf("--osb-addr %s is not loopback, so it needs --osb-key (or SBX_OSB_KEY): "+
 			"the API it proxies creates and runs code", opt.OSBAddr)
 	}
+
+	opt.EnsureOptions.OSB = opt.OSBAddr != ""
 
 	if !opt.skipEnsure {
 		if err := m.Ensure(ctx, opt.EnsureOptions); err != nil {

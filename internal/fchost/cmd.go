@@ -209,6 +209,11 @@ func ServeMain(version string, args []string) error {
 		return err
 	}
 
+	// Refused before the helper VM is started for it: nothing the API would create can run.
+	if *osbAddr != "" {
+		return provider.ErrOSBOnFirecracker
+	}
+
 	if *osbKey == "" {
 		*osbKey = os.Getenv("SBX_OSB_KEY")
 	}

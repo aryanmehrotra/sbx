@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -159,5 +160,17 @@ func TestDockerAPISandboxLabelIsReadBack(t *testing.T) {
 	plain.servesOSB = true
 	if !plain.adopts(units[0]) {
 		t.Fatal("the daemon serving the API would not adopt its own sandbox")
+	}
+}
+
+func TestOSBIsRefusedOnFirecrackerAtStartup(t *testing.T) {
+	for _, kind := range []string{"firecracker", "fc"} {
+		if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); !errors.Is(err, provider.ErrOSBOnFirecracker) {
+			t.Errorf("%s: %v", kind, err)
+		}
+	}
+
+	if refuseOSBOnMicroVM("firecracker", "") != nil || refuseOSBOnMicroVM("docker", "127.0.0.1:8080") != nil {
+		t.Error("refused something that works")
 	}
 }

@@ -223,6 +223,10 @@ func Serve(args []string) error {
 		return err
 	}
 
+	if err := refuseOSBOnMicroVM(*kind, *osbAddr); err != nil {
+		return err
+	}
+
 	// One per machine. A second copy binds nothing - every listener fails with "address
 	// already in use", logged once per port with no retry - while the process stays up
 	// looking healthy, and on exit it removes the first daemon's presence record. That is a
@@ -837,4 +841,14 @@ func (d *daemon) lifetime(caller context.Context) context.Context {
 	}
 
 	return caller
+}
+
+// refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup: every create
+// through that API would fail, and a listener that can only refuse is worse than no listener.
+func refuseOSBOnMicroVM(kind, osbAddr string) error {
+	if osbAddr != "" && (kind == "firecracker" || kind == "fc") {
+		return provider.ErrOSBOnFirecracker
+	}
+
+	return nil
 }

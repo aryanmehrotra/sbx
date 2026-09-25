@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 const runningLima = `{"name":"sbx-fc","status":"Running","sshConfigFile":"/lima/sbx-fc/ssh.config"}`
@@ -246,11 +248,15 @@ func TestEnsureInstallsByContentAndRestartsOnlyOnChange(t *testing.T) {
 			"systemctl stop sbx-fc-serve",
 			"systemd-run --quiet --unit=sbx-fc-serve --collect -p Restart=on-failure -p EnvironmentFile=/etc/sbx-fc/env",
 			`'\''/usr/local/bin/sbx'\'' '\''serve'\'' '\''--provider'\'' '\''firecracker'\''`,
-			`'\''--connect-addr'\'' '\''127.0.0.1:22980'\'' '\''--osb-addr'\'' '\''127.0.0.1:22981'\'' '\''--idle'\'' '\''2m'\''`,
+			`'\''--connect-addr'\'' '\''127.0.0.1:22980'\'' '\''--idle'\'' '\''2m'\''`,
 		} {
 			if !strings.Contains(all, w) {
 				t.Errorf("no %q in\n%s", w, all)
 			}
+		}
+
+		if strings.Contains(all, "--osb-addr") {
+			t.Error("the in-VM daemon was given an OpenSandbox listener nobody asked for")
 		}
 
 		if !slices.Contains(r.stdin, string(payload)) {
@@ -478,5 +484,12 @@ func TestEnsureSaysWhenNestedVirtDidNotTakeEffect(t *testing.T) {
 	err := m.Ensure(context.Background(), EnsureOptions{Binary: func(context.Context) (string, error) { return "/x", nil }})
 	if err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// OSB on firecracker cannot create anything yet, so it is refused before any VM is touched.
+func TestServeRefusesOSBOnFirecracker(t *testing.T) {
+	if err := ServeMain("dev", []string{"--osb-addr", "127.0.0.1:18080"}); !errors.Is(err, provider.ErrOSBOnFirecracker) {
+		t.Fatalf("ServeMain --osb-addr = %v", err)
 	}
 }

@@ -1492,3 +1492,11 @@ func TestHealthRunsInsideTheVM(t *testing.T) {
 		t.Fatalf("health with no guest agent = %v, want it refused by name", err)
 	}
 }
+
+// The refusal names the provider and what it lacks - not a cluster's init container.
+func TestInjectorForNamesFirecracker(t *testing.T) {
+	_, err := InjectorFor(newRig(t).p)
+	if err == nil || !strings.Contains(err.Error(), "firecracker") || strings.Contains(err.Error(), "cluster") {
+		t.Fatalf("InjectorFor(firecracker) = %v", err)
+	}
+}

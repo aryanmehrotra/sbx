@@ -21,6 +21,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -445,16 +446,32 @@ type Injector interface {
 	SeedFromImage(ctx context.Context, volume, image, dir string) error
 }
 
-// InjectorFor returns the provider's injection support, or a refusal naming the backend.
+// ErrOSBOnFirecracker is why `sbx serve --provider firecracker --osb-addr` is refused at startup
+// rather than answering every create with a 501: an OpenSandbox API sandbox gets sbx's agent
+// through a read-only volume and an entrypoint, and a microVM takes neither yet.
+var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker: an OpenSandbox API " +
+	"sandbox runs sbx's agent from a read-only volume mounted into an arbitrary image, and a microVM " +
+	"cannot take a host volume yet, so every create would fail. Serve the OpenSandbox API from a " +
+	"docker-backed `sbx serve --osb-addr`, and use the CLI or sandbox.json for microVM sandboxes")
+
+// InjectorFor returns the provider's injection support, or a refusal naming the backend and
+// what it would take.
 func InjectorFor(p Provider) (Injector, error) {
 	in, ok := p.(Injector)
-	if !ok {
+	if ok {
+		return in, nil
+	}
+
+	switch p.Name() {
+	case "firecracker":
+		return nil, errors.New("the firecracker provider cannot run sbx's agent inside an arbitrary " +
+			"image: that takes a read-only volume and an entrypoint, and a microVM cannot mount a host " +
+			"volume yet - use the docker provider for OpenSandbox API sandboxes")
+	default:
 		return nil, fmt.Errorf("the %s provider cannot run sbx's agent inside an arbitrary image: "+
 			"on a cluster that is an init container copying from a pullable image, which sbx "+
 			"does not create for you yet - use the docker provider for OpenSandbox API sandboxes", p.Name())
 	}
-
-	return in, nil
 }
 
 // Artifact is something a sandbox left behind.
