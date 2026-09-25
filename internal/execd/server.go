@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/jupyter"
 )
 
 // Error codes are upstream's (components/execd/pkg/web/model/error.go), so a client that
@@ -50,6 +52,10 @@ type Options struct {
 
 	// Logger receives one line per notable event. Nil means the standard logger.
 	Logger *log.Logger
+
+	// Jupyter runs the /code routes. Nil means an engine configured from JUPYTER_HOST,
+	// JUPYTER_TOKEN and JUPYTER_PORT, which answers 501 with the reason when they name nothing.
+	Jupyter *jupyter.Engine
 }
 
 // Server is the execd HTTP API. Build it with New, serve it with any http.Server, and Close it
@@ -59,6 +65,7 @@ type Server struct {
 	procs *procs
 	log   *log.Logger
 	mux   *http.ServeMux
+	code  *jupyter.Engine
 
 	outputDir     string
 	ownsOutputDir bool
@@ -80,6 +87,11 @@ func New(o Options) (*Server, error) {
 		commands:    map[string]*command{},
 		sessions:    map[string]*session{},
 		stopJanitor: make(chan struct{}),
+		code:        o.Jupyter,
+	}
+
+	if s.code == nil {
+		s.code = jupyter.New(jupyter.ConfigFromEnv())
 	}
 
 	if s.log == nil {
@@ -186,6 +198,14 @@ func (s *Server) routes() {
 	handle("GET /metrics", s.metrics)
 	handle("GET /metrics/watch", s.watchMetrics)
 
+	handle("POST /code", s.runCode)
+	handle("DELETE /code", s.interruptCode)
+	handle("POST /code/context", s.createCodeContext)
+	handle("GET /code/contexts", s.listCodeContexts)
+	handle("DELETE /code/contexts", s.deleteCodeContexts)
+	handle("GET /code/contexts/{contextId}", s.getCodeContext)
+	handle("DELETE /code/contexts/{contextId}", s.deleteCodeContext)
+
 	// Parts of the API a later release adds. They answer 501 with the spec's error shape, not
 	// 404: a 404 reads as "you have the path wrong", and a client should instead learn that
 	// this daemon knows the endpoint and does not do it yet.
@@ -205,8 +225,6 @@ func (s *Server) routes() {
 // notYet maps each unimplemented prefix to the sbx release that implements it, per the release
 // table in docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md.
 var notYet = map[string]string{
-	"/code":         "v0.10.0 (code interpreter)",
-	"/code/":        "v0.10.0 (code interpreter)",
 	"/pty":          "v0.10.0 (pty)",
 	"/pty/":         "v0.10.0 (pty)",
 	"/proxy/":       "v0.10.0 (port proxy)",
