@@ -244,7 +244,10 @@ build (`readiness`, a `disk` size) are refused rather than stored and ignored.
 lists roots with `sbx serve --osb-host-paths`. A path is checked as written and again after
 following symlinks - a link inside an allowed root that points at `/` passes a string check and
 escapes at mount time - and the directory is created as the user running sbx, not by docker as
-root. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
+root. It is created only once the whole request has passed, and resolved and checked again
+immediately before the container is created, so a directory swapped for a symlink in between is
+refused. Docker resolves a bind source again at every container start, which this does not cover:
+the roots are the operator's, and a root a sandbox's adversary can write to is not one to list. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
 it creates it inside the runtime's VM, where the caller's files are not. Refused is the useful
 failure.
 
@@ -367,9 +370,48 @@ the point of the API is that clients written for OpenSandbox — its five SDKs, 
 server, and the agents built on them — run against a machine you already have. What did not
 change is the line itself: the API takes **one operator key**, the same "is this yours" posture as
 the connect token, compared in constant time; there are no per-user keys, no tenants and no
-quotas, and upstream's key-to-namespace multi-tenancy is deliberately not implemented. It binds
-loopback by default and refuses any other address without `--osb-key`. A team that wants
-identities puts a gateway in front, exactly as this section already says.
+quotas, and upstream's key-to-namespace multi-tenancy is deliberately not implemented. A team that
+wants identities puts a gateway in front, exactly as this section already says.
+
+*Corrected in v0.9.1.* v0.9.0 bound loopback by default **with no key there**, on the premise that
+being on this machine answers "is this yours". It does not on a VM-backed engine - see "Loopback
+is not a trust boundary on a VM-backed engine" below - so the key is now required on loopback too
+(generated when not given), and a non-loopback `--osb-addr` is refused outright until
+server-proxy mode exists.
+
+### Loopback is not a trust boundary on a VM-backed engine
+
+colima and Docker Desktop run containers inside a VM whose gateway forwards to the host's
+`127.0.0.1`. Measured on colima: a host `nc -l 127.0.0.1 18999` answered a `docker run alpine
+wget` at `host.lima.internal`, `host.docker.internal` and `192.168.5.2` alike. Docker Desktop
+does the same through `host.docker.internal`. So "bound to loopback" keeps other *machines* out
+and keeps nothing on the engine out - including sandboxes, which exist to run code nobody vetted.
+
+v0.9.0 treated loopback as private and served the OpenSandbox API there with no key. Any container
+could list sandboxes, read each one's execd token from its endpoint and run commands in any of
+them. What follows from taking the reach seriously:
+
+- **A key is always required.** Given with `--osb-key`/`SBX_OSB_KEY`, or generated once into
+  `~/.sbx/osb/key` (0600, directory 0700) and reused; the log says where, never what. `sbx mcp`
+  reads that file, for a loopback `--url` only. Keyless is `--osb-insecure-no-key`: typed, never
+  defaulted, loopback only, and warned about on every start.
+- **Nothing a sandbox holds may authorise anything beyond that sandbox's own execd.** execd's
+  token must be in the container, so the egress sidecar route - which changes the sandbox's own
+  filter - has a separate credential, stored only in the API's 0600 record and handed out only
+  to a caller that already has the key.
+- **Non-loopback is refused, not keyed.** The endpoints the API returns are 127.0.0.1 listeners,
+  useless to a remote client; serving them needs server-proxy mode, which is not built. Until it
+  is, reach a remote machine's API through `ssh -L`, and its sandboxes through `sbx connect`.
+- **An API sandbox has exactly one daemon.** Containers the API creates carry `sbx.osb`, and an
+  unscoped daemon that does not serve the API leaves them alone, so the machine's own daemon
+  cannot thaw a sandbox the API paused.
+
+**Rejected: telling containers apart by source address.** On colima all three of those routes
+arrive at the host listener from `127.0.0.1` (measured: the peer address was `127.0.0.1:<port>`
+for each), so the API cannot see who is calling - the premise that failed in the first place.
+
+**Rejected: a unix socket instead of TCP.** It would keep containers out, but every OpenSandbox SDK
+speaks HTTP to a host and port; an API they cannot reach is not the compatibility this exists for.
 
 **"Hosted Postgres, operated for you" stays in the use-something-else table permanently.** Neon
 is the answer there and always will be — not because sbx cannot branch and scale to zero, but
@@ -556,6 +598,12 @@ sandbox's own bridge, so without it the workload could rewrite its own policy. I
 filter container and carried as a label, which is readable by whoever can `docker inspect` - who
 can already do anything to the container.
 
+The OpenSandbox API's own door to the same policy - the sidecar-shaped route behind
+`endpoints/18080` - follows the same rule with a credential of its own. v0.9.0 accepted execd's
+token there, and execd's token is in the sandbox's environment by necessity, so the workload could
+rewrite its own policy. Since v0.9.1 each sandbox has a separate egress credential, kept only in the
+API's 0600 record and handed out only to a caller holding the API key.
+
 **Only replace crosses the wire.** Merge, remove and reset are computed by the caller from a `GET`,
 and the `PUT` carries `If-Match` with the hash it read. Two writers - the CLI and the OpenSandbox API
 - cannot silently drop each other's rules; the loser re-reads and retries.
@@ -725,3 +773,77 @@ no iptables rule, so nothing masquerades and nothing leaves - the no-NAT model `
 already uses - and `egress_allow`/`egress_policy` are refused until the filter listens on a VM bridge.
 Between bridges the host routes only if `ip_forward` is on and FORWARD allows it; docker sets that
 policy to DROP, and `sbx doctor` shows `ip_forward` rather than sbx writing a rule to be sure.
+### An API sandbox's health check runs once a minute, and quickly only while it starts
+
+Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes
+used to declare, that is 0.2 execs a second per sandbox, forever - 20 a second at 100 sandboxes -
+for an answer almost nothing waits on: the wake path runs the same command itself (`Probe`) rather
+than waiting for docker's verdict, and a create reports Running on execd's own `/ping` through the
+wake port. What does read docker's status is the idle clock, which will not start until a unit has
+been seen healthy once, so that first report has to arrive promptly after a start and nothing after
+it has to be fresh.
+
+So the check runs every 60s, with `--health-start-interval 1s` inside the 60s start period. Docker
+uses the start interval only until the first healthy result, so a sandbox pays one exec about a
+second after each start and then one a minute. The flag needs Engine API 1.44 (Docker 25); sbx asks
+the engine's version once and leaves it off on an older one, which then reports healthy on docker's
+own schedule inside the start period rather than refusing the create.
+
+Measured on the osb colima engine (Docker 29.2.1, API 1.53), 10 containers per arm running
+together, `docker events` counting `exec_start`:
+
+| | first 60s | next 60s | first check after start |
+|---|---|---|---|
+| before: `--health-interval 5s` | 116 execs (1.93/s) | 118 (1.96/s) | ~5 s |
+| after: `60s` + start interval `1s` | 10 (0.16/s) | 10 (0.16/s) | 1.4 s |
+
+12x fewer execs, and the first healthy report sooner rather than later.
+
+**Rejected: drop the docker health check once execd has answered through the wake port.** A
+container's health config is fixed at create, so dropping it means recreating the container - or
+never declaring one, and then the wake path has nothing to run and falls back to sleeping two
+seconds and hoping, which is exactly what declaring it avoided.
+
+### The OpenSandbox API is docker-only, for now
+
+Every API sandbox runs sbx's agent, execd, inside an image the caller chose and sbx did not build.
+On docker that is a named volume seeded once and mounted read-only at `/opt/sbx` - the `Injector`
+capability. A cluster's equivalent is an init container copying the binary from an image the nodes
+can pull, which is a different mechanism with a different trust story (whose registry, which
+digest), and it has not been built. So `POST /v1/sandboxes` on the kubernetes provider answers 501
+naming the missing capability, rather than creating something that cannot become ready.
+
+`pause` would be refused there regardless. Scaling to zero keeps the filesystem and discards the
+memory, and OpenSandbox's pause is a promise that a process running before it is running after it.
+The original design's "k8s: scale to 0, reported honestly in `status.message`" was a pause that
+does not pause with a note saying so - the stub the capability pattern exists to avoid.
+
+**Rejected: a kubernetes path that bakes execd into a derived image.** It would mean sbx building
+and pushing images to the operator's registry on every create, for every image anyone names.
+
+### What the API remembers lives in its record file, not in labels
+
+Metadata, expiry, the execd token, the held-pause flag and the pvc volumes a sandbox owns are in
+`~/.sbx/osb/<id>.json` (0600) and nowhere else. The design said metadata would also be written as
+labels; it is not, because docker labels are fixed when a container is created. A label copy is
+stale after the first `PATCH`, and relabelling means recreating the container - a restart, with its
+processes and memory gone, that the caller did not ask for. Labels carry only what docker's own
+view needs and nothing the API edits: sandbox, service, slot, ports, idle policy.
+
+The cost is that a record file lost is metadata lost while the container survives. That is the
+same trade the rest of this state makes (expiry is in the same file), and the alternative is two
+copies that disagree after the first edit.
+
+### An API sandbox freezes when idle; a sandbox.json sandbox stops
+
+sbx's default is to stop an idle container: 0 B held, woken by `docker start` in about 110 ms, and
+anything that was running in it is gone. OpenSandbox's contract is the opposite - a background
+command started in one request is expected to be running at the next, however long the gap - and
+stopping breaks it silently: the next request succeeds against a sandbox whose server is no longer
+there. So an API sandbox's default `on_idle` is `freeze` (`docker pause`, the cgroup freezer):
+memory and processes kept, no CPU, thawed in about 10 ms by the next byte.
+
+It is the API's default and not sbx's because it holds memory, and holding nothing is why sbx
+exists. `extensions["sbx.idle"]="sleep"` opts an API sandbox back into stopping; `on_idle:
+"freeze"` opts a `sandbox.json` service into freezing. A frozen sandbox the caller paused is a
+different thing - held, reported as `Paused`, and not thawed by traffic (ARCHITECTURE.md).

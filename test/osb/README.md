@@ -12,6 +12,7 @@ scripts/osb-conformance.sh -run 'Renew|Endpoint'    # and only tests whose name 
 scripts/osb-conformance.sh --external http://host:8080 --key K   # any server - a real
                                                     # OpenSandbox, to compare against
 scripts/osb-bench.sh [--compare http://host:8080]   # the same lifecycle, timed
+scripts/osb-usecases-e2e.sh [filter]                # user and agent flows end to end (cmd/osbuse)
 ```
 
 ## What is here
@@ -22,6 +23,7 @@ scripts/osb-bench.sh [--compare http://host:8080]   # the same lifecycle, timed
 | `expectations` | which upstream files each release must pass, and the only skips allowed - each by test name *and* skip message. |
 | `cmd/osbharness` | the Go half of the scripts: lists upstream tests, reads `go test -json`, prints the table and decides the exit status. Its tests are the gate's own gate. |
 | `bench` | the benchmark, through the upstream Go SDK (required from the module proxy at `v1.1.0`, the same commit). |
+| `cmd/osbuse` | the Go half of `scripts/osb-usecases-e2e.sh`: whole flows (an MCP agent, the code interpreter, freeze and wake, expiry across a restart, live egress, fork, volumes, PTY, the port proxy, ten agents at once), each asserting on what a caller can observe. |
 
 Nothing from upstream is vendored or copied. The suite is fetched once per pinned commit into
 `${SBX_OSB_CACHE:-${XDG_CACHE_HOME:-~/.cache}/sbx/osb}/<commit>` (a sparse checkout of
@@ -86,4 +88,4 @@ Upstream's CI runs the same suite with `OPENSANDBOX_INSECURE_SERVER=YES` for its
 - `TestSandbox_PauseAndResume` and `TestManager_PauseAndResume` call `t.Skip` unconditionally
   at the pinned commit; `expectations` allows exactly that message.
 - `TestE2E_FullLifecycle` (`e2e_test.go`, tier v0.12.0) creates its client with an empty key,
-  so it needs a daemon started with `--no-key`.
+  so it needs a daemon started with `--no-key` (which passes sbx `--osb-insecure-no-key`).

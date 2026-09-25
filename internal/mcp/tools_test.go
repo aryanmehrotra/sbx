@@ -251,10 +251,7 @@ func TestCommandRunAndInterrupt(t *testing.T) {
 	// Interrupt a foreground command from a second call while the first is running.
 	runID := c.request("tools/call", map[string]any{"name": "command_run", "arguments": map[string]any{"sandbox_id": id, "command": "sleep"}})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for f.Running() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	must(t, f.WaitRunning(5*time.Second, 1), "the foreground command never started")
 
 	ids := f.RunningIDs()
 	if len(ids) != 1 {
@@ -282,21 +279,45 @@ func TestCancellingCommandRunInterruptsIt(t *testing.T) {
 
 	runID := c.request("tools/call", map[string]any{"name": "command_run", "arguments": map[string]any{"sandbox_id": id, "command": "sleep"}})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for f.Running() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	must(t, f.WaitRunning(5*time.Second, 1), "the command never started")
 
 	c.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": runID}})
 
-	for f.Running() > 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	must(t, f.Running() == 0, "cancelling the call left the command running in the sandbox")
-
-	_, interrupted := f.Last("DELETE", "/command")
+	// The interrupt is waited for, not looked up once the command is gone: cancelling drops the
+	// stream, the fake forgets a command whose reader disconnected, and the DELETE the server
+	// sends after that lands later - on a loaded Linux runner, after a one-shot check had run.
+	_, interrupted := f.WaitFor(5*time.Second, "DELETE", "/command")
 	must(t, interrupted, "cancelling the call did not send an interrupt")
+
+	must(t, f.WaitRunning(5*time.Second, 0), "cancelling the call left the command running in the sandbox")
+}
+
+// A cancel that lands after execd has started the command but before its id has been read still
+// interrupts it. Dropping the stream at that moment loses the id, and upstream execd does not
+// stop a command whose reader went away: it would run on with nothing able to name it.
+func TestCancellingCommandRunBeforeItsIDArrivesStillInterruptsIt(t *testing.T) {
+	f, c := sandboxServer(t)
+	id := f.AddSandbox("alpine")
+
+	release := f.HoldCommands()
+	t.Cleanup(release)
+
+	runID := c.request("tools/call", map[string]any{"name": "command_run", "arguments": map[string]any{"sandbox_id": id, "command": "sleep"}})
+
+	_, started := f.WaitFor(5*time.Second, "POST", "/command")
+	must(t, started, "the command was never sent to execd")
+
+	c.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": runID}})
+	// Notifications are handled in order on the read loop, so once this answers the call's
+	// context is cancelled - and the id is still held back.
+	must(t, obj(c.call("ping", nil)["result"]) != nil, "ping failed")
+
+	release()
+
+	_, interrupted := f.WaitFor(5*time.Second, "DELETE", "/command")
+	must(t, interrupted, "a cancel before the command's id arrived left it running with no interrupt")
+
+	must(t, f.WaitRunning(5*time.Second, 0), "cancelling the call left the command running in the sandbox")
 }
 
 func TestFileTools(t *testing.T) {

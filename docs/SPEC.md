@@ -88,7 +88,6 @@ script that already knows a port.
 | `volume` | | One container path to persist. What makes sleeping safe |
 | `mounts` | | Host directories bound read-write, `host: /container`. Your disk, visible to both - a source tree, a dump, fixtures a test run leaves behind. Docker only; a cluster refuses, because a hostPath is a node's disk rather than yours |
 | `files` | | Read-only host files, mounted; paths are relative to the spec |
-| `volume_mounts` | | Named volumes or host directories with options `mounts` lacks: `[{"volume": "sbx-osb-pvc-data", "target": "/data", "sub_path": "train", "read_only": true}]` or `{"host": "/abs/dir", ...}`. Set by the OpenSandbox API for `volumes`; a spec usually wants `volume` or `mounts`. Docker only (`--mount`, so a host path the engine cannot see is refused rather than created empty in its VM); a cluster refuses |
 | `init` | | Commands run **once**, after the service first reports healthy |
 | `depends_on` | | Services that must be serving before this one starts - at creation, and on every wake |
 | `optional` | | Not created unless `--optional` - but still reserves its ports |
@@ -113,7 +112,8 @@ The same file, with a VM underneath. What changes:
 | `health` | Accepted, not run yet: readiness is the first port accepting, reported as undeclared, until the guest agent can run the command inside the VM |
 | `egress` | Only `"deny"` (or unset, which means the same here): a VM bridge has no NAT |
 | `volume` | Nothing extra to do: the VM's root filesystem is already its own and persists across sleep |
-| `build`, `files`, `mounts`, `volume_mounts`, `readonly_volumes`, `init`, `gpus`, `cap_add`, `egress_allow`, `egress_policy` | **Refused by name**, each with the reason - never silently ignored |
+| `build`, `files`, `mounts`, `init`, `gpus`, `cap_add`, `egress_allow`, `egress_policy` | **Refused by name**, each with the reason - never silently ignored |
+There is no field for mounting an arbitrary named volume. The OpenSandbox API attaches its `volumes` (and sbx's own execd volume) in memory, after checking them against its own namespace and the operator's host allow-list; a `sandbox.json` naming `readonly_volumes` or `volume_mounts` is refused as an unknown field, because a spec that could name any volume could mount another sandbox's data.
 
 ### `image` or `build` - exactly one
 

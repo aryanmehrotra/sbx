@@ -289,3 +289,27 @@ func TestMCPRejectsArguments(t *testing.T) {
 		t.Fatalf("runMCP(extra) = %v", err)
 	}
 }
+
+// With no flag or variable, `sbx mcp` reads the key `sbx serve` generated - but only for a
+// loopback server: that key must never be sent to somebody else's OpenSandbox.
+func TestLocalKeyIsReadOnlyForALoopbackServer(t *testing.T) {
+	read := func() string { return "from-file" }
+
+	for url, want := range map[string]string{
+		"http://127.0.0.1:8080":   "from-file",
+		"http://localhost:8080":   "from-file",
+		"http://[::1]:8080":       "from-file",
+		"localhost:8080":          "from-file",
+		"https://osb.example.com": "",
+		"osb.example.com":         "",
+		"http://10.0.0.5:8080":    "",
+	} {
+		if got := withLocalKey(url, "", read); got != want {
+			t.Errorf("withLocalKey(%q) = %q, want %q", url, got, want)
+		}
+	}
+
+	if got := withLocalKey("http://127.0.0.1:8080", "given", read); got != "given" {
+		t.Errorf("a key already given was replaced by the file: %q", got)
+	}
+}

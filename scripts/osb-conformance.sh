@@ -10,7 +10,7 @@
 #                                                       # compare, or an sbx you already run
 #
 # Other flags: --docker-host URL (the engine the throwaway daemon uses; must hold no sbx
-# sandboxes), --no-key (start sbx without --osb-key; upstream's e2e_test.go sends none),
+# sandboxes), --no-key (start sbx with --osb-insecure-no-key; upstream's e2e_test.go sends none),
 # --timeout DUR (go test -timeout, default 30m), --keep-logs.
 #
 # "Compatible" is not a feature table here. It is upstream's tests/go at the commit pinned in

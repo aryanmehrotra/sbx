@@ -67,7 +67,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"command_run, file_read, file_write and the rest - and speaks OpenSandbox's HTTP API,\n" +
 			"so it drives `sbx serve --osb-addr` or a real OpenSandbox server alike.\n" +
 			"--url defaults to $SBX_OSB_URL, then $OPEN_SANDBOX_DOMAIN; --key to $SBX_OSB_KEY,\n" +
-			"then $OPEN_SANDBOX_API_KEY - upstream's names, so an existing config carries over.",
+			"then $OPEN_SANDBOX_API_KEY - upstream's names, so an existing config carries over -\n" +
+			"then, for a loopback --url only, the key sbx serve generated in ~/.sbx/osb/key.",
 		"claude mcp add sbx -- sbx mcp",
 	},
 	"with": {
@@ -238,8 +239,10 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"--only PREFIX (repeatable; a glob also works) makes this daemon ignore every\n" +
 			"sandbox outside it: never fronted, woken, slept or removed. That is what lets a\n" +
 			"second daemon - a test run - share an engine with somebody's live stack.\n" +
-			"--osb-addr serves the OpenSandbox lifecycle API (loopback unless --osb-key, or\n" +
-			"SBX_OSB_KEY, is set; then OPEN-SANDBOX-API-KEY is required).",
+			"--osb-addr serves the OpenSandbox lifecycle API, always behind OPEN-SANDBOX-API-KEY:\n" +
+			"--osb-key or SBX_OSB_KEY, else one generated once into ~/.sbx/osb/key. Loopback is\n" +
+			"no protection on colima or Docker Desktop, where containers reach the host's\n" +
+			"127.0.0.1; --osb-insecure-no-key turns the key off anyway, loopback only.",
 		"sbx serve --idle 5m &",
 	},
 	"selftest": {

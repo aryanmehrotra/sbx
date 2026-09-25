@@ -30,23 +30,36 @@ func History(args []string, out io.Writer) error {
 		return err
 	}
 
+	// A bare name is the sandbox to filter by, which is the common case: `sbx history my-branch`.
+	// Flags may follow it, as the usage line writes them. Go's flag package stops at the first
+	// non-flag, so without the second parse `sbx history x --json` printed the table and dropped
+	// --json without a word.
+	var sandbox string
+
+	if rest := fs.Args(); len(rest) > 0 {
+		sandbox = rest[0]
+
+		if err := fs.Parse(rest[1:]); err != nil {
+			return err
+		}
+
+		if extra := fs.Args(); len(extra) > 0 {
+			return fmt.Errorf("sbx history takes one sandbox name; %q is one too many", extra[0])
+		}
+	}
+
 	if *commands && *events {
 		return fmt.Errorf("--commands and --events ask for opposite halves of the same file; " +
 			"leave both off to see everything")
 	}
 
-	f := history.Filter{Limit: *limit}
+	f := history.Filter{Limit: *limit, Sandbox: sandbox}
 
 	switch {
 	case *commands:
 		f.Kind = "command"
 	case *events:
 		f.Kind = "event"
-	}
-
-	// A bare name is the sandbox to filter by, which is the common case: `sbx history my-branch`.
-	if rest := fs.Args(); len(rest) > 0 {
-		f.Sandbox = rest[0]
 	}
 
 	records, err := history.Read(f)

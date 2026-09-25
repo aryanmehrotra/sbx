@@ -352,6 +352,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--label", labelOnIdle+"="+spec.OnIdleFreeze)
 	}
 
+	if svc.OSBOwner != "" {
+		args = append(args, "--label", labelOSB+"="+svc.OSBOwner)
+	}
+
 	// An allow-list gets the no-NAT bridge too - direct egress denied - plus a filtering proxy
 	// on the gateway as its one way out. HTTP(S)_PROXY points ordinary clients at it; a client
 	// that ignores the proxy and dials out directly has no route, so the allow-list holds.
@@ -433,20 +437,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%s:%d", backing[i], svc.Ports[i]))
 	}
 
-	if svc.Health != "" {
-		// The interval is the floor on how long a wake appears to take, because docker only
-		// re-evaluates health on it. The long start period is the opposite of low retries:
-		// inside it a failing check does not latch the container as unhealthy, while a
-		// passing one still flips it immediately - so a database that needs six seconds to
-		// open its data directory is not declared broken at 300ms.
-		args = append(args,
-			"--health-cmd", svc.Health,
-			"--health-interval", probeInterval(svc).String(),
-			"--health-timeout", "2s",
-			"--health-retries", "3",
-			"--health-start-period", "60s",
-		)
-	}
+	args = append(args, healthArgs(svc, svc.HealthStartInterval != "" && d.hasStartInterval())...)
 
 	for _, k := range SortedKeys(svc.Env) {
 		args = append(args, "-e", k+"="+svc.Env[k])
@@ -1141,6 +1132,7 @@ func unitOf(c container) (Unit, bool) {
 	}
 
 	u.EgressPolicy = c.Labels[labelEgressPolicy]
+	u.OSB = c.Labels[labelOSB]
 
 	if dep := c.Labels[labelDependsOn]; dep != "" {
 		u.DependsOn = strings.Split(dep, ",")
@@ -1166,7 +1158,11 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	for _, u := range units {
-		if _, err := d.docker("rm", "-f", u.Ref); err != nil {
+		// -v takes the container's ANONYMOUS volumes with it - the ones an image's VOLUME
+		// instruction makes (redis /data, postgres PGDATA). Without it every rm left one behind
+		// holding that sandbox's data, under a name `sbx gc` cannot attribute. Named volumes,
+		// including the sandbox's own data volume below, are untouched by -v.
+		if _, err := d.docker("rm", "-f", "-v", u.Ref); err != nil {
 			return err
 		}
 

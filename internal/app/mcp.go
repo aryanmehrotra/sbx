@@ -3,11 +3,15 @@ package app
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/aryanmehrotra/sbx/internal/mcp"
+	"github.com/aryanmehrotra/sbx/internal/osb"
 	"github.com/aryanmehrotra/sbx/internal/osbclient"
 )
 
@@ -45,6 +49,14 @@ func runMCP(args []string) error {
 	}
 
 	url, key := osbTarget(*flagURL, *flagKey, os.Getenv)
+	key = withLocalKey(url, key, func() string {
+		dir, err := osb.DefaultStateDir()
+		if err != nil {
+			return ""
+		}
+
+		return osb.ReadKey(dir)
+	})
 
 	client, err := osbclient.New(url, key, osbclient.WithUserAgent("sbx-mcp/"+version))
 	if err != nil {
@@ -71,4 +83,33 @@ func runMCP(args []string) error {
 	}
 
 	return nil
+}
+
+// withLocalKey falls back to the key `sbx serve` generated (~/.sbx/osb/key) when no key was
+// given - and only when the server is on this machine's loopback. That file is the credential
+// for this machine's API; sending it to whatever --url names would hand it to somebody else's
+// server.
+func withLocalKey(target, key string, read func() string) string {
+	if key != "" {
+		return key
+	}
+
+	raw := target
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return ""
+	}
+
+	return read()
 }

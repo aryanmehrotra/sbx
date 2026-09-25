@@ -56,7 +56,12 @@ echo "==> go vet"
 "$SBX" exec "$NAME" go sh -c 'cd /src && go vet ./...'
 
 echo "==> go test -race ${*:-}"
-"$SBX" exec "$NAME" go sh -c "cd /src && go test ./... -race -count=1 ${*:-} 2>&1 | grep -v 'no test files'"
+# The container's sh has no pipefail, so `go test | grep` would exit with grep's status and a
+# red suite would pass the gate. The output goes to a file, go test's status is kept, and the
+# filter only prints.
+"$SBX" exec "$NAME" go sh -c "cd /src && out=\$(mktemp) || exit 1
+go test ./... -race -count=1 ${*:-} >\"\$out\" 2>&1; rc=\$?
+grep -v 'no test files' \"\$out\"; rm -f \"\$out\"; exit \$rc"
 
 echo
 echo "the sandbox stays. It sleeps to 0 B on the idle timer and wakes on the next exec."
