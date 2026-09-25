@@ -168,7 +168,9 @@ func (e *Engine) create(ctx context.Context, language, cwd string) (*kernelCtx, 
 
 // notebookPath is where the session's notebook nominally lives. Nothing is ever written there;
 // Jupyter uses the directory as the kernel's cwd. With no cwd the path is relative, which puts
-// the kernel in the server's root directory - upstream's behaviour.
+// the kernel in the server's root directory - upstream's behaviour. Jupyter resolves the path
+// under its root, so a cwd must be relative to that root or inside it; an absolute path outside
+// the root falls back to the root, in upstream too (checked against opensandbox/code-interpreter).
 func notebookPath(name, cwd string) (string, error) {
 	if cwd == "" {
 		return name + ".ipynb", nil
