@@ -206,7 +206,12 @@ func Doctor(ctx context.Context) Report {
 		mkfsPath = where
 	}
 
-	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(fb.Kind, mkfsPath, readIPForward())...)
+	var usage *provider.FirecrackerUsage
+	if u, err := provider.FirecrackerDiskUsage(); err == nil {
+		usage = &u
+	}
+
+	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(fb.Kind, mkfsPath, readIPForward(), usage)...)
 
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // The microVM row is fchost's; these are only the rows under it, and only for a host that runs
@@ -24,7 +25,7 @@ func TestDoctorFirecrackerDetailRows(t *testing.T) {
 		{"refused", hostcap.Refused, "/sbin/mkfs.ext4", "0", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			caps := firecrackerCapabilities(tc.kind, tc.mkfs, tc.fwd)
+			caps := firecrackerCapabilities(tc.kind, tc.mkfs, tc.fwd, nil)
 
 			var names []string
 			for _, c := range caps {
@@ -45,8 +46,25 @@ func TestDoctorFirecrackerDetailRows(t *testing.T) {
 		})
 	}
 
-	caps := firecrackerCapabilities(hostcap.Direct, "", "0")
+	caps := firecrackerCapabilities(hostcap.Direct, "", "0", nil)
 	if caps[0].Have || !strings.Contains(caps[0].Meaning, "e2fsprogs") {
 		t.Fatalf("mkfs row = %+v", caps[0])
+	}
+}
+
+// A Direct host's doctor says what its sleeping VMs hold on disk, broken down.
+func TestDoctorShowsMicroVMDiskUsage(t *testing.T) {
+	u := &provider.FirecrackerUsage{Root: "/root/.sbx/fc", VMs: 3, Memory: 768 << 20, Disks: 2 << 30, Snapshots: 256 << 20}
+
+	caps := firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", "0", u)
+
+	last := caps[len(caps)-1]
+	if last.Name != "microVM disk" || !last.Have ||
+		!strings.Contains(last.Detail, "3.0 GiB in 3 VMs under /root/.sbx/fc (memory 768.0 MiB, disks 2.0 GiB, snapshots 256.0 MiB)") {
+		t.Fatalf("disk row = %+v", last)
+	}
+
+	if caps := firecrackerCapabilities(hostcap.HelperVM, "", "", u); len(caps) != 0 {
+		t.Fatalf("a helper-VM host graded its own disk: %+v", caps)
 	}
 }
