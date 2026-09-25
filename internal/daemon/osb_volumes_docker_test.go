@@ -182,6 +182,25 @@ func TestDockerSnapshotForkSeesTheFileWrittenBeforeIt(t *testing.T) {
 		a.call("GET", "/v1/snapshots/"+snap.ID, "", &snap)
 	}
 
+	// The source is still running, so its execd token is live: the image must not carry it.
+	// Read from the image's own config, the place anyone with docker access would look.
+	var imgEnv []string
+	if err := json.Unmarshal([]byte(dockerCLI(t, "image", "inspect", "--format", "{{json .Config.Env}}", image)), &imgEnv); err != nil {
+		t.Fatalf("reading the snapshot image's env: %v", err)
+	}
+
+	for _, kv := range imgEnv {
+		k, v, _ := strings.Cut(kv, "=")
+		if v == "" {
+			continue
+		}
+
+		switch k {
+		case "EXECD_ACCESS_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy":
+			t.Errorf("snapshot image %s carries the source's %s=%s", image, k, v)
+		}
+	}
+
 	// Commit paused the source for the copy and docker resumed it.
 	if st := containerState("sbx-" + src + "-sandbox"); st != "running" {
 		t.Fatalf("after the snapshot the source is %s, want running", st)

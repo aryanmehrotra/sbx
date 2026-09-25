@@ -264,8 +264,10 @@ func For(kind, socket, namespace string) (Provider, error) {
 // Snapshotter saves and restores a service's state. Filesystem state - memory and running
 // processes are not included, and the docs say so wherever the word snapshot appears.
 type Snapshotter interface {
-	// Commit saves a unit's filesystem as a named image.
-	Commit(ctx context.Context, ref, image string) error
+	// Commit saves a unit's filesystem as a named image. changes are Dockerfile-style
+	// instructions applied to the image config (docker commit --change), e.g. "ENV K=" to
+	// clear a variable that belongs to the running unit rather than to its filesystem.
+	Commit(ctx context.Context, ref, image string, changes ...string) error
 
 	// Images lists saved images beginning with prefix.
 	Images(ctx context.Context, prefix string) ([]string, error)

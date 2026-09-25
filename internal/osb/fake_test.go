@@ -37,6 +37,7 @@ type fakeDocker struct {
 	// Snapshots and named volumes.
 	images     map[string]bool
 	commits    []string // "ref -> image"
+	changes    []string // docker commit --change values, all commits
 	commitErr  error
 	commitGate chan struct{} // when set, Commit waits for it to close
 	removedImg []string
@@ -424,7 +425,7 @@ func (f *fakeDocker) pulled() []string {
 	return append([]string(nil), f.pulls...)
 }
 
-func (f *fakeDocker) Commit(_ context.Context, ref, image string) error {
+func (f *fakeDocker) Commit(_ context.Context, ref, image string, changes ...string) error {
 	f.mu.Lock()
 	gate, err := f.commitGate, f.commitErr
 	f.mu.Unlock()
@@ -446,6 +447,7 @@ func (f *fakeDocker) Commit(_ context.Context, ref, image string) error {
 
 	f.images[image] = true
 	f.commits = append(f.commits, ref+" -> "+image)
+	f.changes = append(f.changes, changes...)
 
 	return nil
 }

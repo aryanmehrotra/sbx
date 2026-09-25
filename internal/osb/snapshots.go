@@ -234,7 +234,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) capture(ctx context.Context, snapper provider.Snapshotter, id, sandbox, ref string) {
 	img := snapRepo + ":" + id
 
-	err := snapper.Commit(ctx, ref, img)
+	err := snapper.Commit(ctx, ref, img, scrubbedEnv()...)
 	if err != nil {
 		s.setSnap(id, func(r *snapshotRecord) {
 			r.transition(snapFailed, "snapshot_capture_failed", fmt.Sprintf("docker commit of %s "+
@@ -519,4 +519,26 @@ func paginate[T any](all []T, page, size int) ([]T, paginationJSON) {
 
 	return items, paginationJSON{Page: page, PageSize: size, TotalItems: total, TotalPages: pages,
 		HasNextPage: page < pages}
+}
+
+// scrubbedEnv clears what sbx put in the source's environment that belongs to that sandbox
+// rather than to its filesystem. docker commit copies Config.Env into the image, so without this
+// every snapshot image would carry:
+//
+//   - EXECD_ACCESS_TOKEN: the source's live credential - the source may well still be running,
+//     and the token is everything inside it to whoever reads `docker image inspect`;
+//   - HTTP(S)_PROXY: the source's egress filter, which a fork without a policy of its own would
+//     otherwise keep dialling - another sandbox's door, or no door at all.
+//
+// Cleared to empty rather than removed, because a Dockerfile instruction cannot unset a
+// variable; empty is "no token" to execd and "no proxy" to every client. A fork sets its own
+// token (and its own proxy, when it has a policy), which overrides these. The caller's own env
+// stays: it is theirs, and a snapshot is expected to carry what they configured.
+func scrubbedEnv() []string {
+	out := []string{"ENV " + tokenEnv + "="}
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		out = append(out, "ENV "+k+"=")
+	}
+
+	return out
 }

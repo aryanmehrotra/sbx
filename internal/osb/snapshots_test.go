@@ -360,3 +360,17 @@ func TestSnapshotsAndClaimsNeedTheCapability(t *testing.T) {
 		t.Errorf("pvc on a provider without NamedVolumes = %d %+v", resp.StatusCode, e)
 	}
 }
+
+// The source may still be running, so its execd token is live; a snapshot image that carried it
+// would be a credential for the source handed to anyone who can read the image.
+func TestSnapshotCommitScrubsPerSandboxEnv(t *testing.T) {
+	h := newHarness(t)
+	h.snapshotOf(nil)
+
+	changes := h.p.lists(&h.p.changes)
+	for _, k := range []string{"EXECD_ACCESS_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		if !slices.Contains(changes, "ENV "+k+"=") {
+			t.Errorf("commit changes %v do not clear %s", changes, k)
+		}
+	}
+}

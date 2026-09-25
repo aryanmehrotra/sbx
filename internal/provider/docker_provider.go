@@ -641,13 +641,18 @@ func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	return code == 0, true
 }
 
-func (d *dockerProvider) Commit(_ context.Context, ref, image string) error {
+func (d *dockerProvider) Commit(_ context.Context, ref, image string, changes ...string) error {
 	// Pausing for the duration of the copy is what makes this crash-consistent rather than
 	// torn - the filesystem does not move underneath it. It is docker's default and the flag
 	// that used to say so is deprecated, so passing it printed a deprecation notice on top of
 	// every commit error, burying the actual reason. Not passing it keeps the behaviour and
 	// loses the noise; `--no-pause` is the flag that would change it.
-	_, err := d.docker("commit", ref, image)
+	args := []string{"commit"}
+	for _, c := range changes {
+		args = append(args, "--change", c)
+	}
+
+	_, err := d.docker(append(args, ref, image)...)
 
 	return err
 }
