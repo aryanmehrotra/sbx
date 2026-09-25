@@ -37,7 +37,7 @@ func run(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("execd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: sbx execd [--addr %s] [-- command args...]\n\n"+
+		fmt.Fprintf(stderr, "usage: sbx execd [--addr %s] [--vsock-port N] [-- command args...]\n\n"+
 			"The OpenSandbox execd API, for inside a sandbox. Environment:\n"+
 			"  %s  token clients must send in %s (unset: no auth)\n"+
 			"  %s  how long to keep serving after the command exits (default %s)\n"+
@@ -45,7 +45,9 @@ func run(args []string, stderr io.Writer) int {
 			DefaultAddr, EnvAccessToken, AccessTokenHeader, EnvGraceShutdown, defaultGrace, EnvExtraEnvs)
 	}
 
-	addr := fs.String("addr", DefaultAddr, "address to serve the execd API on")
+	addr := fs.String("addr", DefaultAddr, "TCP address to serve the execd API on (empty: no TCP listener)")
+	vsockPort := fs.Uint("vsock-port", 0,
+		"also serve the API on this AF_VSOCK port, as a Firecracker guest agent (linux/amd64, linux/arm64; 0: off)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -92,17 +94,19 @@ func run(args []string, stderr io.Writer) int {
 	}
 	defer srv.Close()
 
-	ln, err := net.Listen("tcp", *addr)
-	if err != nil {
-		logger.Printf("listen on %s: %v; pass a free address with --addr", *addr, err)
-		return 1
+	lns, code := listeners(*addr, *vsockPort, logger)
+	if lns == nil {
+		return code
 	}
 
-	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 30 * time.Second, ErrorLog: logger}
+	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 30 * time.Second, ErrorLog: logger, ConnContext: connContext}
 
-	served := make(chan error, 1)
+	// One slot per listener, so a listener that stops never blocks on a send nobody reads.
+	served := make(chan error, len(lns))
 
-	go func() { served <- hs.Serve(ln) }()
+	for _, ln := range lns {
+		go func() { served <- hs.Serve(ln) }()
+	}
 
 	sigs := make(chan os.Signal, 16)
 	signal.Notify(sigs, forwarded...)
@@ -182,4 +186,59 @@ func shutdown(hs *http.Server, wait time.Duration) {
 	if err := hs.Shutdown(ctx); err != nil {
 		_ = hs.Close()
 	}
+}
+
+// listeners opens what execd serves on: TCP at addr unless it is empty, and AF_VSOCK at
+// vsockPort unless it is 0. Both may run - the TCP one is what the docker and kubernetes
+// providers reach, the vsock one is how a Firecracker host does. On failure it returns nil and
+// the exit status: 2 for a flag this platform cannot honour, 1 for a listener that would not open.
+func listeners(addr string, vsockPort uint, logger *log.Logger) ([]net.Listener, int) {
+	if addr == "" && vsockPort == 0 {
+		logger.Print("nothing to serve on: --addr is empty and --vsock-port is 0; set one of them")
+		return nil, 2
+	}
+
+	// 0xFFFFFFFF is VMADDR_PORT_ANY, which asks the kernel to pick - and a host has to know the
+	// port to CONNECT to it.
+	if vsockPort >= 0xFFFFFFFF {
+		logger.Printf("--vsock-port %d is out of range; use a port from 1 to 4294967294", vsockPort)
+		return nil, 2
+	}
+
+	var lns []net.Listener
+
+	closeAll := func() {
+		for _, l := range lns {
+			_ = l.Close()
+		}
+	}
+
+	if vsockPort != 0 {
+		ln, err := listenVsock(uint32(vsockPort))
+		if err != nil {
+			logger.Print(err)
+
+			if errors.Is(err, errVsockUnsupported) {
+				return nil, 2
+			}
+
+			return nil, 1
+		}
+
+		lns = append(lns, ln)
+	}
+
+	if addr != "" {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			closeAll()
+			logger.Printf("listen on %s: %v; pass a free address with --addr", addr, err)
+
+			return nil, 1
+		}
+
+		lns = append(lns, ln)
+	}
+
+	return lns, 0
 }
