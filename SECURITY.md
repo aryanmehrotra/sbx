@@ -9,6 +9,49 @@ public issue for something exploitable.
 Expect an acknowledgement within about a week. If a report is confirmed, the fix and the
 advisory go out together.
 
+## Advisories
+
+### v0.9.0: a keyless OpenSandbox API is reachable from every container (fixed in v0.9.1)
+
+**Affected:** v0.9.0, only when `sbx serve --osb-addr` was started **without `--osb-key`** (and
+without `SBX_OSB_KEY`). v0.9.0 allowed that on a loopback address. Nothing else in sbx is
+affected; without `--osb-addr` the API does not exist.
+
+**What was exposed.** v0.9.0 treated `127.0.0.1` as private. On a VM-backed engine - colima,
+Docker Desktop - it is not: every container reaches the host's loopback through
+`host.docker.internal`, `host.lima.internal` or the VM gateway (`192.168.5.2` on colima), and the
+connection arrives from `127.0.0.1`. So any container on that engine, including an API sandbox
+running untrusted code, could call the keyless lifecycle API: list sandboxes, read every
+sandbox's execd token from `GET /v1/sandboxes/{id}/endpoints/44772`, and with it run commands in
+and read or write files of **any other sandbox**; create and delete sandboxes; and, through the
+egress sidecar route (authenticated by the execd token its own environment holds), lift its own
+egress policy.
+
+**Impact:** cross-sandbox takeover and egress-policy bypass from inside a sandbox. **No host
+escape** in v0.9.0: its API accepts no volumes (they answer 501), no capabilities and no
+privileged mode, so a sandbox created through it is an ordinary container. (v0.10.0 adds host
+volumes, only under roots named by `--osb-host-paths`; a keyless API there would have reached
+those directories - one reason the key requirement ships in v0.10.0 as well.)
+
+**Fixed in v0.9.1:**
+
+- a key is always required - generated into `~/.sbx/osb/key` (0600) when none is given;
+  keyless only with an explicit `--osb-insecure-no-key`, loopback only, loudly;
+- the egress sidecar route has its own per-sandbox credential that is never in the container;
+- a non-loopback `--osb-addr` is refused until server-proxy mode exists;
+- API pauses are applied before the daemon binds any listener, and `sbx sleep`/`wake` and the
+  control API refuse to undo them;
+- API sandboxes carry an `sbx.osb` label and an unscoped daemon that does not serve the API
+  leaves them alone. Sandboxes created by v0.9.0 have no label: recreate them to get this.
+
+**Workaround on v0.9.0:** always pass `--osb-key` (or set `SBX_OSB_KEY`) to a random value, and
+give that key to your clients (`OPEN_SANDBOX_API_KEY`, `sbx mcp --key`). Sandboxes that ran
+untrusted code on a keyless v0.9.0 API should be treated as able to have touched every other API
+sandbox on that engine.
+
+Why loopback is not a trust boundary here, and what follows from it:
+[DECISIONS.md](docs/DECISIONS.md#loopback-is-not-a-trust-boundary-on-a-vm-backed-engine).
+
 ## What sbx assumes
 
 Most of what people expect to be a vulnerability here is a documented design position, so
@@ -71,6 +114,8 @@ threat model is not "untrusted users share one daemon".**
 Roughly: anything that breaks a boundary sbx claims to hold.
 
 - A sandbox reaching another sandbox's data, or a fork inheriting state it should not.
+- A container reaching the OpenSandbox API (`--osb-addr`) without the key, or getting from inside
+  its sandbox a credential that works anywhere but that sandbox's own execd.
 - `egress: "deny"` permitting routed egress on docker.
 - A filtered service (`egress_policy`, `egress_allow`, `egress: "allow"`) reaching a destination its
   policy denies - directly, through the filter, or through a name that resolves into a denied
@@ -90,4 +135,5 @@ down and checked.
 
 ## Supported versions
 
-Pre-1.0: fixes land on `main` and there is no backport branch. Use the latest tag.
+Pre-1.0: fixes land on `main` and there is no backport branch. Use the latest tag. A security fix
+may also ship as a patch on the latest release (v0.9.1 is one).
