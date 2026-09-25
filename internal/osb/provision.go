@@ -454,7 +454,10 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 
 	s.trace.mark(id, "container created")
 
-	s.rt.Refresh(ctx)
+	// The server's context, not this create's: the daemon derives the new sandbox's listeners
+	// from the context it is refreshed with, and this create's is cancelled the moment it
+	// finishes - which closed the wake port just as the sandbox became Running.
+	s.rt.Refresh(s.base)
 	s.trace.mark(id, "daemon refreshed")
 
 	s.waitReady(ctx, id)
