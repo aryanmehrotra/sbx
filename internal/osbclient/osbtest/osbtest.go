@@ -185,6 +185,21 @@ func (s *Server) Exists(id string) bool {
 	return ok
 }
 
+// RunningIDs returns the ids of the foreground commands blocked in the fake right now.
+func (s *Server) RunningIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ids := make([]string, 0, len(s.running))
+	for id := range s.running {
+		ids = append(ids, id)
+	}
+
+	sort.Strings(ids)
+
+	return ids
+}
+
 // Running reports how many foreground commands are blocked in the fake right now.
 func (s *Server) Running() int {
 	s.mu.Lock()
