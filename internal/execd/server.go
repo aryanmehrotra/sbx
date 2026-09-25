@@ -11,9 +11,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/jupyter"
 )
 
 // Error codes are upstream's (components/execd/pkg/web/model/error.go), so a client that
@@ -50,6 +54,14 @@ type Options struct {
 
 	// Logger receives one line per notable event. Nil means the standard logger.
 	Logger *log.Logger
+
+	// Jupyter runs the /code routes. Nil means an engine configured from JUPYTER_HOST,
+	// JUPYTER_TOKEN and JUPYTER_PORT, which answers 501 with the reason when they name nothing.
+	Jupyter *jupyter.Engine
+
+	// JupyterStartupWait bounds how long a /code call waits for a configured Jupyter that is not
+	// answering yet, as when the image entrypoint is still starting it. Zero means 30s.
+	JupyterStartupWait time.Duration
 }
 
 // Server is the execd HTTP API. Build it with New, serve it with any http.Server, and Close it
@@ -59,6 +71,15 @@ type Server struct {
 	procs *procs
 	log   *log.Logger
 	mux   *http.ServeMux
+	code  *jupyter.Engine
+
+	// codeUp remembers that Jupyter answered, so /code calls skip the probe; codeWait is how
+	// long a call waits for a configured Jupyter that is still starting. See codeReady.
+	codeUp   atomic.Bool
+	codeWait time.Duration
+
+	// proxyH is /proxy/, guarded; see proxy for why it bypasses the mux.
+	proxyH http.Handler
 
 	outputDir     string
 	ownsOutputDir bool
@@ -66,6 +87,7 @@ type Server struct {
 	mu       sync.Mutex
 	commands map[string]*command
 	sessions map[string]*session
+	ptys     map[string]*ptySession
 
 	stopJanitor chan struct{}
 	closeOnce   sync.Once
@@ -79,7 +101,18 @@ func New(o Options) (*Server, error) {
 		log:         o.Logger,
 		commands:    map[string]*command{},
 		sessions:    map[string]*session{},
+		ptys:        map[string]*ptySession{},
 		stopJanitor: make(chan struct{}),
+		code:        o.Jupyter,
+	}
+
+	if s.code == nil {
+		s.code = jupyter.New(jupyter.ConfigFromEnv())
+	}
+
+	s.codeWait = o.JupyterStartupWait
+	if s.codeWait <= 0 {
+		s.codeWait = 30 * time.Second
 	}
 
 	if s.log == nil {
@@ -128,10 +161,19 @@ func (s *Server) Close() {
 				groups = append(groups, pgid)
 			}
 		}
+
+		ptys := make([]*ptySession, 0, len(s.ptys))
+		for _, ps := range s.ptys {
+			ptys = append(ptys, ps)
+		}
 		s.mu.Unlock()
 
 		for _, g := range groups {
 			_ = signalGroup(g, syscall.SIGKILL)
+		}
+
+		for _, ps := range ptys {
+			ps.close()
 		}
 
 		s.procs.close()
@@ -143,6 +185,11 @@ func (s *Server) Close() {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, proxyPrefix) {
+		s.proxyH.ServeHTTP(w, r)
+		return
+	}
+
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -186,6 +233,19 @@ func (s *Server) routes() {
 	handle("GET /metrics", s.metrics)
 	handle("GET /metrics/watch", s.watchMetrics)
 
+	handle("POST /code", s.runCode)
+	handle("DELETE /code", s.interruptCode)
+	handle("POST /code/context", s.createCodeContext)
+	handle("GET /code/contexts", s.listCodeContexts)
+	handle("DELETE /code/contexts", s.deleteCodeContexts)
+	handle("GET /code/contexts/{contextId}", s.getCodeContext)
+	handle("DELETE /code/contexts/{contextId}", s.deleteCodeContext)
+
+	handle("POST /pty", s.createPTY)
+	handle("GET /pty/{sessionId}", s.getPTY)
+	handle("DELETE /pty/{sessionId}", s.deletePTY)
+	handle("GET /pty/{sessionId}/ws", s.ptyWebSocket)
+
 	// Parts of the API a later release adds. They answer 501 with the spec's error shape, not
 	// 404: a 404 reads as "you have the path wrong", and a client should instead learn that
 	// this daemon knows the endpoint and does not do it yet.
@@ -200,16 +260,12 @@ func (s *Server) routes() {
 	})
 
 	s.mux = m
+	s.proxyH = s.guard(s.proxy)
 }
 
 // notYet maps each unimplemented prefix to the sbx release that implements it, per the release
 // table in docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md.
 var notYet = map[string]string{
-	"/code":         "v0.10.0 (code interpreter)",
-	"/code/":        "v0.10.0 (code interpreter)",
-	"/pty":          "v0.10.0 (pty)",
-	"/pty/":         "v0.10.0 (pty)",
-	"/proxy/":       "v0.10.0 (port proxy)",
 	"/v1/isolated/": "v0.11.0 (isolated sessions)",
 }
 
