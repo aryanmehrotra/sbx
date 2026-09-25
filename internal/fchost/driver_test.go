@@ -151,7 +151,7 @@ func TestColimaCommandsNeverLeaveTheirProfile(t *testing.T) {
 	start := strings.Join(d.StartArgv(testCfg), " ")
 	for _, w := range []string{
 		"colima start --profile sbx-fc", "--vm-type vz", "--nested-virtualization",
-		"--cpus 2", "--memory 2", "--disk 20", "--runtime docker", "--port-forwarder none",
+		"--cpus 2", "--memory 2", "--disk 20", "--runtime docker", "--port-forwarder none", "--activate=false",
 	} {
 		if !strings.Contains(start, w) {
 			t.Errorf("start %q lacks %q", start, w)

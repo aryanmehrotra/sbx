@@ -283,6 +283,11 @@ func (colima) StartArgv(c Config) []string {
 		"--vm-type", "vz", "--nested-virtualization",
 		"--cpus", strconv.Itoa(c.CPUs), "--memory", gib(c.MemoryGiB), "--disk", strconv.Itoa(c.DiskGiB),
 		"--runtime", "docker", "--port-forwarder", "none",
+		// Never make the helper VM the active docker context, not even for the length of the start:
+		// that context is global, and for the ~20 s a start takes every docker command in every
+		// terminal on the Mac went to the helper VM. guardDockerContext stays as the backstop for
+		// a colima that predates the flag or ignores it.
+		"--activate=false",
 	}
 }
 
