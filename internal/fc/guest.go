@@ -8,12 +8,12 @@ import (
 
 // The guest seam: everything the provider needs from inside a VM, which it cannot do itself.
 //
-// Owned by another piece of work (branch osb/fc-vsock): execd's AF_VSOCK listener, the host
-// side of Firecracker's hybrid vsock (internal/fcvsock), and the control-plane client that seals
-// execd before a snapshot and re-keys it after a restore (internal/execdctl). This package does
-// not reimplement any of that. It names the four operations the VM lifecycle depends on and
-// ships NoGuest, which refuses each one honestly, so the provider compiles, runs and is tested
-// on its own - and the integration is one type implementing Guest, assigned to NewGuest.
+// The pieces live elsewhere: execd's AF_VSOCK listener (internal/execd), the host side of
+// Firecracker's hybrid vsock (internal/fcvsock), and the control-plane client that seals execd
+// before a snapshot and re-keys it after a restore (internal/execdctl). VsockGuest
+// (vsockguest.go) joins them into one Guest and is the default wherever the provider drives
+// Firecracker itself; NoGuest, which refuses each operation honestly, is what every other
+// platform gets, so nothing there pretends to reach a VM it cannot.
 //
 // Why the lifecycle depends on it at all: a restored snapshot is the parent's memory, including
 // execd's access token and every key userspace generated before the snapshot (the spike measured
@@ -30,6 +30,11 @@ type GuestVM struct {
 
 // Rekey is the identity a restored execd is given.
 type Rekey struct {
+	// Secret is the control secret execd holds NOW - the one captured in the snapshot - and
+	// authorises the call. ControlSecret replaces it and must differ: a secret every clone
+	// shares is dead the moment each is re-keyed.
+	Secret string
+
 	Generation    uint64   // increases on every restore; execd refuses an older one
 	AccessToken   string   // what API clients present; unchanged across a plain resume
 	ControlSecret string   // authenticates Seal and Rekey themselves
@@ -54,9 +59,9 @@ type Guest interface {
 }
 
 // ErrGuestUnavailable is every NoGuest answer.
-var ErrGuestUnavailable = errors.New("the Firecracker guest channel (vsock to execd) is not in " +
-	"this build: exec, copy and forking a VM snapshot need it, and sbx will not fake them over " +
-	"another path. Build from a tree that carries internal/fcvsock and internal/execdctl")
+var ErrGuestUnavailable = errors.New("the Firecracker guest channel (vsock to execd) is only " +
+	"wired where sbx drives Firecracker itself (linux with /dev/kvm; on a Mac, inside the helper " +
+	"VM): exec, copy and forking a VM snapshot need it, and sbx will not fake them over another path")
 
 // NoGuest is the Guest used until a real one is wired in.
 type NoGuest struct{}
@@ -66,7 +71,8 @@ func (NoGuest) Seal(context.Context, GuestVM, string) error          { return Er
 func (NoGuest) Rekey(context.Context, GuestVM, Rekey) error          { return ErrGuestUnavailable }
 func (NoGuest) Available() bool                                      { return false }
 
-// NewGuest makes the provider's guest channel. The integration replaces it; see the file comment.
+// NewGuest makes the provider's guest channel: VsockGuest on linux, where the provider drives
+// Firecracker itself (vsockguest_linux.go), and NoGuest everywhere else.
 var NewGuest = func() Guest { return NoGuest{} }
 
 // ExecdVsockPort is where execd listens inside the VM (`sbx execd --vsock-port`), the same number
