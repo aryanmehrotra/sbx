@@ -437,6 +437,47 @@ jobs:
         # tier anyone can use.
         run: ./sbx selftest -isolation gvisor
 
+  # --provider firecracker had no CI at all: every unit test runs against fcfake, and the only
+  # proof a real VM boots, snapshots, restores and re-keys was a run by hand. This runs the Go
+  # end-to-end test (TestFirecrackerE2E: create, restore, first byte, Diff sleep, restore again,
+  # exec over vsock, rm) wherever the runner exposes /dev/kvm - GitHub's Linux runners do, but it
+  # is the runner's to give, so a runner without it SKIPS this with a notice rather than failing
+  # a change that cannot have broken anything it could see.
+  microvm:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: is there a /dev/kvm
+        id: kvm
+        run: |
+          if [ -c /dev/kvm ]; then
+            ls -l /dev/kvm
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=microVM e2e skipped::this runner has no /dev/kvm, so no Firecracker VM can boot here - the microVM e2e was skipped, not failed"
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: a real Firecracker VM, end to end
+        if: steps.kvm.outputs.have == 'true'
+        # As root: taps and bridges need CAP_NET_ADMIN. A compiled test binary, because the
+        # agent drive is built from SBX_EXECD_BINARY - a real linux sbx - and `go test` under
+        # sudo would find neither the module cache nor the toolchain.
+        run: |
+          set -eux
+          sudo apt-get install -y e2fsprogs iproute2
+          CGO_ENABLED=0 go build -o sbx-linux .
+          go test -c -o fc.test ./internal/provider
+          sudo env SBX_FC_E2E=1 SBX_EXECD_BINARY="$PWD/sbx-linux" SBX_FC_STATE="$RUNNER_TEMP/fc" \
+            ./fc.test -test.run 'TestFirecrackerE2E' -test.v -test.timeout 20m
+
   # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
   # processes, where sbx restores a disk and starts the process cold. It went unmeasured for
   # a reason that was honest and self-serving - its README calls arm64-in-a-VM-on-macOS
