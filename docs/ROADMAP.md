@@ -72,6 +72,15 @@ upstream of it.
 **≈ 18 weeks on Linux, one engineer.** The rootfs pipeline is the bulk and the part to spike
 first; the VMM driver is the part that looks hard and is not.
 
+**Status (v0.11.0, part A).** Built: the VMM driver (`internal/fc`), pinned artifacts, the rootfs
+pipeline, per-VM clones, tap networking, `sbx fc-init` as PID 1, and `--provider firecracker` with
+the wake path (Start = load, Stop = Diff snapshot), `Pauser`, `Snapshotter` (memory included) and
+`Limiter`. The rootfs pipeline came in far under four weeks, because `docker export` hands back the
+filesystem already flattened - there are no layers or `.wh.` whiteouts to apply (DECISIONS.md).
+Not yet: exec/copy/logs-by-agent and forking a snapshot, which wait on the guest seam (`fc.Guest`,
+built on the vsock branch); egress beyond deny; the bare-metal measurement the spike asked for,
+which `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider` now takes on any Linux host with KVM.
+
 ### Two landmines, written down before anyone hits them
 
 **vsock modules must vermagic-match the kernel exactly.** `vsock`,
@@ -104,6 +113,11 @@ what people install this for — and then does not deliver the fast resume the w
 get. It is on this list only so that nobody spends two months rediscovering it.
 
 **A ships the provider. B is the macOS story. C stays unbuilt.**
+
+As built, A is not a flat refusal on darwin: `internal/fc/hostcap` returns **helper-vm** on a Mac
+that can nest (M3 or later, macOS 15 or later) and on Windows, and hands that decision to the
+helper-VM layer - B - through `provider.HelperVMProvider`. A build without that layer says so; a
+Mac that cannot nest, and every other case with no path, is refused with the one thing to change.
 
 ### The honest trade
 

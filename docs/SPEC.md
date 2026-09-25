@@ -101,6 +101,20 @@ script that already knows a port.
 | `cap_add` | | Linux capabilities to grant, named without the `CAP_` prefix: `["SYS_PTRACE"]`. A list rather than a `privileged` flag, which is a different thing entirely. Docker only; a cluster refuses |
 | `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
 
+### On `--provider firecracker`
+
+The same file, with a VM underneath. What changes:
+
+| field | on firecracker |
+|---|---|
+| `image` | Booted as the VM's root filesystem (`docker export` → ext4, cached by image ID). A name from `sbx snapshot` restores that VM - memory included - as the same sandbox and service in the same slot only |
+| `cpu` | Whole vCPUs, rounded up, 1 or even (Firecracker's rule): `"0.5"` is 1, `"3"` is 4. Default 1 |
+| `memory` | The guest's RAM, default `256m` - and the size of its snapshot on disk while it sleeps. Both fixed at creation; changing them live is refused |
+| `health` | Accepted, not run yet: readiness is the first port accepting, reported as undeclared, until the guest agent can run the command inside the VM |
+| `egress` | Only `"deny"` (or unset, which means the same here): a VM bridge has no NAT |
+| `volume` | Nothing extra to do: the VM's root filesystem is already its own and persists across sleep |
+| `build`, `files`, `mounts`, `volume_mounts`, `readonly_volumes`, `init`, `gpus`, `cap_add`, `egress_allow`, `egress_policy` | **Refused by name**, each with the reason - never silently ignored |
+
 ### `image` or `build` - exactly one
 
 \* Every service needs something to run. Give it an `image` to pull, or a `build` to make:
