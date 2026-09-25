@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -290,5 +292,81 @@ func TestEgressEndpointServesTheSidecarPolicy(t *testing.T) {
 
 	if !strings.Contains(h.eg.seen(), "forget "+sb.ID) {
 		t.Fatal("deleting a sandbox did not drop its saved policy")
+	}
+}
+
+// The sidecar route changes a sandbox's egress policy, so its credential must be one the sandbox
+// cannot hold: a workload that could read it could lift its own filter. v0.9.0 reused execd's
+// token there - and execd's token is in the container's environment by necessity.
+func TestSidecarCredentialIsNeverInTheSandbox(t *testing.T) {
+	h := newHarness(t, func(_ *harness, o *Options) { o.Key = "k" })
+	key := []string{"OPEN-SANDBOX-API-KEY", "k"}
+
+	var sb sandboxJSON
+	h.do("POST", "/v1/sandboxes", minimalCreate(), &sb, key...)
+	h.waitStateKeyed(sb.ID, key)
+
+	var ep endpointJSON
+	if resp := h.do("GET", "/v1/sandboxes/"+sb.ID+"/endpoints/18080", nil, &ep, key...); resp.StatusCode != 200 {
+		t.Fatalf("endpoint 18080 = %d", resp.StatusCode)
+	}
+
+	egressTok := ep.Headers["OPENSANDBOX-EGRESS-AUTH"]
+	sidecar := "/v1/sandboxes/" + sb.ID + "/egress/policy"
+
+	// Everything the container is given: its environment, its command line, its health check.
+	svc := h.p.service(sb.ID)
+
+	var inside []string
+	for k, v := range svc.Env {
+		inside = append(inside, k, v)
+	}
+
+	inside = append(inside, svc.Entrypoint...)
+	inside = append(inside, svc.Health)
+
+	execdTok := svc.Env[tokenEnv]
+	if execdTok == "" {
+		t.Fatal("the container has no execd token to test against")
+	}
+
+	for _, s := range inside {
+		if s != "" && strings.Contains(s, egressTok) {
+			t.Fatalf("the egress credential is inside the container: %q", s)
+		}
+
+		if s == "" {
+			continue
+		}
+
+		if resp := h.do("GET", sidecar, nil, nil, "OPENSANDBOX-EGRESS-AUTH", s); resp.StatusCode != 401 {
+			t.Fatalf("a value from inside the sandbox (%.12q...) opened the sidecar route: %d", s, resp.StatusCode)
+		}
+	}
+
+	if resp := h.do("GET", sidecar, nil, nil, "OPENSANDBOX-EGRESS-AUTH", execdTok); resp.StatusCode != 401 {
+		t.Fatalf("execd's token on the sidecar route = %d, want 401", resp.StatusCode)
+	}
+
+	if resp := h.do("GET", sidecar, nil, nil, "OPENSANDBOX-EGRESS-AUTH", egressTok); resp.StatusCode != 200 {
+		t.Fatalf("the credential endpoints/18080 handed out = %d, want 200", resp.StatusCode)
+	}
+
+	// It is stable, so an SDK that fetched it once keeps working, and it lives only in the
+	// record, which is owner-only.
+	var again endpointJSON
+	h.do("GET", "/v1/sandboxes/"+sb.ID+"/endpoints/18080", nil, &again, key...)
+
+	if again.Headers["OPENSANDBOX-EGRESS-AUTH"] != egressTok {
+		t.Fatal("the egress credential changed between two endpoint calls")
+	}
+
+	st, err := os.Stat(filepath.Join(h.dir, sb.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("the record holding the credential is %o, want 600", st.Mode().Perm())
 	}
 }

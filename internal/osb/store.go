@@ -55,6 +55,13 @@ type record struct {
 	// which is why this file is 0600.
 	Token string `json:"token"`
 
+	// EgressToken authenticates the sidecar-shaped egress policy route (endpoints/18080). It is
+	// minted separately from Token and never placed in the container - not env, files or labels -
+	// because the workload holds Token, and a workload that could reach its own policy route with
+	// it could lift its own egress filter. Empty on a record from before v0.9.1 until first asked
+	// for.
+	EgressToken string `json:"egressToken,omitempty"`
+
 	CreatedAt time.Time  `json:"createdAt"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 

@@ -129,21 +129,26 @@ func (s *Server) egressErr(w http.ResponseWriter, id string, err error) {
 }
 
 // sidecarPolicy is the sandbox's egress sidecar /policy, served from here. It authenticates
-// with the per-sandbox credential handed out in endpoints/18080's headers; a request that
-// instead passed the API key check is allowed too, because the operator can already do the same
-// through /networkpolicy.
+// with the per-sandbox egress credential handed out in endpoints/18080's headers - never execd's
+// token, which the workload holds - or, with no such header, the API key check in authed already
+// passed, because the operator can do the same through /networkpolicy.
 func (s *Server) sidecarPolicy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	rec, ok := s.snapshot(id)
-	if !validID(id) || !ok {
-		http.Error(w, "no such sandbox", http.StatusNotFound)
-		return
+
+	if got := r.Header.Get(egressAuthHeader); got != "" {
+		// One answer for "no such sandbox" and "wrong credential": this path skipped the API key,
+		// so a 404 here would let anybody enumerate sandbox ids.
+		if !ok || rec.EgressToken == "" ||
+			subtle.ConstantTimeCompare([]byte(got), []byte(rec.EgressToken)) != 1 {
+			http.Error(w, "invalid "+egressAuthHeader+": fetch it from GET /v1/sandboxes/{id}/endpoints/18080 with the API key", http.StatusUnauthorized)
+			return
+		}
 	}
 
-	if got := r.Header.Get(egressAuthHeader); got != "" &&
-		subtle.ConstantTimeCompare([]byte(got), []byte(rec.Token)) != 1 {
-		http.Error(w, "invalid "+egressAuthHeader, http.StatusUnauthorized)
+	if !validID(id) || !ok {
+		http.Error(w, "no such sandbox", http.StatusNotFound)
 		return
 	}
 
@@ -155,10 +160,27 @@ func (s *Server) sidecarPolicy(w http.ResponseWriter, r *http.Request) {
 	s.egress.Handler(rec.ID).ServeHTTP(w, r)
 }
 
-// egressEndpoint is endpoints/18080: this listener, as the caller reached it.
+// egressEndpoint is endpoints/18080: this listener, as the caller reached it, with the sandbox's
+// egress credential. Minted on first ask - which also covers a record written before the
+// credential existed - and stored only in the record, which is 0600 and never in the container.
 func (s *Server) egressEndpoint(w http.ResponseWriter, r *http.Request, rec record) {
+	tok := rec.EgressToken
+	if tok == "" {
+		updated, ok := s.update(rec.ID, func(r *record) {
+			if r.EgressToken == "" {
+				r.EgressToken = newToken()
+			}
+		})
+		if !ok {
+			writeErr(w, http.StatusNotFound, "SANDBOX::NOT_FOUND", rec.ID+" was deleted")
+			return
+		}
+
+		tok = updated.EgressToken
+	}
+
 	writeJSON(w, http.StatusOK, endpointJSON{
 		Endpoint: r.Host + "/v1/sandboxes/" + rec.ID + "/egress",
-		Headers:  map[string]string{egressAuthHeader: rec.Token},
+		Headers:  map[string]string{egressAuthHeader: tok},
 	})
 }
