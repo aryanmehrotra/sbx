@@ -93,7 +93,7 @@ one.
 | | | cost |
 |---|---|---|
 | **A · Linux only, refused elsewhere** | `--provider microvm` is refused on darwin, and `sbx doctor` says why. Exactly the behaviour `--isolation gvisor\|kata` already has | **+0** |
-| **B · nested virtualisation** | M3-and-later on macOS 15+ exposes a real `/dev/kvm` inside a Linux VM, which runs Firecracker unmodified | +2–3 wk |
+| **B · nested virtualisation** | M3-and-later on macOS 15+ exposes a real `/dev/kvm` inside a Linux VM, which runs Firecracker unmodified | **shipping in v0.11** |
 | **C · a second VMM on Apple's Virtualization.framework** | a second backend behind the same provider | +8–12 wk, **and it does not work** |
 
 **C is a trap and the reason is specific.** Virtualization.framework cannot snapshot: its own
@@ -104,6 +104,13 @@ what people install this for — and then does not deliver the fast resume the w
 get. It is on this list only so that nobody spends two months rediscovering it.
 
 **A ships the provider. B is the macOS story. C stays unbuilt.**
+
+**B is shipping in v0.11**, moved up from "later" once the spike ([2026-09-26](superpowers/specs/2026-09-26-firecracker-spike.md))
+measured it working on an M4: `--provider firecracker` on an M3+ Mac runs in a helper VM sbx
+manages (`sbx fc vm status|start|stop|rm`), and the same design covers Windows 11 through a WSL2
+distro (built and unit-tested; not yet run on a Windows host). How and why: DECISIONS, "A microVM
+off Linux runs in a helper VM". It is dev parity, not speed - 88 ms single restore, and nested
+virtualisation collapses at burst - so the macOS Burst-TTI path stays the docker warm pool.
 
 ### The honest trade
 

@@ -98,6 +98,40 @@ immediately. Kubernetes' own default is to refuse silently, taking two minutes t
 service "never became ready" when the real problem is a missing RuntimeClass — so sbx checks
 first and says so in one second, rather than letting that report stand in for a diagnosis.
 
+### A microVM off Linux runs in a helper VM, not on Virtualization.framework
+
+Firecracker needs Linux KVM. On an Apple M3+ Mac with macOS 15+, `--provider firecracker` runs
+the linux build of the same sbx inside a Linux VM that sbx creates with nested virtualisation
+(lima, else colima; `sbx-fc`, 2 CPU / 2 GiB by default), and on Windows 11 inside a WSL2 distro.
+The spike measured it on an M4: a real `/dev/kvm`, Firecracker unmodified, 88 ms from snapshot
+restore to first byte.
+
+**Not Virtualization.framework, because it cannot do the one thing a microVM is for.** It
+reports snapshot support and then fails to save one: the entitlement is Apple's own. A second
+VMM there would cost cgo and the static binary, and still resume nothing (ROADMAP §1, option C).
+
+**The VM tool is shelled out**, for the reason tunnels are: lima and colima already solve the
+VM, and `go.mod` stays empty. Every command names the instance, and the name must start with
+`sbx-`, so nothing sbx runs can reach colima's `default` profile. colima's start can repoint the
+*global* docker context, so sbx starts it with the containerd runtime and puts the context back
+regardless.
+
+**The rest of sbx is not reimplemented against the VM - it is run in it.** `create`, `list`,
+`env`, `exec`, `logs`, `rm` and the rest execute unchanged in the VM, with the exit status
+passed back, so every command the provider has works on the Mac the day it lands. The host half
+of `sbx serve` follows the in-VM daemon's `/v1/fleet` and binds every sandbox port on the Mac's
+loopback **at the same number** (`sbx connect`'s tunnel, re-asked on a tick so sandboxes created
+later appear), so `sbx env` is correct on both sides and a TCP connect on the Mac is what wakes
+the microVM. Only two in-VM ports reach the host - the connect endpoint and the OpenSandbox API -
+over one ssh forward; lima's own port forwarding is switched off so a sandbox port is never
+bound twice. WSL2 forwards loopback natively, so there it is not mirrored at all.
+
+**Refused, with the fix, everywhere else**: an M1/M2 or an Intel Mac, macOS 14, Windows 10, WSL2
+with `nestedVirtualization=false` (the refusal quotes the line to add), and a Linux host without
+`/dev/kvm` (naming nested virtualisation, a metal instance type, or `--isolation gvisor|kata`).
+It is a dev-parity path, not a speed one: at N≥5 concurrent restores nested virtualisation
+collapses, so the macOS burst path stays the docker warm pool.
+
 ### What makes two wake numbers comparable
 
 `scripts/compare.sh` publishes numbers from different tools on one machine — meaningful only
