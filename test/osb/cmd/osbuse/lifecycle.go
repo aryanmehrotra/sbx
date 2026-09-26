@@ -118,8 +118,16 @@ func caseIdle(ctx context.Context, t *T, e *env) {
 	out, _, _, err := run(ctx, sl, "cat /tmp/counter")
 	t.check(err == nil && strings.TrimSpace(out) != "", "an API call wakes the slept sandbox and its disk is intact (counter file %q)", strings.TrimSpace(out))
 
-	_, _, code, _ := run(ctx, sl, "kill -0 $(cat /tmp/counter.pid)")
-	t.check(code != 0, "but the background process did not survive a sleep, as documented")
+	// Survival is judged by what the counter DOES, not by its PID. A container that was stopped
+	// and started again numbers its processes from 1, so `kill -0` on the old PID can find a new,
+	// unrelated process - the check's own shell included - and read "alive"; and an exec that came
+	// back without an exit status read as 0. A counter that survived would still be counting.
+	c1, _, _, err1 := run(ctx, sl, "cat /tmp/counter")
+	time.Sleep(2500 * time.Millisecond)
+	c2, _, _, err2 := run(ctx, sl, "cat /tmp/counter")
+	t.check(err1 == nil && err2 == nil && strings.TrimSpace(c1) != "" && strings.TrimSpace(c1) == strings.TrimSpace(c2),
+		"but the background process did not survive a sleep, as documented (counter %q, then %q 2.5s later)",
+		strings.TrimSpace(c1), strings.TrimSpace(c2))
 
 	v, _ := inspect(sname, "{{.State.Running}}")
 	t.check(v == "true", "it is running again")
