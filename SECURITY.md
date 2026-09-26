@@ -179,8 +179,28 @@ threat model is not "untrusted users share one daemon".**
     partition or volume), or enable project quotas (XFS / ext4 `prjquota`) on it. `sbx doctor`
     warns when the state directory shares `/` (`microVM state filesystem`). Unjailed
     (`SBX_FC_JAILER=off`) the VMM has no file-size limit.
-  - **The daemon still runs as root** (taps, bridges, iptables, the jailer itself), and the guest
-    kernel plus Firecracker's own seccomp filters are the first boundary, as before.
+  - **The daemon still runs as root**, and the guest kernel plus Firecracker's own seccomp filters
+    are the first boundary, as before. It cannot give root up after startup: every create and every
+    wake does privileged work again (a namespace, a veth and a tap, the guard's rules, a jail to
+    fill and a jailer to run), so "set up, then drop" has no "after". What it needs, and why - the
+    set a host can bound it to (a system unit's `CapabilityBoundingSet=`; CI runs it as full root,
+    so a bounded daemon is not exercised there):
+
+    | capability | for |
+    |---|---|
+    | `CAP_NET_ADMIN` | bridges, veths, taps, `ip netns`, iptables rules, the bridge's IPv6 sysctl |
+    | `CAP_NET_RAW` | iptables' legacy backend (raw sockets) |
+    | `CAP_SYS_ADMIN` | `ip netns add` (a bind mount of the namespace), and the jailer: mount namespace, pivot_root, setns |
+    | `CAP_SYS_CHROOT` | the jailer's chroot |
+    | `CAP_MKNOD` | the jailer's `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` in the jail |
+    | `CAP_SETUID`, `CAP_SETGID` | the jailer dropping to the VM's uid and gid |
+    | `CAP_CHOWN`, `CAP_FOWNER` | giving a VM's own files to its uid and taking them back; holding the shared kernel and base root's and 0444 |
+    | `CAP_DAC_OVERRIDE` | reading what a jailed VMM wrote as its uid, connecting to its sockets, the cgroup tree |
+    | `CAP_KILL` | ending a VMM that runs as another uid |
+    | `CAP_SYS_RESOURCE` | the jailer's `no-file` limit where the hard limit is lower |
+
+    `CAP_SYS_ADMIN` is most of root, so the bound narrows little; the real reduction is that no
+    VMM holds any of it (`CapEff` is 0 in every jailed VMM, checked from `/proc` in CI).
   - Snapshots taken before v0.13 name host paths the jailed VMM cannot open: those VMs cold-boot
     once (memory lost, disk kept), and a saved memory snapshot of the other kind is refused by name.
 - **In a microVM, the guest's root can read execd's own secrets** - the access token and the
