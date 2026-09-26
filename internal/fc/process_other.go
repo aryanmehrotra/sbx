@@ -20,3 +20,5 @@ func procStart(int) uint64 { return 0 }
 func holding(int, uint64) bool { return false }
 
 func removeCgroup(string) {}
+
+func cgroup2Mount() string { return "" }

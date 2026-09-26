@@ -12,3 +12,9 @@ func parseCgroup2Mount(mounts string) string {
 
 	return ""
 }
+
+// Cgroup2 is where the unified cgroup hierarchy is mounted on this host, if it is.
+func Cgroup2() (string, bool) {
+	mnt := cgroup2Mount()
+	return mnt, mnt != ""
+}

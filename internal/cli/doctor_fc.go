@@ -68,8 +68,8 @@ func firecrackerGuardRows(kind hostcap.Backend, iptables error, c fc.GuardCount,
 	}
 
 	ipt := Capability{Name: "iptables", Have: iptables == nil, Detail: "on PATH",
-		Meaning: "sbx cannot close the host to a microVM's guests: they reach every host service " +
-			"bound to 0.0.0.0 at 10.231.<slot>.1, and docker-published ports. Install iptables"}
+		Meaning: "sbx cannot close the host to a microVM's guests, so every microVM create and wake is " +
+			"refused (fail closed). Install iptables, or set " + fc.FirewallEnv + "=unmanaged if this host's own firewall closes it to 10.231.0.0/16"}
 	if iptables != nil {
 		ipt.Detail = iptables.Error()
 	}
@@ -98,4 +98,53 @@ func firecrackerGuardRows(kind hostcap.Backend, iptables error, c fc.GuardCount,
 	}
 
 	return append(rows, g)
+}
+
+// firecrackerGuards are the two controls between a guest and this host: the host guard, which
+// fails closed (a VM it cannot install is refused), and the jailer, which confines the VMM.
+// guard is fc.Available; cgroup2 finds the unified hierarchy the jailer's limits go in.
+func firecrackerGuards(getenv func(string) string, guard func() error, cgroup2 func() (string, bool)) []Capability {
+	var caps []Capability
+
+	g := Capability{Name: "vm host guard"}
+
+	switch mode, err := fc.FirewallFromEnv(getenv); {
+	case err != nil:
+		g.Detail, g.Meaning = err.Error(), "every microVM create fails until "+fc.FirewallEnv+" is managed or unmanaged"
+	case mode == fc.FirewallUnmanaged:
+		g.Have, g.Detail = true, "unmanaged ("+fc.FirewallEnv+"): sbx writes no rule; this host's own firewall must "+
+			"close it to 10.231.0.0/16 (SECURITY.md)"
+	default:
+		if gerr := guard(); gerr != nil {
+			g.Detail = "managed, but " + gerr.Error()
+			g.Meaning = "every microVM create and wake is refused (fail closed): install iptables, or set " +
+				fc.FirewallEnv + "=unmanaged (sbx serve --fc-firewall=unmanaged) if this host's firewall closes it"
+		} else {
+			g.Have, g.Detail = true, "managed: each bridge's guard is installed and verified, or its VM is refused"
+		}
+	}
+
+	caps = append(caps, g)
+
+	j := Capability{Name: "vm jailer"}
+
+	switch jail, err := fc.JailFromEnv(getenv); {
+	case err != nil:
+		j.Detail, j.Meaning = err.Error(), "every microVM create fails until "+fc.JailerEnv+" is on or off"
+	case jail == nil:
+		j.Detail = fc.JailerEnv + "=off"
+		j.Meaning = "every VMM runs as root, unconfined: a guest that escapes into it has this host (SECURITY.md)"
+	default:
+		first := fmt.Sprintf("uid %d+", jail.UIDBase)
+		if mnt, ok := cgroup2(); ok {
+			j.Have, j.Detail = true, "on: each VMM chrooted in its VM's directory as its own "+first+
+				", limited by cgroup v2 at "+mnt
+		} else {
+			j.Detail = "on, but no cgroup v2 hierarchy is mounted"
+			j.Meaning = "every microVM create fails in the jailer; mount cgroup2, or for a development host " +
+				"only set " + fc.JailerEnv + "=off"
+		}
+	}
+
+	return append(caps, j)
 }

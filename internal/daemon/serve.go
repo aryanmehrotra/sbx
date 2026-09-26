@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -211,6 +212,8 @@ func Serve(args []string) error {
 	// sandbox's policy cannot open any of it. Never the host itself, its loopback or a guest.
 	vmEgressAllow := fs.String("vm-egress-allow", envOr("SBX_VM_EGRESS_ALLOW", ""), "comma-separated CIDRs a microVM's egress filter may reach although they are private or on a host subnet (e.g. 10.20.0.0/16 for a registry on the VPC); none unless set")
 
+	osbNoJailer := fs.Bool("osb-insecure-no-jailer", false, "serve --osb-addr on --provider firecracker with SBX_FC_JAILER=off: every sandbox's VMM then runs as unconfined root, so a guest that escapes into it has this host")
+	fcFirewall := fs.String("fc-firewall", envOr(fc.FirewallEnv, string(fc.FirewallManaged)), "managed: sbx closes this host to microVM guests and refuses a VM it cannot guard; unmanaged: this host's own firewall does, and sbx writes no rule (the operator's responsibility, SECURITY.md)")
 	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim")
 
 	var only stringList
@@ -243,6 +246,14 @@ func Serve(args []string) error {
 	}
 
 	if err := refuseOSBOnMicroVM(*kind, *osbAddr); err != nil {
+		return err
+	}
+
+	if err := applyFCFirewall(*fcFirewall); err != nil {
+		return err
+	}
+
+	if err := refuseOSBWithoutJailer(*kind, *osbAddr, *osbNoJailer); err != nil {
 		return err
 	}
 
@@ -870,6 +881,39 @@ func (d *daemon) lifetime(caller context.Context) context.Context {
 
 // hasNetAdmin is hostcap.NetAdmin, a variable so a test can say what this process may do.
 var hasNetAdmin = hostcap.NetAdmin
+
+// applyFCFirewall carries --fc-firewall to the firecracker provider, which reads it from
+// SBX_FC_FIREWALL wherever it is made - here, and in every CLI process.
+func applyFCFirewall(mode string) error {
+	if _, err := fc.FirewallFromEnv(func(string) string { return mode }); err != nil {
+		return fmt.Errorf("--fc-firewall: %w", err)
+	}
+
+	return os.Setenv(fc.FirewallEnv, mode)
+}
+
+// refuseOSBWithoutJailer stops the OpenSandbox API serving microVMs whose VMMs are unconfined
+// root: it hands VMs to callers it does not otherwise trust, and with SBX_FC_JAILER=off a guest
+// that escapes into its VMM has the host. --osb-insecure-no-jailer says, by name, that the
+// operator accepts that.
+func refuseOSBWithoutJailer(kind, osbAddr string, insecure bool) error {
+	if osbAddr == "" || (kind != "firecracker" && kind != "fc") {
+		return nil
+	}
+
+	jail, err := fc.JailFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+
+	if jail == nil && !insecure {
+		return fmt.Errorf("--osb-addr with --provider firecracker and %s=off: every sandbox's VMM would run "+
+			"as unconfined root. Turn the jailer back on, or pass --osb-insecure-no-jailer to accept that "+
+			"(SECURITY.md)", fc.JailerEnv)
+	}
+
+	return nil
+}
 
 // refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup where the VMs
 // would run in a helper VM: the API is not fronted into it, so every create would fail, and a

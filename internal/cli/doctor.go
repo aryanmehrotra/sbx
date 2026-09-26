@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
 
@@ -211,6 +212,7 @@ func Doctor(ctx context.Context) Report {
 		}
 
 		rep.Capabilities = append(rep.Capabilities, firecrackerGuardRows(fb.Kind, iptErr, guards, countErr)...)
+		rep.Capabilities = append(rep.Capabilities, firecrackerGuards(os.Getenv, fc.Available, fc.Cgroup2)...)
 	}
 
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
