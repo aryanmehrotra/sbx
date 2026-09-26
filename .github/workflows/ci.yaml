@@ -450,7 +450,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 60 for the e2e and the conformance tier; the warm-pool steps (v0.13) add a pooled
+    # conformance subset and two burst benches, each cold-booting its members.
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -479,7 +481,7 @@ jobs:
           CGO_ENABLED=0 go build -o sbx-linux .
           go test -c -o fc.test ./internal/provider
           sudo env SBX_FC_E2E=1 SBX_EXECD_BINARY="$PWD/sbx-linux" SBX_FC_STATE="$RUNNER_TEMP/fc" \
-            ./fc.test -test.run 'TestFirecrackerE2E' -test.v -test.timeout 20m
+            ./fc.test -test.run 'TestFirecrackerE2E|TestFirecrackerPoolE2E' -test.v -test.timeout 20m
 
       # Upstream's own suite, unmodified, against `sbx serve --provider firecracker`: the daemon
       # runs as root here, the suite as the runner. Allowed skips are in test/osb/expectations,
@@ -489,6 +491,33 @@ jobs:
         env:
           SBX_FC_STATE: ${{ runner.temp }}/fc-osb
         run: scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 40m
+
+      # The warm pool on microVMs (v0.13): members parked asleep, then restored and re-keyed per
+      # claim. The upstream files a pool touches, with pools full before the suite starts - the
+      # script fails if not one create was served from a member, so a green run cannot be a pool
+      # that every create missed.
+      - name: OpenSandbox conformance with a warm pool on microVMs
+        if: steps.kvm.outputs.have == 'true'
+        env:
+          SBX_FC_STATE: ${{ runner.temp }}/fc-osb-pool
+          SBX_OSB_POOL: python:3.11-slim=4
+        run: scripts/osb-conformance.sh --files sandbox,command,filesystem --provider firecracker --timeout 30m
+
+      # create -> first command, cold against pooled, members asleep and then frozen: which of the
+      # two is faster is measured here, on real KVM, and read into docs/BENCHMARKS.md - reported,
+      # not gated. Each run says how many creates its pool actually served.
+      - name: warm pool against cold create on microVMs (asleep, frozen)
+        if: steps.kvm.outputs.have == 'true'
+        run: |
+          set -euo pipefail
+          for mode in asleep frozen; do
+            set -- --provider firecracker --burst 4 --rounds 3 --pool node:22-slim=4 --burst-modes default,cold
+            if [ "$mode" = frozen ]; then set -- "$@" --pool-freeze; fi
+            SBX_FC_STATE="$RUNNER_TEMP/fc-bench-$mode" scripts/osb-bench.sh "$@" | tee "bench-$mode.md"
+            { echo "### microVM warm pool, members $mode"; cat "bench-$mode.md"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          done
+          # An asleep member's memory file is as big as its RAM: what the pool cost this runner's disk.
+          df -h "$RUNNER_TEMP"
 
   # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
   # processes, where sbx restores a disk and starts the process cold. It went unmeasured for
