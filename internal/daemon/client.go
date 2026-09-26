@@ -60,7 +60,10 @@ type source struct {
 	// fleet response. False against anything older than v0.8.0, which is when the client must
 	// not send one - an old sbx would write the empty frame upstream as a no-op and never pass
 	// the EOF on, turning a truncated reply into a wait.
-	halfClose bool
+	//
+	// Atomic because it is rewritten while it is read: Mirror refreshes it from every fleet poll
+	// while connections already accepted on that source's ports read it in their own goroutines.
+	halfClose atomic.Bool
 }
 
 // placed is one remote service and the deployment it came from.
@@ -420,7 +423,7 @@ func fetchAll(ctx context.Context, sources []*source) ([][]fleetService, error) 
 
 			var hc bool
 			out[i], hc, errs[i] = fetchFleet(ctx, s.base, s.token, false)
-			s.halfClose = hc
+			s.halfClose.Store(hc)
 		}(i, s)
 	}
 
@@ -684,7 +687,7 @@ func tunnelOne(ctx context.Context, local net.Conn, b boundPort, base *url.URL, 
 
 	defer func() { _ = ws.close() }()
 
-	relayClient(ws, local, b.src.halfClose)
+	relayClient(ws, local, b.src.halfClose.Load())
 
 	return nil
 }

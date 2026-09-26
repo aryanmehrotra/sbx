@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -206,4 +207,40 @@ func TestMirrorRefusesARejectedToken(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rejected the token") {
 		t.Fatalf("a wrong token must end the mirror, not retry forever: %v", err)
 	}
+}
+
+// Connections are accepted and carried while the mirror keeps refreshing the source they belong
+// to: the refresh rewrites the source's half-close flag, and every tunnel reads it. Run under
+// -race, this is the case that tripped the detector (tunnelOne reading, Mirror writing).
+func TestMirrorRefreshesWhileConnectionsRun(t *testing.T) {
+	p := echoPort(t)
+	d := daemonFronting(p, "i1")
+	ts := serverFor(t, d)
+	shift := shiftFor(t, p)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = Mirror(ctx, MirrorOptions{Endpoint: Endpoint{URL: ts.URL, Token: testToken},
+			Refresh: time.Millisecond, Shift: shift, Out: io.Discard})
+	}()
+
+	eventually(t, "mirrored", func() bool { return listening(p + shift) })
+
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for range 10 {
+				mirrorEcho(t, p+shift)
+			}
+		}()
+	}
+
+	wg.Wait()
 }

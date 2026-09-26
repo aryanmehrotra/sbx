@@ -108,7 +108,7 @@ func Mirror(ctx context.Context, opt MirrorOptions) error {
 			}
 
 			down = false
-			src.halfClose = halfClose
+			src.halfClose.Store(halfClose)
 
 			reconcile(ctx, out, src, svcs, bound, failed, closeOne, &wg)
 		}
