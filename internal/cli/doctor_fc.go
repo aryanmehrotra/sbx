@@ -37,10 +37,17 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 	// What sleeping VMs cost: each one's memory file is as big as its RAM, and nothing else in
 	// doctor would show a fleet of them filling the disk.
 	if usage != nil {
-		caps = append(caps, Capability{Name: "microVM disk", Have: true,
-			Detail: fmt.Sprintf("%s in %d VMs under %s (memory %s, disks %s, snapshots %s)",
-				bytesIEC(usage.Total()), usage.VMs, usage.Root, bytesIEC(usage.Memory),
-				bytesIEC(usage.Disks), bytesIEC(usage.Snapshots))})
+		detail := fmt.Sprintf("%s in %d VMs under %s (memory %s, disks %s, snapshots %s)",
+			bytesIEC(usage.Total()), usage.VMs, usage.Root, bytesIEC(usage.Memory),
+			bytesIEC(usage.Disks), bytesIEC(usage.Snapshots))
+
+		// A warm pool that waits asleep trades RAM for exactly this: say how much of it is the pool's.
+		if usage.PoolMembers > 0 {
+			detail += fmt.Sprintf("; %d parked warm-pool members hold %s of it", usage.PoolMembers,
+				bytesIEC(usage.PoolMemory))
+		}
+
+		caps = append(caps, Capability{Name: "microVM disk", Have: true, Detail: detail})
 	}
 
 	return caps

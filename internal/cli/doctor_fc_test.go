@@ -65,6 +65,13 @@ func TestDoctorShowsMicroVMDiskUsage(t *testing.T) {
 		t.Fatalf("disk row = %+v", last)
 	}
 
+	u.PoolMembers, u.PoolMemory = 2, 512<<20
+
+	caps = firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("0", nil), u)
+	if last := caps[len(caps)-1]; !strings.Contains(last.Detail, "; 2 parked warm-pool members hold 512.0 MiB of it") {
+		t.Fatalf("disk row with a pool = %+v", last)
+	}
+
 	if caps := firecrackerCapabilities(hostcap.HelperVM, "", fc.BridgeIsolation{}, u); len(caps) != 0 {
 		t.Fatalf("a helper-VM host graded its own disk: %+v", caps)
 	}

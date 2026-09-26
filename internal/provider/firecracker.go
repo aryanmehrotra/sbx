@@ -159,6 +159,16 @@ type fcVM struct {
 
 	// Volumes are named volumes attached as extra drives, in drive order.
 	Volumes []fcVolume `json:"volumes,omitempty"`
+
+	// Pooled: parked as a warm-pool member of the OpenSandbox API (PoolParker), waiting for a
+	// claim. Claim refuses a VM without it; `sbx doctor` counts it, to say what waiting members cost.
+	Pooled bool `json:"pooled,omitempty"`
+
+	// BootToken is the access token the agent drive boots execd with, once a claim has replaced
+	// AccessToken with the caller's; empty means AccessToken is it. ClaimEnv is the env the claim
+	// gave. A cold boot of a claimed VM re-keys with both, since its agent drive holds neither.
+	BootToken string            `json:"boot_token,omitempty"`
+	ClaimEnv  map[string]string `json:"claim_env,omitempty"`
 }
 
 type fcProvider struct {
@@ -992,6 +1002,7 @@ func (p *fcProvider) rekey(ctx context.Context, vm *fcVM) error {
 
 	if err := p.guest.Rekey(ctx, p.guestVM(vm), fc.Rekey{
 		Secret: vm.secret(), Generation: vm.Generation, AccessToken: vm.AccessToken, ControlSecret: next,
+		Env: claimEnv(vm.ClaimEnv),
 	}); err != nil {
 		return err
 	}
@@ -1148,6 +1159,11 @@ func (p *fcProvider) Start(ctx context.Context, ref string) error {
 			"(it stopped without being slept)\n", ref)
 
 		if err := p.coldBoot(ctx, vm); err != nil {
+			return err
+		}
+
+		// A claimed warm-pool member boots the member's identity from its agent drive.
+		if err := p.reassertClaim(ctx, vm); err != nil {
 			return err
 		}
 
