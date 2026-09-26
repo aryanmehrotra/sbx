@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -676,7 +677,10 @@ func pingExecd(ctx context.Context, hostport string) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+hostport+"/ping", nil)
+	// Readiness, not liveness: an image that configures Jupyter is Running once Jupyter answers
+	// too (execd checks; an image without one costs nothing). An execd too old to know the query
+	// ignores it and answers as it always did.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+hostport+"/ping?ready=code", nil)
 	if err != nil {
 		return err
 	}
@@ -688,6 +692,14 @@ func pingExecd(ctx context.Context, hostport string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode/100 != 2 {
+		var e struct {
+			Message string `json:"message"`
+		}
+
+		if b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)); json.Unmarshal(b, &e) == nil && e.Message != "" {
+			return fmt.Errorf("execd /ping answered %s: %s", resp.Status, e.Message)
+		}
+
 		return fmt.Errorf("execd /ping answered %s", resp.Status)
 	}
 

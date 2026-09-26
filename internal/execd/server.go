@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -235,10 +236,27 @@ func (s *Server) routes() {
 	//
 	// Sealed, it says 503: a sandbox waiting for its re-key is not serving, and the wake proxy
 	// must not be told otherwise.
-	m.Handle("GET /ping", recoverer(s.log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	m.Handle("GET /ping", recoverer(s.log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.sealed.Load() {
 			writeSealed(w)
 			return
+		}
+
+		// ?ready=code is readiness, not liveness: an image that configures Jupyter is not usable
+		// until Jupyter answers, and the API reports a sandbox Running on this. One probe, no
+		// wait - the caller polls - and nothing at all for an image with no Jupyter configured.
+		if r.URL.Query().Get("ready") == "code" && !s.codeUp.Load() {
+			err := s.code.Available(r.Context())
+
+			switch {
+			case err == nil:
+				s.codeUp.Store(true)
+			case !errors.Is(err, jupyter.ErrNotConfigured):
+				writeError(w, http.StatusServiceUnavailable, codeNotSupported, "execd is up, but the "+
+					"image's Jupyter server ("+jupyter.EnvHost+") is not answering yet: "+err.Error())
+
+				return
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)

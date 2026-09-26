@@ -989,6 +989,15 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   removing one that is attached is refused (a sleeping VM's snapshot names its path).
 - **`host` volumes are refused by name** (`HostVolumes`, which docker has): Firecracker has no
   virtio-fs, and the refusal comes before the operator's allow-list, so it names the provider.
+- **Running means usable, Jupyter included.** A cold boot plus Jupyter's own start is slower in a
+  VM than in a container, and the first CI run reported a code-interpreter sandbox Running while
+  its Jupyter was still starting: the SDK's first `/code` call then spent its whole deadline
+  waiting inside execd and failed `context canceled`. The API's readiness probe is now
+  `/ping?ready=code`: execd answers 503 with a sentence while an image-configured Jupyter
+  (`JUPYTER_HOST`/`JUPYTER_PORT`) does not answer, and 200 at once for an image with none - so
+  nothing else waits longer. The same on docker, where it is the same execd. A Jupyter that never
+  comes up fails the create at the ready timeout with execd's sentence as the cause. Plain `/ping`
+  is still liveness, which is what the wake proxy wants.
 - **A guest's console is bounded** (security review of v0.12, M3). `console.log` is the guest's
   serial console, appended to by firecracker for the VM's life, so a guest printing in a loop could
   fill the host's disk. It (and `vmm.log`) is cut back in place to its newest 4 MiB of whole lines
