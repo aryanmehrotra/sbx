@@ -56,16 +56,19 @@ func TestAReleaseNeverCompilesANearbyCheckout(t *testing.T) {
 		return "/built/sbx", nil
 	}
 
-	src, err := Locate(context.Background(), "arm64", "v0.11.0")
+	// The other architecture from this one: a linux build asked for its OWN arch returns itself
+	// (os.Executable) before any of this, which would pass without testing anything.
+	arch := "arm64"
+	if runtime.GOARCH == "arm64" {
+		arch = "amd64"
+	}
+
+	src, err := Locate(context.Background(), arch, "v0.11.0")
 	if err != nil || compiled != 0 || src.Image != Activator+":v0.11.0" {
 		t.Fatalf("release: %+v, %v, compiled %d times", src, err, compiled)
 	}
 
-	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
-		return // a linux/arm64 dev build uses itself
-	}
-
-	if src, err := Locate(context.Background(), "arm64", "dev"); err != nil || compiled != 1 || src.File != "/built/sbx" {
+	if src, err := Locate(context.Background(), arch, "dev"); err != nil || compiled != 1 || src.File != "/built/sbx" {
 		t.Fatalf("dev: %+v, %v, compiled %d times", src, err, compiled)
 	}
 }
