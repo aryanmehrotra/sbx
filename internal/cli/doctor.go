@@ -198,6 +198,21 @@ func Doctor(ctx context.Context) Report {
 
 	rep.Capabilities = append(rep.Capabilities, firecrackerCapabilities(fb.Kind, mkfsPath, bridges, usage)...)
 
+	if fb.Kind == fchost.Direct {
+		iptErr := fc.Available()
+
+		var (
+			guards   fc.GuardCount
+			countErr error
+		)
+
+		if iptErr == nil {
+			guards, countErr = fc.CountGuards(ctx, fc.NewGuard(provider.EgressProxyPort), fc.BridgeSlots())
+		}
+
+		rep.Capabilities = append(rep.Capabilities, firecrackerGuardRows(fb.Kind, iptErr, guards, countErr)...)
+	}
+
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.
 	exp, _ := dockerInfo(ctx, "{{.ExperimentalBuild}}")

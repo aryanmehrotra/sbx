@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -299,8 +300,25 @@ func (g *Guard) Ensure(ctx context.Context, a Addr) (repaired bool, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	whole, err := g.whole(ctx, a)
+	if err != nil || whole {
+		return false, err
+	}
+
+	return true, g.install(ctx, a)
+}
+
+// Whole reports whether a's guard is in place, by the checks Ensure makes, and writes nothing:
+// what `sbx doctor` asks.
+func (g *Guard) Whole(ctx context.Context, a Addr) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	return g.whole(ctx, a)
+}
+
+func (g *Guard) whole(ctx context.Context, a Addr) (bool, error) {
 	chain := a.Chain()
-	whole := true
 
 	for _, s := range g.shares(a) {
 		checks := [][]string{{"-C", chain, "-j", "DROP"}}
@@ -314,20 +332,63 @@ func (g *Guard) Ensure(ctx context.Context, a Addr) (repaired bool, err error) {
 					return false, err
 				}
 
-				whole = false
-
-				break
+				return false, nil
 			}
 		}
+	}
 
-		if !whole {
-			break
+	return true, nil
+}
+
+// GuardCount is how many of this host's microVM bridges have their guard in place.
+type GuardCount struct {
+	Guarded, Total int
+	Unguarded      []string // the bridges that do not
+}
+
+// CountGuards checks every sbxfc<slot> bridge on this host (BridgeSlots) with Whole.
+func CountGuards(ctx context.Context, g *Guard, slots []int) (GuardCount, error) {
+	var c GuardCount
+
+	for _, s := range slots {
+		a := Addr{Slot: s}
+		if a.Valid() != nil {
+			continue
+		}
+
+		c.Total++
+
+		ok, err := g.Whole(ctx, a)
+		if err != nil {
+			return c, err
+		}
+
+		if ok {
+			c.Guarded++
+		} else {
+			c.Unguarded = append(c.Unguarded, a.Bridge())
 		}
 	}
 
-	if whole {
-		return false, nil
+	return c, nil
+}
+
+// BridgeSlots are the slots of the sbxfc<slot> bridges on this host, from its interface names.
+func BridgeSlots() []int {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil
 	}
 
-	return true, g.install(ctx, a)
+	var out []int
+
+	for _, i := range ifs {
+		if n, ok := strings.CutPrefix(i.Name, "sbxfc"); ok {
+			if s, err := strconv.Atoi(n); err == nil && strconv.Itoa(s) == n {
+				out = append(out, s)
+			}
+		}
+	}
+
+	return out
 }

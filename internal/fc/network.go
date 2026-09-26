@@ -12,15 +12,16 @@ import (
 // Networking: a tap per VM on a bridge per sandbox, addressed from the slot.
 //
 // The model is the one `egress: "deny"` already uses for docker (DECISIONS.md, "Egress is denied
-// by a bridge without NAT"): sbx writes no iptables rule, so nothing masquerades traffic from
-// these bridges and nothing routed leaves the host. The host reaches every guest directly on its
+// by a bridge without NAT"): nothing masquerades traffic from these bridges and nothing routed
+// leaves the host. The only rules sbx writes are the guard's (guard.go), which close the host and
+// drop forwarding for the bridges sbx owns. The host reaches every guest directly on its
 // bridge address, which is all the wake proxy needs - it dials the guest's IP and port, exactly
 // as it dials a container's backing port.
 //
 // One bridge per sandbox rather than one for the machine, so two sandboxes do not share a
-// layer-2 segment. Between bridges the host routes only if ip_forward is on and the FORWARD
-// policy lets it; docker turns forwarding on and sets that policy to DROP, and sbx does not
-// write a rule of its own to make sure - `sbx doctor` reports ip_forward so it is visible.
+// layer-2 segment. Between bridges the guard's mangle FORWARD drops keep them apart; where the
+// guard could not be installed the host routes only if ip_forward is on and the FORWARD policy
+// lets it - `sbx doctor` reports both.
 //
 // Addresses are arithmetic, never allocated: 10.231.<slot>.0/24, the bridge at .1, a service at
 // .<its port index + 2>. A slot is already unique per sandbox and an index per service within

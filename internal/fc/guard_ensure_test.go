@@ -136,3 +136,32 @@ func TestARepairLeavesAWholeChainAlone(t *testing.T) {
 		}
 	}
 }
+
+// doctor's count: Whole checks and writes nothing, so a doctor run never repairs behind the
+// operator's back, and a flushed bridge is named.
+func TestCountGuardsNamesAnUnguardedBridgeAndWritesNothing(t *testing.T) {
+	tables := newFakeTables()
+	g := tables.guard()
+
+	for _, s := range []int{3, 5} {
+		if err := g.Install(context.Background(), Addr{Slot: s}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tables.chains["mangle/PREROUTING"] = []string{"-i sbxfc3 -j SBX-FC3", "-j CNI-MARK"} // slot 5's hook gone
+	before := len(tables.cmds)
+
+	c, err := CountGuards(context.Background(), g, []int{3, 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if c.Guarded != 1 || c.Total != 2 || !slices.Equal(c.Unguarded, []string{"sbxfc5"}) {
+		t.Fatalf("count = %+v, want 1/2 with sbxfc5 unguarded", c)
+	}
+
+	if w := writes(tables.cmds[before:]); len(w) > 0 {
+		t.Fatalf("counting wrote %q", w)
+	}
+}

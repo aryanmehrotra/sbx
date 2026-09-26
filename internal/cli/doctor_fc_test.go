@@ -61,7 +61,7 @@ func TestDoctorShowsMicroVMDiskUsage(t *testing.T) {
 
 	last := caps[len(caps)-1]
 	if last.Name != "microVM disk" || !last.Have ||
-		!strings.Contains(last.Detail, "3.0 GiB in 3 VMs under /root/.sbx/fc (memory 768.0 MiB, disks 2.0 GiB, snapshots 256.0 MiB)") {
+		!strings.Contains(last.Detail, "3.0 GiB in 3 VMs under /root/.sbx/fc (memory 768.0 MiB, disks 2.0 GiB, snapshots 256.0 MiB, volumes 0 KiB)") {
 		t.Fatalf("disk row = %+v", last)
 	}
 

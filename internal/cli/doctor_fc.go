@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
@@ -27,8 +28,9 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 
 	caps := []Capability{row}
 
-	// Checked, not assumed: sbx writes no firewall rule, so whether one sandbox's VMs can reach
-	// another's is the host's FORWARD policy, which sbx neither sets nor owns.
+	// The host's FORWARD policy: what isolates sandboxes from each other on a bridge whose guard
+	// is not installed. A guarded bridge drops everything forwarded from or to it on its own (the
+	// mangle FORWARD rules, fc.Guard); firecrackerGuardRows says how many are guarded.
 	if iso.Known {
 		caps = append(caps, Capability{Name: "vm bridges isolated", Have: iso.Isolated,
 			Detail: iso.Detail, Meaning: iso.Meaning})
@@ -38,9 +40,9 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 	// doctor would show a fleet of them filling the disk.
 	if usage != nil {
 		caps = append(caps, Capability{Name: "microVM disk", Have: true,
-			Detail: fmt.Sprintf("%s in %d VMs under %s (memory %s, disks %s, snapshots %s)",
+			Detail: fmt.Sprintf("%s in %d VMs under %s (memory %s, disks %s, snapshots %s, volumes %s)",
 				bytesIEC(usage.Total()), usage.VMs, usage.Root, bytesIEC(usage.Memory),
-				bytesIEC(usage.Disks), bytesIEC(usage.Snapshots))})
+				bytesIEC(usage.Disks), bytesIEC(usage.Snapshots), bytesIEC(usage.Volumes))})
 	}
 
 	return caps
@@ -55,4 +57,45 @@ func bytesIEC(n int64) string {
 	default:
 		return fmt.Sprintf("%d KiB", n>>10)
 	}
+}
+
+// firecrackerGuardRows are the rows that say whether the host is actually closed to its guests:
+// iptables present at all, and how many of this host's sbxfc<slot> bridges have their guard in
+// place (fc.CountGuards, which checks and writes nothing). Direct hosts only, like the rows above.
+func firecrackerGuardRows(kind hostcap.Backend, iptables error, c fc.GuardCount, countErr error) []Capability {
+	if kind != hostcap.Direct {
+		return nil
+	}
+
+	ipt := Capability{Name: "iptables", Have: iptables == nil, Detail: "on PATH",
+		Meaning: "sbx cannot close the host to a microVM's guests: they reach every host service " +
+			"bound to 0.0.0.0 at 10.231.<slot>.1, and docker-published ports. Install iptables"}
+	if iptables != nil {
+		ipt.Detail = iptables.Error()
+	}
+
+	rows := []Capability{ipt}
+
+	if iptables != nil {
+		return rows
+	}
+
+	g := Capability{Name: "vm bridges guarded", Have: true,
+		Detail: fmt.Sprintf("%d/%d", c.Guarded, c.Total)}
+
+	switch {
+	case countErr != nil:
+		g.Have = false
+		g.Detail = "could not check: " + countErr.Error()
+		g.Meaning = "reading the firewall needs root: run `sudo sbx doctor`"
+	case c.Guarded < c.Total:
+		g.Have = false
+		g.Detail += " - unguarded: " + strings.Join(c.Unguarded, ", ")
+		g.Meaning = "those bridges' guests can reach the host and docker-published ports; the daemon " +
+			"puts a guard back on its next reconcile, and the log says why it could not if it cannot"
+	case c.Total == 0:
+		g.Detail = "no microVM bridges on this host"
+	}
+
+	return append(rows, g)
 }

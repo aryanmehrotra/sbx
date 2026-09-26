@@ -7,7 +7,8 @@ import (
 )
 
 // BridgeIsolation is whether this host drops traffic routed from one sandbox's bridge to
-// another's. sbx writes no firewall rule (see network.go), so the answer is the host's: with
+// another's by its own policy. A bridge whose guard is installed drops everything forwarded from
+// or to it itself (fc.Guard's mangle FORWARD rules); this is what isolates the rest: with
 // ip_forward off nothing is routed at all; with it on (docker turns it on) the FORWARD chain's
 // policy decides, and docker sets it to DROP - but sbx neither sets nor owns that policy, so it
 // checks it instead of assuming it.

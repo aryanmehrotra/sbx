@@ -18,10 +18,11 @@ type FirecrackerUsage struct {
 	Memory    int64 // vm.mem, diff.mem and vm.state of every VM
 	Disks     int64 // every VM's root filesystem and agent drive
 	Snapshots int64 // everything under snapshots/
+	Volumes   int64 // every pvc's ext4 image under volumes/
 }
 
 // Total is every byte counted.
-func (u FirecrackerUsage) Total() int64 { return u.Memory + u.Disks + u.Snapshots }
+func (u FirecrackerUsage) Total() int64 { return u.Memory + u.Disks + u.Snapshots + u.Volumes }
 
 // FirecrackerDiskUsage walks the provider's state directory (SBX_FC_STATE, else ~/.sbx/fc). A
 // state directory that does not exist is zero, not an error: nothing was ever created here.
@@ -56,7 +57,22 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 		}
 	}
 
-	err = filepath.WalkDir(filepath.Join(root, "snapshots"), func(p string, d fs.DirEntry, err error) error {
+	u.Snapshots, err = allocatedUnder(filepath.Join(root, "snapshots"))
+	if err != nil {
+		return u, err
+	}
+
+	u.Volumes, err = allocatedUnder(filepath.Join(root, "volumes"))
+
+	return u, err
+}
+
+// allocatedUnder is what every regular file under dir holds on disk; a dir that does not exist
+// holds nothing.
+func allocatedUnder(dir string) (int64, error) {
+	var n int64
+
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
@@ -66,11 +82,11 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 		}
 
 		if d.Type().IsRegular() {
-			u.Snapshots += allocated(p)
+			n += allocated(p)
 		}
 
 		return nil
 	})
 
-	return u, err
+	return n, err
 }
