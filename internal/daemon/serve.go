@@ -211,7 +211,7 @@ func Serve(args []string) error {
 	// sandbox's policy cannot open any of it. Never the host itself, its loopback or a guest.
 	vmEgressAllow := fs.String("vm-egress-allow", envOr("SBX_VM_EGRESS_ALLOW", ""), "comma-separated CIDRs a microVM's egress filter may reach although they are private or on a host subnet (e.g. 10.20.0.0/16 for a registry on the VPC); none unless set")
 
-	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim")
+	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim; on firecracker, keep members paused in RAM instead of asleep on disk (faster claim, costs their memory)")
 
 	var only stringList
 	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
