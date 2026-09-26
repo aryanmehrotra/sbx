@@ -641,7 +641,7 @@ func poolBlocker(raw []byte, req createRequest) string {
 	for _, k := range slices.Sorted(maps.Keys(fields)) {
 		v := fields[k]
 		if !poolFields[k] && present(v) && string(v) != "[]" && string(v) != `""` && string(v) != "false" {
-			return "for this create: it sets " + k + ", which a pool member cannot carry"
+			return fmt.Sprintf("for this create: it sets %q, which a pool member cannot carry", k)
 		}
 	}
 
@@ -676,9 +676,14 @@ func (s *Server) poolDiff(key string) string {
 		var diffs []string
 
 		for i := range got {
-			if got[i] != want[i] {
+			switch {
+			case got[i] == want[i]:
+			case poolKeyFields[i] == "entrypoint":
+				// The caller's argv: it can carry a secret, and is not ours to write to a log.
+				diffs = append(diffs, "entrypoint differs from the pool's")
+			default:
 				diffs = append(diffs, fmt.Sprintf("%s is %s, the pool's is %s", poolKeyFields[i],
-					keyPart(i, got[i]), keyPart(i, want[i])))
+					keyPart(got[i]), keyPart(want[i])))
 			}
 		}
 
@@ -688,23 +693,22 @@ func (s *Server) poolDiff(key string) string {
 		}
 
 		if bestN < 0 || n < bestN {
-			best, bestN = "for image "+got[0]+": "+strings.Join(diffs, "; "), n
+			best, bestN = "for image "+strconv.Quote(got[0])+": "+strings.Join(diffs, "; "), n
 		}
 	}
 
 	if best == "" {
-		best = "for image " + got[0] + ": no pool has this shape"
+		best = "for image " + strconv.Quote(got[0]) + ": no pool has this shape"
 	}
 
 	return best
 }
 
-func keyPart(i int, v string) string {
-	switch {
-	case v == "":
+// keyPart is one of a key's values as a log line may show it: quoted, so a value can never break
+// the line. Never the entrypoint, which poolDiff names without its value.
+func keyPart(v string) string {
+	if v == "" {
 		return "unset"
-	case poolKeyFields[i] == "entrypoint":
-		return "[" + strings.ReplaceAll(v, "\x00", " ") + "]"
 	}
 
 	return strconv.Quote(v)

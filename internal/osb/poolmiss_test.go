@@ -69,7 +69,7 @@ func TestAPoolMissSaysWhichFieldDiffersOncePerWindow(t *testing.T) {
 	other["entrypoint"] = []string{"sleep", "infinity"}
 	h.create(other)
 
-	if misses = poolMisses(mark); len(misses) != 2 || !strings.Contains(misses[1], "entrypoint is [sleep infinity], the pool's is [tail -f /dev/null]") {
+	if misses = poolMisses(mark); len(misses) != 2 || !strings.Contains(misses[1], "entrypoint differs from the pool's") {
 		t.Fatalf("a second, different miss: %q", misses)
 	}
 
@@ -120,5 +120,32 @@ func TestNoPoolMeansNoPoolMissLines(t *testing.T) {
 
 	if m := poolMisses(mark); len(m) != 0 {
 		t.Fatalf("pool-miss lines with no pool configured: %q", m)
+	}
+}
+
+// A pool-miss line is written from request values. The caller's entrypoint is their argv - it
+// can hold a token, and a newline that forges the next log line - so the line names the field
+// that differed, never its value, and every value it does print is quoted.
+func TestAPoolMissNeverLogsTheCallersArgvOrARawNewline(t *testing.T) {
+	h := poolHarness(t, 1, &claimLog{})
+	h.poolReady(1)
+
+	mark := sinkMark()
+
+	c := sdkCreate()
+	c["entrypoint"] = []string{"sh", "-c", "curl -H 'Authorization: s3cr3t'\n2026-09-26 INFO forged line"}
+	h.create(c)
+
+	misses := poolMisses(mark)
+	if len(misses) != 1 {
+		t.Fatalf("pool-miss lines: %q", misses)
+	}
+
+	if strings.Contains(misses[0], "s3cr3t") || strings.Contains(misses[0], "\n") || strings.Contains(misses[0], "forged") {
+		t.Fatalf("the pool-miss line carries the caller's argv: %q", misses[0])
+	}
+
+	if !strings.Contains(misses[0], "entrypoint differs") || !strings.Contains(misses[0], `"python:3.11-slim"`) {
+		t.Fatalf("the pool-miss line no longer says what differed, or does not quote the image: %q", misses[0])
 	}
 }
