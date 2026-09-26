@@ -86,6 +86,11 @@ A warm pool (`--osb-pool IMAGE[=N]`) serves only creates with the same image, en
 resourceLimits as its members, which are the SDKs' defaults (`tail -f /dev/null`, cpu 1, memory
 2Gi); anything else goes cold, and the daemon log names the field that differed - see
 [AGENTS.md](docs/AGENTS.md).
+On an M3+ Mac or Windows, `sbx serve --provider firecracker --osb-addr 127.0.0.1:8080` runs the API
+inside the helper VM (jailer, egress filter and host guard as on Linux) and fronts it here with the
+same key; `--osb-insecure-no-key` and the warm pool are refused on that path. It is unit-tested
+with fakes and **not yet run end to end on a Mac** - see
+[ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **Scale it up**
 | | |

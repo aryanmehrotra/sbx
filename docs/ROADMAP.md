@@ -82,7 +82,8 @@ the helper VM for M3+ Macs and Windows 11 (`internal/fchost`), and egress throug
 each VM bridge with the host closed behind it, and the OpenSandbox API on a Linux host with KVM,
 `pvc` volumes and disk-snapshot forks included (v0.12), and its warm pool (v0.13). Not yet:
 forking a VM's memory under another name (a snapshot fork is its disk); `files`, `init` and host
-volumes into a VM; the OpenSandbox API through a helper VM (refused at startup); the bare-metal
+volumes into a VM; the warm pool through a helper VM (the API itself is served there now,
+unit-tested, not yet run on a Mac); the bare-metal
 measurement the spike asked for, which `SBX_FC_E2E=1 go test -run FirecrackerE2E
 ./internal/provider` takes on any Linux host with KVM (CI runs it on every change, and fails
 without `/dev/kvm`).

@@ -312,6 +312,11 @@ Knowing these saves an agent a turn spent fighting them:
 - **`sbx serve --provider firecracker --osb-addr` with `SBX_FC_JAILER=off`.** Every VMM would be
   unconfined root, which an API handing VMs to callers must not do by default; pass
   `--osb-insecure-no-jailer` to accept it (SECURITY.md).
+- **`sbx serve --provider firecracker --osb-addr --osb-insecure-no-key` on a Mac or Windows.** The
+  API is served in the helper VM and forwarded to this machine's loopback, which containers on a
+  VM-backed engine reach, so it is keyed or not served; the front also refuses to start unless the
+  in-VM API answers 401 without the key. `--osb-pool` is refused there too (not carried into the
+  VM yet) - run creates cold, or the pool on Linux.
 - **A microVM whose host guard cannot be installed** (no iptables, a refused rule). It fails closed
   rather than boot a guest that can reach every host service; `--fc-firewall=unmanaged` hands the
   host firewall to the operator.

@@ -199,6 +199,29 @@ outside. The same cause is in the daemon log (`Failed (runtime_error): ...`) and
 
 ---
 
+## `sbx serve --provider firecracker --osb-addr` on a Mac will not start
+
+On an M3+ Mac or Windows the API runs in the helper VM and is fronted here; the front checks it
+before serving and says which check failed:
+
+- **"answered N to a request without the key"** - the in-VM API is not keyed. The front refuses,
+  because its ssh forward is on this machine's loopback, reachable from containers. Restart
+  `sbx serve --provider firecracker --osb-addr ...`, which rewrites the in-VM daemon's key.
+- **"rejects the key this machine holds"** - the in-VM daemon is still running with another key
+  (a different `--osb-key`, or `~/.sbx/osb/key` was replaced). Restarting `sbx serve` restarts it
+  with this one.
+- **"never answered"** - the in-VM daemon did not start its API. Its log:
+  `colima ssh --profile sbx-fc -- sudo journalctl -u sbx-fc-serve -n 50` (lima: `limactl shell
+  sbx-fc sudo journalctl ...`). A jailer or guard refusal there is the same one Linux gives -
+  `--osb-insecure-no-jailer` is passed through only when typed.
+- **"--osb-insecure-no-key is refused"** / **"--osb-pool ... is not carried into the helper VM"**
+  - by design on this path; drop the flag (or `SBX_OSB_POOL`).
+
+An endpoint the API returned that refuses a connection means the mirror could not bind that port
+here (its log says `cannot open 127.0.0.1:N`): something else on this machine holds it.
+
+---
+
 ## A fork is missing the write I just made
 
 `sbx snapshot` does **not** stop the service first. It takes a crash-consistent copy - the state
