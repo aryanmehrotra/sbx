@@ -996,9 +996,20 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   because firecracker holds it `O_APPEND`. Not a pipe through sbx: firecracker outlives the `sbx`
   process that started it, and a pipe reader would die with that process. Between two reconciles
   (the refresh interval, 15s by default) a guest can overshoot the cap by what its UART can write.
+- **A frozen sandbox runs briefly while it is snapshotted.** A disk snapshot of a paused VM resumes
+  it for the guest's `fssync` (bounded by the seal timeout), pauses it for the copy and leaves it
+  paused - so its workload gets CPU for that moment. Copying an unsynced disk instead would lose
+  whatever the guest had written but not flushed; a caller who froze a sandbox and then snapshots
+  it gets a consistent disk at the price of those few hundred milliseconds of execution.
+- **A disk snapshot keeps the image's env, not the create's.** The saved record is the image config
+  (command, env, working directory) the VM was built from; the `env` a caller passed at create is
+  not in it, so a sandbox created from the snapshot does not inherit it. Docker differs - `docker
+  commit` bakes the container's env into the image. Passing the env again on the create from the
+  snapshot is the workaround; carrying it in the record (less execd's secrets) is a follow-up.
 - **Not yet:** the warm pool (`--osb-pool` is a startup error on firecracker until members are
-  snapshotted asleep and restored per claim), the helper-VM path on a Mac or Windows (`--osb-addr`
-  still refused there at startup), and egress on VM bridges (its own branch).
+  snapshotted asleep and restored per claim) and the helper-VM path on a Mac or Windows
+  (`--osb-addr` still refused there at startup). Egress on VM bridges shipped in v0.12 ("A
+  microVM's only door is its filter").
 
 ### What the API remembers lives in its record file, not in labels
 
