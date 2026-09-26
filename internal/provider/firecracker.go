@@ -1224,7 +1224,7 @@ func (p *fcProvider) Start(ctx context.Context, ref string) error {
 	case fc.StateRunning:
 		return nil
 	case fc.StatePaused:
-		return p.client(ref).Resume(ctx)
+		return p.resume(ctx, vm)
 	}
 
 	dir := p.dir(ref)
@@ -2022,6 +2022,10 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 
 	if guest {
 		if state == fc.StatePaused {
+			if err := p.net.RecheckGuard(ctx, vm.addr()); err != nil {
+				return fcVM{}, err
+			}
+
 			if err := c.Resume(ctx); err != nil {
 				return fcVM{}, err
 			}

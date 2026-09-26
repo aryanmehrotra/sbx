@@ -115,3 +115,42 @@ func TestCountGuardsNamesABridgeWithIPv6On(t *testing.T) {
 		t.Fatalf("CountGuards = %+v, %v", c, err)
 	}
 }
+
+// RecheckGuard is the wake's recheck for a VM resumed in place: a standing bridge's guard is put
+// back or the resume refused, and its tap is never touched (the paused VMM holds it).
+func TestRecheckGuardRepairsOrRefusesAndLeavesTheTapAlone(t *testing.T) {
+	a := Addr{Slot: 5}
+	tables := newFakeTables()
+	g := tables.guard()
+
+	ip := &fakeIP{links: map[string]bool{a.Bridge(): true, a.Tap(): true}}
+	n := &IPNetwork{Owner: -1, Guard: g, Run: ip.run}
+
+	if err := n.RecheckGuard(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+
+	if whole, _ := g.Whole(context.Background(), a); !whole {
+		t.Fatal("RecheckGuard did not put the guard on a standing bridge")
+	}
+
+	for _, c := range ip.cmds {
+		if strings.Contains(c, a.Tap()) {
+			t.Fatalf("RecheckGuard touched the paused VMM's tap: %q", c)
+		}
+	}
+
+	root, _ := sysctlRoot(t, a.Slot, "0")
+	g.ProcSys = root
+	g.Sysctl = func(string, string) error { return errors.New("read-only file system") }
+
+	if err := n.RecheckGuard(context.Background(), a); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("RecheckGuard with IPv6 stuck on = %v, want a refusal", err)
+	}
+
+	// No bridge: nothing a guest could reach the host through.
+	delete(ip.links, a.Bridge())
+	if err := n.RecheckGuard(context.Background(), a); err != nil {
+		t.Fatalf("RecheckGuard with no bridge = %v", err)
+	}
+}

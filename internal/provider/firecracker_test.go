@@ -93,6 +93,19 @@ type fakeNet struct {
 	mu      sync.Mutex
 	taps    map[string]bool
 	bridges map[int]bool
+
+	// rechecked is every RecheckGuard, by slot; guardErr is what it answers.
+	rechecked []int
+	guardErr  error
+}
+
+func (n *fakeNet) RecheckGuard(_ context.Context, a fc.Addr) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.rechecked = append(n.rechecked, a.Slot)
+
+	return n.guardErr
 }
 
 func (n *fakeNet) EnsureTap(_ context.Context, a fc.Addr) error {

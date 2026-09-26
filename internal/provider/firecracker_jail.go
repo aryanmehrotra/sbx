@@ -106,3 +106,13 @@ func guardedNetwork(firewall fc.FirewallMode, jail *fc.JailConfig) *fc.IPNetwork
 
 	return n
 }
+
+// resume thaws vm's paused VMM in place, after the same host-guard recheck every wake gets
+// (EnsureTap): a VM frozen before a firewall flush must not come back to a host open to it.
+func (p *fcProvider) resume(ctx context.Context, vm *fcVM) error {
+	if err := p.net.RecheckGuard(ctx, vm.addr()); err != nil {
+		return err
+	}
+
+	return p.client(vm.Ref).Resume(ctx)
+}

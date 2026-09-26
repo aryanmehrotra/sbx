@@ -65,6 +65,12 @@ func (a Addr) Valid() error {
 // Network creates and removes the host side.
 type Network interface {
 	EnsureTap(ctx context.Context, a Addr) error
+
+	// RecheckGuard verifies - and puts back - the host guard of a's bridge without touching its
+	// tap: for a VM resumed in place, whose VMM already holds the tap. An error is the resume's
+	// refusal (fail closed); nil when the operator owns the firewall, or the bridge is gone.
+	RecheckGuard(ctx context.Context, a Addr) error
+
 	RemoveTap(ctx context.Context, a Addr) error
 	RemoveBridge(ctx context.Context, slot int) error
 }
@@ -239,6 +245,20 @@ func (n *IPNetwork) recheck(ctx context.Context, a Addr) error {
 	}
 
 	return nil
+}
+
+// RecheckGuard is recheck for a VM resumed in place (Network.RecheckGuard): no bridge, nothing
+// a guest could reach the host through.
+func (n *IPNetwork) RecheckGuard(ctx context.Context, a Addr) error {
+	if err := a.Valid(); err != nil {
+		return err
+	}
+
+	if n.Guard == nil || !n.exists(ctx, a.Bridge()) {
+		return nil
+	}
+
+	return n.recheck(ctx, a)
 }
 
 // EnsureGuard is recheck for the daemon's reconcile: a bridge that exists gets its guard checked

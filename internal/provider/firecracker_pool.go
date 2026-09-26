@@ -141,6 +141,12 @@ func (p *fcProvider) claimAsleep(ctx context.Context, vm *fcVM) error {
 // at a newer generation. A failure abandons the VM: stopped, and cold-booted if ever woken.
 func (p *fcProvider) claimAwake(ctx context.Context, vm *fcVM, state string) error {
 	if state == fc.StatePaused {
+		// Refused before anything changed: the member stays frozen, and a later claim may find the
+		// guard back.
+		if err := p.net.RecheckGuard(ctx, vm.addr()); err != nil {
+			return err
+		}
+
 		if err := p.client(vm.Ref).Resume(ctx); err != nil {
 			return errors.Join(fmt.Errorf("resuming %s: %w", vm.Ref, err), p.abandon(ctx, vm))
 		}

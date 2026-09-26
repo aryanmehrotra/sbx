@@ -360,3 +360,51 @@ func TestEveryReadOnlyDriveIsStagedReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// A paused VM resumed - by a Start, or by the claim of a frozen warm-pool member - goes through the
+// same host-guard recheck a wake does, and is refused, still paused, when the guard cannot be put
+// back: resuming it would hand its guests a host that is open to them.
+func TestAResumeIsRefusedWhenTheHostGuardCannotBeRechecked(t *testing.T) {
+	gone := errors.New("refusing to start a microVM on sbxfc1: its host guard was missing")
+
+	resumes := map[string]func(r *rig) (string, error){
+		"start": func(r *rig) (string, error) {
+			ref := r.create(t, "rs", redis)
+			if err := r.p.Start(r.ctx, ref); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := r.p.client(ref).Pause(r.ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			return ref, r.p.Start(r.ctx, ref)
+		},
+		"claim of a frozen member": func(r *rig) (string, error) {
+			ref := r.create(t, "rc", apiSvc("member-token"))
+			if err := r.p.Park(r.ctx, ref, true); err != nil {
+				t.Fatal(err)
+			}
+
+			return ref, r.p.Claim(r.ctx, ref, "caller-token", nil)
+		},
+	}
+
+	for name, resume := range resumes {
+		r, _ := osbRig(t)
+		r.n.guardErr = gone
+
+		ref, err := resume(r)
+		if !errors.Is(err, gone) {
+			t.Fatalf("%s with the guard unrecoverable = %v, want the guard's refusal", name, err)
+		}
+
+		if s := r.l.server(r.p.dir(ref)); s != nil && s.State() == fc.StateRunning {
+			t.Fatalf("%s: the VM was resumed on a bridge whose guard could not be put back", name)
+		}
+
+		if slot := r.vm(t, ref).Slot; !slices.Contains(r.n.rechecked, slot) {
+			t.Fatalf("%s: rechecked slots %v, not the VM's %d", name, r.n.rechecked, slot)
+		}
+	}
+}
