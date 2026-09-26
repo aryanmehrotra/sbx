@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -110,8 +111,13 @@ func (f *fakeTables) run(_ context.Context, args ...string) (string, error) {
 	return "", nil
 }
 
+// noIPv6Root is a /proc/sys with no net/ipv6: a kernel without IPv6, so the fake guard's IPv6 half
+// is whole on every host the tests run on and never reads the real /proc (guard_ipv6_test.go
+// gives it one that has IPv6).
+const noIPv6Root = "/nonexistent/sbx-test-proc-sys"
+
 func (f *fakeTables) guard() *Guard {
-	return &Guard{Run: f.run, Port: 20999, Sysctl: func(string, string) error { return nil }}
+	return &Guard{Run: f.run, Port: 20999, ProcSys: noIPv6Root, Sysctl: func(string, string) error { return nil }}
 }
 
 var guarded = []string{
@@ -217,20 +223,24 @@ func TestNoIptablesIsReportedAndReleaseIsANoOp(t *testing.T) {
 func TestNoIPv6TurnsItOffOnTheBridgeOnly(t *testing.T) {
 	var wrote []string
 
-	g := &Guard{Sysctl: func(p, v string) error {
+	root, file := sysctlRoot(t, 5, "0")
+	sysctlRoot(t, 6, "0") // another bridge, which is not this one's to touch
+
+	g := &Guard{ProcSys: root, Sysctl: func(p, v string) error {
 		wrote = append(wrote, p+"="+v)
-		return nil
+		return realSysctl(p, v)
 	}}
 
 	if err := g.NoIPv6(Addr{Slot: 5}); err != nil {
 		t.Fatal(err)
 	}
 
-	if !slices.Equal(wrote, []string{"/proc/sys/net/ipv6/conf/sbxfc5/disable_ipv6=1"}) {
+	if !slices.Equal(wrote, []string{file + "=1"}) {
 		t.Fatalf("wrote %q", wrote)
 	}
 
-	g.Sysctl = func(string, string) error { return os.ErrNotExist } // a kernel without IPv6
+	g.ProcSys = t.TempDir() // a kernel without IPv6: no net/ipv6 at all
+	g.Sysctl = func(string, string) error { return os.ErrNotExist }
 	if err := g.NoIPv6(Addr{Slot: 5}); err != nil {
 		t.Fatalf("no IPv6 at all = %v", err)
 	}
@@ -265,7 +275,7 @@ func TestABridgeIsGuardedBeforeItIsUpAndReleasedWithIt(t *testing.T) {
 	}
 
 	jump := slices.Index(order, "iptables -I INPUT 1 -i sbxfc5 -j SBX-FC5")
-	v6 := slices.Index(order, "sysctl /proc/sys/net/ipv6/conf/sbxfc5/disable_ipv6")
+	v6 := slices.Index(order, "sysctl "+filepath.Join(noIPv6Root, "net", "ipv6", "conf", "sbxfc5", "disable_ipv6"))
 	up := slices.Index(order, "ip link set sbxfc5 up")
 
 	if jump < 0 || v6 < 0 || up < 0 || jump > up || v6 > up {

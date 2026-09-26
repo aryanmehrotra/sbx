@@ -98,6 +98,11 @@ func firecrackerGuardRows(kind hostcap.Backend, iptables error, c fc.GuardCount,
 	case c.Guarded < c.Total:
 		g.Have = false
 		g.Detail += " - unguarded: " + strings.Join(c.Unguarded, ", ")
+
+		if len(c.IPv6On) > 0 {
+			g.Detail += " (IPv6 not disabled on " + strings.Join(c.IPv6On, ", ") + ": guests reach [::] services over link-local)"
+		}
+
 		g.Meaning = "those bridges' guests can reach the host and docker-published ports; the daemon " +
 			"puts a guard back on its next reconcile, and the log says why it could not if it cannot"
 	case c.Total == 0:

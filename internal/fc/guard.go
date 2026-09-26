@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,13 +57,19 @@ import (
 // is put back within one refresh interval rather than staying gone until the sandbox is recreated.
 //
 // IPv6 is closed by disabling it on the bridge: a guest kernel brings up an fe80:: address on its
-// own, and the host's bridge would answer it with every service bound to [::].
+// own, and the host's bridge would answer it with every service bound to [::]. It is checked with
+// the rest - Ensure reads disable_ipv6 back and re-asserts it, and a bridge where it cannot be made
+// 1 again refuses its VMs like a missing rule does.
 type Guard struct {
 	// Run executes iptables with args. A field so tests see the commands without a netns.
 	Run func(ctx context.Context, args ...string) (string, error)
 
 	// Sysctl writes value to a /proc/sys path. A field for the same reason.
 	Sysctl func(path, value string) error
+
+	// ProcSys is where the sysctls are read and written: "" is /proc/sys. A field so tests use a
+	// directory of their own.
+	ProcSys string
 
 	// Port is the one the guests may reach on their gateway: the egress filter's.
 	Port int
@@ -153,15 +160,58 @@ func (g *Guard) ipt(ctx context.Context, table string, args ...string) error {
 	return err
 }
 
-// NoIPv6 turns IPv6 off on the bridge. Called before the bridge is up, so its link-local
-// address is never assigned. A kernel built without IPv6 has nothing to turn off.
-func (g *Guard) NoIPv6(a Addr) error {
-	err := g.Sysctl("/proc/sys/net/ipv6/conf/"+a.Bridge()+"/disable_ipv6", "1")
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+func (g *Guard) procSys() string {
+	if g.ProcSys == "" {
+		return "/proc/sys"
 	}
 
-	return err
+	return g.ProcSys
+}
+
+// ipv6Path is a's bridge's disable_ipv6.
+func (g *Guard) ipv6Path(a Addr) string {
+	return filepath.Join(g.procSys(), "net", "ipv6", "conf", a.Bridge(), "disable_ipv6")
+}
+
+// NoIPv6 turns IPv6 off on the bridge, and reads it back: a write that did not take is an error,
+// not a guard. Called before the bridge is up, so its link-local address is never assigned, and
+// again by Ensure on every wake and reconcile. A kernel built without IPv6 has nothing to turn off.
+func (g *Guard) NoIPv6(a Addr) error {
+	err := g.Sysctl(g.ipv6Path(a), "1")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	off, rerr := g.IPv6Off(a)
+
+	switch {
+	case rerr != nil:
+		return errors.Join(err, rerr)
+	case !off:
+		return errors.Join(err, fmt.Errorf("%s still reads other than 1 after it was set", g.ipv6Path(a)))
+	}
+
+	return nil
+}
+
+// IPv6Off reports whether a's bridge has IPv6 disabled, reading and writing nothing else: true on
+// a kernel with no IPv6 at all (no net/ipv6 under /proc/sys). A bridge whose file is missing on a
+// kernel that has IPv6 is not off.
+func (g *Guard) IPv6Off(a Addr) (bool, error) {
+	b, err := os.ReadFile(g.ipv6Path(a))
+
+	switch {
+	case err == nil:
+		return strings.TrimSpace(string(b)) == "1", nil
+	case !errors.Is(err, os.ErrNotExist):
+		return false, err
+	}
+
+	if _, serr := os.Stat(filepath.Join(g.procSys(), "net", "ipv6")); errors.Is(serr, os.ErrNotExist) {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // Install makes the bridge's chains and the rules that reach them, in every table. Idempotent.
@@ -296,16 +346,34 @@ func (g *Guard) holds(ctx context.Context, s share, chain string) bool {
 //
 // What it checks is what a flush removes: each hook, and each chain's final DROP. A rule edited
 // out of the middle of a chain by hand is not looked for; an `iptables -F` of either table is.
+// And the IPv6 half: the bridge's disable_ipv6, which a sysctl reload or a network manager can
+// set back to 0, is read and - if it is not 1 - written and read back. Either half that cannot be
+// put back is an error, which the caller refuses the VM on.
 func (g *Guard) Ensure(ctx context.Context, a Addr) (repaired bool, err error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	whole, err := g.whole(ctx, a)
-	if err != nil || whole {
+	tables, err := g.tablesWhole(ctx, a)
+	if err != nil {
 		return false, err
 	}
 
-	return true, g.install(ctx, a)
+	v6off, _ := g.IPv6Off(a) // unreadable is not off: NoIPv6 below says why
+	if tables && v6off {
+		return false, nil
+	}
+
+	if !v6off {
+		if err := g.NoIPv6(a); err != nil {
+			return true, fmt.Errorf("turning IPv6 off on %s again: %w", a.Bridge(), err)
+		}
+	}
+
+	if !tables {
+		return true, g.install(ctx, a)
+	}
+
+	return true, nil
 }
 
 // Whole reports whether a's guard is in place, by the checks Ensure makes, and writes nothing:
@@ -318,6 +386,16 @@ func (g *Guard) Whole(ctx context.Context, a Addr) (bool, error) {
 }
 
 func (g *Guard) whole(ctx context.Context, a Addr) (bool, error) {
+	tables, err := g.tablesWhole(ctx, a)
+	if err != nil || !tables {
+		return false, err
+	}
+
+	return g.IPv6Off(a)
+}
+
+// tablesWhole is the iptables half of whole.
+func (g *Guard) tablesWhole(ctx context.Context, a Addr) (bool, error) {
 	chain := a.Chain()
 
 	for _, s := range g.shares(a) {
@@ -344,6 +422,7 @@ func (g *Guard) whole(ctx context.Context, a Addr) (bool, error) {
 type GuardCount struct {
 	Guarded, Total int
 	Unguarded      []string // the bridges that do not
+	IPv6On         []string // of those, the ones whose IPv6 is not disabled
 }
 
 // CountGuards checks every sbxfc<slot> bridge on this host (BridgeSlots) with Whole.
@@ -367,6 +446,10 @@ func CountGuards(ctx context.Context, g *Guard, slots []int) (GuardCount, error)
 			c.Guarded++
 		} else {
 			c.Unguarded = append(c.Unguarded, a.Bridge())
+
+			if off, _ := g.IPv6Off(a); !off {
+				c.IPv6On = append(c.IPv6On, a.Bridge())
+			}
 		}
 	}
 

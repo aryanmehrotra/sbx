@@ -165,6 +165,11 @@ func TestGuardLive(t *testing.T) {
 		t.Fatalf("Install on a real kernel: %v", err)
 	}
 
+	// And its IPv6 half, as a new bridge gets it (IPNetwork.guard).
+	if err := NewGuard(filter).NoIPv6(a); err != nil {
+		t.Fatalf("NoIPv6 on a real kernel: %v", err)
+	}
+
 	for addr, want := range map[string]bool{published: false, hostSvc: false, filterAddr: true} {
 		if got := fromGuest(addr); got != want {
 			t.Errorf("guarded, guest -> %s = %v, want %v", addr, got, want)
@@ -189,6 +194,29 @@ func TestGuardLive(t *testing.T) {
 
 	if repaired, err := g.Ensure(context.Background(), a); err != nil || !repaired || fromGuest(published) {
 		t.Errorf("Ensure after a removed hook = %v, %v, and the port is reachable again: %v", repaired, err, fromGuest(published))
+	}
+
+	// IPv6 turned back on by hand (a sysctl reload): not whole, and Ensure turns it off again.
+	if v6 := "/proc/sys/net/ipv6/conf/" + a.Bridge() + "/disable_ipv6"; fileExists(v6) {
+		mustWrite := func(v string) {
+			if err := os.WriteFile(v6, []byte(v), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		mustWrite("0")
+
+		if whole, _ := g.Whole(context.Background(), a); whole {
+			t.Error("Whole missed IPv6 turned back on")
+		}
+
+		if repaired, err := g.Ensure(context.Background(), a); err != nil || !repaired {
+			t.Errorf("Ensure after IPv6 was turned on = %v, %v", repaired, err)
+		}
+
+		if b, _ := os.ReadFile(v6); strings.TrimSpace(string(b)) != "1" {
+			t.Errorf("disable_ipv6 = %q after Ensure", b)
+		}
 	}
 
 	t.Logf("real iptables rules:\n%s%s", sh("iptables", "-t", "mangle", "-S"), sh("iptables", "-S", a.Chain()))
@@ -224,3 +252,5 @@ func TestGuardLiveHelper(t *testing.T) {
 		t.Skip("run by TestGuardLive")
 	}
 }
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
