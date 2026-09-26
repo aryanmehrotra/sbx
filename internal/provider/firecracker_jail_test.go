@@ -449,3 +449,25 @@ func TestAJailedVMMCannotWriteAFileBiggerThanItsLargestDrive(t *testing.T) {
 		t.Fatalf("FileSizeLimit %d is far past %d, the largest file the VMM writes: not a bound", got, largest)
 	}
 }
+
+// A jailed VMM joins its VM's own network namespace, where its tap is (fc.IPNetwork.PerVMNetNS);
+// the host network the provider builds for the jailer makes the taps there.
+func TestAJailedVMMRunsInItsVMsOwnNetns(t *testing.T) {
+	r := jailRig(t)
+	r.g.available = false
+
+	ref := r.create(t, "ns1", redis)
+	vm := r.vm(t, ref)
+
+	if got := r.l.specs[len(r.l.specs)-1].Jail.NetNS; got != fc.NetNSPath(vm.addr()) {
+		t.Fatalf("the jailed VMM joins %q, want its VM's namespace %q", got, fc.NetNSPath(vm.addr()))
+	}
+
+	if n := guardedNetwork(fc.FirewallManaged, &fc.JailConfig{UIDBase: fc.DefaultJailUIDBase}); !n.PerVMNetNS {
+		t.Fatal("the jailed provider's network makes taps on the host's network")
+	}
+
+	if n := guardedNetwork(fc.FirewallManaged, nil); n.PerVMNetNS {
+		t.Fatal("an unjailed VMM, which cannot join a namespace, was given taps inside one")
+	}
+}

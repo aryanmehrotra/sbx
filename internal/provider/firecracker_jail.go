@@ -55,7 +55,7 @@ func (p *fcProvider) launchSpec(ctx context.Context, vm *fcVM, stage []fc.Stage)
 
 	uid := p.jail.UID(vm.addr())
 	s.Jail = &fc.JailSpec{Jailer: jailer, UID: uid, GID: uid, CPUs: vm.VCPU, MemMiB: vm.MemMiB, Files: stage,
-		FileSizeLimit: fileSizeLimit(vm, stage)}
+		FileSizeLimit: fileSizeLimit(vm, stage), NetNS: fc.NetNSPath(vm.addr())}
 
 	return s, nil
 }
@@ -131,6 +131,7 @@ func guardedNetwork(firewall fc.FirewallMode, jail *fc.JailConfig) *fc.IPNetwork
 	if jail != nil {
 		n.OwnerOf = jail.UID
 		n.TapOwner = fc.SysTapOwner
+		n.PerVMNetNS = true // the jailer joins it (fc.JailSpec.NetNS); an unjailed VMM could not
 	}
 
 	return n

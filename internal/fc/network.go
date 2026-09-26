@@ -98,6 +98,10 @@ type IPNetwork struct {
 	// Warn is told what the daemon's reconcile could not repair on a bridge already in use.
 	Guard *Guard
 	Warn  func(string)
+
+	// PerVMNetNS makes each VM's tap in a network namespace of its own (ensureNetNS), which its
+	// jailed VMM joins (JailSpec.NetNS): the VMM then has no interface on the host's network.
+	PerVMNetNS bool
 }
 
 // tapOwner is the uid a's tap is made for; -1 leaves it root's.
@@ -163,6 +167,10 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 		}
 	} else if err := n.recheck(ctx, a); err != nil {
 		return err
+	}
+
+	if n.PerVMNetNS {
+		return n.ensureNetNS(ctx, a)
 	}
 
 	owner := n.tapOwner(a)
@@ -279,6 +287,12 @@ func (n *IPNetwork) EnsureGuard(ctx context.Context, slot int) {
 
 // RemoveTap deletes the VM's tap; one already gone is success.
 func (n *IPNetwork) RemoveTap(ctx context.Context, a Addr) error {
+	// Its namespace goes, and the tap and the veth pair with it. Also when this process would not
+	// make one (the jailer turned off since): a namespace left behind holds its name.
+	if _, err := n.Run(ctx, "netns", "del", a.NetNS()); err != nil && n.PerVMNetNS && n.netnsExists(a) {
+		return err
+	}
+
 	if !n.exists(ctx, a.Tap()) {
 		return nil
 	}
@@ -330,4 +344,73 @@ func SysTapOwner(tap string) (int, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 
 	return n, err == nil
+}
+
+// NetNS is the name of a's own network namespace, where its jailed VMM runs: its tap's name.
+func (a Addr) NetNS() string { return a.Tap() }
+
+// NetNSPath is where `ip netns` binds a's namespace, for the jailer's --netns.
+func NetNSPath(a Addr) string { return "/var/run/netns/" + a.NetNS() }
+
+// netnsBridge and netnsUplink are the bridge and the veth end inside a VM's namespace.
+const (
+	netnsBridge = "br0"
+	netnsUplink = "eth0"
+)
+
+// ensureNetNS builds a's namespace from nothing: its tap inside, owned by the VM's uid, bridged
+// there to a veth whose host end - named as a host tap was - is a port of the sandbox's bridge.
+// Rebuilt at every launch (the caller has ended, or is ending, the VM's VMM, which is the only
+// thing that uses it): whatever an earlier VMM, a reboot or a v0.12 host tap left is replaced, so
+// the tap's owner is always this launch's uid and no two VMMs ever share a tap.
+func (n *IPNetwork) ensureNetNS(ctx context.Context, a Addr) error {
+	ns, host, tap, br := a.NetNS(), a.Tap(), a.Tap(), a.Bridge()
+
+	_, _ = n.Run(ctx, "netns", "del", ns)
+
+	if n.exists(ctx, host) {
+		if _, err := n.Run(ctx, "link", "del", host); err != nil {
+			return fmt.Errorf("removing %s's old host link: %w", host, err)
+		}
+	}
+
+	in := func(args ...string) []string { return append([]string{"-n", ns}, args...) }
+
+	steps := [][]string{
+		{"netns", "add", ns},
+		{"link", "add", host, "type", "veth", "peer", "name", netnsUplink, "netns", ns},
+		{"link", "set", host, "master", br},
+		{"link", "set", host, "up"},
+		in("link", "add", netnsBridge, "type", "bridge"),
+		in("link", "set", netnsUplink, "master", netnsBridge),
+	}
+
+	tuntap := in("tuntap", "add", "dev", tap, "mode", "tap")
+	if owner := n.tapOwner(a); owner >= 0 {
+		tuntap = append(tuntap, "user", fmt.Sprint(owner))
+	}
+
+	steps = append(steps, tuntap, in("link", "set", tap, "master", netnsBridge))
+
+	// No IPv6 link-local address on anything inside, then up: an address the VMM could bind is
+	// a network it could use.
+	for _, dev := range []string{netnsBridge, netnsUplink, tap} {
+		steps = append(steps, in("link", "set", "dev", dev, "addrgenmode", "none"), in("link", "set", dev, "up"))
+	}
+
+	for _, args := range steps {
+		if _, err := n.Run(ctx, args...); err != nil {
+			_, _ = n.Run(context.WithoutCancel(ctx), "netns", "del", ns)
+			return fmt.Errorf("making %s's network namespace: %w", host, err)
+		}
+	}
+
+	return nil
+}
+
+// netnsExists reports whether a's namespace is still bound; a field-free check so RemoveTap can
+// tell "was never there" from "could not be removed".
+func (n *IPNetwork) netnsExists(a Addr) bool {
+	_, err := os.Stat(NetNSPath(a))
+	return err == nil
 }

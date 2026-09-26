@@ -148,6 +148,30 @@ connections it holds.
 
 ---
 
+## A microVM fails "making sbxfcN-M's network namespace"
+
+**The host cannot make a network namespace or a veth pair.** With the jailer on (the default), each
+microVM's VMM runs in a namespace of its own (`ip netns add`, then a veth into the sandbox's bridge).
+It needs iproute2 with `ip netns`, a writable `/var/run/netns`, and a kernel with `CONFIG_NET_NS`
+and `CONFIG_VETH` - every distribution kernel has both. The error quotes `ip`'s own words. A
+container or sandbox that runs sbx may forbid namespaces: run sbx on the host, or accept the risk
+with `SBX_FC_JAILER=off` (no jailer and no namespace - SECURITY.md).
+
+## A microVM fails "mounting the image root (overlay ...)"
+
+**The guest kernel has no overlayfs.** A microVM's root is its image, shared read-only, with a
+writable layer laid over it by overlayfs. sbx's pinned kernels have it built in; a kernel named by
+`SBX_FC_KERNEL` may not. Use a kernel with `CONFIG_OVERLAY_FS=y`, or `SBX_FC_ROOTFS=copy` (each VM
+gets a whole copy of its image, as before v0.13 - slower to create without reflink).
+
+## A microVM's workload says "No space left on device"
+
+**Its writable layer is full.** What a microVM writes to `/` goes to a layer of its own, as big as
+`SBX_FC_DISK_SIZE` (10G by default; sparse, so it costs only what is written). Recreate the sandbox
+with a larger `SBX_FC_DISK_SIZE` set for `sbx serve`/`sbx create`, or write the data to a volume.
+
+---
+
 ## A microVM "could not sleep: execd did not confirm its seal"
 
 **The guest did not answer its seal in time** - almost always a host short of memory, which

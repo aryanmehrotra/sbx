@@ -132,6 +132,10 @@ type JailSpec struct {
 	// writes can grow past it. 0 is no limit.
 	FileSizeLimit int64
 
+	// NetNS is the network namespace the jailer joins before it drops privileges (--netns): the VM's own
+	// (NetNSPath), where its tap is. "" is the host's.
+	NetNS string
+
 	// Files are put in the root before the VMM starts: everything it will be told to open.
 	Files []Stage
 }
@@ -180,6 +184,10 @@ func JailerArgs(s LaunchSpec) []string {
 	if len(limits) > 0 {
 		args = append(args, "--cgroup-version", "2", "--parent-cgroup", JailCgroupParent)
 		args = append(args, limits...)
+	}
+
+	if j.NetNS != "" {
+		args = append(args, "--netns", j.NetNS)
 	}
 
 	if j.FileSizeLimit > 0 {

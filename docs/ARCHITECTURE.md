@@ -272,6 +272,9 @@ its VM's directory, as uid `900000 + slot*256 + index`, in `<cgroup2>/sbx-fc/<id
 and memory. The provider hands the VMM only paths in that root (`fc.View`) and takes what it writes back
 (`View.Adopt`: a plain file with one name, or refused). `SBX_FC_JAILER=off` is the unjailed v0.12 launch.
 The host guard beside it fails closed (`fc.IPNetwork`): no guard, no VM, unless `SBX_FC_FIREWALL=unmanaged`.
+A jailed VMM joins its VM's own network namespace (`--netns`, `/var/run/netns/sbxfc<slot>-<index>`),
+where its tap is, bridged to a veth whose host end is a port of the sandbox's bridge - rebuilt at every
+launch; the guard's rules, on the bridge, see the guest's frames as before.
 ## The OpenSandbox API
 
 `sbx serve --osb-addr` also answers OpenSandbox's lifecycle API. An API sandbox is an ordinary sbx

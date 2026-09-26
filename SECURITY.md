@@ -153,8 +153,10 @@ threat model is not "untrusted users share one daemon".**
   - **`SBX_FC_JAILER=off` restores v0.12's risk exactly**, for a development host where the jailer
     cannot run (no cgroup v2, no mknod). Warned on every use; the OpenSandbox API refuses to serve on
     firecracker with it unless `--osb-insecure-no-jailer` is passed.
-  - **No network namespace per VM.** The VMM shares the host's; its tap on the sandbox's bridge is
-    guarded as above. A VMM escape reaches what a non-root uid on the host's network can.
+  - **A network namespace per VM** (v0.13, with the jailer): each VMM runs in its VM's own, holding
+    only its tap (its uid's) bridged to a veth into the sandbox's guarded bridge, with no address
+    and no route. A VMM escape reaches what the guest reaches, not the host's network. Unjailed, the
+    VMM shares the host's namespace and reaches what a root process on it can.
   - **The uid range must hold no real account** (`SBX_FC_JAILER_UID_BASE` moves it); sbx does not
     check `/etc/passwd`.
   - **A compromised VMM owns its chroot's `/`** and can replace its API or vsock socket there with

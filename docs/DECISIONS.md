@@ -1101,9 +1101,20 @@ defensible without it.
   host's, and a VMM of the other kind cannot open them. A wake with the jailer switched the other
   way cold-boots (disk kept, memory lost, said); a saved memory snapshot of the other kind is
   refused by name. Every v0.12 VM's first wake under v0.13 is therefore a cold boot.
-- **Not adopted: a network namespace per VM** (`--netns`). The tap stays on the sandbox's bridge in
-  the host namespace, guarded as above; a namespace would need a veth pair per VM and a second
-  guard.
+- **A network namespace per VM** (`--netns`; *first rejected, then adopted in v0.13*). The first
+  cut kept the tap in the host namespace, reasoning a namespace would need a veth pair per VM "and
+  a second guard". It needs the pair and not the guard: the guard's rules match on the sandbox's
+  bridge (`-i sbxfcN`), and a frame from the guest now reaches that bridge through a veth port
+  instead of a tap port - the same bridge, the same rules. So each VM's namespace
+  (`/var/run/netns/sbxfc<slot>-<index>`) holds its tap - owned by the VM's uid - on a bridge `br0`
+  with `eth0`, the inner end of a veth whose host end (named as the tap was) is a port of the
+  sandbox's bridge; nothing inside has an address (IPv6 `addrgenmode none`) or a route. The jailer
+  joins it before it drops privileges. What that buys: a VMM escape (its uid, no capabilities) has
+  no interface on the host's network at all - no host loopback, no host service, no other link -
+  only the guest's own tap, i.e. exactly what the guest could reach. It is rebuilt from nothing at
+  every launch (a new namespace, tap and pair), so a tap's owner is always this launch's uid and no
+  two VMMs ever open one tap. Unjailed (`SBX_FC_JAILER=off`) there is no namespace: only the jailer
+  can put the VMM in one.
 
 **Escape hatches, each named for what it gives up.** `SBX_FC_JAILER=off`, for a development host
 where the jailer cannot run (no cgroup v2, no mknod): v0.12's behaviour exactly, warned on every

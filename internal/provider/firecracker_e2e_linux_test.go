@@ -208,7 +208,25 @@ func assertJailed(t *testing.T, p *fcProvider, vm *fcVM) {
 		t.Fatalf("the VMM's cgroup is %q", cg)
 	}
 
-	t.Logf("jailed: pid %d uid %s, chrooted in %s", pid, want, fc.JailRoot(dir, vm.Binary))
+	// In its VM's own network namespace, not the host's: an escape has no interface out of it but
+	// the guest's own tap.
+	vmNS, _ := os.Stat(proc + "/ns/net")
+	hostNS, _ := os.Stat("/proc/self/ns/net")
+	bound, _ := os.Stat(fc.NetNSPath(vm.addr()))
+
+	if vmNS == nil || hostNS == nil || os.SameFile(vmNS, hostNS) {
+		t.Fatal("the VMM runs in the host's network namespace")
+	}
+
+	if bound == nil || !os.SameFile(vmNS, bound) {
+		t.Fatalf("the VMM's network namespace is not its VM's (%s)", fc.NetNSPath(vm.addr()))
+	}
+
+	if route, _ := os.ReadFile(proc + "/net/route"); strings.Count(strings.TrimSpace(string(route)), "\n") != 0 {
+		t.Fatalf("the VMM's namespace has routes:\n%s", route)
+	}
+
+	t.Logf("jailed: pid %d uid %s, chrooted in %s, in netns %s", pid, want, fc.JailRoot(dir, vm.Binary), vm.addr().NetNS())
 }
 
 func ping(t *testing.T, host string, port int) string {
