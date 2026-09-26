@@ -50,7 +50,7 @@ TIMEOUT="30m"
 PROVIDER="docker"
 VM=""
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
