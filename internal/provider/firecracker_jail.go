@@ -10,13 +10,34 @@ import (
 )
 
 // view is how vm's VMM sees the host's files: the host's own paths unjailed, its jail's root
-// otherwise (fc.View).
+// otherwise (fc.View). Keyed on the VM's record - how its VMM WAS launched (fcVM.JailUID) - never
+// on p.jail, which is how this process would launch the next one.
 func (p *fcProvider) view(vm *fcVM) fc.View {
-	if p.jail == nil {
+	if vm.JailUID == 0 {
 		return fc.View{}
 	}
 
 	return fc.View{Root: fc.JailRoot(p.dir(vm.Ref), vm.Binary)}
+}
+
+// launchVMM starts spec's VMM for vm, having first recorded - durably - how it is launched, so no
+// process ever speaks to it in the other jail mode.
+func (p *fcProvider) launchVMM(ctx context.Context, vm *fcVM, spec fc.LaunchSpec) error {
+	uid := 0
+	if spec.Jail != nil {
+		uid = spec.Jail.UID
+	}
+
+	if vm.JailUID != uid {
+		vm.JailUID = uid
+		if err := p.save(vm); err != nil {
+			return err
+		}
+	}
+
+	_, err := p.launch.Launch(ctx, spec)
+
+	return err
 }
 
 // launchSpec is the launch of vm's VMM with stage put in its jail - or, unjailed, the plain

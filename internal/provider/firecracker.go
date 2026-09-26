@@ -144,6 +144,14 @@ type fcVM struct {
 	// way cold-boots from the disk instead.
 	SnapshotJailed bool `json:"snapshot_jailed,omitempty"`
 
+	// JailUID is the uid the VM's current (or last) VMM was launched as under the jailer; 0 is a
+	// VMM launched unjailed - and every record written before the jailer existed, which has no
+	// such field. Recorded, and saved, BEFORE the launch: every later call to that VMM (a
+	// snapshot, a commit, a socket check) must speak to it as it was launched, not as this
+	// process's SBX_FC_JAILER would launch the next one. A v0.12 VMM slept by a jailed daemon and
+	// told "/vm.state.new" would write its RAM into the host's /.
+	JailUID int `json:"jail_uid,omitempty"`
+
 	// Restored: the running process was loaded from vm.mem with dirty tracking, so a Diff on
 	// top of vm.mem is a correct snapshot. False after a cold boot, and after a Commit, which
 	// resets Firecracker's dirty bitmap and would make the next Diff miss pages.
@@ -958,7 +966,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		return err
 	}
 
-	if _, err := p.launch.Launch(ctx, spec); err != nil {
+	if err := p.launchVMM(ctx, vm, spec); err != nil {
 		return err
 	}
 
@@ -1160,7 +1168,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	}
 
 	vm.SnapshotValid = true
-	vm.SnapshotJailed = p.jail != nil
+	vm.SnapshotJailed = vm.JailUID != 0
 	vm.Restored = false
 
 	return p.save(vm)
@@ -1326,7 +1334,7 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 		return p.revalidate(vm, err)
 	}
 
-	if _, err := p.launch.Launch(ctx, spec); err != nil {
+	if err := p.launchVMM(ctx, vm, spec); err != nil {
 		return p.revalidate(vm, err)
 	}
 
@@ -2048,7 +2056,7 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 	}
 
 	snap := *vm
-	snap.SnapshotJailed = p.jail != nil
+	snap.SnapshotJailed = vm.JailUID != 0
 
 	// A snapshot resets Firecracker's dirty bitmap; the next sleep must be Full.
 	vm.Restored = false

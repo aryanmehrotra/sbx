@@ -233,3 +233,86 @@ func TestAnUnmanagedHostReportsNoMissingGuard(t *testing.T) {
 		t.Fatalf("managed without iptables: %q", w)
 	}
 }
+
+// The jail mode of a running VMM is its own, recorded when it was launched - not whatever this
+// process's SBX_FC_JAILER says now. An unjailed VMM (a v0.12 record, which has no jail_uid at all)
+// slept by a daemon with the jailer on must be told host paths; told "/vm.state.new" it writes a
+// RAM-sized file into the host's /. And a jailed one slept with the jailer switched off must still
+// be told paths in its root, and have them taken back out.
+func TestTheJailModeOfARunningVMMIsTheOneItWasLaunchedWith(t *testing.T) {
+	for _, jailedAtLaunch := range []bool{true, false} {
+		r := newRig(t)
+		r.p.jailer = func(context.Context) (string, error) { return "/pinned/jailer", nil }
+		cfg := &fc.JailConfig{UIDBase: fc.DefaultJailUIDBase}
+
+		if jailedAtLaunch {
+			r.p.jail = cfg
+		}
+
+		ref := r.create(t, "jm", redis)
+		dir := r.p.dir(ref)
+
+		if err := r.p.Start(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+
+		launched := r.l.specs[len(r.l.specs)-1]
+
+		// The daemon restarts with the jailer the other way while the VMM runs.
+		if jailedAtLaunch {
+			r.p.jail = nil
+		} else {
+			r.p.jail = cfg
+		}
+
+		if err := r.p.Stop(r.ctx, ref); err != nil {
+			t.Fatalf("jailed at launch %v: Stop = %v", jailedAtLaunch, err)
+		}
+
+		calls := r.l.history[len(r.l.history)-1].Calls()
+		got := body(calls, "PUT /snapshot/create", "snapshot_path")
+
+		want := fc.View{}.Path(filepath.Join(dir, fc.StateName+".new"))
+		if launched.Jail != nil {
+			want = fc.View{Root: fc.JailRoot(dir, launched.Binary)}.Path(filepath.Join(dir, fc.StateName+".new"))
+		}
+
+		if got != want {
+			t.Fatalf("jailed at launch %v: snapshot_path = %q, want %q", jailedAtLaunch, got, want)
+		}
+
+		vm := r.vm(t, ref)
+		if !vm.SnapshotValid || vm.SnapshotJailed != (launched.Jail != nil) {
+			t.Fatalf("jailed at launch %v: valid %v, snapshot_jailed %v", jailedAtLaunch, vm.SnapshotValid, vm.SnapshotJailed)
+		}
+
+		if b, err := os.ReadFile(filepath.Join(dir, fc.StateName)); err != nil || len(b) == 0 {
+			t.Fatalf("jailed at launch %v: the snapshot is not the VM's: %v", jailedAtLaunch, err)
+		}
+	}
+}
+
+// A commit of a running VMM takes the same view: its own launch's, not the process's.
+func TestACommitUsesTheJailModeTheVMMWasLaunchedWith(t *testing.T) {
+	r := newRig(t)
+	r.p.jailer = func(context.Context) (string, error) { return "/pinned/jailer", nil }
+
+	ref := r.create(t, "jc", redis)
+	dir := r.p.dir(ref)
+
+	if err := r.p.Start(r.ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	r.p.jail = &fc.JailConfig{UIDBase: fc.DefaultJailUIDBase}
+
+	const img = "sbx-snap-jc-cache:latest"
+	if err := r.p.Commit(r.ctx, ref, img); err != nil {
+		t.Fatal(err)
+	}
+
+	got := body(r.l.server(dir).Calls(), "PUT /snapshot/create", "snapshot_path")
+	if want := filepath.Join(r.p.snapshotDir(img), fc.StateName); !strings.HasPrefix(got, filepath.Dir(want)) {
+		t.Fatalf("an unjailed VMM was told %q, want a host path under %s", got, filepath.Dir(want))
+	}
+}
