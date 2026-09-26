@@ -102,15 +102,18 @@ threat model is not "untrusted users share one daemon".**
   the internet only through the egress filter on `10.231.<slot>.1:20999`, which refuses the host's
   own addresses and every other sandbox's unless a rule names them. Two consequences:
   - **The host is closed to a guest except for that filter port** - where sbx could install it.
-    Each bridge gets an INPUT chain `SBX-FC<slot>` (replies returned to your rules, the filter port
-    accepted, the rest dropped) and IPv6 off, made with the bridge and removed with it
+    Each bridge gets a chain `SBX-FC<slot>` in INPUT (replies returned to your rules, the filter
+    port accepted, the rest dropped) and another in mangle PREROUTING that drops what a guest starts
+    before docker's DNAT can turn it into forwarded traffic - so a docker-published port, a
+    container's IP and a NodePort are closed too, not only services bound to the host - plus
+    mangle FORWARD drops from and to the bridge, and IPv6 off, made with the bridge and removed with it
     (DECISIONS.md, "A microVM's only door is its filter"). **Where `iptables` is missing or refuses,
     the bridge still comes up and a guest reaches every host service bound to `0.0.0.0` at
     `10.231.<slot>.1`**; the create and the daemon's log say so. Bridges made by v0.11 are not
     guarded until the sandbox is recreated.
-  - **Isolation between sandboxes is the host's FORWARD policy.** With `ip_forward=1` (docker
-    turns it on) one sandbox's VMs can reach another's unless the policy is `DROP`, which docker
-    sets but sbx neither sets nor owns. `sbx doctor` checks it (`vm bridges isolated`), and every
+  - **Isolation between sandboxes is sbx's where the guard is installed** (the mangle FORWARD
+    drops), and the host's FORWARD policy where it is not. With `ip_forward=1` (docker turns it on)
+    an unguarded bridge's VMs can reach another's unless the policy is `DROP`. `sbx doctor` checks it (`vm bridges isolated`), and every
     create warns when it is not confirmed.
 - **In a microVM, the guest's root can read execd's own secrets** - the access token and the
   boot control secret, from `/proc/1/environ` and `/init.json` on the agent drive. execd strips

@@ -22,8 +22,10 @@ type fakeTables struct {
 func newFakeTables() *fakeTables {
 	// Somebody else's rules, which nothing sbx does may touch.
 	return &fakeTables{chains: map[string][]string{
-		"INPUT":  {"-i eth0 -j ACCEPT", "-i docker0 -j DOCKER-IN"},
-		"OTHERS": {"-j RETURN"},
+		"INPUT":             {"-i eth0 -j ACCEPT", "-i docker0 -j DOCKER-IN"},
+		"OTHERS":            {"-j RETURN"},
+		"mangle/PREROUTING": {"-j CNI-MARK"},
+		"mangle/FORWARD":    {},
 	}}
 }
 
@@ -39,11 +41,17 @@ func (f *fakeTables) run(_ context.Context, args ...string) (string, error) {
 		return "", errors.New("iptables: No chain/target/match by that name")
 	}
 
+	// Chains are keyed "<table>/<chain>", the filter table's by bare name.
+	table := ""
+	if args[0] == "-t" {
+		table, args = args[1]+"/", args[2:]
+	}
+
 	if args[0] == "-n" { // -n -L chain
 		args = args[1:]
 	}
 
-	op, chain, rule := args[0], args[1], strings.Join(args[2:], " ")
+	op, chain, rule := args[0], table+args[1], strings.Join(args[2:], " ")
 	rules, exists := f.chains[chain]
 	missing := errors.New("iptables: No chain/target/match by that name")
 
@@ -69,9 +77,13 @@ func (f *fakeTables) run(_ context.Context, args ...string) (string, error) {
 			return "", missing
 		}
 
-		for _, rs := range f.chains {
+		for name, rs := range f.chains {
+			if !strings.HasPrefix(name, table) || (table == "" && strings.Contains(name, "/")) {
+				continue // another table's chains cannot refer to this one
+			}
+
 			for _, r := range rs {
-				if strings.HasSuffix(r, "-j "+chain) {
+				if strings.HasSuffix(r, "-j "+args[1]) {
 					return "", errors.New("iptables: Too many links")
 				}
 			}

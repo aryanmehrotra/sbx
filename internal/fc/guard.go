@@ -19,18 +19,36 @@ import (
 // sbx wrote nothing to it, so it was the operator's to close (SECURITY.md).
 //
 // Now sbx closes it for the bridges it owns, and only those. Each bridge gets its own chain,
-// SBX-FC<slot>, reached by one jump at the top of INPUT that matches that bridge by name:
+// SBX-FC<slot>, in two tables, each reached by rules at the top of that table's built-in chains
+// that match the bridge by name:
 //
+//	mangle:
+//	-A SBX-FC<slot> -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN   replies
+//	-A SBX-FC<slot> -p tcp -d 10.231.<slot>.1 --dport <filter> -j RETURN   the egress filter
+//	-A SBX-FC<slot> -j DROP                                                everything else
+//	-I PREROUTING 1 -i sbxfc<slot> -j SBX-FC<slot>
+//	-I FORWARD 1 -i sbxfc<slot> -j DROP
+//	-I FORWARD 1 -o sbxfc<slot> -j DROP
+//	filter:
 //	-A SBX-FC<slot> -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN   replies to the host
 //	-A SBX-FC<slot> -p tcp -d 10.231.<slot>.1 --dport <filter> -j ACCEPT   the egress filter
 //	-A SBX-FC<slot> -j DROP                                                everything else
 //	-I INPUT 1 -i sbxfc<slot> -j SBX-FC<slot>
 //
+// INPUT alone is not enough. Docker's nat PREROUTING DNATs every packet addressed to a local
+// address (addrtype LOCAL) and a published port onto the container behind it, so a guest dialling
+// 10.231.<slot>.1:<published port> becomes FORWARD traffic that DOCKER's filter chain accepts -
+// and never reaches INPUT. A container's own IP and a kube-proxy NodePort are the same story. The
+// mangle chain runs after conntrack and before nat, so it drops what a guest starts before DNAT
+// can rewrite it; docker writes nothing to mangle, so a docker restart cannot reorder it. The
+// FORWARD drops say the rest: a guest's bridge has no NAT and no route, the host reaches its
+// guests as OUTPUT, and nothing is ever meant to be forwarded from or to it.
+//
 // Replies RETURN rather than ACCEPT, so the host's own rules still decide the traffic it
-// started (the wake proxy dialling a guest). The filter port is ACCEPTed, so a host whose INPUT
-// policy is DROP still lets a guest reach its filter. Nothing outside those two names is read,
-// written or reordered, and the pair goes away with the bridge (Release), so a host with no
-// microVM sandbox has no rule of sbx's at all.
+// started (the wake proxy dialling a guest). The filter port is ACCEPTed in filter, so a host
+// whose INPUT policy is DROP still lets a guest reach its filter. Nothing outside those names is
+// read, written or reordered, and all of it goes away with the bridge (Release), so a host with
+// no microVM sandbox has no rule of sbx's at all.
 //
 // It is made when the bridge is made, not on every wake: a wake is on the latency path, and the
 // bridge and its chain have the same life - a reboot takes both, and the next wake remakes both.
@@ -75,10 +93,64 @@ func NewGuard(port int) *Guard {
 	}
 }
 
-// Chain is the per-bridge chain's name.
+// Chain is the per-bridge chain's name. The same name in each table the guard writes to: tables
+// have separate namespaces, and one name makes `iptables-save | grep SBX-FC5` find all of it.
 func (a Addr) Chain() string { return "SBX-FC" + strconv.Itoa(a.Slot) }
 
-func (g *Guard) jump(a Addr) []string { return []string{"INPUT", "-i", a.Bridge(), "-j", a.Chain()} }
+// share is one table's part of the guard: a chain of the guard's own, and the rules at the top of
+// that table's built-in chains that send the bridge's traffic to it (or drop it outright).
+type share struct {
+	table string     // "" is filter
+	rules [][]string // the chain's contents, in order
+	hooks [][]string // {built-in chain, rule...}, each inserted at position 1
+}
+
+// shares is the whole guard for a, built only from a's integers and the filter port.
+func (g *Guard) shares(a Addr) []share {
+	br, chain, gw, port := a.Bridge(), a.Chain(), a.Gateway(), strconv.Itoa(g.Port)
+
+	return []share{
+		{
+			// Before nat: docker's PREROUTING DNATs a guest's packet for 10.231.<slot>.1:<a
+			// published port> onto a container, after which it is FORWARD traffic that DOCKER
+			// accepts and INPUT never sees. Mangle runs after conntrack (so a reply to the host's
+			// own dial is known as one) and before nat, and docker writes nothing to it.
+			table: "mangle",
+			rules: [][]string{
+				{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
+				{"-p", "tcp", "-d", gw, "--dport", port, "-j", "RETURN"},
+				{"-j", "DROP"},
+			},
+			hooks: [][]string{
+				// A guest has no route anywhere, and nothing is routed to it: the bridge has no
+				// NAT and is reached only by the host itself, which is OUTPUT, not FORWARD.
+				{"FORWARD", "-o", br, "-j", "DROP"},
+				{"FORWARD", "-i", br, "-j", "DROP"},
+				{"PREROUTING", "-i", br, "-j", chain},
+			},
+		},
+		{
+			table: "",
+			rules: [][]string{
+				{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
+				{"-p", "tcp", "-d", gw, "--dport", port, "-j", "ACCEPT"},
+				{"-j", "DROP"},
+			},
+			hooks: [][]string{{"INPUT", "-i", br, "-j", chain}},
+		},
+	}
+}
+
+// ipt runs iptables against table ("" is filter).
+func (g *Guard) ipt(ctx context.Context, table string, args ...string) error {
+	if table != "" {
+		args = append([]string{"-t", table}, args...)
+	}
+
+	_, err := g.Run(ctx, args...)
+
+	return err
+}
 
 // NoIPv6 turns IPv6 off on the bridge. Called before the bridge is up, so its link-local
 // address is never assigned. A kernel built without IPv6 has nothing to turn off.
@@ -91,51 +163,62 @@ func (g *Guard) NoIPv6(a Addr) error {
 	return err
 }
 
-// Install makes the bridge's chain and its jump. Idempotent. On any failure it removes what it
-// made, so the host is left either guarded or exactly as it was - never with half a chain.
+// Install makes the bridge's chains and the rules that reach them, in every table. Idempotent.
+// On any failure it removes what it made, so the host is left either guarded or exactly as it
+// was - never with half a guard.
 func (g *Guard) Install(ctx context.Context, a Addr) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	return g.install(ctx, a)
+}
+
+func (g *Guard) install(ctx context.Context, a Addr) error {
 	chain := a.Chain()
+	shares := g.shares(a)
 
-	if _, err := g.Run(ctx, "-N", chain); err != nil {
-		if errors.Is(err, ErrNoFirewall) {
-			return err
+	// Every chain filled before anything jumps to one: a jump to a chain still being written
+	// would be a moment with the rules half there.
+	for _, s := range shares {
+		if err := g.ipt(ctx, s.table, "-N", chain); err != nil {
+			if errors.Is(err, ErrNoFirewall) {
+				return err
+			}
+
+			// Left by a bridge deleted without sbx: reuse the name, rebuild the contents.
+			if lerr := g.ipt(ctx, s.table, "-n", "-L", chain); lerr != nil {
+				return errors.Join(err, g.release(ctx, a))
+			}
 		}
 
-		// Left by a bridge deleted without sbx: reuse the name, rebuild the contents.
-		if _, lerr := g.Run(ctx, "-n", "-L", chain); lerr != nil {
-			return err
-		}
-	}
-
-	// Filled before anything jumps to it: a jump to a chain still being written would be a
-	// moment with the rules half there.
-	for _, rule := range [][]string{
-		{"-F", chain},
-		{"-A", chain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
-		{"-A", chain, "-p", "tcp", "-d", a.Gateway(), "--dport", strconv.Itoa(g.Port), "-j", "ACCEPT"},
-		{"-A", chain, "-j", "DROP"},
-	} {
-		if _, err := g.Run(ctx, rule...); err != nil {
+		if err := g.ipt(ctx, s.table, "-F", chain); err != nil {
 			return errors.Join(err, g.release(ctx, a))
 		}
+
+		for _, r := range s.rules {
+			if err := g.ipt(ctx, s.table, append([]string{"-A", chain}, r...)...); err != nil {
+				return errors.Join(err, g.release(ctx, a))
+			}
+		}
 	}
 
-	if _, err := g.Run(ctx, append([]string{"-C"}, g.jump(a)...)...); err == nil {
-		return nil
-	}
+	for _, s := range shares {
+		for _, h := range s.hooks {
+			if g.ipt(ctx, s.table, append([]string{"-C"}, h...)...) == nil {
+				continue
+			}
 
-	if _, err := g.Run(ctx, append([]string{"-I", "INPUT", "1"}, g.jump(a)[1:]...)...); err != nil {
-		return errors.Join(err, g.release(ctx, a))
+			if err := g.ipt(ctx, s.table, append([]string{"-I", h[0], "1"}, h[1:]...)...); err != nil {
+				return errors.Join(err, g.release(ctx, a))
+			}
+		}
 	}
 
 	return nil
 }
 
-// Release removes the bridge's jump and chain. Idempotent: a bridge that never had them, or
-// whose rules were already removed, is success.
+// Release removes the bridge's rules and chains from every table. Idempotent: a bridge that
+// never had them, or whose rules were already removed, is success.
 func (g *Guard) Release(ctx context.Context, a Addr) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -144,30 +227,39 @@ func (g *Guard) Release(ctx context.Context, a Addr) error {
 }
 
 func (g *Guard) release(ctx context.Context, a Addr) error {
-	// Every copy of the jump, in case two processes inserted one each.
-	for range 16 {
-		if _, err := g.Run(ctx, append([]string{"-D"}, g.jump(a)...)...); err != nil {
-			if errors.Is(err, ErrNoFirewall) {
-				return nil // nothing could ever have been installed
-			}
+	chain := a.Chain()
 
-			break
+	var errs []error
+
+	for _, s := range g.shares(a) {
+		for _, h := range s.hooks {
+			// Every copy, in case two processes inserted one each.
+			for range 16 {
+				if err := g.ipt(ctx, s.table, append([]string{"-D"}, h...)...); err != nil {
+					if errors.Is(err, ErrNoFirewall) {
+						return nil // nothing could ever have been installed
+					}
+
+					break
+				}
+			}
+		}
+
+		if g.ipt(ctx, s.table, "-n", "-L", chain) != nil {
+			continue // no chain: nothing to remove
+		}
+
+		if err := g.ipt(ctx, s.table, "-F", chain); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
+		if err := g.ipt(ctx, s.table, "-X", chain); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	chain := a.Chain()
-
-	if _, err := g.Run(ctx, "-n", "-L", chain); err != nil {
-		return nil // no chain: nothing to remove
-	}
-
-	if _, err := g.Run(ctx, "-F", chain); err != nil {
-		return err
-	}
-
-	_, err := g.Run(ctx, "-X", chain)
-
-	return err
+	return errors.Join(errs...)
 }
 
 // Available is nil where Install can run: iptables is on PATH.

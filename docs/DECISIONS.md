@@ -822,8 +822,8 @@ one a VM user cannot see from inside the spec. So each `sbxfc<slot>` gets a chai
 jump at the top of INPUT matched to that bridge by name, and IPv6 is switched off on the bridge so
 a guest's link-local address has nothing to talk to. What makes it safe to own:
 
-- **Scoped by name.** Nothing outside `SBX-FC<slot>` and its one jump is read, written or
-  reordered; a host with no microVM sandbox has no rule of sbx's.
+- **Scoped by name.** Nothing outside the `SBX-FC<slot>` chains and the rules that match `sbxfc<slot>`
+  is read, written or reordered; a host with no microVM sandbox has no rule of sbx's.
 - **Made with the bridge, before it is up; removed with it** - and collected by `RemoveBridge` even
   when the bridge was deleted by hand. A failure halfway removes what was made: guarded, or exactly
   as before, never half a chain.
@@ -835,6 +835,32 @@ a guest's link-local address has nothing to talk to. What makes it safe to own:
 
 Measured in the same helper VM, with a host listener on `0.0.0.0:18999`: the host reached
 `10.231.0.1:18999`; the guest timed out on it, and got 403 asking the filter for it.
+
+**INPUT alone did not close it: a docker-published port is not an INPUT packet** (security review
+of v0.12, H1). Docker's nat `PREROUTING` DNATs every packet for a local address (`addrtype LOCAL`)
+on a published port onto the container behind it. A guest dialling `10.231.<slot>.1:<published
+port>` is therefore FORWARD traffic by the time the filter table sees it, and `DOCKER`'s chain
+accepts it - `SBX-FC<slot>` in INPUT is never consulted. A container's own IP and a kube-proxy
+NodePort are the same shape. So the guard has a second half, in `mangle`:
+
+- `SBX-FC<slot>` in mangle (replies `RETURN`, `-p tcp -d <gw> --dport 20999` `RETURN`, the rest
+  `DROP`), reached from the top of mangle `PREROUTING` by `-i sbxfc<slot>`. Mangle runs after
+  conntrack, so the reply to a host's own dial is still known as one, and before nat, so a guest's
+  packet is dropped before DNAT can rewrite it.
+- `-i sbxfc<slot> -j DROP` and `-o sbxfc<slot> -j DROP` at the top of mangle `FORWARD`. Nothing is
+  ever meant to be routed from or onto a guest bridge: it has no NAT, and the host reaches its
+  guests as OUTPUT. This also makes isolation between sandboxes sbx's own rather than the host's
+  FORWARD policy, wherever the guard is installed.
+
+Mangle rather than filter `FORWARD` or `DOCKER-USER` because docker writes nothing to mangle: a
+docker restart re-inserts its jumps at the top of filter `FORWARD`, which would put `DOCKER`'s
+accepts back in front of ours. The two tables are installed and removed as one: every chain filled
+before any rule jumps to one, and a failure anywhere removes what was made in both.
+
+Verified by the rule-set tests in `internal/fc` (`guard_forward_test.go`: the exact mangle chain,
+the hooks, idempotence, and nothing left behind by a failure at any step), against a fake
+iptables that interprets the commands. The live check - a guest dialling a docker-published port on
+its gateway and timing out - runs in CI on a real host; it cannot run on the development Mac.
 
 **Rejected: nftables directly.** It is the better API, and docker - the other writer on every host
 that runs this - still speaks `iptables`, which on current distributions is the nft backend anyway.
