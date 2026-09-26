@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aryanmehrotra/sbx/internal/fc"
@@ -83,5 +84,36 @@ func TestDrivePlan(t *testing.T) {
 
 	if !slices.Equal(got, want) {
 		t.Fatalf("plan:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// docker writes /etc/hosts too, so `docker export` gives an empty one, and in a VM with no DNS
+// "localhost" and the sandbox's own hostname then resolve to nothing - a workload (a Jupyter
+// server binding "localhost", a tool resolving its own name) sees a lookup fail that never fails
+// in a container. fc-init fills it the way docker does: loopback names, and the hostname.
+func TestWriteHostsGivesLocalhostAndTheHostname(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHosts(p, "sandbox")
+
+	b, _ := os.ReadFile(p)
+	for _, want := range []string{"127.0.0.1\tlocalhost", "::1\tlocalhost ip6-localhost ip6-loopback", "127.0.1.1\tsandbox"} {
+		if !strings.Contains(string(b), want+"\n") {
+			t.Fatalf("/etc/hosts = %q, want a line %q", b, want)
+		}
+	}
+
+	// An image that ships its own entries keeps them: appended to, not replaced.
+	if err := os.WriteFile(p, []byte("10.0.0.9\tdb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHosts(p, "sandbox")
+
+	if b, _ := os.ReadFile(p); !strings.HasPrefix(string(b), "10.0.0.9\tdb\n") || !strings.Contains(string(b), "127.0.0.1\tlocalhost") {
+		t.Fatalf("/etc/hosts = %q", b)
 	}
 }

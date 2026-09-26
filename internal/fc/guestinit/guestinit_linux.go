@@ -118,6 +118,7 @@ func Main(_ []string) int {
 	}
 
 	writeHostname("/etc/hostname", cfg.Hostname)
+	writeHosts("/etc/hosts", cfg.Hostname)
 
 	wd := cfg.WorkingDir
 	if wd == "" {
