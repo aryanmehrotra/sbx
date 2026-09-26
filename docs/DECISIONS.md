@@ -696,6 +696,33 @@ ten minutes. Silent, it cost a test run its warm path unnoticed: curl creates om
 rather than per create, because a client that misses does so on every create, and a line each
 time would bury the log it is meant to explain. Not a warning: going cold is correct, only slower.
 
+### Warm-pool members wait asleep on a microVM, and each is its own VM
+
+On `--provider firecracker` (Linux, `/dev/kvm`) a member is an ordinary API microVM of the pool
+key, born running with execd healthy, then *parked* by the provider (`PoolParker`): by default
+**asleep** - execd sealed, a Full snapshot, the VMM ended - so a waiting member holds no RAM and a
+memory file as big as its RAM (`sbx doctor` says how much the pool holds); with
+`--osb-pool-freeze`, **frozen** - Firecracker's pause, memory resident, no CPU. The opposite
+default from docker's, because the trade is different: a waiting container costs `tail` and an
+idle execd, a waiting VM costs its whole RAM.
+
+A claim is one provider call under the VM's lock: restore (or resume), then one re-key carrying
+the token the API minted for the request, the caller's env and a new control secret. Not
+`POST /sbx/claim`: a restored execd is sealed and answers nobody until its host re-keys it over
+vsock, so the re-key is the claim. The record takes the caller's token before the wake, so every
+later restore re-keys with it; and a claimed VM that dies awake and cold-boots is re-keyed again
+after the boot, because its agent drive still carries the member's token and none of the
+caller's env (rebuilding that drive per claim would cost an mkfs on the claim path). A member
+whose re-key fails is stopped and discarded, the cause logged, and the create goes cold - never
+handed out. The daemon holds every member, so no connection can wake one with its own token.
+
+Each member boots from its own disk, with its own drives, slot, tap, token and control secret:
+no two share memory. Forking members from one template's snapshot would make the pool far
+cheaper to fill, and is deliberately not this release - a memory clone carries the kernel-set
+guest IP and every secret userspace made before the snapshot, and re-key replaces only execd's
+("The OpenSandbox API on a microVM"). The helper-VM path on a Mac or Windows has no `PoolParker`
+and still refuses `--osb-pool` at startup.
+
 ---
 
 ### One host probe decides the microVM path, and a Mac is sent to a helper VM, not refused
@@ -1006,9 +1033,9 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   not in it, so a sandbox created from the snapshot does not inherit it. Docker differs - `docker
   commit` bakes the container's env into the image. Passing the env again on the create from the
   snapshot is the workaround; carrying it in the record (less execd's secrets) is a follow-up.
-- **Not yet:** the warm pool (`--osb-pool` is a startup error on firecracker until members are
-  snapshotted asleep and restored per claim) and the helper-VM path on a Mac or Windows
-  (`--osb-addr` still refused there at startup). Egress on VM bridges shipped in v0.12 ("A
+- **Not yet:** the helper-VM path on a Mac or Windows (`--osb-addr` still refused there at
+  startup). *Amended in v0.13:* the warm pool shipped on Linux direct - see "Warm-pool members wait
+  asleep on a microVM". Egress on VM bridges shipped in v0.12 ("A
   microVM's only door is its filter").
 
 ### What the API remembers lives in its record file, not in labels
