@@ -73,3 +73,28 @@ func TestExitStateStringNamesTheCause(t *testing.T) {
 		}
 	}
 }
+
+// The runtime's start error reaches the API's caller in a failure message. It is worth keeping -
+// it is often the only cause there is - but docker writes the HOST's paths into it (volume data
+// directories, containerd's bundle, the operator's home), which are the operator's, not the
+// caller's. They are replaced; the container's own paths and the rest of the message stay.
+func TestExitStateRedactsHostPathsFromTheRuntimesError(t *testing.T) {
+	st := ExitState{Status: "created", ExitCode: 127, Error: `failed to create task: OCI runtime create ` +
+		`failed: error mounting "/var/lib/docker/volumes/sbx-osb-pvc-x/_data" to rootfs at "/data": ` +
+		`open /run/containerd/io.containerd.runtime.v2.task/moby/0123/config.json and /home/ops/.sbx/fc/x: ` +
+		`exec: "/app/start": no such file`}
+
+	got := st.String()
+
+	for _, leak := range []string{"/var/lib/docker", "/run/containerd", "/home/ops", "moby/0123"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("the failure message carries host path %s: %s", leak, got)
+		}
+	}
+
+	for _, keep := range []string{`"/data"`, `"/app/start"`, "OCI runtime create failed", "<host path>", "no such file"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("the failure message lost %q: %s", keep, got)
+		}
+	}
+}

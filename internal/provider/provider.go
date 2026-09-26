@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -939,11 +940,17 @@ func (e ExitState) String() string {
 	}
 
 	if s := strings.TrimSpace(e.Error); s != "" {
-		b.WriteString("; the runtime reported: " + s)
+		b.WriteString("; the runtime reported: " + hostPaths.ReplaceAllString(s, "<host path>"))
 	}
 
 	return b.String()
 }
+
+// hostPaths are the host-side paths a runtime writes into its start errors: volume data
+// directories, containerd's and docker's state, an operator's home. A failure message goes to
+// the API's caller, and these are the operator's; the container's own paths ("/data", "/app")
+// are not under these roots and are kept.
+var hostPaths = regexp.MustCompile(`/(?:var/lib|var/run|run|home|Users|root|tmp|private|snap|mnt)/[^\s"':,;]*`)
 
 func orUnknown(s string) string {
 	if s == "" {
