@@ -121,6 +121,13 @@ threat model is not "untrusted users share one daemon".**
 - **`sbx serve --provider firecracker` runs as root** (or with `CAP_NET_ADMIN`): it makes a tap
   and a bridge per sandbox and writes the iptables rules that guard them, and `--osb-addr` is
   refused at startup without that privilege rather than failing every create on its tap.
+- **The VMM runs as unconfined root: no jailer yet (accepted for v0.12).** Firecracker is started
+  by the root daemon as a plain root process - no jailer, no chroot, no seccomp beyond
+  Firecracker's own default filters, no dropped uid, no cgroup of its own. The guest kernel is the
+  boundary; a guest-to-VMM escape would land as root on the host. That is an accepted risk for
+  v0.12, where the operator chooses what runs. **The jailer is v0.13, and a prerequisite for
+  anonymous or public use** of the OpenSandbox API on microVMs: until it ships, do not expose
+  `--osb-addr` with `--provider firecracker` to callers you would not give a root shell.
 - **In a microVM, the guest's root can read execd's own secrets** - the access token and the
   boot control secret, from `/proc/1/environ` and `/init.json` on the agent drive. execd strips
   them from what it starts, which keeps them out of `env` and logs, not from root. They are
