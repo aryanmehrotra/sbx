@@ -39,9 +39,16 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 	// What sleeping VMs cost: each one's memory file is as big as its RAM, and nothing else in
 	// doctor would show a fleet of them filling the disk.
 	if usage != nil {
-		detail := fmt.Sprintf("%s in %d VMs under %s (memory %s, disks %s, snapshots %s, volumes %s)",
+		detail := fmt.Sprintf("%s in %d VMs under %s (memory %s, disks %s, snapshots %s, volumes %s",
 			bytesIEC(usage.Total()), usage.VMs, usage.Root, bytesIEC(usage.Memory),
 			bytesIEC(usage.Disks), bytesIEC(usage.Snapshots), bytesIEC(usage.Volumes))
+
+		// Only when there is any: a jail normally holds nothing of its own.
+		if usage.Jails > 0 {
+			detail += ", jails " + bytesIEC(usage.Jails)
+		}
+
+		detail += ")"
 
 		// A warm pool that waits asleep trades RAM for exactly this: say how much of it is the pool's.
 		if usage.PoolMembers > 0 {

@@ -22,3 +22,17 @@ func allocated(path string) int64 {
 
 	return fi.Size()
 }
+
+// links is how many names the file has; 1 where the platform does not say.
+func links(path string) uint64 {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return 1
+	}
+
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Nlink) //nolint:unconvert // uint16 on darwin, uint64 on linux
+	}
+
+	return 1
+}
