@@ -681,17 +681,8 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 
 	eps := s.p.Endpoints(id, service, slot, 0, svc.Ports)
 
-	// The host paths were checked when the request arrived; docker resolves them now. Checked
-	// again as the last thing before create, so a directory swapped for a symlink in between is
-	// refused rather than followed. The window left is this call to docker's own resolution.
-	for _, m := range svc.VolumeMounts {
-		if m.Host == "" {
-			continue
-		}
-
-		if err := s.checkHostMount(m.Host); err != nil {
-			return &hostPathChanged{err}
-		}
+	if err := s.recheckHostMounts(svc); err != nil {
+		return err
 	}
 
 	if err := s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer); err != nil {
@@ -1004,4 +995,24 @@ func (s *Server) hostWarnings(ctx context.Context, id string) string {
 	defer cancel()
 
 	return strings.Join(hw.HostWarnings(ctx, id), "; ")
+}
+
+// recheckHostMounts is the last thing before a create: the host paths were checked when the
+// request arrived, and docker resolves them now, so a directory swapped for a symlink in between
+// is refused rather than followed. The window left is the call to docker's own resolution.
+//
+// Both create paths call it. It used to sit only on the allocate-a-slot path, and the docker
+// provider picks its own slot - so on the one provider that binds host paths, it never ran.
+func (s *Server) recheckHostMounts(svc spec.Service) error {
+	for _, m := range svc.VolumeMounts {
+		if m.Host == "" {
+			continue
+		}
+
+		if err := s.checkHostMount(m.Host); err != nil {
+			return &hostPathChanged{err}
+		}
+	}
+
+	return nil
 }

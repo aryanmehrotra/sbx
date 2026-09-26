@@ -27,6 +27,12 @@ it supervised, so it survives your terminal.
 **If a daemon *is* running:** it discovers new sandboxes on its `--refresh` interval (15 s by
 default), so one created seconds ago may not be fronted yet. `sbx ready <name>` waits.
 
+**If the running daemon was started with `--only`:** it fronts only the sandboxes its scope
+names, and `sbx doctor` says so (`scoped only: pid N --only osb-`). A sandbox outside that scope
+has no daemon, and `sbx create`, `sbx list` and `sbx ui` name it. Before v0.13 a scoped daemon
+wrote no record the CLI could find, so all of them reported "no `sbx serve` is running" even for
+sandboxes it was fronting; `sbx sleep` and `sbx wake` reach it through the port and always did.
+
 ---
 
 ## "colima is not running" / "the container runtime is not running"
@@ -196,6 +202,29 @@ container's logs). "It printed nothing" with exit code 137 is a SIGKILL - out of
 host or under the sandbox's `resourceLimits.memory`, or a `docker kill`; 143 is a SIGTERM from
 outside. The same cause is in the daemon log (`Failed (runtime_error): ...`) and in
 `sbx history <id>`, without the container's output.
+
+---
+
+## `sbx serve --provider firecracker --osb-addr` on a Mac will not start
+
+On an M3+ Mac or Windows the API runs in the helper VM and is fronted here; the front checks it
+before serving and says which check failed:
+
+- **"answered N to a request without the key"** - the in-VM API is not keyed. The front refuses,
+  because its ssh forward is on this machine's loopback, reachable from containers. Restart
+  `sbx serve --provider firecracker --osb-addr ...`, which rewrites the in-VM daemon's key.
+- **"rejects the key this machine holds"** - the in-VM daemon is still running with another key
+  (a different `--osb-key`, or `~/.sbx/osb/key` was replaced). Restarting `sbx serve` restarts it
+  with this one.
+- **"never answered"** - the in-VM daemon did not start its API. Its log:
+  `colima ssh --profile sbx-fc -- sudo journalctl -u sbx-fc-serve -n 50` (lima: `limactl shell
+  sbx-fc sudo journalctl ...`). A jailer or guard refusal there is the same one Linux gives -
+  `--osb-insecure-no-jailer` is passed through only when typed.
+- **"--osb-insecure-no-key is refused"** / **"--osb-pool ... is not carried into the helper VM"**
+  - by design on this path; drop the flag (or `SBX_OSB_POOL`).
+
+An endpoint the API returned that refuses a connection means the mirror could not bind that port
+here (its log says `cannot open 127.0.0.1:N`): something else on this machine holds it.
 
 ---
 

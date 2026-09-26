@@ -10,10 +10,14 @@ package fchost
 //     this machine's loopback at the SAME number the in-VM `sbx env` prints, and carries each
 //     connection over the existing WebSocket tunnel. A TCP connect on the Mac reaches the in-VM
 //     daemon's listener, which is what wakes the microVM. Connect-to-wake survives the hop.
-//   - OSB (22981 in the VM) can be reverse-proxied at --osb-addr, but is not today: an OpenSandbox
-//     API sandbox needs sbx's agent mounted into it as a volume, which a microVM cannot take yet,
-//     so ServeMain refuses --osb-addr (provider.ErrOSBOnFirecracker) and the in-VM daemon is
-//     started without an OSB listener. The proxy below is kept for when it can.
+//   - OSB (22981 in the VM), started only for --osb-addr, is reverse-proxied there. The API runs
+//     in the VM exactly as on a Linux host with /dev/kvm - its daemon, the jailer, the egress
+//     filter and the guard are all the VM's, native - so this side adds only transport and two
+//     checks: it will not front the API without a key, and before serving it proves the API
+//     behind the tunnel refuses a request without that key and accepts it with it (the ssh
+//     forward is a port on this machine's loopback, which containers on a VM-backed engine
+//     reach). A create, or an endpoint lookup, is answered only after the mirror has bound the
+//     sandbox's ports here, so an SDK that dials the endpoint at once finds it listening.
 //
 // The rest of the CLI (create, list, env, exec, logs, rm, ...) is redirected into the VM by
 // Redirect, so it needs none of this - which is why this file is small.
@@ -184,6 +188,9 @@ type FrontOptions struct {
 
 	// skipEnsure is for tests whose "VM" is an httptest server.
 	skipEnsure bool
+
+	// keyNote says where the API key came from, for the startup line; never the key.
+	keyNote string
 }
 
 // Front runs until ctx ends or the tunnel to the VM dies.
@@ -194,6 +201,13 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 	if opt.OSBAddr != "" {
 		if err := osb.CheckBind(opt.OSBAddr, opt.OSBKey); err != nil {
 			return err
+		}
+
+		// ServeMain always resolves one (flag, env, or ~/.sbx/osb/key). Fail closed anyway: a
+		// keyless in-VM API would be open to every container that reaches this loopback.
+		if opt.OSBKey == "" {
+			return errors.New("the OpenSandbox API through the helper VM is served with a key or not at all: " +
+				"pass --osb-key, set SBX_OSB_KEY, or let sbx serve generate one into ~/.sbx/osb/key")
 		}
 	}
 
@@ -222,6 +236,12 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 	if err := waitHealthy(ctx, eps.Connect+"/healthz", 60*time.Second); err != nil {
 		return fmt.Errorf("the daemon in the helper VM never answered: %w - read its log with: %s",
 			err, strings.Join(m.shellHint("journalctl", "-u", guestUnit, "-n", "50"), " "))
+	}
+
+	if opt.OSBAddr != "" {
+		if err := checkKeyed(ctx, eps.OSB, opt.OSBKey, 60*time.Second); err != nil {
+			return err
+		}
 	}
 
 	tok, err := m.Token()
@@ -257,7 +277,11 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 
 	// WSL2 already forwards every guest loopback port to the host at the same number; binding
 	// them a second time would only collide with its own relay.
+	var kick chan chan struct{}
+
 	if !m.Driver.NativeForwarding() {
+		kick = make(chan chan struct{})
+
 		listeners.Add(1)
 
 		go func() {
@@ -265,18 +289,19 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 
 			errc <- daemon.Mirror(ctx, daemon.MirrorOptions{
 				Endpoint: daemon.Endpoint{Label: m.Config.Name, URL: eps.Connect, Token: tok},
-				Refresh:  opt.Refresh, Shift: opt.Shift, Out: m.Out,
+				Refresh:  opt.Refresh, Shift: opt.Shift, Out: m.Out, Sync: kick,
 			})
 		}()
 	}
 
 	if opt.OSBAddr != "" {
-		srv, err := osbProxy(opt.OSBAddr, eps.OSB)
+		srv, err := osbProxy(opt.OSBAddr, eps.OSB, kick)
 		if err != nil {
 			return err
 		}
 
-		m.say("OpenSandbox API on http://%s (proxied into %s)", srv.Addr, m.Config.Name)
+		m.say("OpenSandbox API on http://%s (served in %s, OPEN-SANDBOX-API-KEY required: %s)",
+			srv.Addr, m.Config.Name, orUnknown(opt.keyNote))
 
 		listeners.Add(1)
 
@@ -343,9 +368,72 @@ func waitHealthy(ctx context.Context, u string, limit time.Duration) error {
 	}
 }
 
-// osbProxy forwards the API byte for byte. The key, if any, is checked by the daemon in the VM
-// - it was started with the same one - so this layer cannot disagree with it.
-func osbProxy(addr, target string) (*http.Server, error) {
+// checkKeyed proves the API behind target is keyed with key before anything is fronted: a
+// request without the key must be refused (401), and one with it accepted. The first is the
+// control that matters - the ssh forward it arrives through is a port on this machine's loopback,
+// reachable from containers on a VM-backed engine whatever this process checks - and the second
+// catches an in-VM daemon still holding another key, which would refuse every client here.
+func checkKeyed(ctx context.Context, target, key string, limit time.Duration) error {
+	if err := waitHealthy(ctx, target+"/health", limit); err != nil {
+		return fmt.Errorf("the OpenSandbox API in the helper VM never answered: %w", err)
+	}
+
+	status := func(withKey bool) (int, error) {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target+"/v1/sandboxes", nil)
+		if err != nil {
+			return 0, err
+		}
+
+		if withKey {
+			req.Header.Set("OPEN-SANDBOX-API-KEY", key)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, err
+		}
+
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		return resp.StatusCode, nil
+	}
+
+	code, err := status(false)
+	if err != nil {
+		return fmt.Errorf("asking the helper VM's OpenSandbox API without the key: %w", err)
+	}
+
+	if code != http.StatusUnauthorized {
+		return fmt.Errorf("the OpenSandbox API in the helper VM answered %d to a request without the key, "+
+			"where it must refuse with 401: refusing to front it, because its forward on this machine's "+
+			"loopback is reachable from containers. Restart `sbx serve --provider firecracker --osb-addr ...`", code)
+	}
+
+	code, err = status(true)
+	if err != nil {
+		return fmt.Errorf("asking the helper VM's OpenSandbox API with the key: %w", err)
+	}
+
+	if code != http.StatusOK {
+		return fmt.Errorf("the OpenSandbox API in the helper VM rejects the key this machine holds (HTTP %d): "+
+			"its daemon is running with another one. Restart `sbx serve --provider firecracker --osb-addr ...`", code)
+	}
+
+	return nil
+}
+
+// osbProxy forwards the API byte for byte. The key is checked by the daemon in the VM - it was
+// started with the same one, which checkKeyed proved - so this layer cannot disagree with it.
+//
+// kick, when set, is the mirror's Sync: a create (any POST under /v1/sandboxes) or an endpoint
+// lookup that succeeded is held until the mirror has bound what the VM now fronts, so the
+// endpoint in the answer is listening here when the caller dials it. Bounded, so a mirror that
+// is down delays an answer by seconds, never forever.
+func osbProxy(addr, target string, kick chan<- chan struct{}) (*http.Server, error) {
 	u, err := url.Parse(target)
 	if err != nil {
 		return nil, err
@@ -355,6 +443,16 @@ func osbProxy(addr, target string) (*http.Server, error) {
 
 	// Streaming endpoints (command output, SSE) must not sit in a buffer.
 	rp.FlushInterval = -1
+
+	if kick != nil {
+		rp.ModifyResponse = func(resp *http.Response) error {
+			if mirrorsBefore(resp.Request, resp.StatusCode) {
+				syncMirror(resp.Request.Context(), kick, 5*time.Second)
+			}
+
+			return nil
+		}
+	}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -366,6 +464,35 @@ func osbProxy(addr, target string) (*http.Server, error) {
 	go func() { _ = srv.Serve(ln) }()
 
 	return srv, nil
+}
+
+// mirrorsBefore says whether an API answer can carry an endpoint the mirror may not have bound
+// yet: a successful create, resume or renew (POST), or an endpoint lookup.
+func mirrorsBefore(r *http.Request, code int) bool {
+	if code < 200 || code > 299 || !strings.HasPrefix(r.URL.Path, "/v1/sandboxes") {
+		return false
+	}
+
+	return r.Method == http.MethodPost || (r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/endpoints/"))
+}
+
+// syncMirror asks the mirror to reconcile now and waits for it, at most limit.
+func syncMirror(ctx context.Context, kick chan<- chan struct{}, limit time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+
+	done := make(chan struct{})
+
+	select {
+	case kick <- done:
+	case <-ctx.Done():
+		return
+	}
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func serveUntil(ctx context.Context, srv *http.Server) error {

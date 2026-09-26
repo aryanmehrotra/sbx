@@ -38,6 +38,7 @@ OSB_DOCKER_HOST=""
 OSB_PREEXISTING=""
 OSB_KEEP_WORK=0
 OSB_IDLE=""   # passed to sbx serve --idle when set (the bench's wake-from-frozen)
+OSB_POOL_FREEZE=0 # 1: the firecracker daemon this starts parks its warm-pool members frozen
 OSB_REAL_HOME="$HOME"
 OSB_HOSTVOL=""         # a host-volume root this run made, removed on teardown
 OSB_PREEXISTING_PVC="" # sbx-osb-pvc-* volumes that were there before the run
@@ -412,6 +413,8 @@ osb_fc_sbx_env() {
   # failed one's console is the evidence (osb_fc_evidence).
   printf 'HOME=%s/home SBX_FC_STATE=%s SBX_PROVIDER_KIND=firecracker SBX_NO_UPDATE_CHECK=1 SBX_HISTORY=%s/home/history.jsonl SBX_OSB_TRACE=1 SBX_FC_KEEP_CONSOLES=%s/consoles' \
     "$OSB_FC_DIR" "$OSB_FC_STATE" "$OSB_FC_DIR" "$OSB_FC_DIR"
+  # Warm pools (--osb-pool), when the caller asked for them: sudo and ssh drop the environment.
+  [ -z "${SBX_OSB_POOL:-}" ] || printf ' SBX_OSB_POOL=%s' "$SBX_OSB_POOL"
 }
 
 osb_fc_start_daemon() {
@@ -457,23 +460,59 @@ osb_fc_start_daemon() {
   OSB_URL="http://127.0.0.1:$port"
   OSB_KEY="$key"
 
+  # Spliced into a root shell's command line, so only what an image reference and a size can be.
+  case "${SBX_OSB_POOL:-}" in
+    *[!A-Za-z0-9._:/@=,-]*) osb_die "SBX_OSB_POOL='$SBX_OSB_POOL' is not IMAGE[=N][,IMAGE[=N]...]" ;;
+  esac
+  local freeze=""
+  [ "$OSB_POOL_FREEZE" = 1 ] && freeze="--osb-pool-freeze"
+
   # A host path is allowed on purpose: the refusal the volume tests see must be the provider's
   # (a microVM has no virtio-fs), not an empty allow-list.
   # In a subshell, so the ssh session that started it can end: a direct background job keeps it.
   osb_fc_sh "cd $OSB_FC_DIR && (env $(osb_fc_sbx_env) setsid nohup $OSB_FC_DIR/sbx serve --provider firecracker \
-    --osb-addr 127.0.0.1:$port --osb-key $key --osb-host-paths $OSB_FC_DIR/hostvol \
+    --osb-addr 127.0.0.1:$port --osb-key $key --osb-host-paths $OSB_FC_DIR/hostvol $freeze \
     > $OSB_FC_DIR/daemon.log 2>&1 < /dev/null &)"
   OSB_OWNED=1
-  osb_say "sbx serve --provider firecracker on $OSB_URL (${OSB_VM:+inside colima $OSB_VM, }state $OSB_FC_STATE)"
+  osb_say "sbx serve --provider firecracker on $OSB_URL (${OSB_VM:+inside colima $OSB_VM, }state $OSB_FC_STATE${SBX_OSB_POOL:+, pool $SBX_OSB_POOL${freeze:+ frozen}})"
 
   for n in $(seq 1 60); do
-    osb_fc_sh "curl -sf -o /dev/null http://127.0.0.1:$port/health" && return 0
+    if osb_fc_sh "curl -sf -o /dev/null http://127.0.0.1:$port/health"; then
+      [ -z "${SBX_OSB_POOL:-}" ] || osb_fc_await_pool "$port" "$key"
+      return 0
+    fi
     osb_fc_sh "pgrep -f '^$OSB_FC_DIR/sbx serve' >/dev/null" ||
       osb_die "sbx serve exited during startup: $(osb_fc_sh "tail -20 $OSB_FC_DIR/daemon.log")"
     sleep 1
   done
 
   osb_die "sbx serve never answered on $OSB_URL: $(osb_fc_sh "tail -20 $OSB_FC_DIR/daemon.log")"
+}
+
+# osb_fc_await_pool PORT KEY - wait (up to 10 min: every member is a cold boot, then a snapshot)
+# until every warm pool is full and nothing is being made, so what runs next meets full pools.
+osb_fc_await_pool() {
+  local st n
+  for n in $(seq 1 300); do
+    st="$(osb_fc_sh "curl -sf -H 'OPEN-SANDBOX-API-KEY: $2' http://127.0.0.1:$1/sbx/v1/pool" 2>/dev/null)"
+    # [{"image":..,"size":N,"ready":M,"filling":F}, ...]: full when every M = N and every F = 0.
+    if [ -n "$st" ] && printf '%s' "$st" | grep -o '"size":[0-9]*,"ready":[0-9]*,"filling":[0-9]*' |
+      tr -c '0-9\n' ' ' | awk '{ if ($1 != $2 || $3 != 0) bad = 1; seen = 1 } END { exit !(seen && !bad) }'; then
+      osb_say "warm pools full: $st"
+      return 0
+    fi
+    osb_fc_sh "pgrep -f '^$OSB_FC_DIR/sbx serve' >/dev/null" ||
+      osb_die "sbx serve exited while filling its pools: $(osb_fc_sh "tail -20 $OSB_FC_DIR/daemon.log")"
+    sleep 2
+  done
+
+  osb_die "the warm pools never filled: ${st:-no answer}; $(osb_fc_sh "tail -20 $OSB_FC_DIR/daemon.log")"
+}
+
+# osb_fc_pool_hits - how many creates the firecracker daemon answered from a warm pool, from its
+# history: the proof a pooled run exercised the pool at all, rather than going cold throughout.
+osb_fc_pool_hits() {
+  osb_fc_sh "grep -c 'from the warm pool' $OSB_FC_DIR/home/history.jsonl 2>/dev/null || true"
 }
 
 # osb_fc_run_suite TESTS_DIR RUN_RE TIMEOUT - the suite, compiled for the VM and run there, its

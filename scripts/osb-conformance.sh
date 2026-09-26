@@ -23,6 +23,8 @@
 # On firecracker, skip@firecracker lines in test/osb/expectations are allowances too.
 # --prewarm "IMG ..." (firecracker) builds those images' root filesystems with `sbx prewarm` before
 # the daemon starts, so a first create of a large image is not a build racing the SDK's wait.
+# With SBX_OSB_POOL=IMAGE=N there, the daemon keeps warm pools: the run waits for them to fill,
+# and fails if not one create was served from them.
 #
 # "Compatible" is not a feature table here. It is upstream's tests/go at the commit pinned in
 # test/osb/UPSTREAM, fetched and run as-is, reported per test. A SKIP is not a PASS: any skip
@@ -48,7 +50,7 @@ TIMEOUT="30m"
 PROVIDER="docker"
 VM=""
 
-usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -150,6 +152,14 @@ fi
 if [ "$go_rc" -ne 0 ]; then
   osb_say "go test exited $go_rc although every selected test reported a pass or an allowed skip; raw stream: $OSB_WORK/go-test.json"
   exit 1
+fi
+
+# With warm pools (SBX_OSB_POOL) on microVMs, a green suite proves the pool only if the pool
+# served something: a run where every create missed it went cold throughout.
+if [ "$PROVIDER" = firecracker ] && [ -n "${SBX_OSB_POOL:-}" ]; then
+  hits="$(osb_fc_pool_hits)"
+  osb_say "creates answered from the warm pool: ${hits:-0}"
+  [ "${hits:-0}" -gt 0 ] || osb_die "SBX_OSB_POOL=$SBX_OSB_POOL, and not one create was served from it"
 fi
 
 exit 0

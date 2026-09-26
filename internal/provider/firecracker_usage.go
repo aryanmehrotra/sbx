@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,10 +22,28 @@ type FirecrackerUsage struct {
 	Disks     int64 // every VM's root filesystem and agent drive
 	Snapshots int64 // everything under snapshots/
 	Volumes   int64 // every pvc's ext4 image under volumes/
+
+	// Jails is what VMM jails hold that nothing above counts: a file there whose only name is in the
+	// jail - a per-VM copy of a kernel that could not be shared, a link left to a replaced snapshot
+	// by a VMM that has not been released. A jail's links to the VM's own drives and to the shared
+	// kernel have another name, and are counted there (or are the artifact cache's).
+	Jails int64
+
+	// SharesRootFS: the state directory is on the same filesystem as /, so what the VMs write -
+	// disks, memory files, and anything a compromised VMM writes in its jail as its own uid - can
+	// fill the host's /. sbx sets no per-VM disk quota (SECURITY.md).
+	SharesRootFS bool
+
+	// PoolMembers are VMs parked as OpenSandbox warm-pool members, and PoolMemory the part of
+	// Memory they hold: a member waiting asleep costs no RAM and a memory file as big as its RAM.
+	PoolMembers int
+	PoolMemory  int64
 }
 
 // Total is every byte counted.
-func (u FirecrackerUsage) Total() int64 { return u.Memory + u.Disks + u.Snapshots + u.Volumes }
+func (u FirecrackerUsage) Total() int64 {
+	return u.Memory + u.Disks + u.Snapshots + u.Volumes + u.Jails
+}
 
 // FirecrackerDiskUsage walks the provider's state directory (SBX_FC_STATE, else ~/.sbx/fc). A
 // state directory that does not exist is zero, not an error: nothing was ever created here.
@@ -35,6 +54,7 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 	}
 
 	u := FirecrackerUsage{Root: root}
+	u.SharesRootFS = sameFilesystem(root, "/")
 
 	vms, err := os.ReadDir(filepath.Join(root, "vms"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -50,13 +70,28 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 
 		dir := filepath.Join(root, "vms", d.Name())
 
+		var mem int64
 		for _, f := range []string{fc.MemName, fc.DiffMemName, fc.StateName} {
-			u.Memory += allocated(filepath.Join(dir, f))
+			mem += allocated(filepath.Join(dir, f))
+		}
+
+		u.Memory += mem
+
+		if parked(dir) {
+			u.PoolMembers++
+			u.PoolMemory += mem
 		}
 
 		for _, f := range []string{fc.RootfsName, "agent.ext4"} {
 			u.Disks += allocated(filepath.Join(dir, f))
 		}
+
+		jails, err := onlyNamedUnder(filepath.Join(dir, fc.JailDirName))
+		if err != nil {
+			return u, err
+		}
+
+		u.Jails += jails
 	}
 
 	u.Snapshots, err = allocatedUnder(filepath.Join(root, "snapshots"))
@@ -84,6 +119,31 @@ func allocatedUnder(dir string) (int64, error) {
 		}
 
 		if d.Type().IsRegular() {
+			n += allocated(p)
+		}
+
+		return nil
+	})
+
+	return n, err
+}
+
+// onlyNamedUnder is what the regular files under dir hold on disk that no other name holds: a file
+// with one link is this tree's alone; one with more is a link to something counted elsewhere (a
+// VM's drive) or owned elsewhere (the shared kernel).
+func onlyNamedUnder(dir string) (int64, error) {
+	var n int64
+
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+
+			return err
+		}
+
+		if d.Type().IsRegular() && links(p) == 1 {
 			n += allocated(p)
 		}
 
@@ -154,4 +214,19 @@ func tailBytes(path string, n int64, w *bytes.Buffer) error {
 	}
 
 	return err
+}
+
+// parked reports whether the VM in dir is a warm-pool member waiting for a claim. A record that
+// cannot be read is not one: this is a report, and a guess would inflate it.
+func parked(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "vm.json"))
+	if err != nil {
+		return false
+	}
+
+	var rec struct {
+		Pooled bool `json:"pooled"`
+	}
+
+	return json.Unmarshal(b, &rec) == nil && rec.Pooled
 }

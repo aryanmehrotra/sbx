@@ -63,6 +63,13 @@ func buildSbx(t *testing.T) string {
 		t.Fatalf("building sbx: %v\n%s", err, out)
 	}
 
+	// The first exec of a freshly built binary is not the binary's time to spend: macOS scans an
+	// unsigned executable before it runs, and on a loaded machine that took 36s wall for 0.01s of
+	// CPU - longer than any budget below. Pay it here, once, so the timeouts measure sbx.
+	if out, err := exec.Command(bin, "version").CombinedOutput(); err != nil {
+		t.Fatalf("running the built sbx once: %v\n%s", err, out)
+	}
+
 	return bin
 }
 

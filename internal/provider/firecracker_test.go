@@ -30,6 +30,8 @@ type fakeLauncher struct {
 	servers  map[string]*fcfake.Server
 	launches int
 	kills    int
+	specs    []fc.LaunchSpec  // every launch, in order
+	history  []*fcfake.Server // every server, in order: a slept VM's calls outlive its VMM
 }
 
 func (l *fakeLauncher) Launch(_ context.Context, s fc.LaunchSpec) (int, error) {
@@ -40,12 +42,26 @@ func (l *fakeLauncher) Launch(_ context.Context, s fc.LaunchSpec) (int, error) {
 		_ = old.Close()
 	}
 
-	srv, err := fcfake.Start(filepath.Join(s.Dir, fc.APISockName))
+	// Jailed, as the real launcher does: the root prepared and the sockets pointed into it, and
+	// the fake resolving every path it is given inside that root. It listens at <dir>/api.sock
+	// itself, in place of the symlink, since a socket in the root can pass macOS's 104 bytes.
+	root := ""
+
+	if s.Jail != nil {
+		var err error
+		if root, err = fc.PrepareJail(s); err != nil {
+			return 0, err
+		}
+	}
+
+	srv, err := fcfake.StartIn(filepath.Join(s.Dir, fc.APISockName), root)
 	if err != nil {
 		return 0, err
 	}
 
 	l.servers[s.Dir] = srv
+	l.specs = append(l.specs, s)
+	l.history = append(l.history, srv)
 	l.launches++
 
 	return 1000 + l.launches, nil
@@ -61,6 +77,8 @@ func (l *fakeLauncher) Kill(_ context.Context, dir string) error {
 		l.kills++
 	}
 
+	_ = os.RemoveAll(filepath.Join(dir, fc.JailDirName)) // as the real one releases the jail
+
 	return nil
 }
 
@@ -75,6 +93,19 @@ type fakeNet struct {
 	mu      sync.Mutex
 	taps    map[string]bool
 	bridges map[int]bool
+
+	// rechecked is every RecheckGuard, by slot; guardErr is what it answers.
+	rechecked []int
+	guardErr  error
+}
+
+func (n *fakeNet) RecheckGuard(_ context.Context, a fc.Addr) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.rechecked = append(n.rechecked, a.Slot)
+
+	return n.guardErr
 }
 
 func (n *fakeNet) EnsureTap(_ context.Context, a fc.Addr) error {

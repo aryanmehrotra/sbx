@@ -34,8 +34,7 @@ type Client struct {
 func NewClient(sock string) *Client {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", sock)
+			return DialVMM(ctx, sock)
 		},
 		// One VMM, one socket, calls strictly in sequence: a pool buys nothing and an idle
 		// keep-alive held past the process's death turns the next call's error into a
@@ -295,6 +294,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("firecracker %s %s: %w", method, path, ctx.Err())
+		}
+
+		// Refused, not unreachable: the provider reads unreachable as asleep, and a hijacked
+		// socket is a VMM that is up and must not be treated as gone.
+		if errors.Is(err, ErrForeignSocket) {
+			return fmt.Errorf("firecracker %s %s via %s: %w", method, path, c.sock, err)
 		}
 
 		return fmt.Errorf("%w: %s %s via %s: %v", ErrUnreachable, method, path, c.sock, err)

@@ -246,8 +246,23 @@ following symlinks - a link inside an allowed root that points at `/` passes a s
 escapes at mount time - and the directory is created as the user running sbx, not by docker as
 root. It is created only once the whole request has passed, and resolved and checked again
 immediately before the container is created, so a directory swapped for a symlink in between is
-refused. Docker resolves a bind source again at every container start, which this does not cover:
-the roots are the operator's, and a root a sandbox's adversary can write to is not one to list. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
+refused. (Until v0.13 that last check sat only on the allocate-a-slot create path, and the docker
+provider picks its own slot, so on docker it never ran.)
+
+Docker resolves a bind source again at **every container start**, so a sandbox that slept
+(`sbx.idle=sleep`, `sbx sleep`) and wakes would follow a link swapped in while it was down. Since
+v0.13 the canonical paths the API validated are pinned on the container (label `sbx.host-binds`),
+and every start - the daemon's wake, `sbx wake`, a checkpoint restore - first re-asks the create
+question: each still resolves to exactly itself and is a directory, or the start is refused and
+docker is never asked. The alternative, re-creating the container from the resolved path at each
+wake, was rejected: it loses the container's writable layer, and it re-resolves the path anyway,
+so it narrows the window no further. Refusing is the fail-closed choice - a moved or replaced
+directory stops the sandbox with a message naming it, rather than mounting something else. The
+window left is the one create also has: between this check and docker's own resolution. A frozen
+sandbox (the default idle) never restarts its container and is not affected either way. The roots
+remain the operator's, and a root a sandbox's adversary can write to is still not one to list.
+
+They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
 it creates it inside the runtime's VM, where the caller's files are not. Refused is the useful
 failure.
 
@@ -696,6 +711,42 @@ ten minutes. Silent, it cost a test run its warm path unnoticed: curl creates om
 rather than per create, because a client that misses does so on every create, and a line each
 time would bury the log it is meant to explain. Not a warning: going cold is correct, only slower.
 
+### Warm-pool members wait asleep on a microVM, and each is its own VM
+
+On `--provider firecracker` (Linux, `/dev/kvm`) a member is an ordinary API microVM of the pool
+key, born running with execd healthy, then *parked* by the provider (`PoolParker`): by default
+**asleep** - execd sealed, a Full snapshot, the VMM ended - so a waiting member holds no RAM and a
+memory file as big as its RAM (`sbx doctor` says how much the pool holds); with
+`--osb-pool-freeze`, **frozen** - Firecracker's pause, memory resident, no CPU. The opposite
+default from docker's, because the trade is different: a waiting container costs `tail` and an
+idle execd, a waiting VM costs its whole RAM.
+
+A claim is one provider call under the VM's lock: restore (or resume), then one re-key carrying
+the token the API minted for the request, the caller's env and a new control secret. Not
+`POST /sbx/claim`: a restored execd is sealed and answers nobody until its host re-keys it over
+vsock, so the re-key is the claim. The record takes the caller's token before the wake, so every
+later restore re-keys with it; and a claimed VM that dies awake and cold-boots is re-keyed again
+after the boot, because its agent drive still carries the member's token and none of the
+caller's env (rebuilding that drive per claim would cost an mkfs on the claim path). A member
+whose re-key fails is stopped and discarded, the cause logged, and the create goes cold - never
+handed out. The daemon holds every member, so no connection can wake one with its own token.
+
+Each member boots from its own disk, with its own drives, slot, tap, token and control secret:
+no two share memory. Forking members from one template's snapshot would make the pool far
+cheaper to fill, and is deliberately not this release - a memory clone carries the kernel-set
+guest IP and every secret userspace made before the snapshot, and re-key replaces only execd's
+("The OpenSandbox API on a microVM"). The helper-VM path on a Mac or Windows still refuses
+`--osb-pool` at startup: the API there runs in the VM's daemon, whose provider could park
+members, but the pool is not carried into the VM yet (see "The OpenSandbox API through a helper VM
+runs in the VM").
+
+A member is jailed like any VM (v0.13 ships the pool and the jailer together): every launch -
+its boot, a frozen member's paused VMM, an asleep claim's restore into a fresh root - runs as the
+uid of its address, and the claim's re-key reaches execd through `<dir>/vsock.sock`, the symlink
+into that root. A member parked with the jailer one way and claimed with it the other is refused
+at the claim, not loaded: its snapshot names drive paths the VMM cannot open, and a member that
+would need a cold boot is no warmer than a cold create.
+
 ---
 
 ### One host probe decides the microVM path, and a Mac is sent to a helper VM, not refused
@@ -848,8 +899,17 @@ a guest's link-local address has nothing to talk to. What makes it safe to own:
 - **Made with the bridge, before it is up; removed with it** - and collected by `RemoveBridge` even
   when the bridge was deleted by hand. A failure halfway removes what was made: guarded, or exactly
   as before, never half a chain.
-- **Never a reason a sandbox will not boot.** No `iptables`, or one that refuses: the bridge comes
-  up anyway and the create and the daemon's log say the host is open, which is what it was before.
+- **Fails closed (v0.13; supersedes "never a reason a sandbox will not boot").** No `iptables`, a
+  rule refused, IPv6 not switched off, or a flushed guard that cannot be put back: the create or wake
+  is refused with the reason and the fix, and a bridge made for it is deleted rather than left up
+  unguarded. v0.12 booted anyway and warned; that was the right trade while the guard was new and
+  sbx was a tool one operator ran, and the wrong one for an API that hands VMs to callers - a guest
+  that finds the host open because a firewall module was missing is the outcome the guard exists to
+  prevent, and a warning in a daemon log does not reach the person it matters to. The escape is an
+  operator's statement, not a failure mode: `--fc-firewall=unmanaged` (`SBX_FC_FIREWALL`), under
+  which sbx writes no rule at all and the host firewall is the operator's. A bridge already in use
+  whose guard the daemon's reconcile cannot put back keeps its running VMs (killing them would be a
+  second, silent failure) and is logged; no VM starts on it until the guard is whole.
 - **Checked, not rewritten, on the wake path.** Made when the bridge is made; on every wake and every
   daemon reconcile, six `iptables -C` checks (each hook and each chain's final `DROP`) and no write
   while the guard is whole. A rule a firewall reload or `iptables -F` removed is put back on the next
@@ -896,6 +956,90 @@ that runs this - still speaks `iptables`, which on current distributions is the 
 One tool, the one the operator already reads.
 
 **Rejected: a firewall on the guest side** (rules inside the VM). The guest's root owns them.
+
+### Every VMM runs under Firecracker's jailer, as its VM's own uid, jailed inside its VM's directory
+
+v0.12 started firecracker as a plain child of the root daemon: a guest-to-VMM escape landed as root
+on the host (SECURITY.md, accepted for v0.12). v0.13 starts every VMM through **Firecracker's own
+`jailer`**, on by default, because anonymous use of the OpenSandbox API on microVMs is not
+defensible without it.
+
+- **The jailer is pinned with firecracker, from the same v1.17.0 release tarball**, and verified by
+  the same sha256 (the tarball's); it is cached in a directory of its own, so a v0.12 cache holding
+  only firecracker is never taken for one with the jailer. Its interface was read from v1.17.0's
+  source (`src/jailer/src/env.rs`) and `docs/jailer.md` at that tag, not from memory: `--id` is
+  alphanumerics and hyphens up to 64; the chroot is `<canonical base>/<basename of the canonical
+  exec file>/<id>/root`; it mknods `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and
+  `/dev/userfaultfd` and fails EEXIST on a stale one; it closes every fd but 0-2, clears the
+  environment, and without `--new-pid-ns`/`--daemonize` execs firecracker **in place** as
+  `--id <id> --start-time-us ... <our args>` - so the pid sbx started, its reaper and its console
+  and vmm log files all carry over unchanged.
+- **uid = base + slot*256 + index** (base 900000, `SBX_FC_JAILER_UID_BASE`), gid the same.
+  Arithmetic on the address, like the IP ("Guest networking is arithmetic"): every sbx process
+  agrees on it with no table and no lock, a re-created VM gets its own back, two VMs never share
+  one, and it is never 0. A pool was rejected for the reason addresses are not allocated. The tap
+  is made for that uid; a tun device's owner cannot be changed, so one made for another uid (root's,
+  by v0.12) is deleted and made again.
+- **The jail is inside the VM's directory**: `<vm dir>/jail/firecracker/<id>/root`, `<id>` derived
+  from the directory's path, so two state roots with the same ref never share a cgroup. Rejected:
+  `<state>/jail`. Inside, everything that already removes a VM's directory (`sbx rm`, a failed
+  create, the warm pool) removes its jail, and the hard links below stay on one filesystem.
+- **What the root holds**: `/vmlinux` (a hard link when the kernel - symlink resolved - is
+  root's, readable by all and writable by nobody else; a root-owned 0444 copy otherwise; never
+  re-owned, since it is one inode for every VM, and re-checked and forced back to root's and
+  read-only once the jailer has finished with the root); `/agent.ext4`, `/rootfs.ext4`,
+  `/vol<N>.ext4` and, for a restore, `/vm.state` and `/vm.mem` - hard links to the VM's own files,
+  owned by its uid (except the drives it only reads - the agent drive and read-only volumes - kept
+  root's and other-readable, so a compromised VMM cannot rewrite them for the next VM), so what the guest writes is on the VM's disk (a copy would be a disk the host never sees, so
+  a VM's file that cannot be linked fails the launch); what the jailer adds (the binary, the device
+  nodes); and the VMM's `/api.sock` and `/vsock.sock`. `<vm dir>/api.sock` and `vsock.sock` are
+  symlinks into the root, so the API client, the vsock dialer and the wake proxy keep their paths,
+  and the 108-byte socket limit applies to the short one.
+  Dialled through that link, but not blindly: the entry in the root is the VMM's to replace, so it
+  must be a socket owned by the jail's uid, and the process that answers must be that uid
+  (`SO_PEERCRED`) - never a symlink to another VM's socket (fc.DialVMM).
+- **Emptied on every launch and every Kill**, with the VM's cgroup (`<cgroup2>/sbx-fc/<id>`, which
+  the jailer never removes): a stale `/dev/kvm` fails the next jailer, and a stale hard link to a
+  replaced `vm.mem` would keep its blocks allocated.
+- **The VMM is given paths in its root, and what it writes is taken back.** A sleep's snapshot is
+  written at `/vm.state.new` and `/vm.mem.new` (or `/diff.mem`) and renamed into the VM's directory
+  before the VMM ends; a commit's at `/commit.state` and `/commit.mem`, renamed into the snapshot's
+  directory. Taken back only as a plain file with one name, checked after the rename in a directory
+  only root writes: the VMM owns its root, and a symlink or hard link planted there would otherwise
+  be followed by the host - merged into, cloned, overwritten - as root.
+- **cgroup v2**: `cpu.max` = CPUs x 100000 per 100000, `memory.max` = the guest's memory + 128 MiB
+  (the VMM's heap and the page cache of its drive and snapshot I/O, which reclaims under the limit
+  rather than OOM-killing). No limits means no cgroup flags at all: v1.17 with `--cgroup-version 2`,
+  no `--cgroup` and an existing `--parent-cgroup` *moves* the process into the parent, which fails
+  once a sibling has enabled memory there. No `fsize` limit: it would kill a VM for writing past
+  that offset of its own disk.
+- **A VM's record says how its running VMM was launched** (`jail_uid`, saved before the launch; a
+  record without it is unjailed). Every call to that VMM - a snapshot, a commit - takes its paths
+  from the record, not from this process's `SBX_FC_JAILER`, which only decides the NEXT launch: a
+  v0.12 VMM slept by a jailed daemon would otherwise be told `/vm.state.new` and write its RAM into
+  the host's `/`.
+- **A snapshot records which kind it is** (`snapshot_jailed`): its drive paths are the root's or the
+  host's, and a VMM of the other kind cannot open them. A wake with the jailer switched the other
+  way cold-boots (disk kept, memory lost, said); a saved memory snapshot of the other kind is
+  refused by name. Every v0.12 VM's first wake under v0.13 is therefore a cold boot.
+- **Not adopted: a network namespace per VM** (`--netns`). The tap stays on the sandbox's bridge in
+  the host namespace, guarded as above; a namespace would need a veth pair per VM and a second
+  guard.
+
+**Escape hatches, each named for what it gives up.** `SBX_FC_JAILER=off`, for a development host
+where the jailer cannot run (no cgroup v2, no mknod): v0.12's behaviour exactly, warned on every
+provider construction; the OpenSandbox API refuses to serve on firecracker with it unless
+`--osb-insecure-no-jailer`. A value other than on or off is an error - a typo in an escape hatch
+must not open it. `SBX_FC_JAILER_BINARY` replaces the pinned jailer as `SBX_FC_BINARY` does
+firecracker; set both, since a jailer is meant for its own release's firecracker.
+
+Verified by unit tests against fakes (argv, uid arithmetic, staging by link and ownership, path
+translation, Adopt refusing a symlink, hard link or directory, and every path the provider hands the
+VMM resolving inside a root the fake enforces); by `TestTheRealJailer`, which runs the real pinned
+jailer with the test binary in firecracker's place (root and cgroup v2, no KVM) and checks uid,
+capabilities, chroot, cgroup limits and release from /proc; and in CI's microvm job, where
+`TestFirecrackerE2E` asserts the same of the real VMM every round and every VMM the conformance
+tier causes is sampled from /proc.
 ### An API sandbox's health check runs once a minute, and quickly only while it starts
 
 Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes
@@ -1021,10 +1165,38 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   not in it, so a sandbox created from the snapshot does not inherit it. Docker differs - `docker
   commit` bakes the container's env into the image. Passing the env again on the create from the
   snapshot is the workaround; carrying it in the record (less execd's secrets) is a follow-up.
-- **Not yet:** the warm pool (`--osb-pool` is a startup error on firecracker until members are
-  snapshotted asleep and restored per claim) and the helper-VM path on a Mac or Windows
-  (`--osb-addr` still refused there at startup). Egress on VM bridges shipped in v0.12 ("A
+- **Not yet:** the helper-VM path on a Mac or Windows (`--osb-addr` still refused there at
+  startup). *Amended (K5):* no longer refused - the API runs in the helper VM's daemon and is
+  fronted on the host; see "The OpenSandbox API through a helper VM runs in the VM". *Amended in v0.13:* the warm pool shipped on Linux direct - see "Warm-pool members wait
+  asleep on a microVM". Egress on VM bridges shipped in v0.12 ("A
   microVM's only door is its filter").
+
+### The OpenSandbox API through a helper VM runs in the VM
+
+On an M3+ Mac or Windows, `sbx serve --provider firecracker --osb-addr` used to be refused. It now
+starts the helper VM's daemon with the API on its loopback (22981) and the key in its root-only
+environment file, and the host half reverse-proxies `--osb-addr` to it over the ssh forward the
+connect endpoint already used.
+
+- **Why in the VM, not a host-side API over `Remote`.** The VM is a Linux host with `/dev/kvm`:
+  there the firecracker provider is `RunsAgent`, the jailer, the egress filter on each bridge and
+  the host guard run natively, and every v0.13 refusal (no jailer without
+  `--osb-insecure-no-jailer`, a guard that cannot be installed) is the same code as on Linux. A
+  host-side API would drive VMs one `sbx fc call` at a time and need its own egress and guard.
+- **The key is Linux's key, kept on the host.** `--osb-key`, `SBX_OSB_KEY`, else
+  `~/.sbx/osb/key` generated on the Mac, where `sbx mcp` and the SDK examples read it. It is never
+  on a command line in either machine.
+- **Loopback is not a trust boundary, so the key is verified, not assumed.** The ssh forward is a
+  port on the Mac's loopback, reachable from containers on a VM-backed engine whatever the host
+  proxy checks; the in-VM daemon's key check is the one control for both. So the front refuses to
+  serve with no key, and at startup proves the API behind the forward answers 401 without the key
+  and 200 with it. `--osb-insecure-no-key` is refused on this path by name.
+- **Endpoints listen before the create answers.** They are `127.0.0.1:<port>` in the VM and the
+  mirror binds the same numbers on the Mac on a 2s tick; a create answered before the tick left the
+  SDK's first dial refused. The proxy holds a successful `POST` under `/v1/sandboxes`, or an
+  endpoint lookup, until the mirror has reconciled (`daemon.MirrorOptions.Sync`, bounded 5s).
+- **Not yet:** the warm pool on this path (`--osb-pool` / `SBX_OSB_POOL` refused by name), and a
+  live run on an M3+ Mac: this is proven by unit tests with a fake VM daemon and API only.
 
 ### What the API remembers lives in its record file, not in labels
 

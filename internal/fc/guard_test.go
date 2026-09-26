@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -110,8 +111,13 @@ func (f *fakeTables) run(_ context.Context, args ...string) (string, error) {
 	return "", nil
 }
 
+// noIPv6Root is a /proc/sys with no net/ipv6: a kernel without IPv6, so the fake guard's IPv6 half
+// is whole on every host the tests run on and never reads the real /proc (guard_ipv6_test.go
+// gives it one that has IPv6).
+const noIPv6Root = "/nonexistent/sbx-test-proc-sys"
+
 func (f *fakeTables) guard() *Guard {
-	return &Guard{Run: f.run, Port: 20999, Sysctl: func(string, string) error { return nil }}
+	return &Guard{Run: f.run, Port: 20999, ProcSys: noIPv6Root, Sysctl: func(string, string) error { return nil }}
 }
 
 var guarded = []string{
@@ -217,20 +223,24 @@ func TestNoIptablesIsReportedAndReleaseIsANoOp(t *testing.T) {
 func TestNoIPv6TurnsItOffOnTheBridgeOnly(t *testing.T) {
 	var wrote []string
 
-	g := &Guard{Sysctl: func(p, v string) error {
+	root, file := sysctlRoot(t, 5, "0")
+	sysctlRoot(t, 6, "0") // another bridge, which is not this one's to touch
+
+	g := &Guard{ProcSys: root, Sysctl: func(p, v string) error {
 		wrote = append(wrote, p+"="+v)
-		return nil
+		return realSysctl(p, v)
 	}}
 
 	if err := g.NoIPv6(Addr{Slot: 5}); err != nil {
 		t.Fatal(err)
 	}
 
-	if !slices.Equal(wrote, []string{"/proc/sys/net/ipv6/conf/sbxfc5/disable_ipv6=1"}) {
+	if !slices.Equal(wrote, []string{file + "=1"}) {
 		t.Fatalf("wrote %q", wrote)
 	}
 
-	g.Sysctl = func(string, string) error { return os.ErrNotExist } // a kernel without IPv6
+	g.ProcSys = t.TempDir() // a kernel without IPv6: no net/ipv6 at all
+	g.Sysctl = func(string, string) error { return os.ErrNotExist }
 	if err := g.NoIPv6(Addr{Slot: 5}); err != nil {
 		t.Fatalf("no IPv6 at all = %v", err)
 	}
@@ -265,7 +275,7 @@ func TestABridgeIsGuardedBeforeItIsUpAndReleasedWithIt(t *testing.T) {
 	}
 
 	jump := slices.Index(order, "iptables -I INPUT 1 -i sbxfc5 -j SBX-FC5")
-	v6 := slices.Index(order, "sysctl /proc/sys/net/ipv6/conf/sbxfc5/disable_ipv6")
+	v6 := slices.Index(order, "sysctl "+filepath.Join(noIPv6Root, "net", "ipv6", "conf", "sbxfc5", "disable_ipv6"))
 	up := slices.Index(order, "ip link set sbxfc5 up")
 
 	if jump < 0 || v6 < 0 || up < 0 || jump > up || v6 > up {
@@ -288,25 +298,5 @@ func TestABridgeIsGuardedBeforeItIsUpAndReleasedWithIt(t *testing.T) {
 
 	if _, ok := tables.chains["SBX-FC5"]; ok || slices.Contains(tables.chains["INPUT"], "-i sbxfc5 -j SBX-FC5") {
 		t.Fatalf("rules outlived the bridge: %v", tables.chains)
-	}
-}
-
-// A host where the guard cannot be installed still gets a working bridge, and is told.
-func TestAGuardFailureWarnsAndKeepsTheBridge(t *testing.T) {
-	ip := &fakeIP{links: map[string]bool{}}
-	tables := newFakeTables()
-	tables.absent = true
-
-	var warned []string
-
-	n := &IPNetwork{Owner: -1, Guard: tables.guard(), Run: ip.run,
-		Warn: func(s string) { warned = append(warned, s) }}
-
-	if err := n.EnsureTap(context.Background(), Addr{Slot: 5}); err != nil {
-		t.Fatal(err)
-	}
-
-	if !ip.links["sbxfc5"] || len(warned) != 1 || !strings.Contains(warned[0], "10.231.5.1") {
-		t.Fatalf("bridge %v, warned %q", ip.links, warned)
 	}
 }

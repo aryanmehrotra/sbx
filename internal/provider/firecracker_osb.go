@@ -368,6 +368,7 @@ func (p *fcProvider) execAs(ctx context.Context, vm *fcVM, argv []string) (strin
 // forgetSecrets is a record fit to be saved with a disk snapshot: no identity of the source's.
 func forgetSecrets(vm fcVM) fcVM {
 	vm.AccessToken, vm.ControlSecret, vm.LiveSecret, vm.PendingSecret = "", "", "", ""
+	vm.BootToken, vm.ClaimEnv, vm.Pooled = "", nil, false
 	vm.Volumes = nil
 
 	return vm

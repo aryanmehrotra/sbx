@@ -521,6 +521,11 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		args = append(args, "--mount", mountOption(m))
 	}
 
+	// Pinned, so every later start mounts only what the API validated - see checkHostBinds.
+	if pin := hostBindsLabel(svc.VolumeMounts); pin != "" {
+		args = append(args, "--label", labelHostBinds+"="+pin)
+	}
+
 	// --entrypoint takes one word, so the rest of Entrypoint goes after the image, ahead of
 	// Args - which is where docker would have put the image's own CMD.
 	if len(svc.Entrypoint) > 0 {
@@ -622,6 +627,10 @@ func pairLabel(wake, backing []string) string {
 }
 
 func (d *dockerProvider) Start(ctx context.Context, ref string) error {
+	if err := d.checkHostBinds(ctx, ref); err != nil {
+		return err
+	}
+
 	return d.api.start(ctx, ref)
 }
 
@@ -773,7 +782,7 @@ func (d *dockerProvider) Checkpoint(_ context.Context, ref, name string, leaveRu
 	return err
 }
 
-func (d *dockerProvider) Restore(_ context.Context, ref, name string) error {
+func (d *dockerProvider) Restore(ctx context.Context, ref, name string) error {
 	if err := d.checkpointReady(); err != nil {
 		return err
 	}
@@ -789,6 +798,10 @@ func (d *dockerProvider) Restore(_ context.Context, ref, name string) error {
 	// A restore is a start that seeds the container from the CRIU image instead of its
 	// entrypoint. The container has to exist and be stopped, which is exactly the state a
 	// non-leave-running Checkpoint left it in.
+	if err := d.checkHostBinds(ctx, ref); err != nil {
+		return err
+	}
+
 	_, err := d.docker("start", "--checkpoint", name, ref)
 
 	return err

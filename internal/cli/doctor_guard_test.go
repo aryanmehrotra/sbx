@@ -60,3 +60,15 @@ func TestDoctorCountsMicroVMVolumes(t *testing.T) {
 		t.Fatalf("disk row = %+v", last)
 	}
 }
+
+// A bridge whose guard is missing only its IPv6 half is named as such: its guests reach [::]
+// services over link-local, which the iptables rows say nothing about.
+func TestDoctorNamesABridgeWithIPv6On(t *testing.T) {
+	rows := firecrackerGuardRows(hostcap.Direct, nil,
+		fc.GuardCount{Total: 1, Unguarded: []string{"sbxfc5"}, IPv6On: []string{"sbxfc5"}}, nil)
+
+	r := rows[len(rows)-1]
+	if r.Have || !strings.Contains(r.Detail, "IPv6") || !strings.Contains(r.Detail, "sbxfc5") {
+		t.Fatalf("a bridge with IPv6 on = %+v", r)
+	}
+}

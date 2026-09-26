@@ -359,3 +359,42 @@ func TestUnsavedCreateRemovesTheVolumesItMade(t *testing.T) {
 		t.Fatalf("removed = %v, want only the volume this create made", rm)
 	}
 }
+
+// The same swap on the docker provider's create path. Docker picks its own slot, so create
+// takes a different branch from the fake above - and the re-check before create must be on it,
+// or the one provider that binds host paths never re-checks them at all.
+func TestHostPathSwappedBeforeAPickedSlotCreateIsRefused(t *testing.T) {
+	root, allow := hostRoot(t)
+	pd := &pickingDocker{fakeDocker: newFakeDocker()}
+	h := newHarness(t, allow, func(_ *harness, o *Options) { o.Provider = pd })
+
+	work := filepath.Join(root, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := t.TempDir()
+
+	pd.mu.Lock()
+	pd.onInspect = func() {
+		if err := os.Rename(work, work+".old"); err != nil {
+			t.Error(err)
+		}
+
+		if err := os.Symlink(outside, work); err != nil {
+			t.Error(err)
+		}
+	}
+	pd.mu.Unlock()
+
+	sb := h.create(withVolumes(map[string]any{"name": "work", "host": map[string]any{"path": work}, "mountPath": "/work"}))
+	sb = h.waitState(sb.ID, stateFailed)
+
+	if sb.Status.Reason != "host_path_changed" {
+		t.Fatalf("state = %s (%s: %s), want Failed host_path_changed", sb.Status.State, sb.Status.Reason, sb.Status.Message)
+	}
+
+	if svc := pd.service(sb.ID); len(svc.VolumeMounts) != 0 {
+		t.Fatalf("a container was created on the swapped path: %+v", svc.VolumeMounts)
+	}
+}

@@ -58,6 +58,10 @@ type Dialer struct {
 	Port uint32
 
 	Timeout time.Duration
+
+	// Unix connects to UDSPath; nil is a plain unix dial. The host that jails its VMMs checks what
+	// is at that path before it connects (fc.DialVMM).
+	Unix func(ctx context.Context, path string) (net.Conn, error)
 }
 
 // Dial is Dialer{UDSPath: path, Port: port}.DialContext(ctx).
@@ -98,14 +102,24 @@ func (d Dialer) DialContext(ctx context.Context) (net.Conn, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, timeout, ErrTimeout)
 	defer cancel()
 
-	var nd net.Dialer
+	dial := d.Unix
+	if dial == nil {
+		dial = func(ctx context.Context, path string) (net.Conn, error) {
+			var nd net.Dialer
+			return nd.DialContext(ctx, "unix", path)
+		}
+	}
 
-	raw, err := nd.DialContext(ctx, "unix", d.UDSPath)
+	raw, err := dial(ctx, d.UDSPath)
 	if err != nil {
 		return nil, d.wrap(ctx, err)
 	}
 
-	uc := raw.(*net.UnixConn)
+	uc, ok := raw.(*net.UnixConn)
+	if !ok {
+		_ = raw.Close()
+		return nil, fmt.Errorf("fcvsock: %s did not give a unix connection", d.UDSPath)
+	}
 
 	c, err := d.handshake(ctx, uc)
 	if err != nil {

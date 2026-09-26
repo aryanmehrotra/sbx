@@ -44,6 +44,7 @@ type Pin struct {
 	FirecrackerURL    string
 	FirecrackerSHA256 string // of the .tgz
 	FirecrackerMember string // the binary's path inside it
+	JailerMember      string // the jailer's, in the same tarball: pinned by the same hash
 	KernelURL         string
 	KernelSHA256      string
 }
@@ -55,6 +56,7 @@ var Pins = map[string]Pin{
 		FirecrackerURL:    releaseBase + "/firecracker-" + FirecrackerVersion + "-aarch64.tgz",
 		FirecrackerSHA256: "e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256",
 		FirecrackerMember: "release-" + FirecrackerVersion + "-aarch64/firecracker-" + FirecrackerVersion + "-aarch64",
+		JailerMember:      "release-" + FirecrackerVersion + "-aarch64/jailer-" + FirecrackerVersion + "-aarch64",
 		KernelURL:         kernelBase + "/aarch64/vmlinux-" + KernelVersion,
 		KernelSHA256:      "a80108af80d9549b357ea7e00bd5c12f80686869541d135a8a67f6fe1ec3451e",
 	},
@@ -62,6 +64,7 @@ var Pins = map[string]Pin{
 		FirecrackerURL:    releaseBase + "/firecracker-" + FirecrackerVersion + "-x86_64.tgz",
 		FirecrackerSHA256: "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558",
 		FirecrackerMember: "release-" + FirecrackerVersion + "-x86_64/firecracker-" + FirecrackerVersion + "-x86_64",
+		JailerMember:      "release-" + FirecrackerVersion + "-x86_64/jailer-" + FirecrackerVersion + "-x86_64",
 		KernelURL:         kernelBase + "/x86_64/vmlinux-" + KernelVersion,
 		KernelSHA256:      "9204218e8bcca6ac23848d74f45df2eb19d7f31e8277840a7d145a0df8b078d2",
 	},
@@ -142,6 +145,42 @@ func (c *ArtifactCache) Resolve(ctx context.Context, arch string) (Artifacts, er
 	}
 
 	return a, nil
+}
+
+// JailerBinaryEnv replaces the pinned jailer with a file the operator supplies, as SBX_FC_BINARY
+// does firecracker. Set both or neither: the jailer is meant for the firecracker of its own
+// release (its docs/jailer.md, "Disclaimer").
+const JailerBinaryEnv = "SBX_FC_JAILER_BINARY"
+
+// ResolveJailer returns the jailer for arch: SBX_FC_JAILER_BINARY as given, or the pinned
+// release's, extracted from the same tarball as firecracker and verified by the same hash. Cached
+// in its own directory, so a v0.12 cache that holds firecracker alone is not taken for one that
+// holds the jailer too.
+func (c *ArtifactCache) ResolveJailer(ctx context.Context, arch string) (string, error) {
+	if p := c.Getenv(JailerBinaryEnv); p != "" {
+		if err := isFile(p, JailerBinaryEnv); err != nil {
+			return "", err
+		}
+
+		return p, nil
+	}
+
+	pin, pinned := c.Pins[arch]
+	if !pinned || pin.JailerMember == "" {
+		return "", fmt.Errorf("no pinned firecracker jailer for %s: set %s to one you trust, or %s=off",
+			arch, JailerBinaryEnv, JailerEnv)
+	}
+
+	dir, err := c.ensure(ctx, "jailer-"+FirecrackerVersion+"-"+arch, pin.FirecrackerSHA256,
+		func(tmp string) error {
+			return c.fetchTgzMember(ctx, pin.FirecrackerURL, pin.FirecrackerSHA256, pin.JailerMember,
+				filepath.Join(tmp, "jailer"))
+		})
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, "jailer"), nil
 }
 
 func isFile(p, env string) error {

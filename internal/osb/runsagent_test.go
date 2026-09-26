@@ -171,7 +171,8 @@ func TestRunsAgentVolumes(t *testing.T) {
 	}
 }
 
-// The warm pool is the next phase on a VM: asked for, it is a startup error naming it.
+// A RunsAgent provider that cannot park and claim members (PoolParker) - the helper-VM path -
+// refuses a warm pool at startup, naming it.
 func TestRunsAgentRefusesAPoolAtStartup(t *testing.T) {
 	h := newVMHarness(t)
 

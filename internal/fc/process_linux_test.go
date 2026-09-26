@@ -1,8 +1,11 @@
 package fc
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -51,5 +54,38 @@ func TestHoldingFollowsTheProcessNotItsCommandLine(t *testing.T) {
 
 	if holding(pid, cs) {
 		t.Fatal("a reaped process reads as holding")
+	}
+}
+
+// The real process table: a recorded process whose argv names nothing of the VM's (a VMM that
+// overwrote its own) is still the one started there, by pid and start time, and Kill ends it.
+func TestKillEndsARecordedProcessWhoseArgvNamesNothingOfTheVM(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Skip(err)
+	}
+
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	go func() { _ = cmd.Wait() }()
+
+	dir := t.TempDir()
+	pid := cmd.Process.Pid
+	start := procStart(pid)
+
+	if err := os.WriteFile(filepath.Join(dir, PIDName), fmt.Appendf(nil, "%d %d\n", pid, start), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if owns(pid, dir) {
+		t.Fatal("sleep's argv names the VM; the test proves nothing")
+	}
+
+	if err := (ExecLauncher{}).Kill(context.Background(), dir); err != nil {
+		t.Fatalf("Kill = %v", err)
+	}
+
+	if holding(pid, start) {
+		t.Fatal("the recorded process is still running after Kill")
 	}
 }

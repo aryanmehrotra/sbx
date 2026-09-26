@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -63,6 +65,12 @@ func (a Addr) Valid() error {
 // Network creates and removes the host side.
 type Network interface {
 	EnsureTap(ctx context.Context, a Addr) error
+
+	// RecheckGuard verifies - and puts back - the host guard of a's bridge without touching its
+	// tap: for a VM resumed in place, whose VMM already holds the tap. An error is the resume's
+	// refusal (fail closed); nil when the operator owns the firewall, or the bridge is gone.
+	RecheckGuard(ctx context.Context, a Addr) error
+
 	RemoveTap(ctx context.Context, a Addr) error
 	RemoveBridge(ctx context.Context, slot int) error
 }
@@ -78,11 +86,27 @@ type IPNetwork struct {
 	// it. -1 leaves the tap root-owned.
 	Owner int
 
-	// Guard closes the host to the bridge's guests except for the egress filter's port; nil
-	// leaves the host's INPUT chain to its operator, as it always was. Warn is told when it
-	// could not be installed, which leaves the bridge working and the host as open as before.
+	// OwnerOf, when set, is the uid a VM's tap is made for instead of Owner: a jailed VMM opens
+	// its tap as its own uid (JailConfig.UID). TapOwner reads an existing tap's owner, so one made
+	// for another uid is made again - a tun device's owner cannot be changed.
+	OwnerOf  func(Addr) int
+	TapOwner func(tap string) (int, bool)
+
+	// Guard closes the host to the bridge's guests except for the egress filter's port, and FAILS
+	// CLOSED: a bridge whose guard cannot be installed, or put back, gets no VM (FirewallManaged).
+	// Nil is FirewallUnmanaged - the operator's firewall owns the host and sbx writes no rule.
+	// Warn is told what the daemon's reconcile could not repair on a bridge already in use.
 	Guard *Guard
 	Warn  func(string)
+}
+
+// tapOwner is the uid a's tap is made for; -1 leaves it root's.
+func (n *IPNetwork) tapOwner(a Addr) int {
+	if n.OwnerOf != nil {
+		return n.OwnerOf(a)
+	}
+
+	return n.Owner
 }
 
 // NewIPNetwork runs the real `ip`.
@@ -122,7 +146,12 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 			return fmt.Errorf("creating bridge %s: %w", br, err)
 		}
 
-		n.guard(ctx, a)
+		// Guarded before it is up, and removed if it cannot be: no moment when a guest could
+		// reach the host through it, and nothing left for a retry to mistake for a guarded one.
+		if err := n.guard(ctx, a); err != nil {
+			_, _ = n.Run(ctx, "link", "del", br)
+			return err
+		}
 
 		for _, args := range [][]string{
 			{"addr", "add", a.Gateway() + "/24", "dev", br},
@@ -132,14 +161,26 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 				return fmt.Errorf("creating bridge %s: %w", br, err)
 			}
 		}
-	} else {
-		n.recheck(ctx, a)
+	} else if err := n.recheck(ctx, a); err != nil {
+		return err
+	}
+
+	owner := n.tapOwner(a)
+
+	// A tap made for another uid - root's, by a VMM before the jailer - is one this VMM cannot
+	// open, and a tun device's owner cannot be changed: made again.
+	if owner >= 0 && n.TapOwner != nil {
+		if got, ok := n.TapOwner(tap); ok && got != owner {
+			if _, err := n.Run(ctx, "link", "del", tap); err != nil {
+				return fmt.Errorf("re-making tap %s for uid %d: %w", tap, owner, err)
+			}
+		}
 	}
 
 	if !n.exists(ctx, tap) {
 		args := []string{"tuntap", "add", "dev", tap, "mode", "tap"}
-		if n.Owner >= 0 {
-			args = append(args, "user", fmt.Sprint(n.Owner))
+		if owner >= 0 {
+			args = append(args, "user", fmt.Sprint(owner))
 		}
 
 		if _, err := n.Run(ctx, args...); err != nil {
@@ -159,65 +200,81 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 	return nil
 }
 
-// guard closes the new bridge to the host before it is up, so there is no moment when a guest
-// could reach the host through it. A failure is reported and the bridge used anyway: the host is
-// then exactly as open as it was before sbx guarded anything, which SECURITY.md describes, and a
-// sandbox that stopped booting because a firewall module was missing would be a regression.
-func (n *IPNetwork) guard(ctx context.Context, a Addr) {
-	if n.Guard == nil {
-		return
-	}
+// refusal is why a VM on a's bridge was not started, and what to do about it.
+func refusal(a Addr, what string, err error) error {
+	return fmt.Errorf("refusing to start a microVM on %s: %s (%w), so its guests could reach every host "+
+		"service bound to 0.0.0.0 at %s. Install iptables and see `sbx doctor`; on a host whose own "+
+		"firewall closes it to 10.231.0.0/16, set %s=unmanaged (sbx serve --fc-firewall=unmanaged) - "+
+		"SECURITY.md", a.Bridge(), what, err, a.Gateway(), FirewallEnv)
+}
 
-	warn := func(format string, args ...any) {
-		if n.Warn != nil {
-			n.Warn(fmt.Sprintf(format, args...))
-		}
+// guard closes the new bridge to the host before it is up. A failure is the VM's refusal: fail
+// closed, since a guest that finds the host open because a firewall module was missing is the
+// one outcome this guard exists to prevent (v0.12 warned and booted; v0.13 does not).
+func (n *IPNetwork) guard(ctx context.Context, a Addr) error {
+	if n.Guard == nil {
+		return nil
 	}
 
 	if err := n.Guard.NoIPv6(a); err != nil {
-		warn("could not turn IPv6 off on %s, so its guests may reach host services bound to [::] "+
-			"over link-local: %v", a.Bridge(), err)
+		return refusal(a, "IPv6 could not be turned off on it, and guests would reach [::] over link-local", err)
 	}
 
 	if err := n.Guard.Install(ctx, a); err != nil {
-		warn("could not close the host to %s's guests (%v): they can reach every host service "+
-			"bound to 0.0.0.0 at %s - see SECURITY.md", a.Bridge(), err, a.Gateway())
+		return refusal(a, "the host guard could not be installed", err)
 	}
+
+	return nil
 }
 
-// recheck puts the guard back if something removed it while the bridge stood. A host with no
-// iptables was told so when the bridge was made, and is not told again on every wake.
-func (n *IPNetwork) recheck(ctx context.Context, a Addr) {
+// recheck verifies the guard of a bridge that stands, and puts it back if something removed it.
+// One that cannot be verified or put back is the VM's refusal, as in guard.
+func (n *IPNetwork) recheck(ctx context.Context, a Addr) error {
 	if n.Guard == nil {
-		return
+		return nil
 	}
 
 	repaired, err := n.Guard.Ensure(ctx, a)
 
 	switch {
-	case errors.Is(err, ErrNoFirewall):
 	case err != nil:
-		if n.Warn != nil {
-			n.Warn(fmt.Sprintf("%s's host rules were missing and could not be put back (%v): its guests "+
-				"can reach host services at %s - see SECURITY.md", a.Bridge(), err, a.Gateway()))
-		}
-	case repaired:
-		if n.Warn != nil {
-			n.Warn(fmt.Sprintf("%s's host rules had been removed (a firewall reload or flush?) and were put back",
-				a.Bridge()))
-		}
+		return refusal(a, "its host guard was missing and could not be put back", err)
+	case repaired && n.Warn != nil:
+		n.Warn(fmt.Sprintf("%s's host rules had been removed (a firewall reload or flush?) and were put back",
+			a.Bridge()))
 	}
+
+	return nil
+}
+
+// RecheckGuard is recheck for a VM resumed in place (Network.RecheckGuard): no bridge, nothing
+// a guest could reach the host through.
+func (n *IPNetwork) RecheckGuard(ctx context.Context, a Addr) error {
+	if err := a.Valid(); err != nil {
+		return err
+	}
+
+	if n.Guard == nil || !n.exists(ctx, a.Bridge()) {
+		return nil
+	}
+
+	return n.recheck(ctx, a)
 }
 
 // EnsureGuard is recheck for the daemon's reconcile: a bridge that exists gets its guard checked
-// and, if something removed it, put back. No bridge, nothing to guard.
+// and, if something removed it, put back. No bridge, nothing to guard. What it cannot put back is
+// warned about; the VMs already on that bridge keep running, and no new one starts on it.
 func (n *IPNetwork) EnsureGuard(ctx context.Context, slot int) {
 	a := Addr{Slot: slot}
 	if n.Guard == nil || a.Valid() != nil || !n.exists(ctx, a.Bridge()) {
 		return
 	}
 
-	n.recheck(ctx, a)
+	if err := n.recheck(ctx, a); err != nil && n.Warn != nil {
+		n.Warn(fmt.Sprintf("%s's host rules were removed and could not be put back: its running guests "+
+			"can reach host services at %s, and no VM will start on it until they are (%v)",
+			a.Bridge(), a.Gateway(), err))
+	}
 }
 
 // RemoveTap deletes the VM's tap; one already gone is success.
@@ -260,4 +317,17 @@ func (n *IPNetwork) GuardWhole(ctx context.Context, slot int) (bool, error) {
 	}
 
 	return n.Guard.Whole(ctx, Addr{Slot: slot})
+}
+
+// SysTapOwner is a tun device's owner as the kernel reports it (/sys/class/net/<tap>/owner; -1
+// for none), for IPNetwork.TapOwner. False when the tap or the file is not there.
+func SysTapOwner(tap string) (int, bool) {
+	b, err := os.ReadFile("/sys/class/net/" + tap + "/owner")
+	if err != nil {
+		return 0, false
+	}
+
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+
+	return n, err == nil
 }

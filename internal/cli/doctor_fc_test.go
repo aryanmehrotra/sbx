@@ -65,6 +65,13 @@ func TestDoctorShowsMicroVMDiskUsage(t *testing.T) {
 		t.Fatalf("disk row = %+v", last)
 	}
 
+	u.PoolMembers, u.PoolMemory = 2, 512<<20
+
+	caps = firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("0", nil), u)
+	if last := caps[len(caps)-1]; !strings.Contains(last.Detail, "; 2 parked warm-pool members hold 512.0 MiB of it") {
+		t.Fatalf("disk row with a pool = %+v", last)
+	}
+
 	if caps := firecrackerCapabilities(hostcap.HelperVM, "", fc.BridgeIsolation{}, u); len(caps) != 0 {
 		t.Fatalf("a helper-VM host graded its own disk: %+v", caps)
 	}
@@ -78,5 +85,76 @@ func TestDoctorGradesTheForwardPolicy(t *testing.T) {
 	caps := firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("1", acceptAll), nil)
 	if row := caps[1]; row.Name != "vm bridges isolated" || row.Have || !strings.Contains(row.Meaning, "FORWARD DROP") {
 		t.Fatalf("row = %+v", row)
+	}
+}
+
+// The two v0.13 controls, as doctor sees them: whether a VM would start at all (the guard fails
+// closed), and whether its VMM would be confined.
+func TestDoctorReportsTheGuardAndTheJailer(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	find := func(caps []Capability, name string) Capability {
+		for _, c := range caps {
+			if c.Name == name {
+				return c
+			}
+		}
+
+		t.Fatalf("no %q row in %+v", name, caps)
+
+		return Capability{}
+	}
+
+	noIPT := func() error { return fc.ErrNoFirewall }
+	cg := func() (string, bool) { return "/sys/fs/cgroup", true }
+
+	caps := firecrackerGuards(env(nil), noIPT, cg)
+	if g := find(caps, "vm host guard"); g.Have || !strings.Contains(g.Meaning, "refused") || !strings.Contains(g.Meaning, "unmanaged") {
+		t.Fatalf("managed without iptables: %+v", g)
+	}
+
+	if j := find(caps, "vm jailer"); !j.Have || !strings.Contains(j.Detail, "900000") {
+		t.Fatalf("jailer default: %+v", j)
+	}
+
+	caps = firecrackerGuards(env(map[string]string{fc.FirewallEnv: "unmanaged", fc.JailerEnv: "off"}), noIPT, cg)
+	if g := find(caps, "vm host guard"); !g.Have || !strings.Contains(g.Detail, "unmanaged") {
+		t.Fatalf("unmanaged: %+v", g)
+	}
+
+	if j := find(caps, "vm jailer"); j.Have || !strings.Contains(j.Meaning, "root") {
+		t.Fatalf("jailer off: %+v", j)
+	}
+
+	caps = firecrackerGuards(env(nil), func() error { return nil }, func() (string, bool) { return "", false })
+	if g := find(caps, "vm host guard"); !g.Have {
+		t.Fatalf("managed with iptables: %+v", g)
+	}
+
+	if j := find(caps, "vm jailer"); j.Have || !strings.Contains(j.Meaning, fc.JailerEnv+"=off") {
+		t.Fatalf("no cgroup v2: %+v", j)
+	}
+}
+
+// With no disk quota per VM, a state directory on / lets one sandbox fill the host's disk:
+// doctor says so, with the fix, and says nothing when the state has a filesystem of its own.
+func TestDoctorWarnsWhenMicroVMStateSharesRoot(t *testing.T) {
+	find := func(u *provider.FirecrackerUsage) (Capability, bool) {
+		for _, c := range firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("0", nil), u) {
+			if c.Name == "microVM state filesystem" {
+				return c, true
+			}
+		}
+
+		return Capability{}, false
+	}
+
+	u := &provider.FirecrackerUsage{Root: "/root/.sbx/fc", SharesRootFS: true}
+	if c, ok := find(u); !ok || c.Have || !strings.Contains(c.Meaning, "SBX_FC_STATE") || !strings.Contains(c.Meaning, "quota") {
+		t.Fatalf("state on / = %+v (found %v)", c, ok)
+	}
+
+	u.SharesRootFS = false
+	if c, ok := find(u); ok {
+		t.Fatalf("state on its own filesystem still warned: %+v", c)
 	}
 }
