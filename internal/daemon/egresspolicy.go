@@ -375,7 +375,8 @@ func (c *EgressControl) note(f provider.EgressFilter) string {
 		return ""
 	}
 
-	if _, running := Running(); !running {
+	// The daemon that hosts THIS sandbox's filter: the machine's, or one whose --only names it.
+	if _, running := Serving(f.Sandbox); !running {
 		return "saved; this sandbox's filter runs inside sbx serve, which is not running, so " +
 			"nothing leaves the sandbox until it starts - and then under this policy"
 	}

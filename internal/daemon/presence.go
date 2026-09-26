@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -24,6 +25,9 @@ type Presence struct {
 	PID      int       `json:"pid"`
 	Since    time.Time `json:"since"`
 	Provider string    `json:"provider"`
+
+	// Scope is the daemon's --only, empty for the machine's unscoped daemon.
+	Scope Scope `json:"scope,omitempty"`
 }
 
 // presencePath is under $HOME rather than /var/run: the daemon runs as you, not as root,
@@ -105,4 +109,110 @@ func Running() (Presence, bool) {
 	}
 
 	return p, true
+}
+
+// Announce records this process as a running daemon and returns a function that clears it.
+//
+// The machine's daemon claims the one record `sbx serve` guards on. A daemon started with --only
+// does not - it is allowed beside the machine's, and claiming that record would make the next
+// unscoped `sbx serve` refuse - so it writes its own, keyed by pid and carrying its scope, under
+// ~/.sbx/daemons. Without that it was invisible: every CLI verb that asks whether a daemon fronts
+// a sandbox (create's advice, list and ui's warning, doctor, egress) answered "no sbx serve is
+// running" about sandboxes a scoped daemon was fronting, waking and sleeping.
+func Announce(providerName string, scope Scope) func() {
+	if len(scope) == 0 {
+		return MarkRunning(providerName)
+	}
+
+	dir, err := scopedDir()
+	if err != nil {
+		return func() {}
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return func() {}
+	}
+
+	body, err := json.Marshal(Presence{PID: os.Getpid(), Since: time.Now(), Provider: providerName, Scope: scope})
+	if err != nil {
+		return func() {}
+	}
+
+	path := filepath.Join(dir, strconv.Itoa(os.Getpid())+".json")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		return func() {}
+	}
+
+	// Keyed by our own pid, so it cannot be another daemon's to remove.
+	return func() { _ = os.Remove(path) }
+}
+
+func scopedDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(home, ".sbx", "daemons"), nil
+}
+
+// Serving reports the daemon that fronts one sandbox: the machine's, or a scoped one whose
+// --only matches the name. Pid-verified like Running, and a stale scoped record is removed.
+func Serving(sandbox string) (Presence, bool) {
+	if p, ok := Running(); ok {
+		return p, true
+	}
+
+	for _, p := range scopedDaemons() {
+		if p.Scope.Match(sandbox) {
+			return p, true
+		}
+	}
+
+	return Presence{}, false
+}
+
+// Scoped lists the live daemons started with --only.
+func Scoped() []Presence { return scopedDaemons() }
+
+func scopedDaemons() []Presence {
+	dir, err := scopedDir()
+	if err != nil {
+		return nil
+	}
+
+	paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+
+	var out []Presence
+
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var p Presence
+		// An empty scope here would match every sandbox; only a record that names one counts.
+		if json.Unmarshal(body, &p) != nil || p.PID <= 0 || len(p.Scope) == 0 {
+			continue
+		}
+
+		if !alive(p.PID) {
+			_ = os.Remove(path)
+			continue
+		}
+
+		out = append(out, p)
+	}
+
+	return out
+}
+
+func alive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	return proc.Signal(syscall.Signal(0)) == nil
 }

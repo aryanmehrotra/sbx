@@ -140,18 +140,7 @@ func Doctor(ctx context.Context) Report {
 	// without it", and then doctor listed a missing redis-cli that only affects selftest
 	// while saying nothing about this. A daemon started with `sbx serve &` dies with the
 	// terminal, and the first thing anyone runs afterwards is doctor.
-	if p, running := daemon.Running(); running {
-		rep.Capabilities = append(rep.Capabilities, Capability{
-			Name: "sbx serve", Have: true,
-			Detail:  fmt.Sprintf("pid %d, since %s, provider %s", p.PID, p.Since.Format("15:04"), p.Provider),
-			Meaning: "the ports `sbx env` exports are being fronted",
-		})
-	} else {
-		rep.Capabilities = append(rep.Capabilities, Capability{
-			Name: "sbx serve", Have: false, Detail: "not running",
-			Meaning: "nothing accepts on the ports `sbx env` exports; start one: sbx serve --idle 5m &",
-		})
-	}
+	rep.Capabilities = append(rep.Capabilities, daemonCapability())
 
 	rts := dockerRuntimes(ctx)
 
@@ -318,4 +307,36 @@ func machineRow(goos string, mach hostinfo.Machine) Capability {
 	}
 
 	return c
+}
+
+// daemonCapability is doctor's "sbx serve" row.
+func daemonCapability() Capability {
+	if p, running := daemon.Running(); running {
+		return Capability{
+			Name: "sbx serve", Have: true,
+			Detail:  fmt.Sprintf("pid %d, since %s, provider %s", p.PID, p.Since.Format("15:04"), p.Provider),
+			Meaning: "the ports `sbx env` exports are being fronted",
+		}
+	}
+
+	// Only daemons started with --only: they front their scope and nothing else, so a sandbox
+	// outside it still has no daemon - which the row says rather than claiming either extreme.
+	if scoped := daemon.Scoped(); len(scoped) > 0 {
+		var parts []string
+
+		for _, p := range scoped {
+			parts = append(parts, fmt.Sprintf("pid %d --only %s", p.PID, p.Scope))
+		}
+
+		return Capability{
+			Name: "sbx serve", Have: true,
+			Detail:  "scoped only: " + strings.Join(parts, "; "),
+			Meaning: "only sandboxes inside those scopes are fronted; for any other, start one: sbx serve --idle 5m &",
+		}
+	}
+
+	return Capability{
+		Name: "sbx serve", Have: false, Detail: "not running",
+		Meaning: "nothing accepts on the ports `sbx env` exports; start one: sbx serve --idle 5m &",
+	}
 }

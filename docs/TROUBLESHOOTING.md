@@ -27,6 +27,12 @@ it supervised, so it survives your terminal.
 **If a daemon *is* running:** it discovers new sandboxes on its `--refresh` interval (15 s by
 default), so one created seconds ago may not be fronted yet. `sbx ready <name>` waits.
 
+**If the running daemon was started with `--only`:** it fronts only the sandboxes its scope
+names, and `sbx doctor` says so (`scoped only: pid N --only osb-`). A sandbox outside that scope
+has no daemon, and `sbx create`, `sbx list` and `sbx ui` name it. Before v0.13 a scoped daemon
+wrote no record the CLI could find, so all of them reported "no `sbx serve` is running" even for
+sandboxes it was fronting; `sbx sleep` and `sbx wake` reach it through the port and always did.
+
 ---
 
 ## "colima is not running" / "the container runtime is not running"

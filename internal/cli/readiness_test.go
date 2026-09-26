@@ -39,7 +39,7 @@ func TestReadinessTrustsTheOpenPortOverThePresenceFile(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	got := readiness([]provider.Endpoint{{Host: "127.0.0.1", Port: port}})
+	got := readiness("x", []provider.Endpoint{{Host: "127.0.0.1", Port: port}})
 	if !strings.HasPrefix(got, "ready.") {
 		t.Errorf("a served port did not read as ready:\n%s", got)
 	}
@@ -62,7 +62,7 @@ func TestReadinessSaysWhatToRunWhenNothingAnswers(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
 
-	got := readiness([]provider.Endpoint{{Host: "127.0.0.1", Port: port}})
+	got := readiness("x", []provider.Endpoint{{Host: "127.0.0.1", Port: port}})
 
 	if strings.HasPrefix(got, "ready.") {
 		t.Fatalf("claimed ready with nothing listening:\n%s", got)
@@ -79,7 +79,7 @@ func TestReadinessSaysWhatToRunWhenNothingAnswers(t *testing.T) {
 func TestReadinessDoesNotJudgeARemoteHost(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	got := readiness([]provider.Endpoint{{Host: "10.0.0.7", Port: 20000}})
+	got := readiness("x", []provider.Endpoint{{Host: "10.0.0.7", Port: 20000}})
 	if !strings.HasPrefix(got, "ready.") {
 		t.Errorf("judged a remote host's ports:\n%s", got)
 	}
