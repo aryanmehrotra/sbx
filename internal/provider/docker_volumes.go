@@ -35,6 +35,11 @@ func mountOption(m spec.VolumeMount) string {
 	return strings.Join(parts, ",")
 }
 
+// HostVolumes: docker binds a directory of this machine (--mount type=bind).
+func (d *dockerProvider) HostVolumes() {}
+
+var _ HostVolumes = (*dockerProvider)(nil)
+
 // VolumeExists reports whether a named volume exists. An inspect that fails for any reason
 // other than "no such volume" is an error, not an absence: reporting a volume missing because
 // the engine was briefly unreachable would have the caller create a second, empty one.

@@ -12,7 +12,10 @@ package guestinit
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/fc"
 )
 
 // execdArgs is how PID 1 hands over to execd. --vsock-port is execd's AF_VSOCK listener (the
@@ -67,4 +70,49 @@ func writeHostname(path, name string) {
 	}
 
 	_ = os.WriteFile(path, []byte(name+"\n"), 0o644)
+}
+
+// mountStep is one mount fc-init makes for an extra drive; planned here, where it can be tested
+// on any OS, and carried out by the Linux half.
+type mountStep struct {
+	MkdirAll string // created first, when set
+
+	Source, Target, FSType string
+	Bind, ReadOnly         bool
+
+	// Remount makes an existing bind read-only: a bind takes no flags of its own on creation.
+	Remount bool
+}
+
+// drivePlan is how each extra drive reaches the workload: mounted at its target inside root and,
+// with a sub_path, that directory bound over the target so the rest of the drive is not
+// reachable there. A read-only drive is mounted read-only, and so is its bind.
+func drivePlan(root string, ms []fc.InitMount) []mountStep {
+	var out []mountStep
+
+	for _, m := range ms {
+		target := filepath.Join(root, filepath.Clean("/"+m.Target))
+
+		out = append(out, mountStep{MkdirAll: target, Source: m.Device, Target: target, FSType: "ext4",
+			ReadOnly: m.ReadOnly})
+
+		if m.SubPath == "" {
+			continue
+		}
+
+		sub := filepath.Join(target, filepath.Clean("/"+m.SubPath))
+
+		step := mountStep{Source: sub, Target: target, Bind: true}
+		if !m.ReadOnly {
+			step.MkdirAll = sub // docker creates a missing sub_path in a volume, and so does this
+		}
+
+		out = append(out, step)
+
+		if m.ReadOnly {
+			out = append(out, mountStep{Source: sub, Target: target, Bind: true, Remount: true, ReadOnly: true})
+		}
+	}
+
+	return out
 }

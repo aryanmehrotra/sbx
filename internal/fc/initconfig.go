@@ -21,7 +21,29 @@ type InitConfig struct {
 
 	// RootDevice is the image rootfs as the guest sees it, mounted read-write and switched into.
 	RootDevice string `json:"root_device"`
+
+	// Mounts are extra drives - an OpenSandbox pvc, one ext4 image each - mounted into the image
+	// root before it is switched into, in order.
+	Mounts []InitMount `json:"mounts,omitempty"`
 }
+
+// InitMount is one extra drive and where the workload sees it.
+type InitMount struct {
+	Device string `json:"device"` // /dev/vdc, ...
+	Target string `json:"target"` // absolute, inside the image root
+
+	// SubPath mounts this directory of the drive rather than its root: the drive is mounted at
+	// Target and SubPath is then bound over it, so nothing else of the drive is reachable there.
+	SubPath  string `json:"sub_path,omitempty"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+// GuestExtraDevice is the guest device of the i-th extra drive (0-based): Firecracker attaches
+// them after the agent (vda) and the rootfs (vdb), in the order they were PUT.
+func GuestExtraDevice(i int) string { return "/dev/vd" + string(rune('c'+i)) }
+
+// MaxExtraDrives keeps GuestExtraDevice within vdc..vdz.
+const MaxExtraDrives = 24
 
 // Guest device names. Firecracker attaches the root drive first and the rest in the order they
 // were PUT, as virtio-blk vda, vdb, ... - so the agent drive is vda and the image is vdb.

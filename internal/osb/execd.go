@@ -26,6 +26,7 @@ import (
 	"sync"
 
 	"github.com/aryanmehrotra/sbx/internal/agentbin"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 const (
@@ -140,4 +141,23 @@ func AgentFile(ctx context.Context, version, arch string) (string, error) {
 	}
 
 	return src.File, nil
+}
+
+// runsAgent reports whether the provider's sandboxes already run execd as their agent
+// (provider.RunsAgent: a microVM). Then there is nothing to place: no volume, no /opt/sbx
+// mount, no entrypoint wrapper, and the provider boots execd with the token in the env.
+func (s *Server) runsAgent() bool {
+	_, ok := s.p.(provider.RunsAgent)
+	return ok
+}
+
+// inspector is the provider's image inspection, from whichever capability carries it: RunsAgent
+// for a provider that runs the agent itself, Injector for one sbx puts it into. Neither is the
+// API's refusal, naming the backend.
+func (s *Server) inspector() (provider.ImageInspector, error) {
+	if ra, ok := s.p.(provider.RunsAgent); ok {
+		return ra, nil
+	}
+
+	return provider.InjectorFor(s.p)
 }

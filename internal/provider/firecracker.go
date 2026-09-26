@@ -147,6 +147,17 @@ type fcVM struct {
 	// changed on the running VM lives with the filter (DECISIONS.md, "A live egress policy is
 	// held by the filter and pushed to it").
 	EgressPolicy string `json:"egress_policy,omitempty"`
+
+	// OSB is the spec's OSBOwner: set for a VM the OpenSandbox API created. Such a VM is born
+	// running, and its snapshot is its disk (firecracker_osb.go).
+	OSB string `json:"osb,omitempty"`
+
+	// Config is the image config the VM was built from, kept so a disk snapshot of it can be
+	// booted again with the same command, environment and working directory.
+	Config *fc.ImageConfig `json:"image_config,omitempty"`
+
+	// Volumes are named volumes attached as extra drives, in drive order.
+	Volumes []fcVolume `json:"volumes,omitempty"`
 }
 
 type fcProvider struct {
@@ -196,6 +207,9 @@ type fcProvider struct {
 
 	mu    sync.Mutex
 	locks map[string]*refLock
+
+	// volMu holds a volume's "attached nowhere else" check through the save that attaches it.
+	volMu sync.Mutex
 }
 
 func stateRoot() (string, error) {
@@ -466,8 +480,13 @@ func unsupported(svc spec.Service) error {
 	add(svc.Build != nil, "build", "build the image with docker first and name it with `image`")
 	add(len(svc.Files) > 0, "files", "not written into a VM yet: execd can copy into a running VM, but create "+
 		"does not do it before the first snapshot")
-	add(len(svc.Mounts) > 0 || len(svc.VolumeMounts) > 0 || len(svc.ReadOnlyVolumes) > 0,
-		"mounts", "a host directory cannot be bind-mounted into a VM; it would be a virtio-fs device")
+	hostMount := len(svc.Mounts) > 0 || len(svc.ReadOnlyVolumes) > 0
+	for _, m := range svc.VolumeMounts {
+		hostMount = hostMount || m.Host != ""
+	}
+
+	add(hostMount, "mounts", "a host directory cannot be bind-mounted into a VM; it would be a virtio-fs "+
+		"device (a named volume can be mounted: it is attached as an ext4 drive)")
 	add(len(svc.Init) > 0, "init", "not run in a VM yet: execd can run commands, but create does not run them "+
 		"after the first healthy check")
 	add(svc.GPUs != "", "gpus", "Firecracker has no device passthrough")
@@ -638,14 +657,35 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		}
 	}()
 
+	// Where the root filesystem comes from: a saved snapshot of that name, or the image. A memory
+	// snapshot restores only as itself (createFromSnapshot); a disk snapshot of an API sandbox is
+	// a root filesystem to cold-boot a new VM from, with the image config it was saved with.
+	var (
+		rootfsSrc string
+		cfg       fc.ImageConfig
+	)
+
 	if snap, found := p.snapshotFor(svc.Image); found {
-		if err := p.createFromSnapshot(ctx, snap, svc, ref, slot, eps); err != nil {
-			return err
+		if !snap.DiskOnly {
+			if err := p.createFromSnapshot(ctx, snap, svc, ref, slot, eps); err != nil {
+				return err
+			}
+
+			ok = true
+
+			return nil
 		}
 
-		ok = true
+		if snap.VM.Config == nil {
+			return fmt.Errorf("the disk snapshot %s does not say what its image runs; it cannot be booted", svc.Image)
+		}
 
-		return nil
+		src, found := p.savedSnapshotDir(svc.Image)
+		if !found {
+			return fmt.Errorf("the firecracker snapshot %s is gone", svc.Image)
+		}
+
+		rootfsSrc, cfg = filepath.Join(src, fc.RootfsName), *snap.VM.Config
 	}
 
 	arts, err := p.arts.Resolve(ctx, p.arch)
@@ -657,16 +697,20 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return errors.New("the firecracker provider boots an image; the service names none")
 	}
 
-	rfs, err := p.rootfs.Build(ctx, svc.Image)
-	if err != nil {
-		return err
+	if rootfsSrc == "" {
+		rfs, err := p.rootfs.Build(ctx, svc.Image)
+		if err != nil {
+			return err
+		}
+
+		rootfsSrc, cfg = rfs.Path, rfs.Config
 	}
 
-	if !rootUser(rfs.Config.User) {
+	if !rootUser(cfg.User) {
 		return fmt.Errorf("%s runs as USER %q, and the firecracker provider runs every process in the VM "+
 			"as root: fc-init and execd do not switch users yet, and running it as root anyway would "+
 			"quietly drop the boundary the image asked for - use --provider docker, or an image whose "+
-			"USER is root", svc.Image, rfs.Config.User)
+			"USER is root", svc.Image, cfg.User)
 	}
 
 	agent, err := p.agent(ctx, p.arch)
@@ -674,7 +718,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return err
 	}
 
-	clone, err := fc.CloneFile(rfs.Path, filepath.Join(dir, fc.RootfsName))
+	clone, err := fc.CloneFile(rootfsSrc, filepath.Join(dir, fc.RootfsName))
 	if err != nil {
 		return fmt.Errorf("cloning the root filesystem: %w", err)
 	}
@@ -686,11 +730,14 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	vm := &fcVM{
 		Sandbox: sandbox, Service: service, Ref: ref, Instance: randomHex(8),
-		Slot: slot, Index: index, Image: svc.Image, ImageID: rfs.Config.ID,
+		Slot: slot, Index: index, Image: svc.Image, ImageID: cfg.ID,
 		VCPU: vcpu, MemMiB: mem, Ports: svc.Ports, DependsOn: svc.DependsOn, Health: svc.Health,
 		Idle: svc.Idle, OnIdle: svc.OnIdle, Kernel: arts.Kernel, Binary: arts.Firecracker,
 		Clone: clone, Created: time.Now().UTC(),
-		AccessToken: randomHex(16), ControlSecret: randomHex(32),
+		// The API's token when it minted one (RunsAgent): execd must answer the token the API
+		// hands its callers, and a second one minted here would be a sandbox that refuses them.
+		AccessToken: agentToken(svc), ControlSecret: randomHex(32),
+		OSB: svc.OSBOwner, Config: &cfg,
 	}
 
 	for _, e := range eps {
@@ -705,19 +752,21 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	keys := make([]string, 0, len(svc.Env))
 	for k := range svc.Env {
-		keys = append(keys, k)
+		if k != AgentTokenEnv { // appended below, once
+			keys = append(keys, k)
+		}
 	}
 
 	sort.Strings(keys)
 
-	env := fc.MergeEnv(rfs.Config.Env, svc.Env, keys)
+	env := fc.MergeEnv(cfg.Env, svc.Env, keys)
 	// execd reads both and removes them from its own environment before it starts anything,
 	// so the workload does not inherit either. That keeps them out of `env` and logs; it does
 	// not hide them from root in the guest, which can read /proc/1/environ and /init.json on
 	// the agent drive. Harmless by construction (SECURITY.md): each is this guest's own, control
 	// is reachable only over vsock from the host, the control secret rotates at every restore,
-	// and a fork of a VM is refused.
-	env = append(env, "EXECD_ACCESS_TOKEN="+vm.AccessToken, "EXECD_CONTROL_SECRET="+vm.ControlSecret)
+	// and a fork of a VM's memory is refused.
+	env = append(env, AgentTokenEnv+"="+vm.AccessToken, "EXECD_CONTROL_SECRET="+vm.ControlSecret)
 
 	if svc.Filtered() {
 		if vm.EgressPolicy, err = declaredJSON(svc); err != nil {
@@ -727,20 +776,33 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		env = withEgressProxy(env, vm.addr())
 	}
 
-	init := fc.InitConfig{
-		Argv:       fc.Compose(rfs.Config.Entrypoint, rfs.Config.Cmd, svc.Entrypoint, svc.Args),
-		Env:        env,
-		WorkingDir: rfs.Config.WorkingDir,
-		Hostname:   service,
-		RootDevice: fc.GuestRootfsDevice,
-	}
+	// The volumes are checked and the record that attaches them saved under one lock, so two
+	// creates cannot both attach one volume.
+	if err := func() error {
+		p.volMu.Lock()
+		defer p.volMu.Unlock()
 
-	if err := fc.BuildAgentDrive(ctx, p.ext4, fc.AgentDrive{Agent: agent, Config: init},
-		filepath.Join(dir, "agent.ext4")); err != nil {
-		return err
-	}
+		var err error
+		if vm.Volumes, err = p.volumesFor(ref, svc.VolumeMounts); err != nil {
+			return err
+		}
 
-	if err := p.save(vm); err != nil {
+		init := fc.InitConfig{
+			Argv:       fc.Compose(cfg.Entrypoint, cfg.Cmd, svc.Entrypoint, svc.Args),
+			Env:        env,
+			WorkingDir: cfg.WorkingDir,
+			Hostname:   service,
+			RootDevice: fc.GuestRootfsDevice,
+			Mounts:     initMounts(vm.Volumes),
+		}
+
+		if err := fc.BuildAgentDrive(ctx, p.ext4, fc.AgentDrive{Agent: agent, Config: init},
+			filepath.Join(dir, "agent.ext4")); err != nil {
+			return err
+		}
+
+		return p.save(vm)
+	}(); err != nil {
 		return err
 	}
 
@@ -771,6 +833,20 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	}
 
 	release()
+
+	// An API sandbox is born running: the API's contract is a process that runs, it reports
+	// Running once execd answers, and a snapshot and restore here would be a second boot's worth
+	// of time spent to end where this already is. SnapshotValid is false, so if it dies awake its
+	// next wake is a cold boot from its disk, and its first sleep takes a Full snapshot.
+	if vm.OSB != "" {
+		if err := p.save(vm); err != nil {
+			return err
+		}
+
+		ok = true
+
+		return nil
+	}
 
 	if err := p.sleep(ctx, vm); err != nil {
 		return err
@@ -806,7 +882,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 	// which the provider reads as asleep-without-a-snapshot and cold-boots next time.
 	args := "console=ttyS0 reboot=k panic=1 quiet loglevel=3 init=/sbx " + a.BootArg() + " -- fc-init"
 
-	for _, step := range []func() error{
+	steps := []func() error{
 		func() error { return c.PutBootSource(ctx, fc.BootSource{KernelImagePath: vm.Kernel, BootArgs: args}) },
 		func() error {
 			return c.PutDrive(ctx, fc.Drive{DriveID: "agent", PathOnHost: filepath.Join(dir, "agent.ext4"), IsRootDevice: true, IsReadOnly: true})
@@ -814,6 +890,15 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		func() error {
 			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: filepath.Join(dir, fc.RootfsName)})
 		},
+	}
+
+	// Volumes after the rootfs, in order: the guest sees them as vdc, vdd, ... (fc.GuestExtraDevice).
+	for i, v := range vm.Volumes {
+		drive := fc.Drive{DriveID: volumeDriveID(i), PathOnHost: p.volumePath(v.Name), IsReadOnly: v.ReadOnly}
+		steps = append(steps, func() error { return c.PutDrive(ctx, drive) })
+	}
+
+	for _, step := range append(steps, []func() error{
 		func() error {
 			return c.PutMachineConfig(ctx, fc.MachineConfig{VcpuCount: vm.VCPU, MemSizeMib: vm.MemMiB, TrackDirtyPages: true})
 		},
@@ -825,7 +910,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		},
 		func() error { return c.PutEntropy(ctx) },
 		func() error { return c.InstanceStart(ctx) },
-	} {
+	}...) {
 		if err := step(); err != nil {
 			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
 			return err
@@ -1451,7 +1536,7 @@ func (p *fcProvider) List(ctx context.Context, sandbox string) ([]Unit, error) {
 		u := Unit{
 			Sandbox: vm.Sandbox, Service: vm.Service, Slot: vm.Slot, Ref: vm.Ref,
 			Instance: vm.Instance, Running: state == fc.StateRunning || serr != nil, Paused: state == fc.StatePaused,
-			Index: vm.Index % blockSize, DependsOn: vm.DependsOn, Idle: vm.Idle, OnIdle: vm.OnIdle,
+			Index: vm.Index % blockSize, DependsOn: vm.DependsOn, Idle: vm.Idle, OnIdle: vm.OnIdle, OSB: vm.OSB,
 		}
 
 		if vm.EgressPolicy != "" {
@@ -1672,6 +1757,10 @@ func (p *fcProvider) savedSnapshotDir(image string) (string, bool) {
 type fcSnapshot struct {
 	VM  fcVM   `json:"vm"`
 	Dir string `json:"dir"` // the VM directory it was taken in: drive paths in vm.state point there
+
+	// DiskOnly: the root filesystem alone, with no memory - an API sandbox's snapshot
+	// (commitDisk). It boots as a new VM; a memory snapshot restores only as itself.
+	DiskOnly bool `json:"disk_only,omitempty"`
 }
 
 func (p *fcProvider) snapshotFor(image string) (*fcSnapshot, bool) {
@@ -1738,6 +1827,24 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 	state, err := p.running(ctx, ref)
 	if err != nil {
 		return err
+	}
+
+	// An API sandbox's snapshot is its disk (commitDisk), saved with no identity of its own.
+	if vm.OSB != "" {
+		if err := p.commitDisk(ctx, vm, state, dst); err != nil {
+			return err
+		}
+
+		if err := os.WriteFile(filepath.Join(dst, "name"), []byte(image+"\n"), 0o600); err != nil {
+			return err
+		}
+
+		b, err := json.Marshal(fcSnapshot{VM: forgetSecrets(*vm), Dir: dir, DiskOnly: true})
+		if err != nil {
+			return err
+		}
+
+		return os.WriteFile(filepath.Join(dst, "snapshot.json"), b, 0o600)
 	}
 
 	// The record the snapshot is saved with: the identity execd holds inside it.
@@ -1967,4 +2074,9 @@ var (
 	_ Snapshotter = (*fcProvider)(nil)
 	_ Pauser      = (*fcProvider)(nil)
 	_ Limiter     = (*fcProvider)(nil)
+
+	// The OpenSandbox API's needs (firecracker_osb.go).
+	_ RunsAgent    = (*fcProvider)(nil)
+	_ NamedVolumes = (*fcProvider)(nil)
+	_ Puller       = (*fcProvider)(nil)
 )

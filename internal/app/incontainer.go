@@ -17,6 +17,7 @@ import (
 
 var inContainer = map[string]func(args []string) int{
 	"httpcheck": httpcheck,
+	"fssync":    fssync,
 }
 
 // httpcheck exits 0 when a URL answers 2xx. It is the health check for API sandboxes, because

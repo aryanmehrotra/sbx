@@ -426,6 +426,57 @@ type ImageInfo struct {
 	Arch       string // GOARCH spelling: amd64, arm64
 }
 
+// ImageInspector reads what an image runs, and on what. Injector carries it for docker; a
+// provider that runs the agent itself (RunsAgent) answers it too, because the OpenSandbox API
+// records a sandbox's command from it whichever way the agent gets in.
+type ImageInspector interface {
+	ImageInfo(ctx context.Context, image string) (ImageInfo, error)
+}
+
+// RunsAgent is implemented by a provider whose every sandbox already runs sbx's agent, execd, as
+// the sandbox's agent: a microVM, whose PID 1 (`sbx fc-init`) becomes execd with the workload as
+// its child. Named for the want - "this sandbox answers execd's API without being given it" -
+// not for how: a provider that bakes the agent in some other way is the same capability.
+//
+// The OpenSandbox API skips, for such a provider, everything Injector is for: seeding execd into
+// a volume, mounting it at /opt/sbx, and wrapping the entrypoint in it. What it keeps is the
+// token. The API mints the sandbox's execd access token and puts it in the spec's env as
+// EXECD_ACCESS_TOKEN; a RunsAgent provider boots execd with that token, and re-keys a restored
+// execd with it, and never mints one of its own for such a sandbox - two tokens for one sandbox
+// is a sandbox the API hands out credentials for that its agent refuses.
+type RunsAgent interface {
+	ImageInspector
+
+	// RunsAgent is a marker: implementing it is the promise above.
+	RunsAgent()
+}
+
+// AgentTokenEnv is the env var the API puts the execd access token in, and the one execd reads.
+const AgentTokenEnv = "EXECD_ACCESS_TOKEN"
+
+// HostVolumes is implemented by a provider that can bind a directory of this machine into a
+// sandbox. Docker can; a microVM cannot (Firecracker has no virtio-fs), and the OpenSandbox API
+// refuses a `host` volume by name on a provider without it rather than creating a sandbox whose
+// mount silently is not there.
+type HostVolumes interface {
+	HostVolumes()
+}
+
+// HostVolumesFor returns nil when p can mount host directories, or the refusal naming it.
+func HostVolumesFor(p Provider) error {
+	if _, ok := p.(HostVolumes); ok {
+		return nil
+	}
+
+	if p.Name() == "firecracker" {
+		return errors.New("the firecracker provider cannot mount a host directory: a microVM's " +
+			"only way to share one would be virtio-fs, which Firecracker does not have - use a pvc " +
+			"volume (an ext4 image attached as a drive), or the docker provider")
+	}
+
+	return fmt.Errorf("the %s provider cannot mount a host directory into a sandbox", p.Name())
+}
+
 // Injector runs a program sbx supplies inside an image that does not carry it.
 //
 // This is how a sandbox created through the OpenSandbox API gets its agent (`sbx execd`) into
@@ -438,7 +489,7 @@ type ImageInfo struct {
 // provider does not implement it, and API sandboxes are refused there with that reason.
 type Injector interface {
 	// ImageInfo reads an image's default command and platform. The image must be present.
-	ImageInfo(ctx context.Context, image string) (ImageInfo, error)
+	ImageInspector
 
 	// VolumeRuns reports whether volume already holds an executable at name that runs inside
 	// image - the check is to run it, because a file that is present but built for the wrong
@@ -455,12 +506,13 @@ type Injector interface {
 }
 
 // ErrOSBOnFirecracker is why `sbx serve --provider firecracker --osb-addr` is refused at startup
-// rather than answering every create with a 501: an OpenSandbox API sandbox gets sbx's agent
-// through a read-only volume and an entrypoint, and a microVM takes neither yet.
-var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker: an OpenSandbox API " +
-	"sandbox runs sbx's agent from a read-only volume mounted into an arbitrary image, and a microVM " +
-	"cannot take a host volume yet, so every create would fail. Serve the OpenSandbox API from a " +
-	"docker-backed `sbx serve --osb-addr`, and use the CLI or sandbox.json for microVM sandboxes")
+// where the microVMs run in a helper VM (a Mac, Windows): the API sandboxes would be created one
+// level down, and the host half does not front the API into the VM yet. On a Linux host with
+// /dev/kvm the API serves microVMs directly (RunsAgent).
+var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker through a helper VM: the " +
+	"OpenSandbox API serves microVMs on a Linux host with /dev/kvm, and this machine runs them inside " +
+	"a helper VM, which the API is not fronted into yet. Serve the OpenSandbox API from a docker-backed " +
+	"`sbx serve --osb-addr` here, or run `sbx serve --provider firecracker --osb-addr` on Linux")
 
 // InjectorFor returns the provider's injection support, or a refusal naming the backend and
 // what it would take.
@@ -472,9 +524,8 @@ func InjectorFor(p Provider) (Injector, error) {
 
 	switch p.Name() {
 	case "firecracker":
-		return nil, errors.New("the firecracker provider cannot run sbx's agent inside an arbitrary " +
-			"image: that takes a read-only volume and an entrypoint, and a microVM cannot mount a host " +
-			"volume yet - use the docker provider for OpenSandbox API sandboxes")
+		return nil, errors.New("the firecracker provider does not inject sbx's agent into an image: " +
+			"its VMs run the agent as PID 1 already (RunsAgent)")
 	default:
 		return nil, fmt.Errorf("the %s provider cannot run sbx's agent inside an arbitrary image: "+
 			"on a cluster that is an init container copying from a pullable image, which sbx "+

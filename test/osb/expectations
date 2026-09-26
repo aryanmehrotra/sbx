@@ -12,6 +12,10 @@
 #       A SKIP is not a pass. A test not listed here that skips fails the run, and a listed
 #       test that skips for a DIFFERENT reason also fails it - so "Pause not supported" can
 #       never hide behind the allowance for upstream's own unconditional skip.
+#
+#   skip@<provider> <Test> | <message> | <why>
+#       The same, counted only when the run is against that provider (osb-conformance.sh
+#       --provider): a capability one backend refuses by name and another has.
 
 tier v0.9.0  sandbox command filesystem manager lifecycle_metrics error_handling concurrent streaming_timeout
 tier v0.10.0 volume egress_env code_interpreter
@@ -27,3 +31,11 @@ tier v0.12.0 e2e
 # message stops matching and the run fails until this line is revisited.
 skip TestSandbox_PauseAndResume | skip pause/resume e2e test | upstream skips it unconditionally at release-1.1.0
 skip TestManager_PauseAndResume | skip pause/resume e2e test | upstream skips it unconditionally at release-1.1.0
+
+# On --provider firecracker only (skip@<provider> lines count for that provider alone). A microVM
+# cannot mount a host directory - Firecracker has no virtio-fs - so the create is refused by name
+# with a 501 before the operator's allow-list is consulted (docs/DECISIONS.md, "The OpenSandbox
+# API on a microVM"), and upstream skips these two when the create fails. The pvc test is NOT
+# excused: a pvc is an ext4 image attached as a drive, and it must pass.
+skip@firecracker TestVolume_HostMount | Host volume mount not supported | a microVM has no virtio-fs; firecracker refuses a host volume by name (501)
+skip@firecracker TestVolume_HostMountReadOnly | Host volume mount not supported | a microVM has no virtio-fs; firecracker refuses a host volume by name (501)

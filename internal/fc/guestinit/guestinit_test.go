@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/fc"
 )
 
 func TestExecdArgs(t *testing.T) {
@@ -57,5 +59,29 @@ func TestWriteHostname(t *testing.T) {
 
 	if b, _ := os.ReadFile(p); string(b) != "nginx\n" {
 		t.Fatalf("an empty name rewrote it: %q", b)
+	}
+}
+
+// A pvc drive is mounted at its target inside the new root; a sub_path is then bound over the
+// target (so the rest of the drive is not reachable there), and read-only holds for both.
+func TestDrivePlan(t *testing.T) {
+	got := drivePlan("/newroot", []fc.InitMount{
+		{Device: "/dev/vdc", Target: "/data"},
+		{Device: "/dev/vdd", Target: "/ro", SubPath: "train", ReadOnly: true},
+		{Device: "/dev/vde", Target: "/../../etc/x", SubPath: "../../a"},
+	})
+
+	want := []mountStep{
+		{MkdirAll: "/newroot/data", Source: "/dev/vdc", Target: "/newroot/data", FSType: "ext4"},
+		{MkdirAll: "/newroot/ro", Source: "/dev/vdd", Target: "/newroot/ro", FSType: "ext4", ReadOnly: true},
+		{Source: "/newroot/ro/train", Target: "/newroot/ro", Bind: true},
+		{Source: "/newroot/ro/train", Target: "/newroot/ro", Bind: true, Remount: true, ReadOnly: true},
+		// Never outside the new root, whatever the paths say.
+		{MkdirAll: "/newroot/etc/x", Source: "/dev/vde", Target: "/newroot/etc/x", FSType: "ext4"},
+		{MkdirAll: "/newroot/etc/x/a", Source: "/newroot/etc/x/a", Target: "/newroot/etc/x", Bind: true},
+	}
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("plan:\n got %+v\nwant %+v", got, want)
 	}
 }

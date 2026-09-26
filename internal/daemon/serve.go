@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -847,12 +848,18 @@ func (d *daemon) lifetime(caller context.Context) context.Context {
 	return caller
 }
 
-// refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup: every create
-// through that API would fail, and a listener that can only refuse is worse than no listener.
+// refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup where the VMs
+// would run in a helper VM: the API is not fronted into it, so every create would fail, and a
+// listener that can only refuse is worse than no listener. On a Linux host that runs Firecracker
+// directly the API serves microVMs (the provider RunsAgent), and nothing is refused here.
 func refuseOSBOnMicroVM(kind, osbAddr string) error {
-	if osbAddr != "" && (kind == "firecracker" || kind == "fc") {
-		return provider.ErrOSBOnFirecracker
+	if osbAddr == "" || (kind != "firecracker" && kind != "fc") {
+		return nil
 	}
 
-	return nil
+	if provider.DecideHost().Backend == hostcap.Direct {
+		return nil
+	}
+
+	return provider.ErrOSBOnFirecracker
 }
