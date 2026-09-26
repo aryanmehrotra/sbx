@@ -1,10 +1,15 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/fc"
 )
 
 // guardNet is fakeNet that also records the daemon's guard re-checks.
@@ -39,5 +44,28 @@ func TestMaintainRechecksEveryBridgeOnce(t *testing.T) {
 
 	if len(slots) != 2 || slots[0] == slots[1] {
 		t.Fatalf("checked slots %v, want each sandbox's bridge once", g.checked)
+	}
+}
+
+// A guest printing in a loop grows console.log for as long as the VM runs; the daemon's
+// reconcile cuts it back, so the host's disk is not the guest's to fill.
+func TestMaintainCapsAConsoleTheGuestKeepsWritingTo(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "loud", redis)
+
+	path := filepath.Join(r.p.dir(ref), fc.ConsoleName)
+	if err := os.WriteFile(path, bytes.Repeat([]byte("spam spam spam\n"), (fc.ConsoleMax/15)+1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r.p.Maintain(r.ctx)
+
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if st.Size() > fc.ConsoleKeep+4096 {
+		t.Fatalf("console.log is %d bytes after reconcile, want at most about %d", st.Size(), fc.ConsoleKeep)
 	}
 }

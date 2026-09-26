@@ -2101,11 +2101,16 @@ type guardChecker interface {
 }
 
 // Maintain re-checks the host rules of every bridge a VM of this provider is on, and puts back
-// any that a firewall reload or a flush removed (fc.Guard.Ensure: `-C` only while they are whole).
+// any that a firewall reload or a flush removed (fc.Guard.Ensure: `-C` only while they are whole),
+// and cuts back any VM's console.log a guest has printed past fc.ConsoleMax.
 func (p *fcProvider) Maintain(ctx context.Context) {
 	vms, err := p.all()
 	if err != nil {
 		return
+	}
+
+	for _, vm := range vms {
+		_ = fc.CapLogs(p.dir(vm.Ref))
 	}
 
 	g, ok := p.net.(guardChecker)

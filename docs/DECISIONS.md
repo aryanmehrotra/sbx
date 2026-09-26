@@ -989,6 +989,13 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   removing one that is attached is refused (a sleeping VM's snapshot names its path).
 - **`host` volumes are refused by name** (`HostVolumes`, which docker has): Firecracker has no
   virtio-fs, and the refusal comes before the operator's allow-list, so it names the provider.
+- **A guest's console is bounded** (security review of v0.12, M3). `console.log` is the guest's
+  serial console, appended to by firecracker for the VM's life, so a guest printing in a loop could
+  fill the host's disk. It (and `vmm.log`) is cut back in place to its newest 4 MiB of whole lines
+  once past 16 MiB - at every launch and on every daemon reconcile - with a line saying so; in place
+  because firecracker holds it `O_APPEND`. Not a pipe through sbx: firecracker outlives the `sbx`
+  process that started it, and a pipe reader would die with that process. Between two reconciles
+  (the refresh interval, 15s by default) a guest can overshoot the cap by what its UART can write.
 - **Not yet:** the warm pool (`--osb-pool` is a startup error on firecracker until members are
   snapshotted asleep and restored per claim), the helper-VM path on a Mac or Windows (`--osb-addr`
   still refused there at startup), and egress on VM bridges (its own branch).

@@ -56,7 +56,8 @@ type ExecLauncher struct{}
 
 // Launch starts firecracker with its stdout (the guest's serial console) appended to
 // console.log and its own log on stderr in vmm.log. Appended, so the console of a VM that has
-// slept and woken ten times reads as one history, which is what `sbx logs` promises.
+// slept and woken ten times reads as one history, which is what `sbx logs` promises - bounded by
+// CapLogs, here and on the daemon's reconcile, so that history cannot fill the disk.
 func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 	sock := filepath.Join(s.Dir, APISockName)
 
@@ -64,6 +65,9 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 	if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return 0, err
 	}
+
+	// Bounded at every launch as well as on the daemon's reconcile: a wake is a launch.
+	_ = CapLogs(s.Dir)
 
 	console, err := os.OpenFile(filepath.Join(s.Dir, ConsoleName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
