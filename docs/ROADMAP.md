@@ -77,12 +77,13 @@ pipeline, per-VM clones, tap networking, `sbx fc-init` as PID 1, and `--provider
 the wake path (Start = load, Stop = Diff snapshot), `Pauser`, `Snapshotter` (memory included) and
 `Limiter`. The rootfs pipeline came in far under four weeks, because `docker export` hands back the
 filesystem already flattened - there are no layers or `.wh.` whiteouts to apply (DECISIONS.md).
-Since built: exec, copy, logs and the spec's `health` through execd over vsock (`fc.VsockGuest`), and
-the helper VM for M3+ Macs and Windows 11 (`internal/fchost`). Not yet: forking a snapshot under
-another name; `files`, `init` and mounts (a host volume into a VM); the OpenSandbox API on
-firecracker (refused at startup); egress beyond deny; the bare-metal measurement the spike asked
-for, which `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider` takes on any Linux host with
-KVM (CI runs it where the runner exposes `/dev/kvm`).
+Since built: exec, copy, logs and the spec's `health` through execd over vsock (`fc.VsockGuest`),
+the helper VM for M3+ Macs and Windows 11 (`internal/fchost`), and egress through the filter on
+each VM bridge with the host closed behind it (v0.12). Not yet: forking a snapshot under another
+name; `files`, `init` and mounts (a host volume into a VM); the OpenSandbox API on firecracker
+(refused at startup); the bare-metal measurement the spike asked for, which
+`SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider` takes on any Linux host with KVM
+(CI runs it where the runner exposes `/dev/kvm`).
 
 ### Two landmines, written down before anyone hits them
 

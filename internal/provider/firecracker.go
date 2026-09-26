@@ -140,6 +140,13 @@ type fcVM struct {
 	// top of vm.mem is a correct snapshot. False after a cold boot, and after a Commit, which
 	// resets Firecracker's dirty bitmap and would make the next Diff miss pages.
 	Restored bool `json:"restored"`
+
+	// EgressPolicy is the egress policy the spec declared, as JSON, when the service reaches the
+	// network through the filter the daemon serves on this sandbox's bridge gateway; "" when it
+	// has no way out at all. What the filter STARTS with and what a reset returns to: a policy
+	// changed on the running VM lives with the filter (DECISIONS.md, "A live egress policy is
+	// held by the filter and pushed to it").
+	EgressPolicy string `json:"egress_policy,omitempty"`
 }
 
 type fcProvider struct {
@@ -178,6 +185,10 @@ type fcProvider struct {
 	bridgeCheck func() fc.BridgeIsolation
 	warn        io.Writer
 
+	// guardCheck reports whether this host can close itself to a bridge's guests (fc.Guard);
+	// nil skips the check. A host that cannot is warned about on every create.
+	guardCheck func() error
+
 	// boots caps how many VMs restore or cold-boot at once: each is a burst of page faults and a
 	// vCPU spinning up, and a fleet woken together (a host reboot, a burst of connections) would
 	// otherwise contend so hard that every wake is slow. Sized to the host's CPUs; nil is no cap.
@@ -214,7 +225,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		arch:  runtime.GOARCH,
 		arts:  fc.NewArtifactCache(filepath.Join(root, "artifacts")),
 		ext4:  mkfs,
-		net:   fc.NewIPNetwork(os.Getuid()),
+		net:   guardedNetwork(),
 		guest: fc.NewGuest(),
 		rootfs: &fc.RootfsBuilder{
 			Dir:    filepath.Join(root, "rootfs"),
@@ -224,6 +235,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		},
 		launch:      fc.ExecLauncher{},
 		bridgeCheck: fc.HostBridgeIsolation,
+		guardCheck:  fc.Available,
 		boots:       make(chan struct{}, max(1, runtime.NumCPU())),
 		bootTimeout: 60 * time.Second,
 		locks:       map[string]*refLock{},
@@ -460,9 +472,8 @@ func unsupported(svc spec.Service) error {
 		"after the first healthy check")
 	add(svc.GPUs != "", "gpus", "Firecracker has no device passthrough")
 	add(len(svc.CapAdd) > 0, "cap_add", "the workload is root in its own kernel; there is no capability set to widen")
-	add(len(svc.EgressAllow) > 0 || svc.EgressPolicy != nil, "egress_allow/egress_policy",
-		"the egress filter does not listen on a VM bridge yet; a VM has no egress at all, which is egress: deny")
-	add(svc.Egress != "" && svc.Egress != "deny", "egress", "a VM bridge has no NAT, so the only egress it has is deny")
+	add(svc.Egress != "" && svc.Egress != spec.EgressDeny && svc.Egress != spec.EgressAllow, "egress",
+		"a VM bridge has no NAT: its egress is deny, or the filter (allow, egress_allow, egress_policy)")
 
 	if len(why) == 0 {
 		return nil
@@ -583,6 +594,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		}
 	}
 
+	if p.guardCheck != nil {
+		if err := p.guardCheck(); err != nil {
+			fmt.Fprintf(p.warnTo(), "  warning: this host cannot close itself to microVM guests (%v): they reach every "+
+				"host service bound to 0.0.0.0 at their gateway, 10.231.%d.1 - see SECURITY.md\n", err, slot)
+		}
+	}
+
 	ref := containerName(sandbox, service)
 	dir := p.dir(ref)
 
@@ -621,7 +639,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	}()
 
 	if snap, found := p.snapshotFor(svc.Image); found {
-		if err := p.createFromSnapshot(ctx, snap, svc.Image, ref, slot, eps); err != nil {
+		if err := p.createFromSnapshot(ctx, snap, svc, ref, slot, eps); err != nil {
 			return err
 		}
 
@@ -700,6 +718,14 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	// is reachable only over vsock from the host, the control secret rotates at every restore,
 	// and a fork of a VM is refused.
 	env = append(env, "EXECD_ACCESS_TOKEN="+vm.AccessToken, "EXECD_CONTROL_SECRET="+vm.ControlSecret)
+
+	if svc.Filtered() {
+		if vm.EgressPolicy, err = declaredJSON(svc); err != nil {
+			return err
+		}
+
+		env = withEgressProxy(env, vm.addr())
+	}
 
 	init := fc.InitConfig{
 		Argv:       fc.Compose(rfs.Config.Entrypoint, rfs.Config.Cmd, svc.Entrypoint, svc.Args),
@@ -1428,6 +1454,11 @@ func (p *fcProvider) List(ctx context.Context, sandbox string) ([]Unit, error) {
 			Index: vm.Index % blockSize, DependsOn: vm.DependsOn, Idle: vm.Idle, OnIdle: vm.OnIdle,
 		}
 
+		if vm.EgressPolicy != "" {
+			a := vm.addr()
+			u.EgressGateway, u.EgressBridge, u.EgressPolicy = a.Gateway(), a.Bridge(), vm.EgressPolicy
+		}
+
 		for i, pub := range vm.Public {
 			u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pub})
 			u.Listen = append(u.Listen, pub)
@@ -1818,8 +1849,8 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 // service in the same slot, and nowhere else, until drives are re-pointed per clone (a jailer or
 // a mount namespace) and the guest agent re-addresses the network. A clone under another name
 // is also a fork, which needs the guest to re-key - refused for both reasons, each stated.
-func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image, ref string, slot int, eps []Endpoint) error {
-	dir := p.dir(ref)
+func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, svc spec.Service, ref string, slot int, eps []Endpoint) error {
+	dir, image := p.dir(ref), svc.Image
 
 	switch {
 	case s.Dir != dir:
@@ -1830,6 +1861,15 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 		return fmt.Errorf("the firecracker snapshot for %s was taken in slot %d, and this sandbox "+
 			"got slot %d: the guest's address is part of its memory. Free slot %d and retry",
 			ref, s.VM.Slot, slot, s.VM.Slot)
+	case svc.Filtered() != (s.VM.EgressPolicy != ""):
+		// HTTP(S)_PROXY is in the environment of every process the snapshot holds, set or not
+		// at its first boot. Restoring a filtered snapshot as an unfiltered service would leave
+		// clients pointed at a filter nobody serves; the other way round, at none at all, with
+		// the filter serving nothing. Neither is the spec, so neither is done.
+		return fmt.Errorf("the firecracker snapshot for %s was taken %s, and the spec now asks for "+
+			"it %s: the proxy setting is in the environment of every process in the snapshot's "+
+			"memory. Keep the snapshot's egress, or remove the snapshot and create afresh",
+			ref, filteredWord(s.VM.EgressPolicy != ""), filteredWord(svc.Filtered()))
 	}
 
 	// Create holds the lock and removes dir if this fails.
@@ -1850,6 +1890,16 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 	vm.SnapshotValid = true
 	vm.Restored = false
 	vm.Public = nil
+
+	// The policy itself may differ from the snapshot's: it is held by the filter, not the guest.
+	vm.EgressPolicy = ""
+
+	if svc.Filtered() {
+		var err error
+		if vm.EgressPolicy, err = declaredJSON(svc); err != nil {
+			return err
+		}
+	}
 
 	for _, e := range eps {
 		vm.Public = append(vm.Public, e.Port)

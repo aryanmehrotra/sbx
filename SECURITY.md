@@ -97,11 +97,17 @@ threat model is not "untrusted users share one daemon".**
   downgraded. If you are running code you did not write, use one of those or use a tool built
   on microVMs; [COMPARISON.md](docs/COMPARISON.md) names them.
 - **A microVM sandbox (`--provider firecracker`) is on the host's network, not behind it.**
-  Each sandbox is a bridge (`10.231.<slot>.0/24`, the host at `.1`) with no NAT, and sbx writes
-  no firewall rule. Two consequences, both yours to close on a shared host:
-  - **A guest reaches every host service bound to `0.0.0.0`** (or to the bridge address) at
-    `10.231.<slot>.1` - the host's INPUT chain decides, not sbx. Bind host services to
-    `127.0.0.1`, or drop INPUT from `sbxfc+` interfaces except established traffic.
+  Each sandbox is a bridge (`10.231.<slot>.0/24`, the host at `.1`) with no NAT, so a guest has no
+  route off the host; a filtered one (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches
+  the internet only through the egress filter on `10.231.<slot>.1:20999`, which refuses the host's
+  own addresses and every other sandbox's unless a rule names them. Two consequences:
+  - **The host is closed to a guest except for that filter port** - where sbx could install it.
+    Each bridge gets an INPUT chain `SBX-FC<slot>` (replies returned to your rules, the filter port
+    accepted, the rest dropped) and IPv6 off, made with the bridge and removed with it
+    (DECISIONS.md, "A microVM's only door is its filter"). **Where `iptables` is missing or refuses,
+    the bridge still comes up and a guest reaches every host service bound to `0.0.0.0` at
+    `10.231.<slot>.1`**; the create and the daemon's log say so. Bridges made by v0.11 are not
+    guarded until the sandbox is recreated.
   - **Isolation between sandboxes is the host's FORWARD policy.** With `ip_forward=1` (docker
     turns it on) one sandbox's VMs can reach another's unless the policy is `DROP`, which docker
     sets but sbx neither sets nor owns. `sbx doctor` checks it (`vm bridges isolated`), and every

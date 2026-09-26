@@ -113,6 +113,14 @@ type Unit struct {
 	// running service lives with the filter, not here.
 	EgressPolicy string
 
+	// EgressBridge is the host bridge the gateway is on when that bridge is sbx's own - a
+	// microVM sandbox's sbxfc<slot> - rather than one docker made; "" otherwise. Such a bridge
+	// comes and goes with its VMs (a host reboot takes it until the next wake), so the daemon
+	// binds the filter there even while the address is absent. And because that filter runs on
+	// the very host the guests are kept off, it refuses the host's own addresses and the rest of
+	// the VM plan unless a rule names them.
+	EgressBridge string
+
 	// DependsOn is what this service declared it needs. Carried to the daemon so that waking
 	// it wakes those too: a stopped container is absent from the network's DNS, so a service
 	// woken without its dependencies dials a name that does not resolve.

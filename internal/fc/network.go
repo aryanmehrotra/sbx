@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"strings"
 )
@@ -26,6 +27,10 @@ import (
 // it, so two processes computing the address of the same service always agree - which matters
 // because Create, the daemon's Start and a restore after a host reboot may each be a different
 // sbx process.
+
+// Plan is every address the arithmetic below can produce: each sandbox's bridge gateway (the
+// host) and every guest. Nothing else is ever in it, so a filter on the host can refuse it whole.
+var Plan = netip.MustParsePrefix("10.231.0.0/16")
 
 // Addr is one VM's place on the network.
 type Addr struct {
@@ -71,6 +76,12 @@ type IPNetwork struct {
 	// Owner is the uid firecracker runs as, given to the tap so a non-root firecracker can open
 	// it. -1 leaves the tap root-owned.
 	Owner int
+
+	// Guard closes the host to the bridge's guests except for the egress filter's port; nil
+	// leaves the host's INPUT chain to its operator, as it always was. Warn is told when it
+	// could not be installed, which leaves the bridge working and the host as open as before.
+	Guard *Guard
+	Warn  func(string)
 }
 
 // NewIPNetwork runs the real `ip`.
@@ -106,8 +117,13 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 	br, tap := a.Bridge(), a.Tap()
 
 	if !n.exists(ctx, br) {
+		if _, err := n.Run(ctx, "link", "add", br, "type", "bridge"); err != nil && !n.exists(ctx, br) {
+			return fmt.Errorf("creating bridge %s: %w", br, err)
+		}
+
+		n.guard(ctx, a)
+
 		for _, args := range [][]string{
-			{"link", "add", br, "type", "bridge"},
 			{"addr", "add", a.Gateway() + "/24", "dev", br},
 			{"link", "set", br, "up"},
 		} {
@@ -140,6 +156,32 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 	return nil
 }
 
+// guard closes the new bridge to the host before it is up, so there is no moment when a guest
+// could reach the host through it. A failure is reported and the bridge used anyway: the host is
+// then exactly as open as it was before sbx guarded anything, which SECURITY.md describes, and a
+// sandbox that stopped booting because a firewall module was missing would be a regression.
+func (n *IPNetwork) guard(ctx context.Context, a Addr) {
+	if n.Guard == nil {
+		return
+	}
+
+	warn := func(format string, args ...any) {
+		if n.Warn != nil {
+			n.Warn(fmt.Sprintf(format, args...))
+		}
+	}
+
+	if err := n.Guard.NoIPv6(a); err != nil {
+		warn("could not turn IPv6 off on %s, so its guests may reach host services bound to [::] "+
+			"over link-local: %v", a.Bridge(), err)
+	}
+
+	if err := n.Guard.Install(ctx, a); err != nil {
+		warn("could not close the host to %s's guests (%v): they can reach every host service "+
+			"bound to 0.0.0.0 at %s - see SECURITY.md", a.Bridge(), err, a.Gateway())
+	}
+}
+
 // RemoveTap deletes the VM's tap; one already gone is success.
 func (n *IPNetwork) RemoveTap(ctx context.Context, a Addr) error {
 	if !n.exists(ctx, a.Tap()) {
@@ -154,6 +196,15 @@ func (n *IPNetwork) RemoveTap(ctx context.Context, a Addr) error {
 // RemoveBridge deletes the sandbox's bridge once nothing is on it.
 func (n *IPNetwork) RemoveBridge(ctx context.Context, slot int) error {
 	br := Addr{Slot: slot}.Bridge()
+
+	// First, and whether or not the bridge is still there: a bridge deleted by hand leaves its
+	// chain behind, and this is the one place that can collect it.
+	if n.Guard != nil {
+		if err := n.Guard.Release(ctx, Addr{Slot: slot}); err != nil {
+			return fmt.Errorf("removing %s's host rules: %w", br, err)
+		}
+	}
+
 	if !n.exists(ctx, br) {
 		return nil
 	}

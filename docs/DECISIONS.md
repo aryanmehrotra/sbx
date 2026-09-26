@@ -781,6 +781,62 @@ no iptables rule, so nothing masquerades and nothing leaves - the no-NAT model `
 already uses - and `egress_allow`/`egress_policy` are refused until the filter listens on a VM bridge.
 Between bridges the host routes only if `ip_forward` is on and FORWARD allows it; docker sets that
 policy to DROP, and `sbx doctor` shows `ip_forward` rather than sbx writing a rule to be sure.
+
+*Amended in v0.12.* The filter now listens on a VM bridge, so `egress_allow`/`egress_policy`/`egress:
+"allow"` are no longer refused, and sbx now writes firewall rules - INPUT only, for its own bridges
+only. Both are the next entry. FORWARD is still docker's, and still only reported.
+
+### A microVM's only door is its filter, and the host behind it is closed
+
+A filtered microVM gets exactly what a filtered container gets: the daemon's egress filter, on its
+bridge's gateway (`10.231.<slot>.1:20999`), as `HTTP(S)_PROXY` in the environment fc-init hands
+execd and the workload - and still no route of its own, because the bridge still has no NAT. So
+`egress_allow`, `egress_policy`, `egress: "allow"`, live `PUT`/`PATCH`/`DELETE` through
+`EgressControl`, CIDR and wildcard rules, and "traffic through the filter is activity" are the
+docker behaviours unchanged, served from the one place a VM's traffic can go. `egress: "allow"` is
+the same door with an open default, and costs raw TCP exactly as it does on docker.
+
+Three things are different, because here the filter and the host are the same machine.
+
+**The filter binds before the bridge exists** (`IP_FREEBIND`). A reboot takes the bridge, and the
+first wake remakes it; a filter that could bind only once the address existed would miss that
+wake's first requests. Measured in a colima helper VM: bridge and tap deleted, daemon restarted -
+the filter was listening on `10.231.0.1:20999` with no `sbxfc0` link, holding the live policy.
+
+**The filter refuses its own host.** Under an open default a filter on the host would carry a guest
+to `10.231.<slot>.1:22` - the host's sshd - or to another sandbox's guest, neither of which the
+guest can reach itself. A VM's filter refuses `10.231.0.0/16` and every address on the host's
+interfaces unless an allow rule names them, as it already refused loopback. Docker's filters are
+unchanged.
+
+**The host's INPUT chain is closed to the bridge, except the filter port** (SECURITY.md M3). The
+network entry above said sbx writes no rule, and the docker entry rejected rules in `DOCKER-USER` as
+sbx reaching around docker. Neither argument applies here: this bridge is sbx's, made and deleted by
+sbx with nobody else's rules on it, and the exposure - every host service bound to `0.0.0.0` - is
+one a VM user cannot see from inside the spec. So each `sbxfc<slot>` gets a chain `SBX-FC<slot>`
+(replies `RETURN` to the host's own rules, the filter port `ACCEPT`, everything else `DROP`) and one
+jump at the top of INPUT matched to that bridge by name, and IPv6 is switched off on the bridge so
+a guest's link-local address has nothing to talk to. What makes it safe to own:
+
+- **Scoped by name.** Nothing outside `SBX-FC<slot>` and its one jump is read, written or
+  reordered; a host with no microVM sandbox has no rule of sbx's.
+- **Made with the bridge, before it is up; removed with it** - and collected by `RemoveBridge` even
+  when the bridge was deleted by hand. A failure halfway removes what was made: guarded, or exactly
+  as before, never half a chain.
+- **Never a reason a sandbox will not boot.** No `iptables`, or one that refuses: the bridge comes
+  up anyway and the create and the daemon's log say the host is open, which is what it was before.
+- **Off the wake path.** Made when the bridge is made, not per wake: one exec per rule on a create
+  or the first wake after a reboot, none on an ordinary wake. The price is that a rule flushed by
+  hand stays gone until the bridge is next made.
+
+Measured in the same helper VM, with a host listener on `0.0.0.0:18999`: the host reached
+`10.231.0.1:18999`; the guest timed out on it, and got 403 asking the filter for it.
+
+**Rejected: nftables directly.** It is the better API, and docker - the other writer on every host
+that runs this - still speaks `iptables`, which on current distributions is the nft backend anyway.
+One tool, the one the operator already reads.
+
+**Rejected: a firewall on the guest side** (rules inside the VM). The guest's root owns them.
 ### An API sandbox's health check runs once a minute, and quickly only while it starts
 
 Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes

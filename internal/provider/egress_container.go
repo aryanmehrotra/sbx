@@ -314,30 +314,10 @@ func (d *dockerProvider) EgressFilter(ctx context.Context, sandbox string) (Egre
 		return EgressFilter{}, err
 	}
 
-	if len(units) == 0 {
-		return EgressFilter{}, fmt.Errorf("%w %q", ErrNoSandbox, sandbox)
+	f, err := filterOf(sandbox, units)
+	if err != nil {
+		return EgressFilter{}, err
 	}
-
-	f := EgressFilter{Sandbox: sandbox}
-
-	var filtered []Unit
-
-	for _, u := range units {
-		if u.EgressGateway != "" {
-			filtered = append(filtered, u)
-			f.Services = append(f.Services, u.Service)
-			f.Gateway = u.EgressGateway
-		}
-	}
-
-	if len(filtered) == 0 {
-		return EgressFilter{}, fmt.Errorf("%w: sandbox %q was created without egress_policy, "+
-			"egress_allow or egress: \"allow\", so its traffic does not pass through anything "+
-			"sbx can change. Add one of those to the spec and recreate it", ErrNotFiltered, sandbox)
-	}
-
-	sort.Strings(f.Services)
-	f.Declared = DeclaredPolicy(filtered)
 
 	name := filterContainer(sandbox)
 
@@ -365,6 +345,37 @@ func (d *dockerProvider) EgressFilter(ctx context.Context, sandbox string) (Egre
 		return EgressFilter{}, fmt.Errorf("the egress filter for %q is not answering "+
 			"(docker start %s brings it back): %w", sandbox, name, err)
 	}
+
+	return f, nil
+}
+
+// filterOf is the part of finding a sandbox's filter every provider shares: which of its units
+// are filtered, what they declared, and the gateway they share.
+func filterOf(sandbox string, units []Unit) (EgressFilter, error) {
+	if len(units) == 0 {
+		return EgressFilter{}, fmt.Errorf("%w %q", ErrNoSandbox, sandbox)
+	}
+
+	f := EgressFilter{Sandbox: sandbox}
+
+	var filtered []Unit
+
+	for _, u := range units {
+		if u.EgressGateway != "" {
+			filtered = append(filtered, u)
+			f.Services = append(f.Services, u.Service)
+			f.Gateway = u.EgressGateway
+		}
+	}
+
+	if len(filtered) == 0 {
+		return EgressFilter{}, fmt.Errorf("%w: sandbox %q was created without egress_policy, "+
+			"egress_allow or egress: \"allow\", so its traffic does not pass through anything "+
+			"sbx can change. Add one of those to the spec and recreate it", ErrNotFiltered, sandbox)
+	}
+
+	sort.Strings(f.Services)
+	f.Declared = DeclaredPolicy(filtered)
 
 	return f, nil
 }
