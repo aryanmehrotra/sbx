@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -89,4 +90,19 @@ func allocatedUnder(dir string) (int64, error) {
 	})
 
 	return n, err
+}
+
+// cloneSize is what a rootfs holds on disk, for the create log: a copy costs this, not the
+// file's apparent size.
+func cloneSize(path string) string { return bytesIEC(allocated(path)) }
+
+func bytesIEC(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%d KiB", n>>10)
+	}
 }

@@ -48,6 +48,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
+	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -583,6 +584,8 @@ func (p *fcProvider) findAgent(ctx context.Context, arch string) (string, error)
 func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal int, service string,
 	svc spec.Service, eps []Endpoint, _ string, _ Isolation,
 ) error {
+	began := time.Now()
+
 	// Every isolation tier is met: a VM is a stronger boundary than gVisor or a container, and
 	// the same boundary kata gives. Nothing is downgraded, so nothing is refused here.
 	if err := unsupported(svc); err != nil {
@@ -719,10 +722,14 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return err
 	}
 
+	cloneAt := time.Now()
+
 	clone, err := fc.CloneFile(rootfsSrc, filepath.Join(dir, fc.RootfsName))
 	if err != nil {
 		return fmt.Errorf("cloning the root filesystem: %w", err)
 	}
+
+	cloned := time.Since(cloneAt)
 
 	index := blockSize + ordinal // a service with no ports still needs an address
 	if len(eps) > 0 {
@@ -820,12 +827,16 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return err
 	}
 
+	slotAt := time.Now()
+
 	release, err := p.bootSlot(ctx)
 	if err != nil {
 		return err
 	}
 
 	defer release() // safe twice: released early below once the VM serves
+
+	bootAt := time.Now()
 
 	if err := p.coldBoot(ctx, vm); err != nil {
 		return err
@@ -847,6 +858,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	}
 
 	release()
+
+	// Where a create's time went, one line per VM: a slow create (a big image cloned by copy on a
+	// filesystem without reflinks, boots queued behind a burst) says which part was slow.
+	logs.Default.Info(sandbox, service, "microVM %s serving %s after create began: rootfs %s in %s (%s of data), "+
+		"waited %s for a boot slot, booted and served in %s", ref, time.Since(began).Round(time.Millisecond),
+		clone, cloned.Round(time.Millisecond), cloneSize(rootfsSrc), bootAt.Sub(slotAt).Round(time.Millisecond),
+		time.Since(bootAt).Round(time.Millisecond))
 
 	// An API sandbox is born running: the API's contract is a process that runs, it reports
 	// Running once execd answers, and a snapshot and restore here would be a second boot's worth
