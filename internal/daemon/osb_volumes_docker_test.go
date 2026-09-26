@@ -7,6 +7,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/osb"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 type osbTestAPI struct {
@@ -356,5 +358,72 @@ func TestDockerHostAndPVCVolumes(t *testing.T) {
 
 	if err := exec.Command("docker", "volume", "inspect", seededVol).Run(); err != nil {
 		t.Errorf("%s, which existed before the sandbox, was deleted with it", seededVol)
+	}
+}
+
+// A host volume swapped for a symlink while its sandbox is stopped must not be followed at the
+// next start: docker resolves a bind source again every time, so a wake would mount wherever
+// the link leads. The start is refused and the container stays down.
+func TestDockerStartRefusesAHostVolumeSwappedWhileAsleep(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+
+	root, err := os.MkdirTemp(filepath.Join(home, ".cache"), "sbx-osb-hostvol-")
+	if err != nil {
+		t.Skipf("cannot make a directory under %s/.cache: %v", home, err)
+	}
+
+	outside, err := os.MkdirTemp(filepath.Join(home, ".cache"), "sbx-osb-outside-")
+	if err != nil {
+		t.Skipf("cannot make a directory under %s/.cache: %v", home, err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(root); _ = os.RemoveAll(outside) })
+
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("not-yours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := startOSB(t, []string{root})
+	p := dockerOrSkip(t)
+
+	id := a.create(`{"image":{"uri":"alpine:3.20"},"entrypoint":["sleep","3600"],"timeout":600,
+		"resourceLimits":{"cpu":"500m","memory":"128Mi"},"volumes":[
+		{"name":"work","host":{"path":"` + root + `"},"subPath":"work","mountPath":"/mnt/work"}]}`)
+	ref := "sbx-" + id + "-sandbox"
+
+	dockerCLI(t, "stop", "-t", "1", ref)
+
+	work := filepath.Join(root, "work")
+	if err := os.Rename(work, work+".orig"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink(outside, work); err != nil {
+		t.Fatal(err)
+	}
+
+	err = p.Start(context.Background(), ref)
+
+	var changed *provider.HostBindChanged
+	if !errors.As(err, &changed) {
+		t.Fatalf("start after the swap = %v, want a HostBindChanged refusal", err)
+	}
+
+	if s := containerState(ref); s == "running" {
+		out, _ := inSandbox(t, id, "cat /mnt/work/secret")
+		t.Fatalf("the container started anyway (reads %q through the swapped link)", out)
+	}
+
+	// Put back, it starts.
+	_ = os.Remove(work)
+	if err := os.Rename(work+".orig", work); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Start(context.Background(), ref); err != nil {
+		t.Fatalf("start with the directory restored: %v", err)
 	}
 }

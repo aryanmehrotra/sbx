@@ -201,6 +201,11 @@ threat model is not "untrusted users share one daemon".**
 Roughly: anything that breaks a boundary sbx claims to hold.
 
 - A sandbox reaching another sandbox's data, or a fork inheriting state it should not.
+- An OpenSandbox `host` volume binding anything but the directory the API validated under
+  `--osb-host-paths` - at create, or at any later start of the same container. (Before v0.13 a
+  sandbox woken from `sbx.idle=sleep` followed a symlink swapped in while it slept, and on docker
+  the re-check just before create did not run; both are fixed in v0.13 -
+  [DECISIONS.md](docs/DECISIONS.md#volumes-on-the-api-host-paths-are-the-operators-to-allow-and-claims-are-namespaced).)
 - A container reaching the OpenSandbox API (`--osb-addr`) without the key, or getting from inside
   its sandbox a credential that works anywhere but that sandbox's own execd.
 - `egress: "deny"` permitting routed egress on docker.

@@ -246,8 +246,23 @@ following symlinks - a link inside an allowed root that points at `/` passes a s
 escapes at mount time - and the directory is created as the user running sbx, not by docker as
 root. It is created only once the whole request has passed, and resolved and checked again
 immediately before the container is created, so a directory swapped for a symlink in between is
-refused. Docker resolves a bind source again at every container start, which this does not cover:
-the roots are the operator's, and a root a sandbox's adversary can write to is not one to list. They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
+refused. (Until v0.13 that last check sat only on the allocate-a-slot create path, and the docker
+provider picks its own slot, so on docker it never ran.)
+
+Docker resolves a bind source again at **every container start**, so a sandbox that slept
+(`sbx.idle=sleep`, `sbx sleep`) and wakes would follow a link swapped in while it was down. Since
+v0.13 the canonical paths the API validated are pinned on the container (label `sbx.host-binds`),
+and every start - the daemon's wake, `sbx wake`, a checkpoint restore - first re-asks the create
+question: each still resolves to exactly itself and is a directory, or the start is refused and
+docker is never asked. The alternative, re-creating the container from the resolved path at each
+wake, was rejected: it loses the container's writable layer, and it re-resolves the path anyway,
+so it narrows the window no further. Refusing is the fail-closed choice - a moved or replaced
+directory stops the sandbox with a message naming it, rather than mounting something else. The
+window left is the one create also has: between this check and docker's own resolution. A frozen
+sandbox (the default idle) never restarts its container and is not affected either way. The roots
+remain the operator's, and a root a sandbox's adversary can write to is still not one to list.
+
+They are mounted with `--mount`, not `-v`: `-v` creates a missing bind source, and on a Mac
 it creates it inside the runtime's VM, where the caller's files are not. Refused is the useful
 failure.
 
