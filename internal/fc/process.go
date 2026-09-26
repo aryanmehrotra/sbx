@@ -31,7 +31,12 @@ const (
 type LaunchSpec struct {
 	Binary string // the firecracker executable
 	Dir    string // the VM's directory; the API socket and logs go here
-	ID     string // --id, shown in firecracker's own logs
+	ID     string // --id, shown in firecracker's own logs; a jailed VMM's is JailID(Dir)
+
+	// Jail, when set, starts the VMM through Firecracker's jailer (jail.go): chrooted into the
+	// VM's jail, as the spec's uid, in a cgroup of its own. Nil is the VMM as a plain child of
+	// this process - SBX_FC_JAILER=off.
+	Jail *JailSpec
 }
 
 // Launcher starts and ends firecracker processes. An interface so the provider's state
@@ -81,15 +86,26 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 	}
 	defer vmmLog.Close()
 
+	bin, args := s.Binary, []string{"--api-sock", sock, "--id", s.ID}
+
+	if s.Jail != nil {
+		// sock becomes a symlink into the root, where the jailed VMM binds /api.sock.
+		if _, err := PrepareJail(s); err != nil {
+			return 0, err
+		}
+
+		bin, args = s.Jail.Jailer, JailerArgs(s)
+	}
+
 	// Not CommandContext: ctx bounds the launch, not the VM's life.
-	cmd := exec.Command(s.Binary, "--api-sock", sock, "--id", s.ID)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = s.Dir
 	cmd.Stdout = console
 	cmd.Stderr = vmmLog
 	cmd.SysProcAttr = detached()
 
 	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("starting %s: %w", s.Binary, err)
+		return 0, fmt.Errorf("starting %s: %w", bin, err)
 	}
 
 	pid := cmd.Process.Pid
@@ -109,7 +125,12 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 	if err := NewClient(sock).WaitReady(wctx); err != nil {
 		_ = cmd.Process.Kill()
 
-		return 0, fmt.Errorf("%w - firecracker's own log is %s", err, filepath.Join(s.Dir, VMMLogName))
+		why := "firecracker's own log is"
+		if s.Jail != nil {
+			why = "the jailer's and firecracker's log is"
+		}
+
+		return 0, fmt.Errorf("%w - %s %s", err, why, filepath.Join(s.Dir, VMMLogName))
 	}
 
 	return pid, nil
@@ -121,13 +142,14 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 func (ExecLauncher) Kill(ctx context.Context, dir string) error {
 	pid, start, err := readPIDFile(dir)
 	if err != nil {
+		releaseJail(dir)
 		return nil // never started, or already cleaned up
 	}
 
 	sock := filepath.Join(dir, APISockName)
 
 	switch {
-	case ownsPID(pid, sock):
+	case owns(pid, dir):
 		if err := killPID(pid); err != nil {
 			return fmt.Errorf("killing firecracker pid %d: %w", pid, err)
 		}
@@ -135,15 +157,19 @@ func (ExecLauncher) Kill(ctx context.Context, dir string) error {
 		// Not ours any more (a reused pid, or an old pid file with no start time and a process
 		// that no longer names this socket): nothing of ours to wait for.
 		_ = os.Remove(filepath.Join(dir, PIDName))
+		releaseJail(dir)
+
 		return nil
 	}
 
 	// Wait until it has let go of everything, not until its command line empties: see holding.
 	// A firecracker still closing its tap makes the next one's snapshot/load fail with EBUSY.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		if !ownsPID(pid, sock) && !holding(pid, start) {
+		if !owns(pid, dir) && !holding(pid, start) {
 			_ = os.Remove(filepath.Join(dir, PIDName))
 			_ = os.Remove(sock)
+
+			releaseJail(dir)
 
 			return nil
 		}
@@ -166,7 +192,22 @@ func (ExecLauncher) Alive(dir string) bool {
 		return false
 	}
 
-	return ownsPID(pid, filepath.Join(dir, APISockName)) || (start != 0 && holding(pid, start))
+	return owns(pid, dir) || (start != 0 && holding(pid, start))
+}
+
+// owns reports whether pid is the VMM of dir: an unjailed one names dir's API socket on its
+// command line; a jailed one names only "/api.sock", and is known by its --id, JailID(dir), which
+// the jailer passes on to the firecracker it execs.
+func owns(pid int, dir string) bool {
+	return ownsPID(pid, filepath.Join(dir, APISockName)) || ownsPID(pid, "\x00--id\x00"+JailID(dir)+"\x00")
+}
+
+// releaseJail removes what a jailed VMM leaves behind once it has exited: its root - whose hard
+// links would otherwise keep a replaced snapshot's blocks allocated - and its cgroup, which the
+// jailer never removes. Nothing to do for an unjailed one.
+func releaseJail(dir string) {
+	_ = os.RemoveAll(filepath.Join(dir, JailDirName))
+	removeCgroup(JailCgroupParent + "/" + JailID(dir))
 }
 
 // readPIDFile is the PID file: the pid, and its start time when Launch recorded one (0 for a file

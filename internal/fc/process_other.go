@@ -18,3 +18,5 @@ func killPID(int) error { return errors.New("firecracker runs only on Linux") }
 func procStart(int) uint64 { return 0 }
 
 func holding(int, uint64) bool { return false }
+
+func removeCgroup(string) {}

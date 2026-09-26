@@ -99,3 +99,23 @@ func holding(pid int, start uint64) bool {
 
 	return !((st.state == 'Z' || st.state == 'X') && st.threads <= 1)
 }
+
+// removeCgroup removes the empty cgroup rel (a path under the cgroup v2 mount) that a jailed VMM
+// ran in. Best effort: rmdir of a cgroup fails while anything is still in it, which is the
+// kernel keeping it for as long as it is needed.
+func removeCgroup(rel string) {
+	if mnt := cgroup2Mount(); mnt != "" {
+		_ = syscall.Rmdir(mnt + "/" + rel)
+	}
+}
+
+// cgroup2Mount is where the unified hierarchy is mounted, found the way the jailer finds it: the
+// first cgroup2 line of /proc/mounts.
+func cgroup2Mount() string {
+	b, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return ""
+	}
+
+	return parseCgroup2Mount(string(b))
+}
