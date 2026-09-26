@@ -56,6 +56,13 @@ func TestVsockListenerServesTheAPI(t *testing.T) {
 			t.Skipf("no AF_VSOCK in this kernel: %v", err)
 		}
 
+		// A container's default seccomp profile refuses socket(AF_VSOCK): the family exists, this
+		// process may not use it. Not a failure of execd - the test runs where it is allowed (it
+		// passes inside the helper VM).
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Skipf("AF_VSOCK is not permitted here (a seccomp profile or LSM refuses it): %v", err)
+		}
+
 		t.Fatal(err)
 	}
 	defer ln.Close()
