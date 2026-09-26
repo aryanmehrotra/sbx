@@ -164,19 +164,29 @@ func TestDockerAPISandboxLabelIsReadBack(t *testing.T) {
 	}
 }
 
-// Through a helper VM the API is refused at startup; on a Linux host that runs Firecracker
-// directly it is served.
+// Through a helper VM the API is refused at startup with the helper-VM reason; on a host with no
+// path at all (or only a cluster's kata) with the host's own reason, not the helper VM's; on a
+// Linux host that runs Firecracker directly it is served.
 func TestOSBOnFirecrackerIsRefusedOnlyThroughAHelperVM(t *testing.T) {
 	old := provider.DecideHost
 	t.Cleanup(func() { provider.DecideHost = old })
 
-	for _, backend := range []hostcap.Backend{hostcap.HelperVM, hostcap.Refused, hostcap.KataRuntimeClass} {
-		provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: backend} }
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.HelperVM} }
 
-		for _, kind := range []string{"firecracker", "fc"} {
-			if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); !errors.Is(err, provider.ErrOSBOnFirecracker) {
-				t.Errorf("%s on %v: %v", kind, backend, err)
-			}
+	for _, kind := range []string{"firecracker", "fc"} {
+		if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); !errors.Is(err, provider.ErrOSBOnFirecracker) {
+			t.Errorf("%s through a helper VM: %v", kind, err)
+		}
+	}
+
+	for _, backend := range []hostcap.Backend{hostcap.Refused, hostcap.KataRuntimeClass} {
+		provider.DecideHost = func() hostcap.Decision {
+			return hostcap.Decision{Backend: backend, Reason: "no KVM on this box", Next: "use a KVM host"}
+		}
+
+		err := refuseOSBOnMicroVM("firecracker", "127.0.0.1:8080")
+		if err == nil || errors.Is(err, provider.ErrOSBOnFirecracker) || !strings.Contains(err.Error(), "no KVM on this box") {
+			t.Errorf("%v: %v, want the host's own reason", backend, err)
 		}
 	}
 

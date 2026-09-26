@@ -871,15 +871,26 @@ func (d *daemon) lifetime(caller context.Context) context.Context {
 // refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup where the VMs
 // would run in a helper VM: the API is not fronted into it, so every create would fail, and a
 // listener that can only refuse is worse than no listener. On a Linux host that runs Firecracker
-// directly the API serves microVMs (the provider RunsAgent), and nothing is refused here.
+// directly the API serves microVMs (the provider RunsAgent), and nothing is refused here. A host
+// that cannot run Firecracker at all is refused with its own reason (hostcap.Decision).
 func refuseOSBOnMicroVM(kind, osbAddr string) error {
 	if osbAddr == "" || (kind != "firecracker" && kind != "fc") {
 		return nil
 	}
 
-	if provider.DecideHost().Backend == hostcap.Direct {
+	switch d := provider.DecideHost(); d.Backend {
+	case hostcap.Direct:
 		return nil
-	}
+	case hostcap.HelperVM:
+		return provider.ErrOSBOnFirecracker
+	default:
+		// No helper VM is involved: the host cannot run Firecracker at all, and saying why is
+		// the host's reason, not the helper VM's.
+		why := d.Reason
+		if d.Next != "" {
+			why += " - " + d.Next
+		}
 
-	return provider.ErrOSBOnFirecracker
+		return fmt.Errorf("--osb-addr with --provider firecracker: firecracker cannot run on this host: %s", why)
+	}
 }
