@@ -35,7 +35,7 @@ type FirecrackerUsage struct {
 
 	// SharesRootFS: the state directory is on the same filesystem as /, so what the VMs write -
 	// disks, memory files, and anything a compromised VMM writes in its jail as its own uid - can
-	// fill the host's /. sbx sets no per-VM disk quota (SECURITY.md).
+	// fill the host's /. Each VM is bounded, the whole is not (SECURITY.md).
 	SharesRootFS bool
 
 	// PoolMembers are VMs parked as OpenSandbox warm-pool members, and PoolMemory the part of

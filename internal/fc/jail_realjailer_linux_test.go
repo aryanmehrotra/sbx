@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -62,7 +63,7 @@ func TestTheRealJailer(t *testing.T) {
 
 	uid := JailConfig{UIDBase: DefaultJailUIDBase}.UID(Addr{Slot: 2, Index: 3})
 	s := LaunchSpec{Binary: bin, Dir: dir, ID: "x", Jail: &JailSpec{
-		Jailer: jailer, UID: uid, GID: uid, CPUs: 1, MemMiB: 256,
+		Jailer: jailer, UID: uid, GID: uid, CPUs: 1, MemMiB: 256, FileSizeLimit: 3 << 30,
 		Files: []Stage{
 			{Name: RootfsName, Host: filepath.Join(dir, RootfsName)},
 			{Name: "vmlinux", Host: kernel, Shared: true},
@@ -95,6 +96,12 @@ func TestTheRealJailer(t *testing.T) {
 			case len(f) == 2 && f[0] == "CapEff:" && f[1] != "0000000000000000":
 				t.Fatalf("the VMM kept capabilities: %s", l)
 			}
+		}
+
+		// RLIMIT_FSIZE, as the real jailer set it: no file the VMM writes grows past it.
+		limits, _ := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/limits")
+		if !regexp.MustCompile(`Max file size\s+3221225472\s+3221225472\s+bytes`).Match(limits) {
+			t.Fatalf("the VMM's file-size limit is not 3 GiB:\n%s", limits)
 		}
 
 		root := "/proc/" + strconv.Itoa(pid) + "/root/"

@@ -128,6 +128,10 @@ type JailSpec struct {
 	// CPUs and MemMiB become cpu.max and memory.max. Both 0 is no cgroup at all.
 	CPUs, MemMiB int
 
+	// FileSizeLimit is RLIMIT_FSIZE for the VMM, in bytes (jailer --resource-limit fsize=): no file it
+	// writes can grow past it. 0 is no limit.
+	FileSizeLimit int64
+
 	// Files are put in the root before the VMM starts: everything it will be told to open.
 	Files []Stage
 }
@@ -176,6 +180,10 @@ func JailerArgs(s LaunchSpec) []string {
 	if len(limits) > 0 {
 		args = append(args, "--cgroup-version", "2", "--parent-cgroup", JailCgroupParent)
 		args = append(args, limits...)
+	}
+
+	if j.FileSizeLimit > 0 {
+		args = append(args, "--resource-limit", "fsize="+strconv.FormatInt(j.FileSizeLimit, 10))
 	}
 
 	return append(args, "--", "--api-sock", "/"+APISockName)

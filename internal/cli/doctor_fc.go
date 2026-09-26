@@ -41,8 +41,9 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 	if usage != nil && usage.SharesRootFS {
 		caps = append(caps, Capability{Name: "microVM state filesystem", Have: false,
 			Detail: usage.Root + " is on the same filesystem as /",
-			Meaning: "sbx sets no per-VM disk quota, so one sandbox's disk, snapshots or jail can fill / (ENOSPC) " +
-				"for the host and every other sandbox; put SBX_FC_STATE on a filesystem of its own, or one with " +
+			Meaning: "each VM's disk is bounded (SBX_FC_DISK_SIZE) but there is no quota on the whole, so many " +
+				"sandboxes, or a compromised VMM making many files in its jail, can fill / (ENOSPC) for the host and " +
+				"every other sandbox; put SBX_FC_STATE on a filesystem of its own, or one with " +
 				"project quotas - SECURITY.md"})
 	}
 

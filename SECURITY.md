@@ -164,13 +164,19 @@ threat model is not "untrusted users share one daemon".**
     to be that uid (`SO_PEERCRED`, which a swap between the check and the connect cannot fake).
     Anything else is refused as a foreign socket, never read as "asleep". What such a VMM can still
     do is refuse to answer, or answer its own API wrongly - about itself only.
-  - **No disk quota per VM.** A VM's disk, memory snapshot and anything its VMM writes in its jail
-    (as its own uid) are on the state filesystem (`SBX_FC_STATE`), with no per-VM or per-uid limit:
-    one sandbox - or a compromised VMM - can fill that filesystem (ENOSPC) for the host and every
-    other sandbox on it. Where that is `/`, the host itself. The mitigation is the operator's: put
-    `SBX_FC_STATE` on a filesystem of its own (a dedicated partition or volume), or enable project
-    quotas (XFS / ext4 `prjquota`) on it. `sbx doctor` warns when the state directory shares `/`
-    (`microVM state filesystem`).
+  - **A VM's disk is bounded; a compromised VMM's jail is bounded per file, not in total.** What a
+    guest can write is fixed-size drives: its writable layer (`SBX_FC_DISK_SIZE`, 10G by default,
+    sparse - the image beneath it is shared and read-only), its volumes (`SBX_FC_VOLUME_SIZE`) and,
+    when it sleeps, a memory file as big as its RAM; its console is cut back past 16 MiB. A jailed
+    VMM runs with `RLIMIT_FSIZE` (the jailer's `--resource-limit fsize=`) set to the largest of those
+    files plus 64 MiB, so no one file it writes in its jail - as its own uid - can grow past that
+    (it is killed, SIGXFSZ). What remains: such a VMM can still make **many** files in the jail root
+    it owns, and many VMs together can still fill the state filesystem (`SBX_FC_STATE`) - there is
+    no per-uid or per-VM quota on the host's filesystem. Where that is `/`, the host itself. The
+    mitigation is the operator's: put `SBX_FC_STATE` on a filesystem of its own (a dedicated
+    partition or volume), or enable project quotas (XFS / ext4 `prjquota`) on it. `sbx doctor`
+    warns when the state directory shares `/` (`microVM state filesystem`). Unjailed
+    (`SBX_FC_JAILER=off`) the VMM has no file-size limit.
   - **The daemon still runs as root** (taps, bridges, iptables, the jailer itself), and the guest
     kernel plus Firecracker's own seccomp filters are the first boundary, as before.
   - Snapshots taken before v0.13 name host paths the jailed VMM cannot open: those VMs cold-boot

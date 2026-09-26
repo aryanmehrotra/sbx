@@ -412,3 +412,40 @@ func TestAResumeIsRefusedWhenTheHostGuardCannotBeRechecked(t *testing.T) {
 		}
 	}
 }
+
+// Each jailed VMM runs with a file-size limit (RLIMIT_FSIZE): as big as the largest file it may
+// legitimately write - its writable layer, a read-write volume, a memory snapshot of its RAM - and
+// no bigger, so a compromised VMM cannot fill the state filesystem through any one file in its
+// jail. Derived from the files it was staged, not from the code's own constants.
+func TestAJailedVMMCannotWriteAFileBiggerThanItsLargestDrive(t *testing.T) {
+	r := jailRig(t)
+	r.p.ext4 = sizeKeepingExt4{}
+	r.g.available = false
+
+	t.Setenv(DiskSizeEnv, "3g")
+
+	ref := r.create(t, "fs1", redis)
+	vm := r.vm(t, ref)
+	spec := r.l.specs[len(r.l.specs)-1]
+
+	var largest int64 = int64(vm.MemMiB) << 20
+
+	for _, f := range spec.Jail.Files {
+		if f.Shared || f.ReadOnly {
+			continue
+		}
+
+		if st, err := os.Stat(f.Host); err == nil && st.Size() > largest {
+			largest = st.Size()
+		}
+	}
+
+	got := spec.Jail.FileSizeLimit
+	if got < largest {
+		t.Fatalf("FileSizeLimit %d < %d, the largest file the VMM writes: it would be killed (SIGXFSZ) writing it", got, largest)
+	}
+
+	if got > largest+(256<<20) {
+		t.Fatalf("FileSizeLimit %d is far past %d, the largest file the VMM writes: not a bound", got, largest)
+	}
+}

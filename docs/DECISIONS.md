@@ -1083,8 +1083,15 @@ defensible without it.
   (the VMM's heap and the page cache of its drive and snapshot I/O, which reclaims under the limit
   rather than OOM-killing). No limits means no cgroup flags at all: v1.17 with `--cgroup-version 2`,
   no `--cgroup` and an existing `--parent-cgroup` *moves* the process into the parent, which fails
-  once a sibling has enabled memory there. No `fsize` limit: it would kill a VM for writing past
-  that offset of its own disk.
+  once a sibling has enabled memory there.
+- **`fsize` (RLIMIT_FSIZE, the jailer's `--resource-limit`), since the layered root.** v0.13 first
+  shipped without one, reasoning that it would kill a VM for writing past that offset of its own
+  disk. That holds only for a limit below the disk: a guest writes through a block device whose
+  capacity IS its drive file's size, so it never writes past the largest drive. The limit is the
+  largest file the VMM may write - its writable layer, a read-write volume, a memory snapshot of its
+  RAM - plus 64 MiB, measured from the staged files at each launch (a volume made larger earlier
+  still fits). It bounds each file a compromised VMM writes in the jail it owns; it does not bound
+  how many (SECURITY.md).
 - **A VM's record says how its running VMM was launched** (`jail_uid`, saved before the launch; a
   record without it is unjailed). Every call to that VMM - a snapshot, a commit - takes its paths
   from the record, not from this process's `SBX_FC_JAILER`, which only decides the NEXT launch: a

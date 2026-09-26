@@ -54,9 +54,35 @@ func (p *fcProvider) launchSpec(ctx context.Context, vm *fcVM, stage []fc.Stage)
 	}
 
 	uid := p.jail.UID(vm.addr())
-	s.Jail = &fc.JailSpec{Jailer: jailer, UID: uid, GID: uid, CPUs: vm.VCPU, MemMiB: vm.MemMiB, Files: stage}
+	s.Jail = &fc.JailSpec{Jailer: jailer, UID: uid, GID: uid, CPUs: vm.VCPU, MemMiB: vm.MemMiB, Files: stage,
+		FileSizeLimit: fileSizeLimit(vm, stage)}
 
 	return s, nil
+}
+
+// fileSizeHeadroom is what fileSizeLimit allows past the largest file: slack for a snapshot's
+// state file and the logs, far below anything that could fill a disk.
+const fileSizeHeadroom = 64 << 20
+
+// fileSizeLimit is the jailed VMM's RLIMIT_FSIZE: the largest file it may legitimately write - a
+// drive it writes (the writable layer, a read-write volume: a guest writes inside its size, never
+// past it), a memory snapshot as big as its RAM - plus fileSizeHeadroom. A compromised VMM that
+// writes past it in its jail is killed (SIGXFSZ) rather than fill the state filesystem through
+// that file. It bounds each file, not how many there are (SECURITY.md).
+func fileSizeLimit(vm *fcVM, stage []fc.Stage) int64 {
+	largest := int64(vm.MemMiB) << 20
+
+	for _, f := range stage {
+		if f.Shared || f.ReadOnly {
+			continue
+		}
+
+		if st, err := os.Stat(f.Host); err == nil && st.Size() > largest {
+			largest = st.Size()
+		}
+	}
+
+	return largest + fileSizeHeadroom
 }
 
 // driveStages are vm's drives, by the names its VMM opens them at: each is the VM's own file,
