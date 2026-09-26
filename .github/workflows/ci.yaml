@@ -464,6 +464,16 @@ jobs:
         with:
           go-version: '1.26'
 
+      # Firecracker v1.17.0's real, pinned jailer, with sbx's ExecLauncher: it chroots, drops to
+      # the VM's uid, applies the cgroup limits and execs in place - checked from /proc. The test
+      # binary stands in for firecracker, so this needs root and cgroup v2 but no /dev/kvm, and
+      # runs on every runner. Static (CGO_ENABLED=0): it runs inside a chroot with no libc.
+      - name: the real jailer, no KVM needed
+        run: |
+          set -eux
+          CGO_ENABLED=0 go test -c -o fcjail.test ./internal/fc
+          sudo env SBX_FC_JAILER_E2E=1 ./fcjail.test -test.run 'TestTheRealJailer' -test.v -test.timeout 5m
+
       - name: is there a /dev/kvm
         id: kvm
         run: |
@@ -493,6 +503,8 @@ jobs:
           go test -c -o fcguard.test ./internal/fc
           sudo env SBX_GUARD_LIVE=1 ./fcguard.test -test.run '^TestGuardLive$' -test.v
 
+      # The jailer is on (the default): the test asserts from /proc, every round, that the VMM runs
+      # as its VM's non-root uid, with no capabilities, chrooted, in its own cgroup.
       - name: a real Firecracker VM, end to end
         if: steps.kvm.outputs.have == 'true'
         timeout-minutes: 25
@@ -520,9 +532,20 @@ jobs:
           OSB_LOGS_DIR: ${{ runner.temp }}/osb-logs
         # The code interpreter image is ~2.5 GB: prewarmed, so the suite's first creates of it
         # clone a built root filesystem instead of each exporting and mkfs-ing it at once.
-        run: >-
-          scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 35m
-          --prewarm "python:3.11-slim opensandbox/code-interpreter:latest"
+        # With the jailer on (the default), and every VMM the suite causes sampled from /proc
+        # beside it (scripts/fc-jail-watch.sh): the tier passes only if each ran chrooted as its
+        # own non-root uid.
+        run: |
+          set -eu
+          sudo scripts/fc-jail-watch.sh start "$RUNNER_TEMP/fc-jail.txt" &
+          watch=$!
+          rc=0
+          scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 35m \
+            --prewarm "python:3.11-slim opensandbox/code-interpreter:latest" || rc=$?
+          sudo kill "$watch" 2>/dev/null || true
+          sudo pkill -f 'fc-jail-watch.sh start' || true
+          sudo scripts/fc-jail-watch.sh check "$RUNNER_TEMP/fc-jail.txt"
+          exit "$rc"
 
       # The warm pool on microVMs (v0.13): members parked asleep, then restored and re-keyed per
       # claim. The upstream files a pool touches, with pools full before the suite starts - the

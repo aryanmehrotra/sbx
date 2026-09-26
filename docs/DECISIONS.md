@@ -875,8 +875,17 @@ a guest's link-local address has nothing to talk to. What makes it safe to own:
 - **Made with the bridge, before it is up; removed with it** - and collected by `RemoveBridge` even
   when the bridge was deleted by hand. A failure halfway removes what was made: guarded, or exactly
   as before, never half a chain.
-- **Never a reason a sandbox will not boot.** No `iptables`, or one that refuses: the bridge comes
-  up anyway and the create and the daemon's log say the host is open, which is what it was before.
+- **Fails closed (v0.13; supersedes "never a reason a sandbox will not boot").** No `iptables`, a
+  rule refused, IPv6 not switched off, or a flushed guard that cannot be put back: the create or wake
+  is refused with the reason and the fix, and a bridge made for it is deleted rather than left up
+  unguarded. v0.12 booted anyway and warned; that was the right trade while the guard was new and
+  sbx was a tool one operator ran, and the wrong one for an API that hands VMs to callers - a guest
+  that finds the host open because a firewall module was missing is the outcome the guard exists to
+  prevent, and a warning in a daemon log does not reach the person it matters to. The escape is an
+  operator's statement, not a failure mode: `--fc-firewall=unmanaged` (`SBX_FC_FIREWALL`), under
+  which sbx writes no rule at all and the host firewall is the operator's. A bridge already in use
+  whose guard the daemon's reconcile cannot put back keeps its running VMs (killing them would be a
+  second, silent failure) and is logged; no VM starts on it until the guard is whole.
 - **Checked, not rewritten, on the wake path.** Made when the bridge is made; on every wake and every
   daemon reconcile, six `iptables -C` checks (each hook and each chain's final `DROP`) and no write
   while the guard is whole. A rule a firewall reload or `iptables -F` removed is put back on the next
@@ -923,6 +932,79 @@ that runs this - still speaks `iptables`, which on current distributions is the 
 One tool, the one the operator already reads.
 
 **Rejected: a firewall on the guest side** (rules inside the VM). The guest's root owns them.
+
+### Every VMM runs under Firecracker's jailer, as its VM's own uid, jailed inside its VM's directory
+
+v0.12 started firecracker as a plain child of the root daemon: a guest-to-VMM escape landed as root
+on the host (SECURITY.md, accepted for v0.12). v0.13 starts every VMM through **Firecracker's own
+`jailer`**, on by default, because anonymous use of the OpenSandbox API on microVMs is not
+defensible without it.
+
+- **The jailer is pinned with firecracker, from the same v1.17.0 release tarball**, and verified by
+  the same sha256 (the tarball's); it is cached in a directory of its own, so a v0.12 cache holding
+  only firecracker is never taken for one with the jailer. Its interface was read from v1.17.0's
+  source (`src/jailer/src/env.rs`) and `docs/jailer.md` at that tag, not from memory: `--id` is
+  alphanumerics and hyphens up to 64; the chroot is `<canonical base>/<basename of the canonical
+  exec file>/<id>/root`; it mknods `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and
+  `/dev/userfaultfd` and fails EEXIST on a stale one; it closes every fd but 0-2, clears the
+  environment, and without `--new-pid-ns`/`--daemonize` execs firecracker **in place** as
+  `--id <id> --start-time-us ... <our args>` - so the pid sbx started, its reaper and its console
+  and vmm log files all carry over unchanged.
+- **uid = base + slot*256 + index** (base 900000, `SBX_FC_JAILER_UID_BASE`), gid the same.
+  Arithmetic on the address, like the IP ("Guest networking is arithmetic"): every sbx process
+  agrees on it with no table and no lock, a re-created VM gets its own back, two VMs never share
+  one, and it is never 0. A pool was rejected for the reason addresses are not allocated. The tap
+  is made for that uid; a tun device's owner cannot be changed, so one made for another uid (root's,
+  by v0.12) is deleted and made again.
+- **The jail is inside the VM's directory**: `<vm dir>/jail/firecracker/<id>/root`, `<id>` derived
+  from the directory's path, so two state roots with the same ref never share a cgroup. Rejected:
+  `<state>/jail`. Inside, everything that already removes a VM's directory (`sbx rm`, a failed
+  create, the warm pool) removes its jail, and the hard links below stay on one filesystem.
+- **What the root holds**: `/vmlinux` (a hard link when the kernel is world-readable, a copy
+  otherwise - never re-owned, since it is shared); `/agent.ext4`, `/rootfs.ext4`, `/vol<N>.ext4`
+  and, for a restore, `/vm.state` and `/vm.mem` - hard links to the VM's own files, owned by its
+  uid, so what the guest writes is on the VM's disk (a copy would be a disk the host never sees, so
+  a VM's file that cannot be linked fails the launch); what the jailer adds (the binary, the device
+  nodes); and the VMM's `/api.sock` and `/vsock.sock`. `<vm dir>/api.sock` and `vsock.sock` are
+  symlinks into the root, so the API client, the vsock dialer and the wake proxy keep their paths,
+  and the 108-byte socket limit applies to the short one.
+- **Emptied on every launch and every Kill**, with the VM's cgroup (`<cgroup2>/sbx-fc/<id>`, which
+  the jailer never removes): a stale `/dev/kvm` fails the next jailer, and a stale hard link to a
+  replaced `vm.mem` would keep its blocks allocated.
+- **The VMM is given paths in its root, and what it writes is taken back.** A sleep's snapshot is
+  written at `/vm.state.new` and `/vm.mem.new` (or `/diff.mem`) and renamed into the VM's directory
+  before the VMM ends; a commit's at `/commit.state` and `/commit.mem`, renamed into the snapshot's
+  directory. Taken back only as a plain file with one name, checked after the rename in a directory
+  only root writes: the VMM owns its root, and a symlink or hard link planted there would otherwise
+  be followed by the host - merged into, cloned, overwritten - as root.
+- **cgroup v2**: `cpu.max` = CPUs x 100000 per 100000, `memory.max` = the guest's memory + 128 MiB
+  (the VMM's heap and the page cache of its drive and snapshot I/O, which reclaims under the limit
+  rather than OOM-killing). No limits means no cgroup flags at all: v1.17 with `--cgroup-version 2`,
+  no `--cgroup` and an existing `--parent-cgroup` *moves* the process into the parent, which fails
+  once a sibling has enabled memory there. No `fsize` limit: it would kill a VM for writing past
+  that offset of its own disk.
+- **A snapshot records which kind it is** (`snapshot_jailed`): its drive paths are the root's or the
+  host's, and a VMM of the other kind cannot open them. A wake with the jailer switched the other
+  way cold-boots (disk kept, memory lost, said); a saved memory snapshot of the other kind is
+  refused by name. Every v0.12 VM's first wake under v0.13 is therefore a cold boot.
+- **Not adopted: a network namespace per VM** (`--netns`). The tap stays on the sandbox's bridge in
+  the host namespace, guarded as above; a namespace would need a veth pair per VM and a second
+  guard.
+
+**Escape hatches, each named for what it gives up.** `SBX_FC_JAILER=off`, for a development host
+where the jailer cannot run (no cgroup v2, no mknod): v0.12's behaviour exactly, warned on every
+provider construction; the OpenSandbox API refuses to serve on firecracker with it unless
+`--osb-insecure-no-jailer`. A value other than on or off is an error - a typo in an escape hatch
+must not open it. `SBX_FC_JAILER_BINARY` replaces the pinned jailer as `SBX_FC_BINARY` does
+firecracker; set both, since a jailer is meant for its own release's firecracker.
+
+Verified by unit tests against fakes (argv, uid arithmetic, staging by link and ownership, path
+translation, Adopt refusing a symlink, hard link or directory, and every path the provider hands the
+VMM resolving inside a root the fake enforces); by `TestTheRealJailer`, which runs the real pinned
+jailer with the test binary in firecracker's place (root and cgroup v2, no KVM) and checks uid,
+capabilities, chroot, cgroup limits and release from /proc; and in CI's microvm job, where
+`TestFirecrackerE2E` asserts the same of the real VMM every round and every VMM the conformance
+tier causes is sampled from /proc.
 ### An API sandbox's health check runs once a minute, and quickly only while it starts
 
 Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes

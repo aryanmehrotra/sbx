@@ -290,23 +290,3 @@ func TestABridgeIsGuardedBeforeItIsUpAndReleasedWithIt(t *testing.T) {
 		t.Fatalf("rules outlived the bridge: %v", tables.chains)
 	}
 }
-
-// A host where the guard cannot be installed still gets a working bridge, and is told.
-func TestAGuardFailureWarnsAndKeepsTheBridge(t *testing.T) {
-	ip := &fakeIP{links: map[string]bool{}}
-	tables := newFakeTables()
-	tables.absent = true
-
-	var warned []string
-
-	n := &IPNetwork{Owner: -1, Guard: tables.guard(), Run: ip.run,
-		Warn: func(s string) { warned = append(warned, s) }}
-
-	if err := n.EnsureTap(context.Background(), Addr{Slot: 5}); err != nil {
-		t.Fatal(err)
-	}
-
-	if !ip.links["sbxfc5"] || len(warned) != 1 || !strings.Contains(warned[0], "10.231.5.1") {
-		t.Fatalf("bridge %v, warned %q", ip.links, warned)
-	}
-}

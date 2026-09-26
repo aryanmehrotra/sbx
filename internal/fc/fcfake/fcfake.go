@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,12 @@ type Server struct {
 	// alive and slow, which is not the same as one that is gone.
 	Stall map[string]time.Duration
 
+	// Root, when set, is a jailed VMM's chroot: every path it is given is resolved inside it, and
+	// a drive, kernel, snapshot or memory file that is not there is the fault a jailed
+	// firecracker would answer - the fake's check that sbx staged what it names. Set it before
+	// the first request.
+	Root string
+
 	configured bool // anything pre-boot has been PUT
 	started    bool
 	paused     bool
@@ -64,7 +71,10 @@ func (s *Server) StallNext(path string, d time.Duration) {
 }
 
 // Start serves a fresh fake on the unix socket at sock.
-func Start(sock string) (*Server, error) {
+func Start(sock string) (*Server, error) { return StartIn(sock, "") }
+
+// StartIn is Start for a jailed VMM whose root is root (Server.Root); "" is unjailed.
+func StartIn(sock, root string) (*Server, error) {
 	_ = os.Remove(sock)
 
 	ln, err := net.Listen("unix", sock)
@@ -78,6 +88,7 @@ func Start(sock string) (*Server, error) {
 		drives: map[string]map[string]any{},
 		ifaces: map[string]map[string]any{},
 		ln:     ln,
+		Root:   root,
 	}
 	s.srv = &http.Server{Handler: s}
 
@@ -175,6 +186,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if msg := s.unstaged(body); msg != "" {
+			fault(w, 400, msg)
+			return
+		}
+
 		s.preBoot(r.URL.Path, body)
 		w.WriteHeader(204)
 	case key == "PUT /actions":
@@ -199,6 +215,32 @@ func isPreBoot(p string) bool {
 	}
 
 	return false
+}
+
+// resolve is where the VMM finds p: p itself, or p inside Root.
+func (s *Server) resolve(p string) string {
+	if s.Root == "" {
+		return p
+	}
+
+	return filepath.Join(s.Root, filepath.Clean("/"+p))
+}
+
+// unstaged is the fault for a file a jailed VMM is told to open that is not in its root.
+func (s *Server) unstaged(body map[string]any) string {
+	if s.Root == "" {
+		return ""
+	}
+
+	for _, k := range []string{"path_on_host", "kernel_image_path"} {
+		if p, ok := body[k].(string); ok {
+			if _, err := os.Stat(s.resolve(p)); err != nil {
+				return "Cannot open " + p + " inside the jail: " + err.Error()
+			}
+		}
+	}
+
+	return ""
 }
 
 func (s *Server) preBoot(p string, body map[string]any) {
@@ -295,13 +337,13 @@ func (s *Server) create(w http.ResponseWriter, body map[string]any) {
 	memPath, _ := body["mem_file_path"].(string)
 
 	st, _ := json.Marshal(snapshotState{s.boot, s.drives, s.ifaces, s.vsock, s.machine, typ})
-	if err := os.WriteFile(statePath, st, 0o600); err != nil {
+	if err := os.WriteFile(s.resolve(statePath), st, 0o600); err != nil {
 		fault(w, 400, "Cannot write snapshot state: "+err.Error())
 		return
 	}
 
 	// A marker, not 128 MiB: the fake records which kind of memory file it was.
-	if err := os.WriteFile(memPath, []byte("mem:"+typ), 0o600); err != nil {
+	if err := os.WriteFile(s.resolve(memPath), []byte("mem:"+typ), 0o600); err != nil {
 		fault(w, 400, "Cannot write memory file: "+err.Error())
 		return
 	}
@@ -317,7 +359,7 @@ func (s *Server) load(w http.ResponseWriter, body map[string]any) {
 
 	statePath, _ := body["snapshot_path"].(string)
 
-	raw, err := os.ReadFile(statePath)
+	raw, err := os.ReadFile(s.resolve(statePath))
 	if err != nil {
 		fault(w, 400, "Cannot open snapshot file: "+err.Error())
 		return
@@ -333,9 +375,17 @@ func (s *Server) load(w http.ResponseWriter, body map[string]any) {
 	if p, _ := mb["backend_path"].(string); p == "" {
 		fault(w, 400, "missing mem_backend")
 		return
-	} else if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
+	} else if _, err := os.Stat(s.resolve(p)); errors.Is(err, os.ErrNotExist) {
 		fault(w, 400, "Cannot open the memory file: "+err.Error())
 		return
+	}
+
+	// A real restore reopens every drive at the path the snapshot recorded.
+	for _, d := range st.Drives {
+		if msg := s.unstaged(d); msg != "" {
+			fault(w, 400, msg)
+			return
+		}
 	}
 
 	s.boot, s.drives, s.ifaces, s.vsock, s.machine = st.Boot, st.Drives, st.Ifaces, st.Vsock, st.Machine

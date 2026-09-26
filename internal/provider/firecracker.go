@@ -138,6 +138,12 @@ type fcVM struct {
 	// SnapshotValid: vm.state + vm.mem describe the disk as it is now. See the file comment.
 	SnapshotValid bool `json:"snapshot_valid"`
 
+	// SnapshotJailed: vm.state was taken by a jailed VMM, so the drive paths in it are paths in
+	// the jail's root (/rootfs.ext4), not the host's. A snapshot of the other kind cannot be
+	// loaded - the VMM could not open its drives - so a wake with the jailer switched the other
+	// way cold-boots from the disk instead.
+	SnapshotJailed bool `json:"snapshot_jailed,omitempty"`
+
 	// Restored: the running process was loaded from vm.mem with dirty tracking, so a Diff on
 	// top of vm.mem is a correct snapshot. False after a cold boot, and after a Commit, which
 	// resets Firecracker's dirty bitmap and would make the next Diff miss pages.
@@ -212,6 +218,15 @@ type fcProvider struct {
 	// nil skips the check. A host that cannot is warned about on every create.
 	guardCheck func() error
 
+	// firewall is who closes the host to the guests (fc.FirewallMode, SBX_FC_FIREWALL). Managed,
+	// a host where the guard cannot run gets no microVM; unmanaged, it is the operator's.
+	firewall fc.FirewallMode
+
+	// jail, when set, runs every VMM under Firecracker's jailer (fc/jail.go); nil is
+	// SBX_FC_JAILER=off. jailer resolves the jailer binary: the pinned one, fetched once.
+	jail   *fc.JailConfig
+	jailer func(ctx context.Context) (string, error)
+
 	// boots caps how many VMs restore or cold-boot at once: each is a burst of page faults and a
 	// vCPU spinning up, and a fleet woken together (a host reboot, a burst of connections) would
 	// otherwise contend so hard that every wake is slow. Sized to the host's CPUs; nil is no cap.
@@ -246,12 +261,27 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 	rep := hostcap.Probe()
 	mkfs := fc.Mkfs{Path: rep.Mkfs}
 
+	jail, err := fc.JailFromEnv(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+
+	firewall, err := fc.FirewallFromEnv(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+
+	if jail == nil {
+		fmt.Fprintf(os.Stderr, "  warning: %s=off - every Firecracker VMM runs as root, unconfined: a guest "+
+			"that escapes into its VMM has this host. For a development host only (SECURITY.md)\n", fc.JailerEnv)
+	}
+
 	p := &fcProvider{
 		root:  root,
 		arch:  runtime.GOARCH,
 		arts:  fc.NewArtifactCache(filepath.Join(root, "artifacts")),
 		ext4:  mkfs,
-		net:   guardedNetwork(),
+		net:   guardedNetwork(firewall, jail),
 		guest: fc.NewGuest(),
 		rootfs: &fc.RootfsBuilder{
 			Dir:    filepath.Join(root, "rootfs"),
@@ -262,12 +292,15 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		launch:      fc.ExecLauncher{},
 		bridgeCheck: fc.HostBridgeIsolation,
 		guardCheck:  fc.Available,
+		firewall:    firewall,
+		jail:        jail,
 		boots:       make(chan struct{}, max(1, runtime.NumCPU())),
 		bootTimeout: 60 * time.Second,
 		locks:       map[string]*refLock{},
 	}
 
 	p.agent = p.findAgent
+	p.jailer = func(ctx context.Context) (string, error) { return p.arts.ResolveJailer(ctx, p.arch) }
 	p.ready = p.waitServing
 	p.merge = fc.MergeDiff
 	p.portsFree = publicPortsFree
@@ -627,10 +660,15 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		}
 	}
 
-	if p.guardCheck != nil {
+	// Fail closed, before anything is built: a VM here would reach every host service bound to
+	// 0.0.0.0 at its gateway. The bridge's own guard refuses too (fc.IPNetwork); this says it
+	// first, and for the whole host.
+	if p.guardCheck != nil && p.firewall != fc.FirewallUnmanaged {
 		if err := p.guardCheck(); err != nil {
-			fmt.Fprintf(p.warnTo(), "  warning: this host cannot close itself to microVM guests (%v): they reach every "+
-				"host service bound to 0.0.0.0 at their gateway, 10.231.%d.1 - see SECURITY.md\n", err, slot)
+			return fmt.Errorf("refusing to create a microVM: this host cannot close itself to its guests (%w), "+
+				"who would reach every host service bound to 0.0.0.0 at their gateway, 10.231.%d.1. Install "+
+				"iptables (see `sbx doctor`); on a host whose own firewall closes it to 10.231.0.0/16, set "+
+				"%s=unmanaged (sbx serve --fc-firewall=unmanaged) - SECURITY.md", err, slot, fc.FirewallEnv)
 		}
 	}
 
@@ -914,29 +952,38 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 
 	clearVsock(dir)
 
-	if _, err := p.launch.Launch(ctx, fc.LaunchSpec{Binary: vm.Binary, Dir: dir, ID: vm.Instance}); err != nil {
+	spec, err := p.launchSpec(ctx, vm, append([]fc.Stage{{Name: "vmlinux", Host: vm.Kernel, Shared: true}},
+		p.driveStages(vm)...))
+	if err != nil {
+		return err
+	}
+
+	if _, err := p.launch.Launch(ctx, spec); err != nil {
 		return err
 	}
 
 	c := p.client(vm.Ref)
+	v := p.view(vm)
 
 	// panic=1 reboot=k: a guest that panics or whose PID 1 exits takes the VMM down with it,
 	// which the provider reads as asleep-without-a-snapshot and cold-boots next time.
 	args := "console=ttyS0 reboot=k panic=1 quiet loglevel=3 init=/sbx " + a.BootArg() + " -- fc-init"
 
 	steps := []func() error{
-		func() error { return c.PutBootSource(ctx, fc.BootSource{KernelImagePath: vm.Kernel, BootArgs: args}) },
 		func() error {
-			return c.PutDrive(ctx, fc.Drive{DriveID: "agent", PathOnHost: filepath.Join(dir, "agent.ext4"), IsRootDevice: true, IsReadOnly: true})
+			return c.PutBootSource(ctx, fc.BootSource{KernelImagePath: v.At(vm.Kernel, "vmlinux"), BootArgs: args})
 		},
 		func() error {
-			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: filepath.Join(dir, fc.RootfsName)})
+			return c.PutDrive(ctx, fc.Drive{DriveID: "agent", PathOnHost: v.Path(filepath.Join(dir, "agent.ext4")), IsRootDevice: true, IsReadOnly: true})
+		},
+		func() error {
+			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.RootfsName))})
 		},
 	}
 
 	// Volumes after the rootfs, in order: the guest sees them as vdc, vdd, ... (fc.GuestExtraDevice).
-	for i, v := range vm.Volumes {
-		drive := fc.Drive{DriveID: volumeDriveID(i), PathOnHost: p.volumePath(v.Name), IsReadOnly: v.ReadOnly}
+	for i, vol := range vm.Volumes {
+		drive := fc.Drive{DriveID: volumeDriveID(i), PathOnHost: v.At(p.volumePath(vol.Name), volumeStage(i)), IsReadOnly: vol.ReadOnly}
 		steps = append(steps, func() error { return c.PutDrive(ctx, drive) })
 	}
 
@@ -948,7 +995,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 			return c.PutNetworkInterface(ctx, fc.NetworkInterface{IfaceID: "eth0", HostDevName: a.Tap(), GuestMAC: a.MAC()})
 		},
 		func() error {
-			return c.PutVsock(ctx, fc.Vsock{GuestCID: 3, UDSPath: filepath.Join(dir, fc.VsockName)})
+			return c.PutVsock(ctx, fc.Vsock{GuestCID: 3, UDSPath: v.Path(filepath.Join(dir, fc.VsockName))})
 		},
 		func() error { return c.PutEntropy(ctx) },
 		func() error { return c.InstanceStart(ctx) },
@@ -1043,6 +1090,7 @@ func (p *fcProvider) abandon(ctx context.Context, vm *fcVM) error {
 func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	dir := p.dir(vm.Ref)
 	c := p.client(vm.Ref)
+	v := p.view(vm)
 
 	if p.guest.Available() {
 		if err := p.seal(ctx, vm); err != nil {
@@ -1068,7 +1116,12 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 		}
 
 		if err := c.CreateSnapshot(ctx, fc.SnapshotCreate{SnapshotType: fc.SnapshotDiff,
-			SnapshotPath: state + ".new", MemFilePath: diff}); err != nil {
+			SnapshotPath: v.Path(state + ".new"), MemFilePath: v.Path(diff)}); err != nil {
+			return err
+		}
+
+		// Out of the jail before the VMM ends, which releases the jail.
+		if err := errors.Join(v.Adopt(state+".new", fc.StateName+".new"), v.Adopt(diff, fc.DiffMemName)); err != nil {
 			return err
 		}
 
@@ -1085,7 +1138,11 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 		mem := filepath.Join(dir, fc.MemName)
 
 		if err := c.CreateSnapshot(ctx, fc.SnapshotCreate{SnapshotType: fc.SnapshotFull,
-			SnapshotPath: state + ".new", MemFilePath: mem + ".new"}); err != nil {
+			SnapshotPath: v.Path(state + ".new"), MemFilePath: v.Path(mem + ".new")}); err != nil {
+			return err
+		}
+
+		if err := errors.Join(v.Adopt(state+".new", fc.StateName+".new"), v.Adopt(mem+".new", fc.MemName+".new")); err != nil {
 			return err
 		}
 
@@ -1103,6 +1160,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	}
 
 	vm.SnapshotValid = true
+	vm.SnapshotJailed = p.jail != nil
 	vm.Restored = false
 
 	return p.save(vm)
@@ -1171,6 +1229,12 @@ func (p *fcProvider) Start(ctx context.Context, ref string) error {
 		return err
 	}
 	defer release()
+
+	if vm.SnapshotValid && vm.SnapshotJailed != (p.jail != nil) {
+		fmt.Fprintf(os.Stderr, "  %s: cold boot - its snapshot was taken with the jailer %s, and names drive "+
+			"paths a VMM with it %s cannot open\n", ref, onOff(vm.SnapshotJailed), onOff(p.jail != nil))
+		vm.SnapshotValid = false
+	}
 
 	if !vm.SnapshotValid {
 		fmt.Fprintf(os.Stderr, "  %s: cold boot - its last snapshot no longer matches its disk "+
@@ -1255,17 +1319,26 @@ func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 
 	clearVsock(dir)
 
-	if _, err := p.launch.Launch(ctx, fc.LaunchSpec{Binary: vm.Binary, Dir: dir, ID: vm.Instance}); err != nil {
+	spec, err := p.launchSpec(ctx, vm, append(p.driveStages(vm),
+		fc.Stage{Name: fc.StateName, Host: filepath.Join(dir, fc.StateName)},
+		fc.Stage{Name: fc.MemName, Host: filepath.Join(dir, fc.MemName)}))
+	if err != nil {
 		return p.revalidate(vm, err)
 	}
 
-	err := p.client(vm.Ref).LoadSnapshot(ctx, fc.SnapshotLoad{
-		SnapshotPath:     filepath.Join(dir, fc.StateName),
-		MemBackend:       fc.MemBackend{BackendType: "File", BackendPath: filepath.Join(dir, fc.MemName)},
+	if _, err := p.launch.Launch(ctx, spec); err != nil {
+		return p.revalidate(vm, err)
+	}
+
+	v := p.view(vm)
+
+	err = p.client(vm.Ref).LoadSnapshot(ctx, fc.SnapshotLoad{
+		SnapshotPath:     v.Path(filepath.Join(dir, fc.StateName)),
+		MemBackend:       fc.MemBackend{BackendType: "File", BackendPath: v.Path(filepath.Join(dir, fc.MemName))},
 		TrackDirtyPages:  true,
 		ResumeVM:         true,
 		NetworkOverrides: []fc.NetworkOverride{{IfaceID: "eth0", HostDevName: a.Tap()}},
-		VsockOverride:    &fc.VsockOverride{UDSPath: filepath.Join(dir, fc.VsockName)},
+		VsockOverride:    &fc.VsockOverride{UDSPath: v.Path(filepath.Join(dir, fc.VsockName))},
 	})
 	if err != nil {
 		_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
@@ -1959,13 +2032,23 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 		}
 	}
 
+	// Jailed, the VMM writes in its root, under names of their own, and the files are taken out
+	// into dst: it can reach nothing outside its root.
+	v := p.view(vm)
+	stateFile, memFile := filepath.Join(dst, fc.StateName), filepath.Join(dst, fc.MemName)
+
 	err := c.CreateSnapshot(ctx, fc.SnapshotCreate{SnapshotType: fc.SnapshotFull,
-		SnapshotPath: filepath.Join(dst, fc.StateName), MemFilePath: filepath.Join(dst, fc.MemName)})
+		SnapshotPath: v.At(stateFile, "commit.state"), MemFilePath: v.At(memFile, "commit.mem")})
+	if err == nil {
+		err = errors.Join(v.Adopt(stateFile, "commit.state"), v.Adopt(memFile, "commit.mem"))
+	}
+
 	if err == nil {
 		err = copyVM(false)
 	}
 
 	snap := *vm
+	snap.SnapshotJailed = p.jail != nil
 
 	// A snapshot resets Firecracker's dirty bitmap; the next sleep must be Full.
 	vm.Restored = false
@@ -2018,6 +2101,10 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, svc sp
 		return fmt.Errorf("the firecracker snapshot for %s was taken in slot %d, and this sandbox "+
 			"got slot %d: the guest's address is part of its memory. Free slot %d and retry",
 			ref, s.VM.Slot, slot, s.VM.Slot)
+	case !s.DiskOnly && s.VM.SnapshotJailed != (p.jail != nil):
+		return fmt.Errorf("the firecracker snapshot for %s was taken with the jailer %s, and it is %s now: "+
+			"its memory image names drive paths the VMM cannot open. Set %s back, or remove the snapshot "+
+			"and create afresh", ref, onOff(s.VM.SnapshotJailed), onOff(p.jail != nil), fc.JailerEnv)
 	case svc.Filtered() != (s.VM.EgressPolicy != ""):
 		// HTTP(S)_PROXY is in the environment of every process the snapshot holds, set or not
 		// at its first boot. Restoring a filtered snapshot as an unfiltered service would leave
@@ -2188,6 +2275,12 @@ func (p *fcProvider) HostWarnings(ctx context.Context, sandbox string) []string 
 	}
 
 	if slot < 0 {
+		return nil
+	}
+
+	// Unmanaged, the host firewall is the operator's by declaration (SBX_FC_FIREWALL): sbx writes
+	// no rule, so it has none to report missing.
+	if p.firewall == fc.FirewallUnmanaged {
 		return nil
 	}
 

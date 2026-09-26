@@ -87,3 +87,50 @@ func TestDoctorGradesTheForwardPolicy(t *testing.T) {
 		t.Fatalf("row = %+v", row)
 	}
 }
+
+// The two v0.13 controls, as doctor sees them: whether a VM would start at all (the guard fails
+// closed), and whether its VMM would be confined.
+func TestDoctorReportsTheGuardAndTheJailer(t *testing.T) {
+	env := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	find := func(caps []Capability, name string) Capability {
+		for _, c := range caps {
+			if c.Name == name {
+				return c
+			}
+		}
+
+		t.Fatalf("no %q row in %+v", name, caps)
+
+		return Capability{}
+	}
+
+	noIPT := func() error { return fc.ErrNoFirewall }
+	cg := func() (string, bool) { return "/sys/fs/cgroup", true }
+
+	caps := firecrackerGuards(env(nil), noIPT, cg)
+	if g := find(caps, "vm host guard"); g.Have || !strings.Contains(g.Meaning, "refused") || !strings.Contains(g.Meaning, "unmanaged") {
+		t.Fatalf("managed without iptables: %+v", g)
+	}
+
+	if j := find(caps, "vm jailer"); !j.Have || !strings.Contains(j.Detail, "900000") {
+		t.Fatalf("jailer default: %+v", j)
+	}
+
+	caps = firecrackerGuards(env(map[string]string{fc.FirewallEnv: "unmanaged", fc.JailerEnv: "off"}), noIPT, cg)
+	if g := find(caps, "vm host guard"); !g.Have || !strings.Contains(g.Detail, "unmanaged") {
+		t.Fatalf("unmanaged: %+v", g)
+	}
+
+	if j := find(caps, "vm jailer"); j.Have || !strings.Contains(j.Meaning, "root") {
+		t.Fatalf("jailer off: %+v", j)
+	}
+
+	caps = firecrackerGuards(env(nil), func() error { return nil }, func() (string, bool) { return "", false })
+	if g := find(caps, "vm host guard"); !g.Have {
+		t.Fatalf("managed with iptables: %+v", g)
+	}
+
+	if j := find(caps, "vm jailer"); j.Have || !strings.Contains(j.Meaning, fc.JailerEnv+"=off") {
+		t.Fatalf("no cgroup v2: %+v", j)
+	}
+}

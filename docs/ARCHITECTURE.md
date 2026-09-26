@@ -219,12 +219,16 @@ Windows branch - installed as `provider.DecideHost` and used by the provider, th
 
   <state>/fc/                                  SBX_FC_STATE, default ~/.sbx/fc
     artifacts/firecracker-v1.17.0-<arch>-<sha>/  pinned by sha256, .built + atomic rename
+    artifacts/jailer-v1.17.0-<arch>-<sha>/       the same release tarball, the same sha256
     artifacts/vmlinux-6.18.48-<arch>-<sha>/
     rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID
     vms/<hash of ref>/                         0700, one per service; the socket path fits 108 bytes
       vm.json  api.sock  vsock.sock  console.log  vmm.log  firecracker.pid  lock
       agent.ext4 (vda, ro: /sbx + /init.json)  rootfs.ext4 (vdb, rw, reflink or sparse copy)
       vm.state  vm.mem                         the asleep state
+      jail/firecracker/sbx-<hash>/root/        the jailed VMM's / (v0.13): hard links to the files
+                                               above, owned by its uid; api.sock and vsock.sock
+                                               above are symlinks into it; emptied on every launch
     snapshots/<name>/                          sbx snapshot: memory + both drives
 ```
 
@@ -251,6 +255,13 @@ Nothing in the provider assumes it is the process that started a VM or the one f
 every fact is in `vm.json` or answered by the API socket, and every operation takes the VM's
 flock. That is what lets `sbx create` boot a VM that `sbx serve` later sleeps, and what lets the same
 code run inside the helper VM.
+
+**Every VMM is jailed** (v0.13; DECISIONS.md, "Every VMM runs under Firecracker's jailer"). `fc.ExecLauncher`
+starts it through the jailer pinned from firecracker's own release tarball: chrooted into `jail/` inside
+its VM's directory, as uid `900000 + slot*256 + index`, in `<cgroup2>/sbx-fc/<id>` with the spec's CPUs
+and memory. The provider hands the VMM only paths in that root (`fc.View`) and takes what it writes back
+(`View.Adopt`: a plain file with one name, or refused). `SBX_FC_JAILER=off` is the unjailed v0.12 launch.
+The host guard beside it fails closed (`fc.IPNetwork`): no guard, no VM, unless `SBX_FC_FIREWALL=unmanaged`.
 ## The OpenSandbox API
 
 `sbx serve --osb-addr` also answers OpenSandbox's lifecycle API. An API sandbox is an ordinary sbx

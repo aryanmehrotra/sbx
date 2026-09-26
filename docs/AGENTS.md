@@ -308,7 +308,13 @@ Knowing these saves an agent a turn spent fighting them:
 - **`sbx serve --provider firecracker --osb-addr` as a user without CAP_NET_ADMIN.** It runs as
   root: every microVM is a tap on a bridge the daemon makes and guards with iptables rules, and a
   daemon that could not do that would accept every create and fail it on the tap. The VMM then
-  runs as root too, with no jailer yet - SECURITY.md says what that means for untrusted code.
+  is started through Firecracker's jailer: chrooted, as its own non-root uid, in its own cgroup.
+- **`sbx serve --provider firecracker --osb-addr` with `SBX_FC_JAILER=off`.** Every VMM would be
+  unconfined root, which an API handing VMs to callers must not do by default; pass
+  `--osb-insecure-no-jailer` to accept it (SECURITY.md).
+- **A microVM whose host guard cannot be installed** (no iptables, a refused rule). It fails closed
+  rather than boot a guest that can reach every host service; `--fc-firewall=unmanaged` hands the
+  host firewall to the operator.
 
 Every refusal names the field or the flag it came from, so the message is usually the fix.
 

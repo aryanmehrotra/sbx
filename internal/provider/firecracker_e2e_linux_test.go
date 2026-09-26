@@ -7,9 +7,11 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -79,6 +81,8 @@ func TestFirecrackerE2E(t *testing.T) {
 
 		t.Logf("round %d: start %s, first byte %s", round, loaded, time.Since(start))
 
+		assertJailed(t, p, vm)
+
 		// Through execd over the vsock device, on a VM that was just restored and re-keyed: a
 		// stale token, or a Seal/Rekey secret mismatch, fails here or at the Stop below.
 		start = time.Now()
@@ -105,6 +109,61 @@ func TestFirecrackerE2E(t *testing.T) {
 			t.Fatalf("round %d: still running after Stop", round)
 		}
 	}
+}
+
+// assertJailed checks, from /proc, that the running VMM is the jailer's work: its own uid and gid
+// throughout (never 0), no capabilities, a root that is its jail (the VM's disk is there, the
+// host's /etc is not) and its own cgroup. Unless SBX_FC_JAILER=off, which says so in the log.
+func assertJailed(t *testing.T, p *fcProvider, vm *fcVM) {
+	t.Helper()
+
+	if p.jail == nil {
+		t.Logf("%s=off: the VMM runs unjailed, as root", fc.JailerEnv)
+		return
+	}
+
+	dir := p.dir(vm.Ref)
+
+	pid, err := fc.ReadPID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proc := "/proc/" + strconv.Itoa(pid)
+	want := strconv.Itoa(p.jail.UID(vm.addr()))
+
+	status, _ := os.ReadFile(proc + "/status")
+	for _, l := range strings.Split(string(status), "\n") {
+		f := strings.Fields(l)
+
+		switch {
+		case len(f) == 5 && (f[0] == "Uid:" || f[0] == "Gid:"):
+			for _, id := range f[1:] {
+				if id != want || id == "0" {
+					t.Fatalf("VMM %s, want %s throughout", l, want)
+				}
+			}
+		case len(f) == 2 && f[0] == "CapEff:" && f[1] != "0000000000000000":
+			t.Fatalf("the VMM kept capabilities: %s", l)
+		}
+	}
+
+	if _, err := os.Stat(proc + "/root/etc/passwd"); err == nil {
+		t.Fatal("the VMM sees the host's /etc: it is not chrooted")
+	}
+
+	a, _ := os.Stat(dir + "/" + fc.RootfsName)
+	j, _ := os.Stat(proc + "/root/" + fc.RootfsName)
+
+	if a == nil || j == nil || !os.SameFile(a, j) {
+		t.Fatal("the jailed VMM's /rootfs.ext4 is not the VM's disk")
+	}
+
+	if cg, _ := os.ReadFile(proc + "/cgroup"); !strings.Contains(string(cg), "/"+fc.JailCgroupParent+"/"+fc.JailID(dir)) {
+		t.Fatalf("the VMM's cgroup is %q", cg)
+	}
+
+	t.Logf("jailed: pid %d uid %s, chrooted in %s", pid, want, fc.JailRoot(dir, vm.Binary))
 }
 
 func ping(t *testing.T, host string, port int) string {
