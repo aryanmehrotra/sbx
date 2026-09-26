@@ -40,7 +40,14 @@ func newFakeDevice(t *testing.T, port int, h http.Handler) *fakeDevice {
 
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	d := &fakeDevice{path: filepath.Join(dir, VsockName)}
+	return newFakeDeviceAt(t, filepath.Join(dir, VsockName), port, h)
+}
+
+// newFakeDeviceAt is newFakeDevice bound at path, as a jailed VMM binds its device in its root.
+func newFakeDeviceAt(t *testing.T, path string, port int, h http.Handler) *fakeDevice {
+	t.Helper()
+
+	d := &fakeDevice{path: path}
 
 	ln, err := net.Listen("unix", d.path)
 	if err != nil {

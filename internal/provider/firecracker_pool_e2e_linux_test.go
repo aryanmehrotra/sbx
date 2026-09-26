@@ -66,12 +66,21 @@ func TestFirecrackerPoolE2E(t *testing.T) {
 
 		t.Logf("%s: park: %s", mode, time.Since(start))
 
+		// A frozen member keeps its VMM while it waits: jailed as the VM's uid like any other.
+		if frozen {
+			assertJailed(t, p, memberVM(t, p, ref))
+		}
+
 		start = time.Now()
 		if err := p.Claim(ctx, ref, "caller-token-"+mode, map[string]string{"POOLED": mode}); err != nil {
 			t.Fatalf("%s: claim: %v\n%s", mode, err, p.consoleTail(p.dir(ref), 30))
 		}
 
 		claimed := time.Since(start)
+
+		// The claim's VMM - a restore into a fresh jail, or the frozen one resumed - is jailed,
+		// and the re-key above reached execd through <dir>/vsock.sock, the symlink into that jail.
+		assertJailed(t, p, memberVM(t, p, ref))
 
 		out, err := p.Exec(ctx, ref, []string{"sh", "-c", "echo $POOLED"})
 		if err != nil || out != mode {
@@ -92,4 +101,15 @@ func TestFirecrackerPoolE2E(t *testing.T) {
 			t.Fatalf("%s: the claimed execd still answers the member's token", mode)
 		}
 	}
+}
+
+func memberVM(t *testing.T, p *fcProvider, ref string) *fcVM {
+	t.Helper()
+
+	vm, err := p.load(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return vm
 }

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -47,7 +48,13 @@ func TestTheRealJailer(t *testing.T) {
 
 	dir := filepath.Join(state, "vms", "0123456789abcdef")
 	must(t, os.MkdirAll(dir, 0o700))
-	must(t, os.WriteFile(filepath.Join(dir, RootfsName), []byte("disk"), 0o600))
+	// The VM's disk as the provider makes it (v0.12): cloned by extents or reflink from a built
+	// root filesystem, root's and 0600 - and still the VM's disk, owned by its uid, once staged.
+	built := filepath.Join(state, "built.ext4")
+	must(t, os.WriteFile(built, []byte("disk"), 0o600))
+	how, err := CloneFile(built, filepath.Join(dir, RootfsName))
+	must(t, err)
+	t.Logf("the rootfs was cloned by %s", how)
 
 	uid := JailConfig{UIDBase: DefaultJailUIDBase}.UID(Addr{Slot: 2, Index: 3})
 	s := LaunchSpec{Binary: bin, Dir: dir, ID: "x", Jail: &JailSpec{
@@ -92,6 +99,10 @@ func TestTheRealJailer(t *testing.T) {
 		j, _ := os.Stat(root + RootfsName)
 		if a == nil || j == nil || !os.SameFile(a, j) {
 			t.Fatal("the VMM's /rootfs.ext4 is not the VM's disk")
+		}
+
+		if st, ok := j.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid || int(st.Gid) != uid {
+			t.Fatalf("the cloned rootfs in the jail is not owned by the VM's uid %d: %+v", uid, j.Sys())
 		}
 
 		cg, _ := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")
