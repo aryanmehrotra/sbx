@@ -426,9 +426,9 @@ type DaemonOptions struct {
 	// Restart forces a restart of a daemon already running - after a new binary went in.
 	Restart bool
 
-	// OSB serves the OpenSandbox API on the VM's loopback. Off unless asked for: sbx serve on
-	// this host refuses --osb-addr with firecracker (provider.ErrOSBOnFirecracker), so nothing asks
-	// for it today, and a listener nobody asked for is attack surface.
+	// OSB serves the OpenSandbox API on the VM's loopback. Off unless `sbx serve --osb-addr` asked
+	// for it (a listener nobody asked for is attack surface), and then always with OSBKey: the
+	// host half refuses to front it keyless (Front, checkKeyed).
 	OSB bool
 }
 

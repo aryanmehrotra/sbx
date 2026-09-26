@@ -24,7 +24,7 @@ GitHub's x86_64 runner. The docker path is unchanged and still passes the same g
 | volumes | `pvc` → an ext4 image file per claim, attached as an extra virtio block drive, namespaced like docker's; `host` refused by name (Firecracker has no virtio-fs). `ossfs` refused as today. |
 | networkPolicy / egress | the existing egress filter, served by the daemon on each VM bridge's gateway address (Linux has the bridge natively); guests get it as their only route out. Live updates + CIDR reuse `EgressControl`. `defaultAction: allow` needs a NAT'd path through the filter only — refuse if it can't be enforced. |
 | warm pool | members are ordinary API microVMs created, health-checked, snapshotted asleep (disk cost shown in doctor); claim = restore + re-key + env + identity. `--osb-pool-freeze` = keep members restored and paused (faster claim, costs RAM). Fork-from-one-template is a follow-up measured separately. |
-| helper VM (Mac/Windows) | out of scope for this release: `--osb-addr` stays refused there with its current message. Linux direct first. |
+| helper VM (Mac/Windows) | out of scope for this release: `--osb-addr` stays refused there with its current message. Linux direct first. *Amended (K5): served from the helper VM's daemon and fronted on the host; see DECISIONS.md, "The OpenSandbox API through a helper VM runs in the VM".* |
 
 ## Out of scope
 Mac/Windows helper-VM API; snapshot fork for pool speed; host volumes; the public gateway service.

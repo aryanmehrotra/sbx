@@ -244,3 +244,38 @@ func TestMirrorRefreshesWhileConnectionsRun(t *testing.T) {
 
 	wg.Wait()
 }
+
+// A Sync is answered once the pass it asked for is over - even when that pass could not reach the
+// fleet - so a caller waiting on it (the helper VM's API front) is never held past one fetch.
+func TestMirrorSyncIsAnsweredWhenTheRemoteIsUnreachable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	kick := make(chan chan struct{})
+	done := make(chan error, 1)
+
+	go func() {
+		done <- Mirror(ctx, MirrorOptions{Endpoint: Endpoint{URL: "http://127.0.0.1:1", Token: testToken},
+			Refresh: time.Hour, Out: io.Discard, Sync: kick})
+	}()
+
+	answered := make(chan struct{})
+
+	select {
+	case kick <- answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the mirror never took the sync request")
+	}
+
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a sync against an unreachable remote was never answered")
+	}
+
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

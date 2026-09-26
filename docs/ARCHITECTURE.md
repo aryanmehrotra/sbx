@@ -299,8 +299,23 @@ any other. What the API adds is around it, not instead of it:
   mount and the wrapper; it still mints the token, and the VM boots and re-keys execd with it.
   An API microVM is born running (not snapshotted asleep), its pause is a VM pause, its snapshot
   is its disk (a fork cold-boots a copy), a `pvc` is an ext4 image attached as a drive, and a
-  `host` volume is a 501 (`HostVolumes`: no virtio-fs). Linux with `/dev/kvm` only; through a
-  helper VM `--osb-addr` is still refused at startup.
+  `host` volume is a 501 (`HostVolumes`: no virtio-fs). On a Mac or Windows the API runs in
+  the helper VM's daemon, which is Linux with `/dev/kvm` - see below.
+- **Through a helper VM the API is served in the VM and fronted here.** `sbx serve --provider
+  firecracker --osb-addr` on an M3+ Mac or Windows starts the in-VM daemon with `--osb-addr
+  127.0.0.1:22981` and the key in its root-only environment file, so the jailer, the egress filter
+  and the host guard are the VM's own and refuse exactly as on Linux. The host half
+  (`internal/fchost`) resolves the key as Linux does (`--osb-key`, `SBX_OSB_KEY`, else
+  `~/.sbx/osb/key` on the Mac), reverse-proxies `--osb-addr` (loopback only) over the ssh forward,
+  and will not serve until it has proved the API behind the forward answers **401 without the
+  key and 200 with it** - the forward is itself a Mac loopback port, which containers on a
+  VM-backed engine reach, so that check is the control and is verified at startup, not assumed.
+  Endpoints the API hands out are `127.0.0.1:<port>` in the VM; the mirror binds the same numbers
+  here, and a successful create (any `POST` under `/v1/sandboxes`) or endpoint lookup is held
+  until the mirror has bound them (bounded 5s), so an SDK that dials at once finds it listening.
+  Refused on this path: `--osb-insecure-no-key`, and `--osb-pool` / `SBX_OSB_POOL` (not carried
+  into the VM yet). Proven by unit tests with a fake VM daemon and API; **not run end to end on an
+  M3+ Mac yet.**
 - **A held pause is not an idle freeze.** Both are `docker pause`. The idle one is the daemon's and
   the next byte undoes it; the held one is the caller's, reported as `Paused`, and refuses traffic
   until `resume`. The hold is re-asserted from the record when the daemon restarts.

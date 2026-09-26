@@ -720,8 +720,10 @@ Each member boots from its own disk, with its own drives, slot, tap, token and c
 no two share memory. Forking members from one template's snapshot would make the pool far
 cheaper to fill, and is deliberately not this release - a memory clone carries the kernel-set
 guest IP and every secret userspace made before the snapshot, and re-key replaces only execd's
-("The OpenSandbox API on a microVM"). The helper-VM path on a Mac or Windows has no `PoolParker`
-and still refuses `--osb-pool` at startup.
+("The OpenSandbox API on a microVM"). The helper-VM path on a Mac or Windows still refuses
+`--osb-pool` at startup: the API there runs in the VM's daemon, whose provider could park
+members, but the pool is not carried into the VM yet (see "The OpenSandbox API through a helper VM
+runs in the VM").
 
 A member is jailed like any VM (v0.13 ships the pool and the jailer together): every launch -
 its boot, a frozen member's paused VMM, an asleep claim's restore into a fresh root - runs as the
@@ -1149,9 +1151,37 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   commit` bakes the container's env into the image. Passing the env again on the create from the
   snapshot is the workaround; carrying it in the record (less execd's secrets) is a follow-up.
 - **Not yet:** the helper-VM path on a Mac or Windows (`--osb-addr` still refused there at
-  startup). *Amended in v0.13:* the warm pool shipped on Linux direct - see "Warm-pool members wait
+  startup). *Amended (K5):* no longer refused - the API runs in the helper VM's daemon and is
+  fronted on the host; see "The OpenSandbox API through a helper VM runs in the VM". *Amended in v0.13:* the warm pool shipped on Linux direct - see "Warm-pool members wait
   asleep on a microVM". Egress on VM bridges shipped in v0.12 ("A
   microVM's only door is its filter").
+
+### The OpenSandbox API through a helper VM runs in the VM
+
+On an M3+ Mac or Windows, `sbx serve --provider firecracker --osb-addr` used to be refused. It now
+starts the helper VM's daemon with the API on its loopback (22981) and the key in its root-only
+environment file, and the host half reverse-proxies `--osb-addr` to it over the ssh forward the
+connect endpoint already used.
+
+- **Why in the VM, not a host-side API over `Remote`.** The VM is a Linux host with `/dev/kvm`:
+  there the firecracker provider is `RunsAgent`, the jailer, the egress filter on each bridge and
+  the host guard run natively, and every v0.13 refusal (no jailer without
+  `--osb-insecure-no-jailer`, a guard that cannot be installed) is the same code as on Linux. A
+  host-side API would drive VMs one `sbx fc call` at a time and need its own egress and guard.
+- **The key is Linux's key, kept on the host.** `--osb-key`, `SBX_OSB_KEY`, else
+  `~/.sbx/osb/key` generated on the Mac, where `sbx mcp` and the SDK examples read it. It is never
+  on a command line in either machine.
+- **Loopback is not a trust boundary, so the key is verified, not assumed.** The ssh forward is a
+  port on the Mac's loopback, reachable from containers on a VM-backed engine whatever the host
+  proxy checks; the in-VM daemon's key check is the one control for both. So the front refuses to
+  serve with no key, and at startup proves the API behind the forward answers 401 without the key
+  and 200 with it. `--osb-insecure-no-key` is refused on this path by name.
+- **Endpoints listen before the create answers.** They are `127.0.0.1:<port>` in the VM and the
+  mirror binds the same numbers on the Mac on a 2s tick; a create answered before the tick left the
+  SDK's first dial refused. The proxy holds a successful `POST` under `/v1/sandboxes`, or an
+  endpoint lookup, until the mirror has reconciled (`daemon.MirrorOptions.Sync`, bounded 5s).
+- **Not yet:** the warm pool on this path (`--osb-pool` / `SBX_OSB_POOL` refused by name), and a
+  live run on an M3+ Mac: this is proven by unit tests with a fake VM daemon and API only.
 
 ### What the API remembers lives in its record file, not in labels
 

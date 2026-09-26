@@ -35,6 +35,12 @@ type MirrorOptions struct {
 	Refresh  time.Duration // how often to ask what it is fronting; default 2s
 	Shift    int           // added to every local port, as --port-offset
 	Out      io.Writer
+
+	// Sync asks for a reconcile now rather than at the next tick: send a channel, and it is
+	// closed once the fleet has been asked and every port it lists is bound (or has failed to
+	// bind, or the fleet could not be fetched). The helper VM's API front uses it so a create is
+	// not answered before the new sandbox's endpoints listen here. Nil: ticks only.
+	Sync <-chan chan struct{}
 }
 
 type mirrored struct {
@@ -88,6 +94,20 @@ func Mirror(ctx context.Context, opt MirrorOptions) error {
 
 	defer tick.Stop()
 
+	// Sync requests waiting on the reconcile in progress. Released after every pass, and on
+	// return, so a waiter never outlives the mirror.
+	var waiting []chan struct{}
+
+	release := func() {
+		for _, c := range waiting {
+			close(c)
+		}
+
+		waiting = nil
+	}
+
+	defer release()
+
 	for {
 		svcs, halfClose, err := fetchFleet(ctx, src.base, src.token, false)
 
@@ -113,10 +133,14 @@ func Mirror(ctx context.Context, opt MirrorOptions) error {
 			reconcile(ctx, out, src, svcs, bound, failed, closeOne, &wg)
 		}
 
+		release()
+
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-tick.C:
+		case c := <-opt.Sync:
+			waiting = append(waiting, c)
 		}
 	}
 }
