@@ -118,6 +118,9 @@ threat model is not "untrusted users share one daemon".**
     drops), and the host's FORWARD policy where it is not. With `ip_forward=1` (docker turns it on)
     an unguarded bridge's VMs can reach another's unless the policy is `DROP`. `sbx doctor` checks it (`vm bridges isolated`), and every
     create warns when it is not confirmed.
+- **`sbx serve --provider firecracker` runs as root** (or with `CAP_NET_ADMIN`): it makes a tap
+  and a bridge per sandbox and writes the iptables rules that guard them, and `--osb-addr` is
+  refused at startup without that privilege rather than failing every create on its tap.
 - **In a microVM, the guest's root can read execd's own secrets** - the access token and the
   boot control secret, from `/proc/1/environ` and `/init.json` on the agent drive. execd strips
   them from what it starts, which keeps them out of `env` and logs, not from root. They are

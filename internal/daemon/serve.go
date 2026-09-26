@@ -868,6 +868,9 @@ func (d *daemon) lifetime(caller context.Context) context.Context {
 	return caller
 }
 
+// hasNetAdmin is hostcap.NetAdmin, a variable so a test can say what this process may do.
+var hasNetAdmin = hostcap.NetAdmin
+
 // refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup where the VMs
 // would run in a helper VM: the API is not fronted into it, so every create would fail, and a
 // listener that can only refuse is worse than no listener. On a Linux host that runs Firecracker
@@ -880,6 +883,13 @@ func refuseOSBOnMicroVM(kind, osbAddr string) error {
 
 	switch d := provider.DecideHost(); d.Backend {
 	case hostcap.Direct:
+		if !hasNetAdmin() {
+			return errors.New("--osb-addr with --provider firecracker runs as root (or with CAP_NET_ADMIN): " +
+				"every sandbox is a tap on a bridge the daemon makes, guarded by iptables rules it " +
+				"writes, and this process may do none of that, so every create would fail on its tap. " +
+				"Run `sudo sbx serve --provider firecracker --osb-addr ...` (SECURITY.md says what that means)")
+		}
+
 		return nil
 	case hostcap.HelperVM:
 		return provider.ErrOSBOnFirecracker

@@ -305,6 +305,10 @@ Knowing these saves an agent a turn spent fighting them:
   recreate the sandbox. A cluster can, and is allowed to.
 - **`sbx connect` to an `http://` URL not on this machine.** The token would cross the network in
   the clear.
+- **`sbx serve --provider firecracker --osb-addr` as a user without CAP_NET_ADMIN.** It runs as
+  root: every microVM is a tap on a bridge the daemon makes and guards with iptables rules, and a
+  daemon that could not do that would accept every create and fail it on the tap. The VMM then
+  runs as root too, with no jailer yet - SECURITY.md says what that means for untrusted code.
 
 Every refusal names the field or the flag it came from, so the message is usually the fix.
 
