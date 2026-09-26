@@ -404,3 +404,24 @@ func (d *dockerClient) stats(ctx context.Context, id string) (statsSample, error
 
 	return s, err
 }
+
+// exitState reads one container's last state: status, exit code, OOM kill and the engine's own
+// error (an OCI start failure lands there, not in the container's logs).
+func (d *dockerClient) exitState(ctx context.Context, name string) (ExitState, error) {
+	var got struct {
+		State struct {
+			Status    string `json:"Status"`
+			ExitCode  int    `json:"ExitCode"`
+			OOMKilled bool   `json:"OOMKilled"`
+			Error     string `json:"Error"`
+		} `json:"State"`
+	}
+
+	if err := d.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(name)+"/json", &got); err != nil {
+		return ExitState{}, err
+	}
+
+	st := got.State
+
+	return ExitState{Status: st.Status, ExitCode: st.ExitCode, OOMKilled: st.OOMKilled, Error: st.Error}, nil
+}

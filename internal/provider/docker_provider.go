@@ -1416,3 +1416,8 @@ func (d *dockerProvider) UnitOf(ctx context.Context, sandbox, service string) (U
 
 	return u, true, nil
 }
+
+// ExitOf implements ExitReporter with one inspect.
+func (d *dockerProvider) ExitOf(ctx context.Context, ref string) (ExitState, error) {
+	return d.api.exitState(ctx, ref)
+}

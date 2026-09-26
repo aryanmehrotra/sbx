@@ -835,3 +835,54 @@ func FirecrackerRuntimeClass(getenv func(string) string) string {
 
 	return "kata-fc"
 }
+
+// ExitReporter says why a workload is not running, in the runtime's own terms: its state, its
+// exit code, whether the kernel killed it for memory, and any error the runtime recorded while
+// starting it. A caller that has to report a sandbox as failed asks this, because the workload's
+// own output is often empty - a process killed by a signal prints nothing - and "it exited" with
+// no cause is a failure nobody can act on.
+type ExitReporter interface {
+	ExitOf(ctx context.Context, ref string) (ExitState, error)
+}
+
+// ExitState is a stopped workload's last state, as the runtime recorded it.
+type ExitState struct {
+	Status    string // the runtime's word: "exited", "created", "dead", ...
+	ExitCode  int
+	OOMKilled bool
+	Error     string // the runtime's own error, e.g. an OCI start failure
+}
+
+// String renders the state as one clause for a failure message.
+func (e ExitState) String() string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "state %s, exit code %d", orUnknown(e.Status), e.ExitCode)
+
+	switch {
+	case e.OOMKilled:
+		b.WriteString(", killed by the kernel for exceeding its memory limit (OOMKilled)")
+	case e.ExitCode == 137:
+		b.WriteString(" (SIGKILL: killed from outside, or by the kernel for memory)")
+	case e.ExitCode == 143:
+		b.WriteString(" (SIGTERM: stopped from outside)")
+	}
+
+	if e.Status == "created" {
+		b.WriteString(" - the container was created but never started")
+	}
+
+	if s := strings.TrimSpace(e.Error); s != "" {
+		b.WriteString("; the runtime reported: " + s)
+	}
+
+	return b.String()
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+
+	return s
+}

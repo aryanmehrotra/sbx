@@ -457,10 +457,8 @@ func (s *Server) recover(ctx context.Context) {
 
 	for _, r := range pending {
 		if !have[r.ID] {
-			s.update(r.ID, func(r *record) {
-				r.transition(stateFailed, "interrupted", "sbx serve restarted before this "+
-					"sandbox's container was created; delete it and create it again", s.now())
-			})
+			s.failed(r.ID, "interrupted", "sbx serve restarted before this sandbox's container "+
+				"was created; delete it and create it again", "")
 
 			continue
 		}
