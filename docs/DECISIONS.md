@@ -882,10 +882,14 @@ docker restart re-inserts its jumps at the top of filter `FORWARD`, which would 
 accepts back in front of ours. The two tables are installed and removed as one: every chain filled
 before any rule jumps to one, and a failure anywhere removes what was made in both.
 
-Verified by the rule-set tests in `internal/fc` (`guard_forward_test.go`: the exact mangle chain,
-the hooks, idempotence, and nothing left behind by a failure at any step), against a fake
-iptables that interprets the commands. The live check - a guest dialling a docker-published port on
-its gateway and timing out - runs in CI on a real host; it cannot run on the development Mac.
+Verified two ways. The rule-set tests in `internal/fc` (`guard_forward_test.go`: the exact mangle
+chain, the hooks, idempotence, and nothing left behind by a failure at any step) run against a
+fake iptables that interprets the commands. `TestGuardLive` (`SBX_GUARD_LIVE=1`, root, Linux; the
+CI `microvm` job runs it) rebuilds docker's shape by hand on the real kernel - a nat DNAT for local
+addresses onto a namespace, a FORWARD accept - puts a guest namespace on an `sbxfc` bridge, and
+checks that the guest reaches the published port and a host service before `Install` and neither
+after, while the filter port and the host-to-guest direction still work. It cannot run on the
+development Mac, so its first run is CI's.
 
 **Rejected: nftables directly.** It is the better API, and docker - the other writer on every host
 that runs this - still speaks `iptables`, which on current distributions is the nft backend anyway.

@@ -478,6 +478,18 @@ jobs:
             echo "have=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The bridge guard against the real kernel and iptables, no VM needed: a guest namespace on
+      # an sbxfc bridge, docker's DNAT-for-local-addresses shape rebuilt by hand, and what the
+      # guest reaches before and after Install (the published port and a host service: yes, then
+      # no; the filter port: yes; the host dialling the guest: yes). The unit tests prove the rule
+      # set; this proves the kernel reads it the way DECISIONS.md says.
+      - name: the microVM bridge guard, live
+        timeout-minutes: 5
+        run: |
+          set -eux
+          go test -c -o fcguard.test ./internal/fc
+          sudo env SBX_GUARD_LIVE=1 ./fcguard.test -test.run '^TestGuardLive$' -test.v
+
       - name: a real Firecracker VM, end to end
         if: steps.kvm.outputs.have == 'true'
         timeout-minutes: 25
