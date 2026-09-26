@@ -40,8 +40,16 @@ func Main(_ []string) int {
 
 	root := "/newroot"
 
-	if err := syscall.Mount(cfg.RootDevice, root, "ext4", 0, ""); err != nil {
-		return fail("mounting the image rootfs " + cfg.RootDevice + ": " + err.Error())
+	for _, st := range rootPlan(root, cfg) {
+		if err := doMount(st); err != nil {
+			msg := "mounting the image root (" + st.FSType + " " + st.Source + " at " + st.Target + "): " + err.Error()
+			if st.FSType == "overlay" && errors.Is(err, syscall.ENODEV) {
+				msg += " - this guest kernel has no overlayfs (CONFIG_OVERLAY_FS); sbx's pinned kernels have it, " +
+					"so SBX_FC_KERNEL names one that does not"
+			}
+
+			return fail(msg)
+		}
 	}
 
 	for _, d := range []string{"proc", "sys", "dev", "tmp", "opt/sbx"} {
@@ -165,8 +173,12 @@ func loopbackUp() error {
 
 // doMount carries out one planned step.
 func doMount(st mountStep) error {
-	if st.MkdirAll != "" {
-		if err := os.MkdirAll(st.MkdirAll, 0o755); err != nil {
+	for _, d := range append([]string{st.MkdirAll}, st.Dirs...) {
+		if d == "" {
+			continue
+		}
+
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
 	}
@@ -182,5 +194,5 @@ func doMount(st mountStep) error {
 		flags = syscall.MS_RDONLY
 	}
 
-	return syscall.Mount(st.Source, st.Target, st.FSType, flags, "")
+	return syscall.Mount(st.Source, st.Target, st.FSType, flags, st.Data)
 }

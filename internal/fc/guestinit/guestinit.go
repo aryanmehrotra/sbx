@@ -112,6 +112,34 @@ type mountStep struct {
 
 	// Remount makes an existing bind read-only: a bind takes no flags of its own on creation.
 	Remount bool
+
+	// Data is the filesystem's own options (overlayfs's layers; ext4's noload).
+	Data string
+
+	// Dirs are created after MkdirAll and before the mount: an overlay's upper and work
+	// directories, on the writable layer mounted by the step before.
+	Dirs []string
+}
+
+// rootPlan is how the workload's root comes to be at root. A VM with its own copy of its image
+// mounts that, read-write. A layered VM mounts its image's shared base read-only (noload: the base
+// is never written, so its journal is never replayed, which a read-only drive could not do anyway)
+// and its own writable layer beside it, and lays an overlay over the two at root - the shape a
+// container's root has under docker's overlay2, so a workload cannot tell the difference.
+func rootPlan(root string, cfg fc.InitConfig) []mountStep {
+	if cfg.UpperDevice == "" {
+		return []mountStep{{Source: cfg.RootDevice, Target: root, FSType: "ext4"}}
+	}
+
+	lower, layer := "/"+fc.LowerMount, "/"+fc.LayerMount
+	upper, work := filepath.Join(layer, "upper"), filepath.Join(layer, "work")
+
+	return []mountStep{
+		{Source: cfg.RootDevice, Target: lower, FSType: "ext4", ReadOnly: true, Data: "noload"},
+		{Source: cfg.UpperDevice, Target: layer, FSType: "ext4"},
+		{Dirs: []string{upper, work}, Source: "overlay", Target: root, FSType: "overlay",
+			Data: "lowerdir=" + lower + ",upperdir=" + upper + ",workdir=" + work},
+	}
 }
 
 // drivePlan is how each extra drive reaches the workload: mounted at its target inside root and,

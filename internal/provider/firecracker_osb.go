@@ -280,12 +280,13 @@ func (p *fcProvider) volumesFor(ref string, mounts []spec.VolumeMount) ([]fcVolu
 	return out, nil
 }
 
-// initMounts is what fc-init mounts for the VM's volumes, in drive order.
-func initMounts(vs []fcVolume) []fc.InitMount {
+// initMounts is what fc-init mounts for the VM's volumes, in drive order: after the writable layer
+// when the VM is layered.
+func initMounts(vs []fcVolume, layered bool) []fc.InitMount {
 	var out []fc.InitMount
 
 	for i, v := range vs {
-		out = append(out, fc.InitMount{Device: fc.GuestExtraDevice(i), Target: v.Target, SubPath: v.SubPath,
+		out = append(out, fc.InitMount{Device: fc.GuestExtraDevice(layered, i), Target: v.Target, SubPath: v.SubPath,
 			ReadOnly: v.ReadOnly})
 	}
 
@@ -307,9 +308,16 @@ func (p *fcProvider) commitDisk(ctx context.Context, vm *fcVM, state, dst string
 	dir := p.dir(vm.Ref)
 	c := p.client(vm.Ref)
 
+	// Layered, the disk is the image's base - linked, since it never changes - and the writable
+	// layer, copied: a sandbox made from the snapshot starts from both (create's upperSrc).
 	copyDisk := func() error {
-		_, err := fc.CloneFile(filepath.Join(dir, fc.RootfsName), filepath.Join(dst, fc.RootfsName))
-		return err
+		for _, f := range vm.rootfsFiles() {
+			if err := copyVMFile(f, dir, dst); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	switch state {

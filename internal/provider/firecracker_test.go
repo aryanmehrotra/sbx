@@ -354,7 +354,7 @@ func TestCreateLeavesTheVMAsleepWithAFullSnapshot(t *testing.T) {
 		t.Fatalf("record after create = %+v", vm)
 	}
 
-	for _, f := range []string{fc.StateName, fc.MemName, fc.RootfsName, "agent.ext4"} {
+	for _, f := range []string{fc.StateName, fc.MemName, fc.BaseName, fc.UpperName, "agent.ext4"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Fatalf("%s missing after create: %v", f, err)
 		}
@@ -407,9 +407,13 @@ func TestCreateBootsWithTheRightConfig(t *testing.T) {
 				if c.Body["is_root_device"] != true || c.Body["is_read_only"] != true {
 					t.Errorf("agent drive = %v", c.Body)
 				}
-			case "/drives/rootfs":
-				if c.Body["is_root_device"] != false || c.Body["is_read_only"] != false {
+			case "/drives/rootfs": // the image's shared base, never written
+				if c.Body["is_root_device"] != false || c.Body["is_read_only"] != true {
 					t.Errorf("rootfs drive = %v", c.Body)
+				}
+			case "/drives/upper": // the VM's own writable layer
+				if c.Body["is_root_device"] != false || c.Body["is_read_only"] != false {
+					t.Errorf("upper drive = %v", c.Body)
 				}
 			case "/machine-config":
 				if c.Body["track_dirty_pages"] != true || c.Body["vcpu_count"] != float64(2) || c.Body["mem_size_mib"] != float64(512) {
@@ -426,7 +430,7 @@ func TestCreateBootsWithTheRightConfig(t *testing.T) {
 	r.create(t, "t2", svc)
 
 	want := []string{
-		"PUT /boot-source", "PUT /drives/agent", "PUT /drives/rootfs", "PUT /machine-config",
+		"PUT /boot-source", "PUT /drives/agent", "PUT /drives/rootfs", "PUT /drives/upper", "PUT /machine-config",
 		"PUT /network-interfaces/eth0", "PUT /vsock", "PUT /entropy", "PUT /actions",
 	}
 	if !slices.Equal(seen, want) {
@@ -892,10 +896,15 @@ func TestCommitAndRestoreAsTheSameService(t *testing.T) {
 		t.Fatalf("Images = %v, %v", imgs, err)
 	}
 
-	for _, f := range []string{fc.StateName, fc.MemName, fc.RootfsName, "agent.ext4"} {
+	for _, f := range []string{fc.StateName, fc.MemName, fc.BaseName, fc.UpperName, "agent.ext4"} {
 		if _, err := os.Stat(filepath.Join(r.p.snapshotDir(img), f)); err != nil {
 			t.Fatalf("snapshot lacks %s", f)
 		}
+	}
+
+	// The base is the image, linked, never copied into the snapshot.
+	if a, b := stat(t, filepath.Join(dir, fc.BaseName)), stat(t, filepath.Join(r.p.snapshotDir(img), fc.BaseName)); !os.SameFile(a, b) {
+		t.Fatal("the snapshot holds a copy of the image's base, not the base")
 	}
 
 	if r.p.VolumeFor("t12", "cache") != "" {

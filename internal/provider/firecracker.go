@@ -100,26 +100,32 @@ func forFirecracker(socket string) (Provider, error) {
 
 // fcVM is one VM's record, the file every sbx process agrees on.
 type fcVM struct {
-	Sandbox   string    `json:"sandbox"`
-	Service   string    `json:"service"`
-	Ref       string    `json:"ref"`
-	Instance  string    `json:"instance"` // random per create: a re-created service is a new one
-	Slot      int       `json:"slot"`
-	Index     int       `json:"index"`
-	Image     string    `json:"image"`
-	ImageID   string    `json:"image_id"`
-	VCPU      int       `json:"vcpu"`
-	MemMiB    int       `json:"mem_mib"`
-	Ports     []int     `json:"ports"`  // inside the guest
-	Public    []int     `json:"public"` // where clients connect
-	DependsOn []string  `json:"depends_on,omitempty"`
-	Health    string    `json:"health,omitempty"` // the spec's health command, run by execd
-	Idle      string    `json:"idle,omitempty"`
-	OnIdle    string    `json:"on_idle,omitempty"`
-	Kernel    string    `json:"kernel"`
-	Binary    string    `json:"firecracker"`
-	Clone     string    `json:"clone"` // how the rootfs was cloned: reflink or copy
-	Created   time.Time `json:"created"`
+	Sandbox   string   `json:"sandbox"`
+	Service   string   `json:"service"`
+	Ref       string   `json:"ref"`
+	Instance  string   `json:"instance"` // random per create: a re-created service is a new one
+	Slot      int      `json:"slot"`
+	Index     int      `json:"index"`
+	Image     string   `json:"image"`
+	ImageID   string   `json:"image_id"`
+	VCPU      int      `json:"vcpu"`
+	MemMiB    int      `json:"mem_mib"`
+	Ports     []int    `json:"ports"`  // inside the guest
+	Public    []int    `json:"public"` // where clients connect
+	DependsOn []string `json:"depends_on,omitempty"`
+	Health    string   `json:"health,omitempty"` // the spec's health command, run by execd
+	Idle      string   `json:"idle,omitempty"`
+	OnIdle    string   `json:"on_idle,omitempty"`
+	Kernel    string   `json:"kernel"`
+	Binary    string   `json:"firecracker"`
+	Clone     string   `json:"clone"` // how the rootfs came to be here: link (layered), reflink, extents or copy
+
+	// Layout is how the VM's root filesystem is held: "layered" - its image's shared, read-only base
+	// linked in (base.ext4) with its own writable layer (upper.ext4) laid over it by fc-init - or ""
+	// for a whole copy of its image of its own (rootfs.ext4), every VM made before v0.13.
+	Layout string `json:"layout,omitempty"`
+
+	Created time.Time `json:"created"`
 
 	// Identity the guest agent holds. On disk because every process that wakes this VM must
 	// hand the same token back to it; 0600 like the rest of the directory. ControlSecret is the
@@ -728,7 +734,9 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	// snapshot restores only as itself (createFromSnapshot); a disk snapshot of an API sandbox is
 	// a root filesystem to cold-boot a new VM from, with the image config it was saved with.
 	var (
-		rootfsSrc string
+		rootfsSrc string // a whole root filesystem the VM gets a copy of: the layout before v0.13
+		baseSrc   string // the shared, read-only base a layered VM links (fc.LinkShared)
+		upperSrc  string // a saved writable layer it starts from (a layered disk snapshot); "" is empty
 		cfg       fc.ImageConfig
 	)
 
@@ -752,7 +760,15 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 			return fmt.Errorf("the firecracker snapshot %s is gone", svc.Image)
 		}
 
-		rootfsSrc, cfg = filepath.Join(src, fc.RootfsName), *snap.VM.Config
+		// A layered snapshot is its base (a link to the image's) and its writable layer; one
+		// saved before v0.13 is a whole root filesystem, and a VM made from it copies it as then.
+		if snap.VM.Layout == layoutLayered {
+			baseSrc, upperSrc = filepath.Join(src, fc.BaseName), filepath.Join(src, fc.UpperName)
+		} else {
+			rootfsSrc = filepath.Join(src, fc.RootfsName)
+		}
+
+		cfg = *snap.VM.Config
 	}
 
 	arts, err := p.arts.Resolve(ctx, p.arch)
@@ -764,13 +780,24 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return errors.New("the firecracker provider boots an image; the service names none")
 	}
 
-	if rootfsSrc == "" {
+	if rootfsSrc == "" && baseSrc == "" {
+		layered, err := layeredRootfs()
+		if err != nil {
+			return err
+		}
+
 		rfs, err := p.rootfs.Build(ctx, svc.Image)
 		if err != nil {
 			return err
 		}
 
-		rootfsSrc, cfg = rfs.Path, rfs.Config
+		cfg = rfs.Config
+
+		if layered {
+			baseSrc = rfs.Path
+		} else {
+			rootfsSrc = rfs.Path
+		}
 	}
 
 	if !rootUser(cfg.User) {
@@ -787,9 +814,9 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	cloneAt := time.Now()
 
-	clone, err := fc.CloneFile(rootfsSrc, filepath.Join(dir, fc.RootfsName))
+	layout, clone, rootfsNote, err := p.makeRootfs(ctx, dir, rootfsSrc, baseSrc, upperSrc)
 	if err != nil {
-		return fmt.Errorf("cloning the root filesystem: %w", err)
+		return err
 	}
 
 	cloned := time.Since(cloneAt)
@@ -804,7 +831,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		Slot: slot, Index: index, Image: svc.Image, ImageID: cfg.ID,
 		VCPU: vcpu, MemMiB: mem, Ports: svc.Ports, DependsOn: svc.DependsOn, Health: svc.Health,
 		Idle: svc.Idle, OnIdle: svc.OnIdle, Kernel: arts.Kernel, Binary: arts.Firecracker,
-		Clone: clone, Created: time.Now().UTC(),
+		Clone: clone, Layout: layout, Created: time.Now().UTC(),
 		// The API's token when it minted one (RunsAgent): execd must answer the token the API
 		// hands its callers, and a second one minted here would be a sandbox that refuses them.
 		AccessToken: agentToken(svc), ControlSecret: randomHex(32),
@@ -877,7 +904,11 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 			WorkingDir: cfg.WorkingDir,
 			Hostname:   service,
 			RootDevice: fc.GuestRootfsDevice,
-			Mounts:     initMounts(vm.Volumes),
+			Mounts:     initMounts(vm.Volumes, vm.layered()),
+		}
+
+		if vm.layered() {
+			init.UpperDevice = fc.GuestUpperDevice
 		}
 
 		if err := fc.BuildAgentDrive(ctx, p.ext4, fc.AgentDrive{Agent: agent, Config: init},
@@ -924,9 +955,9 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	// Where a create's time went, one line per VM: a slow create (a big image cloned by copy on a
 	// filesystem without reflinks, boots queued behind a burst) says which part was slow.
-	logs.Default.Info(sandbox, service, "microVM %s serving %s after create began: rootfs %s in %s (%s of data), "+
+	logs.Default.Info(sandbox, service, "microVM %s serving %s after create began: rootfs in %s (%s), "+
 		"waited %s for a boot slot, booted and served in %s", ref, time.Since(began).Round(time.Millisecond),
-		clone, cloned.Round(time.Millisecond), cloneSize(rootfsSrc), bootAt.Sub(slotAt).Round(time.Millisecond),
+		cloned.Round(time.Millisecond), rootfsNote, bootAt.Sub(slotAt).Round(time.Millisecond),
 		time.Since(bootAt).Round(time.Millisecond))
 
 	// An API sandbox is born running: the API's contract is a process that runs, it reports
@@ -991,12 +1022,26 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		func() error {
 			return c.PutDrive(ctx, fc.Drive{DriveID: "agent", PathOnHost: v.Path(filepath.Join(dir, "agent.ext4")), IsRootDevice: true, IsReadOnly: true})
 		},
-		func() error {
-			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.RootfsName))})
-		},
 	}
 
-	// Volumes after the rootfs, in order: the guest sees them as vdc, vdd, ... (fc.GuestExtraDevice).
+	// The root drive: a copy of its own, read-write; or the image's shared base, read-only, and the
+	// VM's writable layer after it (vdc), which fc-init lays over it.
+	if vm.layered() {
+		steps = append(steps,
+			func() error {
+				return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.BaseName)), IsReadOnly: true})
+			},
+			func() error {
+				return c.PutDrive(ctx, fc.Drive{DriveID: "upper", PathOnHost: v.Path(filepath.Join(dir, fc.UpperName))})
+			})
+	} else {
+		steps = append(steps, func() error {
+			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.RootfsName))})
+		})
+	}
+
+	// Volumes after the root drives, in order: the guest sees them as vdc (vdd layered), ...
+	// (fc.GuestExtraDevice).
 	for i, vol := range vm.Volumes {
 		drive := fc.Drive{DriveID: volumeDriveID(i), PathOnHost: v.At(p.volumePath(vol.Name), volumeStage(i)), IsReadOnly: vol.ReadOnly}
 		steps = append(steps, func() error { return c.PutDrive(ctx, drive) })
@@ -2049,8 +2094,9 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 	dir := p.dir(ref)
 
 	copyVM := func(withMemory bool) error {
-		for _, f := range []string{fc.RootfsName, "agent.ext4"} {
-			if _, err := fc.CloneFile(filepath.Join(dir, f), filepath.Join(dst, f)); err != nil {
+		// A layered VM's base is linked, never copied: it is the image, and read-only.
+		for _, f := range append(vm.rootfsFiles(), vmFile{name: "agent.ext4"}) {
+			if err := copyVMFile(f, dir, dst); err != nil {
 				return err
 			}
 		}
@@ -2247,9 +2293,9 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, svc sp
 		return fmt.Errorf("the firecracker snapshot %s is gone", image)
 	}
 
-	for _, f := range []string{fc.RootfsName, "agent.ext4", fc.StateName, fc.MemName} {
-		if _, err := fc.CloneFile(filepath.Join(src, f), filepath.Join(dir, f)); err != nil {
-			return fmt.Errorf("restoring %s from its snapshot: %w", f, err)
+	for _, f := range append(s.VM.rootfsFiles(), vmFile{name: "agent.ext4"}, vmFile{name: fc.StateName}, vmFile{name: fc.MemName}) {
+		if err := copyVMFile(f, src, dir); err != nil {
+			return fmt.Errorf("restoring %s from its snapshot: %w", f.name, err)
 		}
 	}
 

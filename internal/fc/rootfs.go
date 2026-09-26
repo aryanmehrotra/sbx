@@ -288,7 +288,7 @@ func BuildAgentDrive(ctx context.Context, ext4 Ext4Builder, d AgentDrive, dst st
 	}
 	defer os.RemoveAll(stage)
 
-	for _, dir := range []string{"dev", "proc", "sys", "newroot"} {
+	for _, dir := range []string{"dev", "proc", "sys", "newroot", LowerMount, LayerMount} {
 		if err := os.Mkdir(filepath.Join(stage, dir), 0o755); err != nil {
 			return err
 		}

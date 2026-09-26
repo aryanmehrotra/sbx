@@ -80,7 +80,7 @@ func TestAJailedAsleepMemberIsParkedAndClaimedThroughItsJail(t *testing.T) {
 		t.Fatalf("the claim's restore was not jailed as uid %d: %+v", uid, claim.Jail)
 	}
 
-	if names := stagedNames(claim); !slices.Equal(names, []string{"agent.ext4", "rootfs.ext4", "vm.mem", "vm.state"}) {
+	if names := stagedNames(claim); !slices.Equal(names, []string{"agent.ext4", fc.BaseName, fc.UpperName, "vm.mem", "vm.state"}) {
 		t.Fatalf("the claim's restore staged %v", names)
 	}
 
@@ -113,9 +113,9 @@ func TestAJailedAsleepMemberIsParkedAndClaimedThroughItsJail(t *testing.T) {
 		t.Fatalf("re-key %+v in state %q, want the caller's token on the restored VM", k, state)
 	}
 
-	// The claimed VM's disks in its root are the VM's own files (the rootfs as the extents clone
-	// made it), not copies: what the guest writes is on the VM's disk.
-	for _, f := range []string{fc.RootfsName, "agent.ext4"} {
+	// The claimed VM's disks in its root are the VM's own files (its base the image's, linked), not
+	// copies: what the guest writes is on the VM's disk.
+	for _, f := range []string{fc.BaseName, fc.UpperName, "agent.ext4"} {
 		a, err1 := os.Stat(filepath.Join(dir, f))
 		j, err2 := os.Stat(filepath.Join(root, f))
 

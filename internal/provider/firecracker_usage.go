@@ -29,6 +29,10 @@ type FirecrackerUsage struct {
 	// kernel have another name, and are counted there (or are the artifact cache's).
 	Jails int64
 
+	// Bases is the images layered VMs share: each image's root filesystem once, however many VMs
+	// and snapshots link it (fcVM.Layout). The rootfs cache's copy is the same file.
+	Bases int64
+
 	// SharesRootFS: the state directory is on the same filesystem as /, so what the VMs write -
 	// disks, memory files, and anything a compromised VMM writes in its jail as its own uid - can
 	// fill the host's /. sbx sets no per-VM disk quota (SECURITY.md).
@@ -42,7 +46,25 @@ type FirecrackerUsage struct {
 
 // Total is every byte counted.
 func (u FirecrackerUsage) Total() int64 {
-	return u.Memory + u.Disks + u.Snapshots + u.Volumes + u.Jails
+	return u.Memory + u.Disks + u.Bases + u.Snapshots + u.Volumes + u.Jails
+}
+
+// fileKey is a file's identity (st_dev, st_ino).
+type fileKey struct{ dev, ino uint64 }
+
+// once counts a file the first time any of its names is seen.
+type once map[fileKey]bool
+
+func (s once) allocated(path string) int64 {
+	if k, ok := inode(path); ok {
+		if s[k] {
+			return 0
+		}
+
+		s[k] = true
+	}
+
+	return allocated(path)
 }
 
 // FirecrackerDiskUsage walks the provider's state directory (SBX_FC_STATE, else ~/.sbx/fc). A
@@ -54,6 +76,7 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 	}
 
 	u := FirecrackerUsage{Root: root}
+	seen := once{}
 	u.SharesRootFS = sameFilesystem(root, "/")
 
 	vms, err := os.ReadDir(filepath.Join(root, "vms"))
@@ -82,9 +105,11 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 			u.PoolMemory += mem
 		}
 
-		for _, f := range []string{fc.RootfsName, "agent.ext4"} {
+		for _, f := range []string{fc.RootfsName, fc.UpperName, "agent.ext4"} {
 			u.Disks += allocated(filepath.Join(dir, f))
 		}
+
+		u.Bases += seen.allocated(filepath.Join(dir, fc.BaseName))
 
 		jails, err := onlyNamedUnder(filepath.Join(dir, fc.JailDirName))
 		if err != nil {
@@ -94,19 +119,31 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 		u.Jails += jails
 	}
 
-	u.Snapshots, err = allocatedUnder(filepath.Join(root, "snapshots"))
+	// A layered snapshot's base is the image again: counted with the bases, once.
+	snaps, err := os.ReadDir(filepath.Join(root, "snapshots"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return u, err
+	}
+
+	for _, d := range snaps {
+		if d.IsDir() {
+			u.Bases += seen.allocated(filepath.Join(root, "snapshots", d.Name(), fc.BaseName))
+		}
+	}
+
+	u.Snapshots, err = allocatedUnder(filepath.Join(root, "snapshots"), seen)
 	if err != nil {
 		return u, err
 	}
 
-	u.Volumes, err = allocatedUnder(filepath.Join(root, "volumes"))
+	u.Volumes, err = allocatedUnder(filepath.Join(root, "volumes"), nil)
 
 	return u, err
 }
 
-// allocatedUnder is what every regular file under dir holds on disk; a dir that does not exist
-// holds nothing.
-func allocatedUnder(dir string) (int64, error) {
+// allocatedUnder is what every regular file under dir holds on disk, less any file seen has
+// already counted; a dir that does not exist holds nothing.
+func allocatedUnder(dir string, seen once) (int64, error) {
 	var n int64
 
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -119,7 +156,11 @@ func allocatedUnder(dir string) (int64, error) {
 		}
 
 		if d.Type().IsRegular() {
-			n += allocated(p)
+			if seen != nil {
+				n += seen.allocated(p)
+			} else {
+				n += allocated(p)
+			}
 		}
 
 		return nil

@@ -64,9 +64,12 @@ func (p *fcProvider) launchSpec(ctx context.Context, vm *fcVM, stage []fc.Stage)
 // only reads it (fc.Stage.ReadOnly: the agent drive, a read-only volume).
 func (p *fcProvider) driveStages(vm *fcVM) []fc.Stage {
 	dir := p.dir(vm.Ref)
-	out := []fc.Stage{
-		{Name: "agent.ext4", Host: filepath.Join(dir, "agent.ext4"), ReadOnly: true},
-		{Name: fc.RootfsName, Host: filepath.Join(dir, fc.RootfsName)},
+	out := []fc.Stage{{Name: "agent.ext4", Host: filepath.Join(dir, "agent.ext4"), ReadOnly: true}}
+
+	// A layered VM's base is every VM's of its image: shared, like the kernel - never given to this
+	// VM's uid, held root's and read-only after the jailer has run. Only its writable layer is its.
+	for _, f := range vm.rootfsFiles() {
+		out = append(out, fc.Stage{Name: f.name, Host: filepath.Join(dir, f.name), Shared: f.shared})
 	}
 
 	for i, v := range vm.Volumes {

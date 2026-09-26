@@ -193,7 +193,7 @@ Everything the spec declares maps onto both; nothing in `sandbox.json` names a b
 | wake | `docker start` | scale → 1 | snapshot load + resume |
 | sleep | `docker stop` | scale → 0 | snapshot (Diff) + kill the VMM |
 | health | HEALTHCHECK | readinessProbe | the spec's `health`, run by execd over vsock (`/bin/sh -c`) at create (before the snapshot) and after a cold boot; a snapshot wake dials the first port only |
-| storage | named volume | PVC | the VM's own ext4 root, cloned per VM |
+| storage | named volume | PVC | the image's ext4, shared read-only, under a writable layer per VM |
 | isolation | `--runtime` | `runtimeClassName` | a guest kernel, always |
 
 The right-hand column is why the provider is an interface, not a flag: the wake policy above
@@ -221,15 +221,21 @@ Windows branch - installed as `provider.DecideHost` and used by the provider, th
     artifacts/firecracker-v1.17.0-<arch>-<sha>/  pinned by sha256, .built + atomic rename
     artifacts/jailer-v1.17.0-<arch>-<sha>/       the same release tarball, the same sha256
     artifacts/vmlinux-6.18.48-<arch>-<sha>/
-    rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID
+    rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID; root's, 0444:
+                                               every layered VM of the image boots this one file
     vms/<hash of ref>/                         0700, one per service; the socket path fits 108 bytes
       vm.json  api.sock  vsock.sock  console.log  vmm.log  firecracker.pid  lock
-      agent.ext4 (vda, ro: /sbx + /init.json)  rootfs.ext4 (vdb, rw, reflink or sparse copy)
+      agent.ext4 (vda, ro: /sbx + /init.json)
+      base.ext4  (vdb, ro)                     layered (v0.13): a hard link to the image's rootfs.ext4
+      upper.ext4 (vdc, rw)                     layered: the VM's writable layer, sparse, SBX_FC_DISK_SIZE
+                                               (10G) at most; fc-init lays overlayfs over the two
+      rootfs.ext4 (vdb, rw)                    instead of both, before v0.13 or SBX_FC_ROOTFS=copy: a whole
+                                               copy of the image (reflink, extents or sparse copy)
       vm.state  vm.mem                         the asleep state
       jail/firecracker/sbx-<hash>/root/        the jailed VMM's / (v0.13): hard links to the files
                                                above, owned by its uid; api.sock and vsock.sock
                                                above are symlinks into it; emptied on every launch
-    snapshots/<name>/                          sbx snapshot: memory + both drives
+    snapshots/<name>/                          sbx snapshot: memory + the drives (a layered base linked, not copied)
 ```
 
 | verb | what happens |

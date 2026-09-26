@@ -135,7 +135,9 @@ threat model is not "untrusted users share one daemon".**
   tarball (same sha256): chrooted into `<vm dir>/jail/firecracker/<id>/root`, which holds only its
   kernel (a link to the one root-owned, read-only file every VM shares - never re-owned, a symlink
   resolved first, a root-owned copy when it is not that, and held to root's and read-only again
-  after the jailer has run), its own drives and snapshot files (hard links, owned by its uid -
+  after the jailer has run), its image's root filesystem (a layered VM's base, shared by every VM
+  of the image and held exactly as the kernel is: root's, read-only, never its uid's), its own
+  drives and snapshot files (hard links, owned by its uid -
   except what it only reads: the agent drive and read-only volumes stay root's, readable, never
   writable, by the jail, so a compromised VMM cannot rewrite a read-only volume for the next
   sandbox), `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and its sockets; running as

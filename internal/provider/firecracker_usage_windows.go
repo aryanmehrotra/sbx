@@ -18,3 +18,6 @@ func links(string) uint64 { return 1 }
 
 // sameFilesystem is false: the provider never runs on Windows.
 func sameFilesystem(string, string) bool { return false }
+
+// inode is false: nothing is linked on Windows.
+func inode(string) (fileKey, bool) { return fileKey{}, false }

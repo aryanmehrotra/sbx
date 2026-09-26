@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -65,7 +66,22 @@ func TestFirecrackerE2E(t *testing.T) {
 
 	ref := containerName(sandbox, "cache")
 	vm, _ := p.load(ref)
-	t.Logf("rootfs clone: %s", vm.Clone)
+	t.Logf("rootfs: layout %q, base by %s", vm.Layout, vm.Clone)
+
+	// Layered is the default: the VM's base is the image's cached root filesystem itself, and a
+	// second VM of the image is given the same file - no data copied for either.
+	if !vm.layered() {
+		t.Fatalf("a default create is not layered: %+v", vm)
+	}
+
+	rfs, err := p.rootfs.Build(ctx, image)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if a, b := statE2E(t, rfs.Path), statE2E(t, p.dir(ref)+"/"+fc.BaseName); !os.SameFile(a, b) {
+		t.Fatalf("the VM's base is a copy of %s, not the file (clone %q)", rfs.Path, vm.Clone)
+	}
 
 	for round := 1; round <= 2; round++ {
 		start = time.Now()
@@ -93,6 +109,21 @@ func TestFirecrackerE2E(t *testing.T) {
 		}
 
 		t.Logf("round %d: exec over vsock %s", round, time.Since(start))
+
+		// The guest's root is the overlay fc-init laid over the shared base, and what it writes
+		// there survives a sleep and a wake: round 1 writes, round 2 reads it back.
+		if mounts, err := p.Exec(ctx, ref, []string{"cat", "/proc/mounts"}); err != nil ||
+			!strings.Contains(mounts, "overlay / overlay ") {
+			t.Fatalf("round %d: the guest's root is not the overlay: %v\n%s", round, err, mounts)
+		}
+
+		if round == 1 {
+			if _, err := p.Exec(ctx, ref, []string{"sh", "-c", "echo layered > /root/k4 && sync"}); err != nil {
+				t.Fatalf("writing to the guest's root: %v", err)
+			}
+		} else if got, err := p.Exec(ctx, ref, []string{"cat", "/root/k4"}); err != nil || strings.TrimSpace(got) != "layered" {
+			t.Fatalf("round %d: what the guest wrote before the sleep is %q, %v", round, got, err)
+		}
 
 		if vm, _ = p.load(ref); vm.Generation != uint64(round) || vm.LiveSecret == "" || vm.LiveSecret == vm.ControlSecret {
 			t.Fatalf("round %d: generation %d, live secret rotated %v", round, vm.Generation, vm.LiveSecret != vm.ControlSecret)
@@ -152,11 +183,25 @@ func assertJailed(t *testing.T, p *fcProvider, vm *fcVM) {
 		t.Fatal("the VMM sees the host's /etc: it is not chrooted")
 	}
 
-	a, _ := os.Stat(dir + "/" + fc.RootfsName)
-	j, _ := os.Stat(proc + "/root/" + fc.RootfsName)
+	// Layered (v0.13): its root is the image's shared base, linked in and held root's and
+	// read-only, and a writable layer that is its own uid's; neither is a copy.
+	for _, f := range vm.rootfsFiles() {
+		a, _ := os.Stat(dir + "/" + f.name)
+		j, _ := os.Stat(proc + "/root/" + f.name)
 
-	if a == nil || j == nil || !os.SameFile(a, j) {
-		t.Fatal("the jailed VMM's /rootfs.ext4 is not the VM's disk")
+		if a == nil || j == nil || !os.SameFile(a, j) {
+			t.Fatalf("the jailed VMM's /%s is not the VM's own file", f.name)
+		}
+
+		st, _ := j.Sys().(*syscall.Stat_t)
+		owner := strconv.Itoa(int(st.Uid))
+
+		switch {
+		case f.shared && (owner != "0" || j.Mode().Perm()&0o222 != 0):
+			t.Fatalf("the shared base in the jail is uid %s mode %v: a VMM could write every VM's image", owner, j.Mode())
+		case !f.shared && owner != want:
+			t.Fatalf("the writable layer in the jail is uid %s, want the VM's %s", owner, want)
+		}
 	}
 
 	if cg, _ := os.ReadFile(proc + "/cgroup"); !strings.Contains(string(cg), "/"+fc.JailCgroupParent+"/"+fc.JailID(dir)) {
@@ -187,4 +232,15 @@ func ping(t *testing.T, host string, port int) string {
 	}
 
 	return line[:len(line)-2]
+}
+
+func statE2E(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return st
 }

@@ -191,7 +191,8 @@ func TestNamedVolumesAreDrivesOneVMAtATime(t *testing.T) {
 		t.Fatalf("volume drives = %v", seenDrives)
 	}
 
-	want := []fc.InitMount{{Device: "/dev/vdc", Target: "/data", SubPath: "x", ReadOnly: true}}
+	// After the agent (vda), the image's base (vdb) and the VM's writable layer (vdc).
+	want := []fc.InitMount{{Device: "/dev/vdd", Target: "/data", SubPath: "x", ReadOnly: true}}
 	if got := x.init(t, r.p.dir(ref)).Mounts; !slices.Equal(got, want) {
 		t.Fatalf("init mounts = %+v", got)
 	}
@@ -279,7 +280,8 @@ func TestAnAPISnapshotIsTheDiskAndForksColdWithItsOwnIdentity(t *testing.T) {
 	ref := r.create(t, "src", apiSvc("src-token"))
 	srcDir := r.p.dir(ref)
 
-	if err := os.WriteFile(filepath.Join(srcDir, fc.RootfsName), []byte("the source's disk"), 0o600); err != nil {
+	// What the guest wrote is in its writable layer; the base is the image and never written.
+	if err := os.WriteFile(filepath.Join(srcDir, fc.UpperName), []byte("the source's disk"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,8 +338,16 @@ func TestAnAPISnapshotIsTheDiskAndForksColdWithItsOwnIdentity(t *testing.T) {
 	fref := r.create(t, "fork", fork)
 	fdir := r.p.dir(fref)
 
-	if b, _ := os.ReadFile(filepath.Join(fdir, fc.RootfsName)); string(b) != "the source's disk" {
-		t.Fatalf("fork rootfs = %q", b)
+	if b, _ := os.ReadFile(filepath.Join(fdir, fc.UpperName)); string(b) != "the source's disk" {
+		t.Fatalf("fork's writable layer = %q", b)
+	}
+
+	if !os.SameFile(stat(t, filepath.Join(srcDir, fc.BaseName)), stat(t, filepath.Join(fdir, fc.BaseName))) {
+		t.Fatal("the fork's base is a copy of the image, not the image")
+	}
+
+	if fvm := r.vm(t, fref); !fvm.layered() {
+		t.Fatalf("the fork of a layered snapshot is not layered: %+v", fvm)
 	}
 
 	fvm := r.vm(t, fref)

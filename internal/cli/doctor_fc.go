@@ -53,6 +53,11 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 			bytesIEC(usage.Total()), usage.VMs, usage.Root, bytesIEC(usage.Memory),
 			bytesIEC(usage.Disks), bytesIEC(usage.Snapshots), bytesIEC(usage.Volumes))
 
+		// The images layered VMs share, each once however many VMs link it.
+		if usage.Bases > 0 {
+			detail += ", shared images " + bytesIEC(usage.Bases)
+		}
+
 		// Only when there is any: a jail normally holds nothing of its own.
 		if usage.Jails > 0 {
 			detail += ", jails " + bytesIEC(usage.Jails)
