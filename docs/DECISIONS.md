@@ -999,8 +999,10 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   waiting inside execd and failed `context canceled`. The API's readiness probe is now
   `/ping?ready=code`: execd answers 503 with a sentence while an image-configured Jupyter
   (`JUPYTER_HOST`/`JUPYTER_PORT`) does not answer, and 200 at once for an image with none - so
-  nothing else waits longer. The same on docker, where it is the same execd. A Jupyter that never
-  comes up fails the create at the ready timeout with execd's sentence as the cause. Plain `/ping`
+  nothing else waits longer. The same on docker, where it is the same execd. Once execd answers, the
+  wait for Jupyter has its own bound (3 minutes by default, `CodeReadyTimeout`), and a Jupyter that
+  never comes up fails the create with "Jupyter did not answer within N (execd up after M ...)".
+  Every create logs one line saying how long execd and then Jupyter took. Plain `/ping`
   is still liveness, which is what the wake proxy wants.
 - **A guest's console is bounded** (security review of v0.12, M3). `console.log` is the guest's
   serial console, appended to by firecracker for the VM's life, so a guest printing in a loop could

@@ -40,7 +40,7 @@ func TestPingReadyCodeWaitsForAConfiguredJupyter(t *testing.T) {
 	}
 
 	code, body := getPing(t, s, "?ready=code")
-	if code != http.StatusServiceUnavailable || !strings.Contains(body, "Jupyter") {
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, "Jupyter") || !strings.Contains(body, codeJupyterNotReady) {
 		t.Fatalf("/ping?ready=code with Jupyter not up = %d %q, want 503 naming Jupyter", code, body)
 	}
 

@@ -80,6 +80,11 @@ type Options struct {
 	// ReadyTimeout bounds Pending: from the container existing to execd answering /ping.
 	ReadyTimeout time.Duration
 
+	// CodeReadyTimeout bounds the wait for an image-configured Jupyter once execd answers: a
+	// microVM cold boot plus Jupyter's own start can outlast ReadyTimeout, and a sandbox is
+	// Running only once it is usable. Zero means 3 minutes.
+	CodeReadyTimeout time.Duration
+
 	// CreateWait is how long a create holds its response for the sandbox to become Running
 	// before answering Pending. Zero means 20s; negative answers at once.
 	//
@@ -157,6 +162,7 @@ type Server struct {
 	version string
 
 	readyTimeout time.Duration
+	codeReady    time.Duration
 	createWait   time.Duration
 	reapEvery    time.Duration
 
@@ -245,6 +251,7 @@ func New(o Options) (*Server, error) {
 		store:        store{dir: o.StateDir},
 		version:      o.Version,
 		readyTimeout: o.ReadyTimeout,
+		codeReady:    o.CodeReadyTimeout,
 		createWait:   o.CreateWait,
 		reapEvery:    o.ReapEvery,
 		now:          o.Now,
@@ -260,6 +267,10 @@ func New(o Options) (*Server, error) {
 
 	if s.readyTimeout <= 0 {
 		s.readyTimeout = 2 * time.Minute
+	}
+
+	if s.codeReady <= 0 {
+		s.codeReady = 3 * time.Minute
 	}
 
 	if s.createWait == 0 {
@@ -693,10 +704,15 @@ func pingExecd(ctx context.Context, hostport string) error {
 
 	if resp.StatusCode/100 != 2 {
 		var e struct {
+			Code    string `json:"code"`
 			Message string `json:"message"`
 		}
 
 		if b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)); json.Unmarshal(b, &e) == nil && e.Message != "" {
+			if e.Code == "JUPYTER_NOT_READY" {
+				return &jupyterNotReady{msg: e.Message}
+			}
+
 			return fmt.Errorf("execd /ping answered %s: %s", resp.Status, e.Message)
 		}
 
@@ -705,3 +721,9 @@ func pingExecd(ctx context.Context, hostport string) error {
 
 	return nil
 }
+
+// jupyterNotReady is execd answering while the image's Jupyter does not: the sandbox is up and
+// not yet usable, which waitReady waits out on its own, longer, bound (CodeReadyTimeout).
+type jupyterNotReady struct{ msg string }
+
+func (e *jupyterNotReady) Error() string { return e.msg }

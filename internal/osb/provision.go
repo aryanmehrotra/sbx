@@ -755,9 +755,13 @@ func (s *Server) placeExecd(ctx context.Context, inj provider.Injector, arch, im
 // port - the address the caller will be handed - or to Failed, with the reason and the last
 // lines the container printed.
 func (s *Server) waitReady(ctx context.Context, id string) {
-	deadline := s.now().Add(s.readyTimeout)
+	began := s.now()
+	deadline := began.Add(s.readyTimeout)
 
-	var lastErr error
+	var (
+		lastErr   error
+		execdUpAt time.Time // when execd first answered while the image's Jupyter did not
+	)
 
 	// Backing off from 5 ms rather than a flat 250: execd is usually listening within a few ms
 	// of `docker run` returning, and a flat interval rounded every create up to it when the
@@ -793,8 +797,29 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 			}
 
 			if len(u.Client) > 0 {
-				if lastErr = s.ping(ctx, u.Client[0].String()); lastErr == nil {
+				lastErr = s.ping(ctx, u.Client[0].String())
+
+				// execd is up and Jupyter is not: the sandbox is starting, not stuck. The wait
+				// for Jupyter gets its own bound, from the moment execd answered.
+				var nr *jupyterNotReady
+				if errors.As(lastErr, &nr) && execdUpAt.IsZero() {
+					execdUpAt = s.now()
+					deadline = execdUpAt.Add(s.codeReady)
+					s.trace.mark(id, "execd answered; waiting for Jupyter")
+				}
+
+				if lastErr == nil {
 					s.trace.mark(id, "execd answered: Running")
+
+					// One line per create, always: where the wait went.
+					if execdUpAt.IsZero() {
+						logs.Default.Info(id, service, "osb: Running %s after the create: execd answered",
+							s.now().Sub(began).Round(time.Millisecond))
+					} else {
+						logs.Default.Info(id, service, "osb: Running %s after the create: execd answered after %s, "+
+							"its Jupyter %s later", s.now().Sub(began).Round(time.Millisecond),
+							execdUpAt.Sub(began).Round(time.Millisecond), s.now().Sub(execdUpAt).Round(time.Millisecond))
+					}
 
 					eps := make([]string, 0, len(u.Client))
 					for _, c := range u.Client {
@@ -839,8 +864,13 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 				last = lastErr.Error()
 			}
 
-			s.failed(id, "provision_timeout", fmt.Sprintf("execd did not answer /ping within %s "+
-				"(last error: %s)", s.readyTimeout, last), s.output(ctx, ref))
+			cause := fmt.Sprintf("execd did not answer /ping within %s (last error: %s)", s.readyTimeout, last)
+			if !execdUpAt.IsZero() {
+				cause = fmt.Sprintf("Jupyter did not answer within %s (execd up after %s; last error: %s)",
+					s.codeReady, execdUpAt.Sub(began).Round(time.Second), last)
+			}
+
+			s.failed(id, "provision_timeout", cause, s.output(ctx, ref))
 
 			return
 		}

@@ -36,6 +36,8 @@ const (
 	codeContextNotFound = "CONTEXT_NOT_FOUND"
 	codeSessionNotFound = "SESSION_NOT_FOUND"
 	codeNotSupported    = "NOT_SUPPORTED"
+	// codeJupyterNotReady is /ping?ready=code while execd is up and the image's Jupyter is not.
+	codeJupyterNotReady = "JUPYTER_NOT_READY"
 	codeUnauthorized    = "UNAUTHORIZED"
 	codeNotFound        = "NOT_FOUND"
 	codeRangeInvalid    = "RANGE_NOT_SATISFIABLE"
@@ -252,7 +254,7 @@ func (s *Server) routes() {
 			case err == nil:
 				s.codeUp.Store(true)
 			case !errors.Is(err, jupyter.ErrNotConfigured):
-				writeError(w, http.StatusServiceUnavailable, codeNotSupported, "execd is up, but the "+
+				writeError(w, http.StatusServiceUnavailable, codeJupyterNotReady, "execd is up, but the "+
 					"image's Jupyter server ("+jupyter.EnvHost+") is not answering yet: "+err.Error())
 
 				return
