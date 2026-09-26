@@ -506,14 +506,14 @@ type Injector interface {
 	SeedFromImage(ctx context.Context, volume, image, dir string) error
 }
 
-// ErrOSBOnFirecracker is why `sbx serve --provider firecracker --osb-addr` is refused at startup
-// where the microVMs run in a helper VM (a Mac, Windows): the API sandboxes would be created one
-// level down, and the host half does not front the API into the VM yet. On a Linux host with
-// /dev/kvm the API serves microVMs directly (RunsAgent).
-var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker through a helper VM: the " +
-	"OpenSandbox API serves microVMs on a Linux host with /dev/kvm, and this machine runs them inside " +
-	"a helper VM, which the API is not fronted into yet. Serve the OpenSandbox API from a docker-backed " +
-	"`sbx serve --osb-addr` here, or run `sbx serve --provider firecracker --osb-addr` on Linux")
+// ErrOSBOnFirecracker is why the daemon itself refuses `--provider firecracker --osb-addr` on a
+// host whose microVMs run in a helper VM (a Mac, Windows): it cannot run a microVM here. The sbx
+// CLI never starts it that way - on such a host `sbx serve --provider firecracker` is the host
+// half (fchost.ServeMain), which runs the API inside the helper VM and fronts it here - so this
+// is reached only by a daemon started around the CLI's dispatch.
+var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker: this machine runs microVMs " +
+	"inside a helper VM, not in this process. Start it as `sbx serve --provider firecracker --osb-addr " +
+	"127.0.0.1:8080`, which serves the OpenSandbox API from the daemon in the helper VM and fronts it here")
 
 // InjectorFor returns the provider's injection support, or a refusal naming the backend and
 // what it would take.

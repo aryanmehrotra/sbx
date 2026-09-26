@@ -915,9 +915,10 @@ func refuseOSBWithoutJailer(kind, osbAddr string, insecure bool) error {
 	return nil
 }
 
-// refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup where the VMs
-// would run in a helper VM: the API is not fronted into it, so every create would fail, and a
-// listener that can only refuse is worse than no listener. On a Linux host that runs Firecracker
+// refuseOSBOnMicroVM stops this daemon serving `--provider firecracker --osb-addr` where the VMs
+// run in a helper VM: this process cannot run one, so every create would fail, and a listener that
+// can only refuse is worse than no listener. The CLI routes that command line to fchost.ServeMain
+// instead, which serves the API from the daemon inside the helper VM. On a Linux host that runs Firecracker
 // directly the API serves microVMs (the provider RunsAgent), and nothing is refused here. A host
 // that cannot run Firecracker at all is refused with its own reason (hostcap.Decision).
 func refuseOSBOnMicroVM(kind, osbAddr string) error {

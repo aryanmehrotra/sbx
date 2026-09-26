@@ -243,7 +243,9 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"--osb-addr serves the OpenSandbox lifecycle API, always behind OPEN-SANDBOX-API-KEY:\n" +
 			"--osb-key or SBX_OSB_KEY, else one generated once into ~/.sbx/osb/key. Loopback is\n" +
 			"no protection on colima or Docker Desktop, where containers reach the host's\n" +
-			"127.0.0.1; --osb-insecure-no-key turns the key off anyway, loopback only.",
+			"127.0.0.1; --osb-insecure-no-key turns the key off anyway, loopback only.\n" +
+			"With --provider firecracker on a Mac or Windows the API runs in the helper VM and\n" +
+			"is fronted here, key always on (no --osb-insecure-no-key) and no --osb-pool yet.",
 		"sbx serve --idle 5m &",
 	},
 	"selftest": {

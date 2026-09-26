@@ -20,8 +20,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 const runningLima = `{"name":"sbx-fc","status":"Running","sshConfigFile":"/lima/sbx-fc/ssh.config"}`
@@ -112,11 +110,10 @@ func TestFrontMirrorsTheVMsPortsAndProxiesItsAPI(t *testing.T) {
 
 	var gotKey, gotPath string
 
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := keyedAPI(t, "k", func(w http.ResponseWriter, r *http.Request) {
 		gotKey, gotPath = r.Header.Get("OPEN-SANDBOX-API-KEY"), r.URL.Path
 		_, _ = io.WriteString(w, `{"items":[]}`)
-	}))
-	t.Cleanup(api.Close)
+	})
 
 	local := freeLocal(t)
 	osbAddr := fmt.Sprintf("127.0.0.1:%d", freeLocal(t))
@@ -126,7 +123,8 @@ func TestFrontMirrorsTheVMsPortsAndProxiesItsAPI(t *testing.T) {
 
 	go func() {
 		done <- m.Front(ctx, FrontOptions{
-			OSBAddr: osbAddr, Refresh: 50 * time.Millisecond, Shift: local - remote, skipEnsure: true,
+			EnsureOptions: EnsureOptions{OSBKey: "k"},
+			OSBAddr:       osbAddr, Refresh: 50 * time.Millisecond, Shift: local - remote, skipEnsure: true,
 			tunnel: func(ctx context.Context) (Endpoints, func() error, error) {
 				return Endpoints{Connect: vm.URL, OSB: api.URL}, func() error { <-ctx.Done(); return nil }, nil
 			},
@@ -503,13 +501,6 @@ func TestEnsureSaysWhenNestedVirtDidNotTakeEffect(t *testing.T) {
 	err := m.Ensure(context.Background(), EnsureOptions{Binary: func(context.Context) (string, error) { return "/x", nil }})
 	if err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
 		t.Fatalf("got %v", err)
-	}
-}
-
-// OSB on firecracker cannot create anything yet, so it is refused before any VM is touched.
-func TestServeRefusesOSBOnFirecracker(t *testing.T) {
-	if err := ServeMain("dev", []string{"--osb-addr", "127.0.0.1:18080"}); !errors.Is(err, provider.ErrOSBOnFirecracker) {
-		t.Fatalf("ServeMain --osb-addr = %v", err)
 	}
 }
 
