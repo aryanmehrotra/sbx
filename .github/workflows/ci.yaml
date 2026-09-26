@@ -447,7 +447,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -477,6 +477,15 @@ jobs:
           go test -c -o fc.test ./internal/provider
           sudo env SBX_FC_E2E=1 SBX_EXECD_BINARY="$PWD/sbx-linux" SBX_FC_STATE="$RUNNER_TEMP/fc" \
             ./fc.test -test.run 'TestFirecrackerE2E' -test.v -test.timeout 20m
+
+      # Upstream's own suite, unmodified, against `sbx serve --provider firecracker`: the daemon
+      # runs as root here, the suite as the runner. Allowed skips are in test/osb/expectations,
+      # skip@firecracker lines included (a host volume is refused by name on a microVM).
+      - name: OpenSandbox conformance on microVMs (v0.10.0 tier)
+        if: steps.kvm.outputs.have == 'true'
+        env:
+          SBX_FC_STATE: ${{ runner.temp }}/fc-osb
+        run: scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 40m
 
   # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
   # processes, where sbx restores a disk and starts the process cold. It went unmeasured for

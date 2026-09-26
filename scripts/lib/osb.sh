@@ -294,7 +294,9 @@ osb_teardown() {
   trap - EXIT INT TERM
   set +e
 
-  if [ "$OSB_OWNED" = 1 ]; then
+  if [ "$OSB_FC" = 1 ]; then
+    osb_fc_teardown "$rc"
+  elif [ "$OSB_OWNED" = 1 ]; then
     # Through the API first, while the daemon is up: that is the path a user would take.
     if [ -n "$OSB_DAEMON" ] && kill -0 "$OSB_DAEMON" 2>/dev/null; then
       "$OSB_HARNESS" sweep -url "$OSB_URL" -key "$OSB_KEY" -prefix osb- >&2
@@ -330,7 +332,7 @@ osb_teardown() {
 
   if [ -n "$OSB_WORK" ] && [ -d "$OSB_WORK" ]; then
     # Binaries are rebuilt every run and are most of the size; the logs are the point.
-    rm -f "$OSB_WORK/sbx" "$OSB_WORK/osbharness" "$OSB_WORK/bench"
+    rm -f "$OSB_WORK/sbx" "$OSB_WORK/sbx-linux" "$OSB_WORK/e2e.test" "$OSB_WORK/osbharness" "$OSB_WORK/bench"
 
     if [ "$OSB_KEEP_WORK" = 1 ] || { [ "$rc" -ne 0 ] &&
       { [ -e "$OSB_WORK/daemon.log" ] || [ -e "$OSB_WORK/go-test.json" ] || [ -e "$OSB_WORK/compile.log" ]; }; }; then
@@ -341,4 +343,144 @@ osb_teardown() {
   fi
 
   exit "$rc"
+}
+
+# ── the firecracker provider ─────────────────────────────────────────────────────────────────
+#
+# osb_fc_start_daemon [VM] - `sbx serve --provider firecracker --osb-addr`, as root (taps,
+# bridges and /dev/kvm need it), either here (a Linux host with /dev/kvm: the CI microvm job) or
+# inside the colima profile VM (a Mac: an arm64 VM with nested virtualisation, which the caller
+# made and owns). -> OSB_URL, OSB_KEY, as for docker; the URL is only reachable where the daemon
+# runs, which is why a VM run executes the suite there too (osb_fc_run_suite).
+#
+# Isolation is its own state directory rather than a docker endpoint: the daemon only sees the
+# VMs under SBX_FC_STATE, which must hold no osb-* sandbox when the run starts. The directory
+# persists between runs so the root filesystems it builds (an image export and an mkfs each) are
+# built once; override it with SBX_FC_STATE.
+OSB_VM=""
+OSB_FC=0
+OSB_FC_DIR=""
+OSB_FC_STATE=""
+OSB_FC_VOLS_BEFORE=""
+
+# osb_fc_sh SCRIPT - run a bash script as root where the daemon runs.
+osb_fc_sh() {
+  if [ -n "$OSB_VM" ]; then
+    colima ssh -p "$OSB_VM" -- sudo bash -c "$1"
+  else
+    sudo -n bash -c "$1"
+  fi
+}
+
+# osb_fc_put SRC DST - copy a file to where the daemon runs, executable.
+osb_fc_put() {
+  osb_fc_sh "mkdir -p $(dirname "$2") && cat > $2 && chmod 755 $2" < "$1"
+}
+
+osb_fc_arch() {
+  local m
+  if [ -n "$OSB_VM" ]; then m="$(colima ssh -p "$OSB_VM" -- uname -m)"; else m="$(uname -m)"; fi
+  case "$m" in aarch64|arm64) echo arm64 ;; x86_64|amd64) echo amd64 ;; *) osb_die "unknown arch $m" ;; esac
+}
+
+osb_fc_sbx_env() {
+  printf 'HOME=%s/home SBX_FC_STATE=%s SBX_PROVIDER_KIND=firecracker SBX_NO_UPDATE_CHECK=1 SBX_HISTORY=%s/home/history.jsonl' \
+    "$OSB_FC_DIR" "$OSB_FC_STATE" "$OSB_FC_DIR"
+}
+
+osb_fc_start_daemon() {
+  local arch port key n
+  OSB_VM="${1:-}"
+  OSB_FC=1
+
+  if [ -n "$OSB_VM" ]; then
+    command -v colima >/dev/null || osb_die "--vm needs colima"
+    colima ssh -p "$OSB_VM" -- true 2>/dev/null || osb_die "colima profile $OSB_VM is not running (colima start --profile $OSB_VM --vm-type vz --nested-virtualization --runtime docker)"
+    OSB_FC_DIR="/tmp/sbx-osb-run.$$"
+  else
+    [ "$(uname -s)" = Linux ] || osb_die "--provider firecracker runs the daemon on this host, which must be Linux with /dev/kvm; on a Mac add --vm PROFILE"
+    sudo -n true 2>/dev/null || osb_die "--provider firecracker starts the daemon as root (taps, bridges, /dev/kvm): run where sudo -n works"
+    OSB_FC_DIR="$OSB_WORK/fc-run"
+  fi
+
+  OSB_FC_STATE="${SBX_FC_STATE:-/var/tmp/sbx-osb-fc}"
+  arch="$(osb_fc_arch)"
+
+  OSB_SBX="$OSB_WORK/sbx-linux"
+  (cd "$OSB_ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$OSB_SBX" .) ||
+    osb_die "could not build linux/$arch sbx from $OSB_ROOT"
+  osb_fc_put "$OSB_SBX" "$OSB_FC_DIR/sbx"
+
+  osb_fc_sh "mkdir -p $OSB_FC_DIR/home $OSB_FC_DIR/hostvol $OSB_FC_STATE"
+
+  # The state directory must hold no API sandbox: a daemon fronts and reaps every one it sees.
+  n="$(osb_fc_sh "env $(osb_fc_sbx_env) $OSB_FC_DIR/sbx list 2>/dev/null | grep -c '^osb-' || true")"
+  [ "${n:-0}" = 0 ] || osb_die "$OSB_FC_STATE already holds $n osb-* sandbox(es); point SBX_FC_STATE at an empty directory"
+  OSB_FC_VOLS_BEFORE="$(osb_fc_sh "ls $OSB_FC_STATE/volumes 2>/dev/null || true" | tr '\n' ' ')"
+
+  port=$((18100 + RANDOM % 800))
+  key="osb-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  OSB_URL="http://127.0.0.1:$port"
+  OSB_KEY="$key"
+
+  # A host path is allowed on purpose: the refusal the volume tests see must be the provider's
+  # (a microVM has no virtio-fs), not an empty allow-list.
+  # In a subshell, so the ssh session that started it can end: a direct background job keeps it.
+  osb_fc_sh "cd $OSB_FC_DIR && (env $(osb_fc_sbx_env) setsid nohup $OSB_FC_DIR/sbx serve --provider firecracker \
+    --osb-addr 127.0.0.1:$port --osb-key $key --osb-host-paths $OSB_FC_DIR/hostvol \
+    > $OSB_FC_DIR/daemon.log 2>&1 < /dev/null &)"
+  OSB_OWNED=1
+  osb_say "sbx serve --provider firecracker on $OSB_URL (${OSB_VM:+inside colima $OSB_VM, }state $OSB_FC_STATE)"
+
+  for n in $(seq 1 60); do
+    osb_fc_sh "curl -sf -o /dev/null http://127.0.0.1:$port/health" && return 0
+    osb_fc_sh "pgrep -f '^$OSB_FC_DIR/sbx serve' >/dev/null" ||
+      osb_die "sbx serve exited during startup: $(osb_fc_sh "tail -20 $OSB_FC_DIR/daemon.log")"
+    sleep 1
+  done
+
+  osb_die "sbx serve never answered on $OSB_URL: $(osb_fc_sh "tail -20 $OSB_FC_DIR/daemon.log")"
+}
+
+# osb_fc_run_suite TESTS_DIR RUN_RE TIMEOUT - the suite, compiled for the VM and run there, its
+# test2json stream on stdout exactly as `go test -json` would print it here. Its exit status is
+# the test binary's.
+osb_fc_run_suite() {
+  local arch envs
+  arch="$(osb_fc_arch)"
+
+  (cd "$1" && GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go test -c -o "$OSB_WORK/e2e.test" .) >&2 ||
+    osb_die "could not cross-compile the upstream suite for linux/$arch"
+  osb_fc_put "$OSB_WORK/e2e.test" "$OSB_FC_DIR/e2e.test"
+
+  envs="$(env | grep -E '^(OPENSANDBOX_|OPEN_SANDBOX_|RUN_CODE_INTERPRETER_E2E=)' | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" | tr '\n' ' ')"
+
+  # As the unprivileged user where it runs: the suite is a client, and needs nothing of root's.
+  colima ssh -p "$OSB_VM" -- bash -c "cd $OSB_FC_DIR && env $envs ./e2e.test -test.v=test2json -test.count=1 \
+    -test.timeout $3 -test.run '$2'" | go tool test2json -t -p e2e
+  return "${PIPESTATUS[0]}"
+}
+
+# osb_fc_teardown - the daemon, then any osb-* VM and pvc volume it left: only ones this run made.
+osb_fc_teardown() {
+  local ids
+  # By its command line, which names this run's directory: setsid forks, so $! is not the daemon.
+  osb_fc_sh "pkill -TERM -f '^$OSB_FC_DIR/sbx serve'; for i in \$(seq 1 60); do pgrep -f '^$OSB_FC_DIR/sbx serve' >/dev/null || break; sleep 0.5; done; pkill -KILL -f '^$OSB_FC_DIR/sbx serve'; true"
+
+  ids="$(osb_fc_sh "env $(osb_fc_sbx_env) $OSB_FC_DIR/sbx list 2>/dev/null | awk '/^osb-/ {print \$1}' | sort -u")"
+  for n in $ids; do
+    osb_say "removing leftover microVM sandbox $n"
+    osb_fc_sh "env $(osb_fc_sbx_env) $OSB_FC_DIR/sbx rm $n >/dev/null 2>&1" || osb_say "  could not remove $n"
+  done
+
+  for v in $(osb_fc_sh "ls $OSB_FC_STATE/volumes 2>/dev/null | grep '^sbx-osb-pvc-.*\.ext4\$' || true"); do
+    case " $OSB_FC_VOLS_BEFORE " in *" $v "*) continue ;; esac
+    osb_fc_sh "rm -f $OSB_FC_STATE/volumes/$v $OSB_FC_STATE/volumes/${v%.ext4}.json"
+  done
+
+  if [ "$OSB_KEEP_WORK" = 1 ] || [ "${1:-0}" -ne 0 ]; then
+    osb_fc_sh "cat $OSB_FC_DIR/daemon.log" > "$OSB_WORK/daemon.log" 2>/dev/null
+  fi
+
+  osb_fc_sh "rm -rf $OSB_FC_DIR"
 }

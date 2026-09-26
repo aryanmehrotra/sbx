@@ -13,6 +13,15 @@
 # sandboxes), --no-key (start sbx with --osb-insecure-no-key; upstream's e2e_test.go sends none),
 # --timeout DUR (go test -timeout, default 30m), --keep-logs.
 #
+#   scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker
+#                                    # microVMs: the daemon as root on this Linux host (/dev/kvm)
+#   scripts/osb-conformance.sh --tier v0.10.0 --vm sbx-fc-x
+#                                    # microVMs from a Mac: daemon AND suite inside that colima
+#                                    # profile (vz, --nested-virtualization, docker runtime), which
+#                                    # the caller made and deletes; implies --provider firecracker
+#
+# On firecracker, skip@firecracker lines in test/osb/expectations are allowances too.
+#
 # "Compatible" is not a feature table here. It is upstream's tests/go at the commit pinned in
 # test/osb/UPSTREAM, fetched and run as-is, reported per test. A SKIP is not a PASS: any skip
 # not allowed by test/osb/expectations - for that test, with that message - fails the run,
@@ -34,8 +43,10 @@ KEY=""
 NOKEY=""
 DOCKER_URL=""
 TIMEOUT="30m"
+PROVIDER="docker"
+VM=""
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +59,8 @@ while [ $# -gt 0 ]; do
     --docker-host) DOCKER_URL="${2:?--docker-host needs a URL}"; shift 2 ;;
     --timeout)     TIMEOUT="${2:?--timeout needs a duration}"; shift 2 ;;
     --keep-logs)   OSB_KEEP_WORK=1; shift ;;
+    --provider)    PROVIDER="${2:?--provider needs docker or firecracker}"; shift 2 ;;
+    --vm)          VM="${2:?--vm needs a colima profile}"; PROVIDER=firecracker; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     *)             usage >&2; osb_die "unknown argument '$1'" ;;
   esac
@@ -55,11 +68,18 @@ done
 
 [ -n "$FILES" ] && [ -n "$TIER" ] && osb_die "--files and --tier choose the same thing; give one"
 [ -n "$KEY" ] && [ -z "$EXTERNAL" ] && osb_die "--key is for --external; the throwaway daemon makes its own"
+case "$PROVIDER" in
+  docker) [ -z "$VM" ] || osb_die "--vm runs the firecracker provider" ;;
+  firecracker|fc) PROVIDER=firecracker
+    [ -z "$EXTERNAL" ] || osb_die "--provider firecracker starts its own daemon; --external names one already running"
+    [ -z "$NOKEY" ] || osb_die "--no-key is not supported with --provider firecracker" ;;
+  *) osb_die "--provider is docker or firecracker, not '$PROVIDER'" ;;
+esac
 
 osb_init
 osb_fetch_upstream
 
-if [ -n "$EXTERNAL" ]; then osb_build_tools nosbx; else osb_build_tools; fi
+if [ -n "$EXTERNAL" ] || [ "$PROVIDER" = firecracker ]; then osb_build_tools nosbx; else osb_build_tools; fi
 
 EXP="$ROOT/test/osb/expectations"
 TESTS_DIR="$OSB_SRC/tests/go"
@@ -83,6 +103,8 @@ osb_say "selected $(wc -l < "$OSB_WORK/expected.tsv" | tr -d ' ') tests from: $F
 
 if [ -n "$EXTERNAL" ]; then
   osb_use_external "$EXTERNAL" "${KEY:-${OPENSANDBOX_TEST_API_KEY:-}}"
+elif [ "$PROVIDER" = firecracker ]; then
+  osb_fc_start_daemon "$VM"
 else
   osb_resolve_docker "$DOCKER_URL"
   if [ -n "$NOKEY" ]; then osb_start_daemon --no-key; else osb_start_daemon; fi
@@ -93,10 +115,18 @@ osb_export_suite_env
 echo
 echo "── upstream $(osb_pin tag) ($(osb_pin commit | cut -c1-12)) against $OSB_URL ──"
 
-(cd "$TESTS_DIR" && GOWORK=off go test -json -count=1 -timeout "$TIMEOUT" -run "$RUN_RE" .) \
-  2>"$OSB_WORK/go-test.stderr" |
+# Inside the VM when there is one: the endpoints the daemon hands out are that VM's loopback.
+suite() {
+  if [ -n "$VM" ]; then
+    osb_fc_run_suite "$TESTS_DIR" "$RUN_RE" "$TIMEOUT"
+  else
+    (cd "$TESTS_DIR" && GOWORK=off go test -json -count=1 -timeout "$TIMEOUT" -run "$RUN_RE" .)
+  fi
+}
+
+suite 2>"$OSB_WORK/go-test.stderr" |
   "$OSB_HARNESS" report -expectations "$EXP" -expected "$OSB_WORK/expected.tsv" \
-    -save "$OSB_WORK/go-test.json"
+    -save "$OSB_WORK/go-test.json" -provider "$PROVIDER"
 codes=("${PIPESTATUS[@]}")
 go_rc="${codes[0]}"
 report_rc="${codes[1]}"
