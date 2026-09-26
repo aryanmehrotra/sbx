@@ -241,6 +241,11 @@ jobs:
         # shell, and shell is what differs between these two machines.
         run: bash scripts/compare_test.sh
 
+      - name: jail watcher verdicts (injected samples)
+        # fc-jail-watch.sh is what says the microvm tier ran every VMM jailed, as its own uid and
+        # no other running VMM's; its check is plain awk over a sample file, so it is proven here.
+        run: bash scripts/fc-jail-watch_test.sh
+
   # The claims that only a real daemon can settle: a sandbox is created, sleeps to zero,
   # wakes on a plain socket, and remembers what it was told.
   selftest:
