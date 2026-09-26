@@ -134,10 +134,11 @@ threat model is not "untrusted users share one daemon".**
   them from what it starts, which keeps them out of `env` and logs, not from root. They are
   harmless there by construction: each belongs to that guest alone, control is reachable only
   over vsock from the host, the control secret is rotated at every restore and every snapshot
-  (the running VM and a saved one never share it), and forking a VM is refused. Neither can be chosen
-  by anyone else: sbx strips both from the image's ENV and the spec's env before appending its
-  own (getenv takes the first occurrence, so an image's would otherwise have won), and the
-  OpenSandbox API refuses a create that sets either (400).
+  (the running VM and a saved one never share it), and forking a VM's memory is refused (a
+  snapshot fork copies the disk only). Neither can be chosen by anyone else: sbx strips both from
+  the image's ENV and the spec's env before appending its own (getenv takes the first occurrence,
+  so an image's would otherwise have won), and the OpenSandbox API refuses a create that sets
+  either (400).
 - **`egress: "deny"` is coarse.** It removes routed egress by putting the service on a bridge
   with IP masquerade disabled. It is not a filtering firewall: it cannot allow one domain and
   deny another, and it is enforced by docker's networking rather than by anything sbx

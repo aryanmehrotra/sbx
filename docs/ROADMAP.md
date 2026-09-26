@@ -79,11 +79,13 @@ the wake path (Start = load, Stop = Diff snapshot), `Pauser`, `Snapshotter` (mem
 filesystem already flattened - there are no layers or `.wh.` whiteouts to apply (DECISIONS.md).
 Since built: exec, copy, logs and the spec's `health` through execd over vsock (`fc.VsockGuest`),
 the helper VM for M3+ Macs and Windows 11 (`internal/fchost`), and egress through the filter on
-each VM bridge with the host closed behind it (v0.12). Not yet: forking a snapshot under another
-name; `files`, `init` and mounts (a host volume into a VM); the OpenSandbox API on firecracker
-(refused at startup); the bare-metal measurement the spike asked for, which
-`SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider` takes on any Linux host with KVM
-(CI runs it where the runner exposes `/dev/kvm`).
+each VM bridge with the host closed behind it, and the OpenSandbox API on a Linux host with KVM,
+`pvc` volumes and disk-snapshot forks included (v0.12). Not yet: forking a VM's memory under
+another name (a snapshot fork is its disk); `files`, `init` and host volumes into a VM; the
+OpenSandbox API through a helper VM (refused at startup); the warm pool on microVMs (v0.13); the
+bare-metal measurement the spike asked for, which `SBX_FC_E2E=1 go test -run FirecrackerE2E
+./internal/provider` takes on any Linux host with KVM (CI runs it on every change, and fails
+without `/dev/kvm`).
 
 ### Two landmines, written down before anyone hits them
 

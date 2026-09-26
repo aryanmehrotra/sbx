@@ -37,3 +37,26 @@ Mac/Windows helper-VM API; snapshot fork for pool speed; host volumes; the publi
 
 ## Risks accepted
 Snapshot files cost disk per pool member (≈ VM RAM each); cold create stays seconds until fork lands.
+
+## Amended 2026-09-26
+
+What v0.12 ships differs from the plan above in three places; each is a decision, with its reason.
+
+- **The warm pool on microVMs moves to v0.13.** `--osb-pool` with `--provider firecracker` is refused
+  at startup with the reason. A pool member is a VM snapshotted asleep and restored per claim,
+  which multiplies what a CI run has to hold (a snapshot per member, ≈ its RAM on disk, and a
+  restore + re-key per claim) on the one runner class that has `/dev/kvm`. It lands once the
+  single-VM paths it is built from have a green CI record of their own, proved there first rather
+  than on a laptop that cannot run Firecracker.
+- **The use-case suite on firecracker is deferred.** `scripts/osb-usecases-e2e.sh` checks its cases
+  against docker directly - `docker volume ls`, `docker ps --filter label=…`, `docker inspect` of
+  the container - in most of them, so `--provider firecracker` is a port of the suite's
+  verification layer, not a flag. v0.12's microVM gate is the unmodified upstream conformance tier
+  (`scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker`, CI `microvm` job, which now
+  fails rather than skips without `/dev/kvm` and prewarms the large images) plus the Go microVM
+  e2e. Porting the suite's checks to read provider state instead of docker's is v0.13.
+- **Snapshots are disk-only.** Create-from-snapshot cold-boots a copy of the source's disk; no
+  memory restore as a new sandbox. The fallback the Shape row above allowed "if that proves
+  unsafe" is what shipped, because it did: the guest's IP lives in its memory and a memory clone
+  carries every secret userspace made. See DECISIONS.md, "The OpenSandbox API on a microVM: the
+  agent is PID 1, the token is the API's, a snapshot is the disk".
