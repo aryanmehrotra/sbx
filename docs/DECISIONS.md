@@ -764,6 +764,10 @@ parent's execd token and every key userspace made before the snapshot (the spike
 identical in every clone at N=2..50). Forking needs per-clone drive paths (a jailer or mount
 namespace) and the guest agent's re-key; until both exist it is refused, not approximated.
 
+An OpenSandbox API sandbox's snapshot is different in kind, not an exception: it is its disk alone,
+and a sandbox made from it is a new VM cold-booted from a copy (see "The OpenSandbox API on a
+microVM"). No memory is forked, so nothing above applies to it.
+
 ### Guest networking is arithmetic, and has no way out
 
 Each sandbox gets a bridge, `sbxfc<slot>` on `10.231.<slot>.0/24`, and each service a tap and the
@@ -804,7 +808,10 @@ container's health config is fixed at create, so dropping it means recreating th
 never declaring one, and then the wake path has nothing to run and falls back to sleeping two
 seconds and hoping, which is exactly what declaring it avoided.
 
-### The OpenSandbox API is docker-only, for now
+### The OpenSandbox API is not on a cluster, for now
+
+(Until v0.12 this entry was "docker-only". A microVM runs the agent itself and serves the API on
+Linux - the next entry. A cluster still does not.)
 
 Every API sandbox runs sbx's agent, execd, inside an image the caller chose and sbx did not build.
 On docker that is a named volume seeded once and mounted read-only at `/opt/sbx` - the `Injector`
@@ -820,6 +827,56 @@ does not pause with a note saying so - the stub the capability pattern exists to
 
 **Rejected: a kubernetes path that bakes execd into a derived image.** It would mean sbx building
 and pushing images to the operator's registry on every create, for every image anyone names.
+
+### The OpenSandbox API on a microVM: the agent is PID 1, the token is the API's, a snapshot is the disk
+
+v0.12 serves every API route on `--provider firecracker` (Linux with `/dev/kvm`), because the
+point of a microVM - untrusted code that must not share the host kernel - is exactly what a public
+API sandbox is. Each difference from the container path is a decision, not an accident:
+
+- **`RunsAgent`, not `Injector`.** A VM's PID 1 is `sbx fc-init`, which already becomes execd with
+  the workload as its child (the agent rides on its own drive - "The image rootfs holds the image").
+  So the provider declares the capability *this sandbox answers execd without being given it*, and
+  the API skips the execd volume seed, the `/opt/sbx` mount, the entrypoint wrapper and the
+  `/bin/sh` health command that runs the agent from that volume. Readiness is execd's own port
+  accepting on the guest's TCP stack, which in a VM is the listener itself, not a proxy.
+- **The token is the API's.** The API mints it and hands it to callers in endpoint headers; the
+  provider boots execd with that `EXECD_ACCESS_TOKEN` (exactly once in the guest env) and re-keys a
+  restored execd with it. It mints its own only for a `sandbox.json` service, which has no API to
+  mint one. Two tokens for one sandbox is a sandbox that refuses the credentials the API handed out.
+- **Born running.** A `sandbox.json` VM is created asleep (booted, snapshotted, killed). An API
+  sandbox's contract is a process that runs, and the API reports Running only once execd answers,
+  so a snapshot and restore at create would cost a second boot's worth of time to end where the VM
+  already is. It is left running with `SnapshotValid=false`; its first sleep takes the Full
+  snapshot, and if it dies awake its next wake cold-boots its disk.
+- **Pause is a VM pause; idle is a VM pause.** `Pauser` is Firecracker's own pause (memory kept, no
+  vCPU), so the API's pause and `on_idle: freeze` both mean what they mean on docker.
+- **A snapshot is the disk, and a fork cold-boots a copy of it.** The plan allowed a memory restore
+  as a new sandbox (per-VM drive copies, `network_overrides`, a mandatory re-key) if it proved safe.
+  It is not safe yet, for reasons measured or read, not guessed: the guest's IP is set by the kernel
+  at boot (`ip=` on the command line) and lives in its memory, so a clone in another slot comes up
+  on a bridge whose subnet it does not have - every TCP port but execd's (vsock) unreachable, and
+  egress on the wrong gateway; and a memory clone carries every secret userspace made before the
+  snapshot (the spike measured execd's token identical in every clone at N=2..50 before re-key
+  existed; re-key fixes execd's, nothing fixes the workload's). A disk fork has neither problem
+  and is exactly what docker's API snapshot already is (`docker commit`: filesystem, no memory -
+  "An API snapshot is the container"). So `Commit` of an API sandbox runs the agent's own `fssync`
+  in the guest through execd (an image with no `sync` still has `/opt/sbx/sbx`), pauses the VM,
+  copies (reflinks where it can) the root filesystem, and resumes it - or leaves it frozen if it was.
+  The saved record keeps the image config (command, env, working directory) and no token or
+  secret; a create from it is a new VM with its own agent drive, token, slot and address.
+  A memory fork stays a follow-up, gated on the guest re-addressing itself on re-key.
+- **`pvc` is an ext4 image on its own drive.** One sparse file per claim (`SBX_FC_VOLUME_SIZE`,
+  default 10G, costing what is written), namespaced `sbx-osb-pvc-<claim>` as on docker, attached
+  after the rootfs and mounted by fc-init at the mount path (a `subPath` bound over it,
+  `readOnly` kept on both). Where docker lets two containers share a named volume, two kernels
+  mounting one ext4 corrupt it: a volume is attached to **one VM at a time**, once per VM, and
+  removing one that is attached is refused (a sleeping VM's snapshot names its path).
+- **`host` volumes are refused by name** (`HostVolumes`, which docker has): Firecracker has no
+  virtio-fs, and the refusal comes before the operator's allow-list, so it names the provider.
+- **Not yet:** the warm pool (`--osb-pool` is a startup error on firecracker until members are
+  snapshotted asleep and restored per claim), the helper-VM path on a Mac or Windows (`--osb-addr`
+  still refused there at startup), and egress on VM bridges (its own branch).
 
 ### What the API remembers lives in its record file, not in labels
 

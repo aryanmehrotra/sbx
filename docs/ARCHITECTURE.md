@@ -45,6 +45,7 @@ Anything not in this table that starts or stops a container is a bug against the
             │       │  Create Start Stop Probe │                         │ Refresh
             │       │  List Exec Logs Copy     │                         │
             │       │  + optional: Injector    │                         │
+            │       │  RunsAgent HostVolumes   │                         │
             │       │  Pauser Snapshotter      │                         │
             │       │  NamedVolumes Puller ... │                         │
             │       └──┬──────────┬───────────┬──┘                       │
@@ -52,6 +53,7 @@ Anything not in this table that starts or stops a container is a bug against the
             │     ┌────▼───┐ ┌────▼──────┐ ┌──▼──────────┐                │
             │     │ docker │ │kubernetes │ │ firecracker │ ← k8s: no      │
             │     └────────┘ └───────────┘ └─────────────┘  Injector, 501 │
+            │                                ↑ RunsAgent: execd is PID 1 │
             │                                                            │
    ┌────────▼────────┐                                                   │
    │   sbx serve     │◀──────────────────────────────────────────────────┘
@@ -281,6 +283,13 @@ any other. What the API adds is around it, not instead of it:
   read-only at `/opt/sbx` in any image the caller names — `Injector`, which only docker
   implements. A cluster would need an init container, so the API answers 501 there rather than
   pretending (`pause` would be a scale-to-zero that loses the memory, and is refused by name).
+- **On a microVM it is already there.** Firecracker's PID 1 (`sbx fc-init`) becomes execd with the
+  workload as its child, so the provider declares `RunsAgent` and the API skips the volume, the
+  mount and the wrapper; it still mints the token, and the VM boots and re-keys execd with it.
+  An API microVM is born running (not snapshotted asleep), its pause is a VM pause, its snapshot
+  is its disk (a fork cold-boots a copy), a `pvc` is an ext4 image attached as a drive, and a
+  `host` volume is a 501 (`HostVolumes`: no virtio-fs). Linux with `/dev/kvm` only; through a
+  helper VM `--osb-addr` is still refused at startup.
 - **A held pause is not an idle freeze.** Both are `docker pause`. The idle one is the daemon's and
   the next byte undoes it; the held one is the caller's, reported as `Paused`, and refuses traffic
   until `resume`. The hold is re-asserted from the record when the daemon restarts.

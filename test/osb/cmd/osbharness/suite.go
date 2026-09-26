@@ -31,17 +31,23 @@ type AllowedSkip struct {
 	Why     string
 }
 
-func loadExpectations(path string) (*Expectations, error) {
+func loadExpectations(path string) (*Expectations, error) { return loadExpectationsFor(path, "docker") }
+
+// loadExpectationsFor reads the file as it applies to one provider: `skip@<provider>` lines
+// count only for that provider, plain `skip` lines for every one.
+func loadExpectationsFor(path, provider string) (*Expectations, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	return parseExpectations(f)
+	return parseExpectationsFor(f, provider)
 }
 
-func parseExpectations(r io.Reader) (*Expectations, error) {
+func parseExpectations(r io.Reader) (*Expectations, error) { return parseExpectationsFor(r, "docker") }
+
+func parseExpectationsFor(r io.Reader, provider string) (*Expectations, error) {
 	e := &Expectations{Skips: map[string]AllowedSkip{}}
 	sc := bufio.NewScanner(r)
 	n := 0
@@ -55,6 +61,17 @@ func parseExpectations(r io.Reader) (*Expectations, error) {
 		}
 
 		kind, rest, _ := strings.Cut(line, " ")
+
+		// skip@<provider>: an allowance that holds on one provider only - a capability that
+		// backend refuses by name (a microVM mounting a host directory), which another has.
+		scoped := ""
+		if k, p, ok := strings.Cut(kind, "@"); ok && k == "skip" {
+			if p == "" {
+				return nil, fmt.Errorf("line %d: skip@ needs a provider, as skip@firecracker", n)
+			}
+
+			kind, scoped = "skip", p
+		}
 
 		switch kind {
 		case "tier":
@@ -80,6 +97,10 @@ func parseExpectations(r io.Reader) (*Expectations, error) {
 			// allowance this file exists to prevent.
 			if s.Test == "" || s.Message == "" || s.Why == "" {
 				return nil, fmt.Errorf("line %d: skip needs a test, a message and a reason, all non-empty", n)
+			}
+
+			if scoped != "" && scoped != provider {
+				continue
 			}
 
 			e.Skips[s.Test] = s

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -245,5 +246,32 @@ func TestFailureNoteCarriesTestifyContinuationLines(t *testing.T) {
 
 	if got, want := failureLine(out), "Not equal: expected: 404 actual : 501"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// skip@<provider> holds on that provider only; a plain skip on every one.
+func TestProviderScopedSkips(t *testing.T) {
+	const exps = "skip TestA | a | why\nskip@firecracker TestB | b | why\n"
+
+	for prov, want := range map[string][]string{"docker": {"TestA"}, "firecracker": {"TestA", "TestB"}} {
+		e, err := parseExpectationsFor(strings.NewReader(exps), prov)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var got []string
+		for k := range e.Skips {
+			got = append(got, k)
+		}
+
+		slices.Sort(got)
+
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: skips %v, want %v", prov, got, want)
+		}
+	}
+
+	if _, err := parseExpectationsFor(strings.NewReader("skip@ TestB | b | why\n"), "x"); err == nil {
+		t.Error("skip@ with no provider was accepted")
 	}
 }
