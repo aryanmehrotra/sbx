@@ -16,6 +16,11 @@ package osb
 // POST /sbx/claim and re-keyed in the same call. The id and the token were minted when the member
 // was made and never left this process, so they are as new to the caller as a cold create's.
 //
+// On a microVM (a provider.PoolParker) a member is parked by its provider instead - asleep, a
+// memory snapshot on disk holding no RAM, or paused with --osb-pool-freeze - and held in the
+// daemon so no connection wakes it. Its claim is the provider's: restore or resume, then one
+// re-key over vsock with the request's token, env and a fresh control secret.
+//
 // What a member cannot take on is anything that shapes the container: image, entrypoint, limits,
 // ports, platform, idle mode, a network policy. A request that differs in any of them is not
 // served from the pool; it takes the cold path, which is the same create it always was.
@@ -36,6 +41,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // poolEntrypoint and poolLimits are what the OpenSandbox SDKs send when the caller leaves them
@@ -112,6 +118,11 @@ type poolMember struct {
 	token  string // the token it was started with; only this process ever held it
 	addr   string // execd through the daemon's wake port
 	frozen bool
+
+	// ref is the provider's handle for the member, and parked says the provider parked it
+	// (PoolParker): its claim is the provider's wake and re-key, not POST /sbx/claim.
+	ref    string
+	parked bool
 }
 
 func (p *pool) poke() {
@@ -167,13 +178,14 @@ func poolKey(pl plan) string {
 // newPools builds one pool per spec. A spec that does not validate is a startup error: a pool
 // that can never fill is a misconfiguration to say at once, not a log line every few seconds.
 func (s *Server) newPools(specs []PoolSpec) error {
-	// A warm member on a provider that runs the agent itself is a VM snapshotted asleep and
-	// restored per claim, which is the next phase - refused by name until it exists, rather
-	// than a pool of running VMs claimed through the container path's re-key.
-	if len(specs) > 0 && s.runsAgent() {
-		return fmt.Errorf("--osb-pool on the %s provider: a warm pool of microVMs (members "+
-			"snapshotted asleep, restored and re-keyed per claim) is not built yet - start without "+
-			"--osb-pool; every create is a cold boot until it is", s.p.Name())
+	// A member on a provider that runs the agent itself is a VM parked asleep (or frozen) and
+	// re-keyed by that provider per claim - never a running VM claimed through the container
+	// path's POST /sbx/claim. A RunsAgent provider that cannot park one (the helper-VM path on a
+	// Mac or Windows) is refused by name, rather than served by the wrong mechanism.
+	if _, ok := s.p.(provider.PoolParker); len(specs) > 0 && s.runsAgent() && !ok {
+		return fmt.Errorf("--osb-pool on the %s provider: this host's microVMs cannot be parked and "+
+			"re-keyed per claim (a warm pool needs Firecracker run directly, on Linux with /dev/kvm) - "+
+			"start without --osb-pool; every create is a cold boot", s.p.Name())
 	}
 
 	for _, sp := range specs {
@@ -264,6 +276,14 @@ func (s *Server) fromPool(w http.ResponseWriter, r *http.Request, raw []byte, re
 func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, error) {
 	s.trace.begin(m.id)
 
+	if m.parked {
+		if err := s.claimParked(ctx, m, pl); err != nil {
+			return record{}, err
+		}
+
+		return s.recordClaim(m, pl)
+	}
+
 	if m.frozen {
 		if err := s.rt.Thaw(ctx, m.id); err != nil {
 			return record{}, fmt.Errorf("thawing: %w", err)
@@ -280,9 +300,34 @@ func (s *Server) claim(ctx context.Context, m poolMember, pl plan) (record, erro
 		return record{}, fmt.Errorf("re-keying execd: %w", err)
 	}
 
-	token := pl.rec.Token
-
 	s.trace.mark(m.id, "execd re-keyed")
+
+	return s.recordClaim(m, pl)
+}
+
+// claimParked wakes a member the provider parked and has the provider re-key its execd with pl's
+// token and env - one call, under the VM's lock, so nothing reaches the member between its wake
+// and its new identity. Only then is the daemon's hold released and the caller's traffic let in.
+func (s *Server) claimParked(ctx context.Context, m poolMember, pl plan) error {
+	pp, ok := s.p.(provider.PoolParker)
+	if !ok {
+		return errors.New("the provider cannot claim a parked member")
+	}
+
+	if err := pp.Claim(ctx, m.ref, pl.rec.Token, pl.env); err != nil {
+		return fmt.Errorf("waking and re-keying the microVM: %w", err)
+	}
+
+	s.trace.mark(m.id, "woken and re-keyed")
+	s.rt.Hold(m.id, false)
+
+	return nil
+}
+
+// recordClaim rewrites a re-keyed member's record as the caller's sandbox and hands it to the
+// caller's idle policy.
+func (s *Server) recordClaim(m poolMember, pl plan) (record, error) {
+	token := pl.rec.Token
 
 	now := s.now().UTC()
 
@@ -495,7 +540,16 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 	}
 
 	units, err := s.unitsOf(ctx, id)
-	if err != nil || len(units) == 0 || len(units[0].Client) == 0 {
+	if err != nil || len(units) == 0 {
+		s.discard(id)
+		return false
+	}
+
+	if pp, ok := s.p.(provider.PoolParker); ok && s.runsAgent() {
+		return s.parkMember(ctx, p, pp, id, rec.Token, units[0].Ref)
+	}
+
+	if len(units[0].Client) == 0 {
 		s.discard(id)
 		return false
 	}
@@ -514,6 +568,27 @@ func (s *Server) addMember(ctx context.Context, p *pool) bool {
 
 	p.mu.Lock()
 	p.ready = append(p.ready, poolMember{id: id, token: rec.Token, addr: units[0].Client[0].String(), frozen: s.poolFreeze})
+	p.mu.Unlock()
+
+	return true
+}
+
+// parkMember parks a new microVM member through its provider: asleep, a snapshot on disk holding
+// no RAM, or frozen in RAM with --osb-pool-freeze. Held in the daemon first, so no connection can
+// wake it while it waits - a wake would restore it with the member's own token - and left pinned,
+// so the reaper never idles it either.
+func (s *Server) parkMember(ctx context.Context, p *pool, pp provider.PoolParker, id, token, ref string) bool {
+	s.rt.Hold(id, true)
+
+	if err := pp.Park(ctx, ref, s.poolFreeze); err != nil {
+		logs.Default.Warn(id, service, "osb: pool %s: could not park a member: %v", p.spec.Image, err)
+		s.discard(id)
+
+		return false
+	}
+
+	p.mu.Lock()
+	p.ready = append(p.ready, poolMember{id: id, token: token, ref: ref, parked: true, frozen: s.poolFreeze})
 	p.mu.Unlock()
 
 	return true

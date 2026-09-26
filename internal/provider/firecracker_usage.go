@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,6 +22,11 @@ type FirecrackerUsage struct {
 	Disks     int64 // every VM's root filesystem and agent drive
 	Snapshots int64 // everything under snapshots/
 	Volumes   int64 // every pvc's ext4 image under volumes/
+
+	// PoolMembers are VMs parked as OpenSandbox warm-pool members, and PoolMemory the part of
+	// Memory they hold: a member waiting asleep costs no RAM and a memory file as big as its RAM.
+	PoolMembers int
+	PoolMemory  int64
 }
 
 // Total is every byte counted.
@@ -50,8 +56,16 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 
 		dir := filepath.Join(root, "vms", d.Name())
 
+		var mem int64
 		for _, f := range []string{fc.MemName, fc.DiffMemName, fc.StateName} {
-			u.Memory += allocated(filepath.Join(dir, f))
+			mem += allocated(filepath.Join(dir, f))
+		}
+
+		u.Memory += mem
+
+		if parked(dir) {
+			u.PoolMembers++
+			u.PoolMemory += mem
 		}
 
 		for _, f := range []string{fc.RootfsName, "agent.ext4"} {
@@ -154,4 +168,19 @@ func tailBytes(path string, n int64, w *bytes.Buffer) error {
 	}
 
 	return err
+}
+
+// parked reports whether the VM in dir is a warm-pool member waiting for a claim. A record that
+// cannot be read is not one: this is a report, and a guess would inflate it.
+func parked(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "vm.json"))
+	if err != nil {
+		return false
+	}
+
+	var rec struct {
+		Pooled bool `json:"pooled"`
+	}
+
+	return json.Unmarshal(b, &rec) == nil && rec.Pooled
 }

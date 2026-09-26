@@ -47,3 +47,41 @@ func TestFirecrackerDiskUsageCountsMemoryDisksAndSnapshots(t *testing.T) {
 		t.Fatalf("no state directory = %+v, %v", u, err)
 	}
 }
+
+// Parked warm-pool members are counted apart: each holds a memory file as big as its RAM, which is
+// the whole price of a pool that waits asleep.
+func TestFirecrackerDiskUsageCountsParkedPoolMembers(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SBX_FC_STATE", root)
+
+	const k = 64 << 10
+
+	for name, pooled := range map[string]bool{"m1": true, "m2": true, "claimed": false} {
+		dir := filepath.Join(root, "vms", name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		rec := `{"pooled":false}`
+		if pooled {
+			rec = `{"pooled":true}`
+		}
+
+		if err := os.WriteFile(filepath.Join(dir, "vm.json"), []byte(rec), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(filepath.Join(dir, fc.MemName), make([]byte, 4*k), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	u, err := FirecrackerDiskUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if u.VMs != 3 || u.PoolMembers != 2 || u.PoolMemory < 8*k || u.PoolMemory >= u.Memory {
+		t.Fatalf("usage = %+v, want 2 parked members holding two of the three memory files", u)
+	}
+}
