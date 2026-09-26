@@ -94,7 +94,7 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 	// long-lived `sbx serve` would collect a zombie per VM it ever stopped.
 	go func() { _ = cmd.Wait() }()
 
-	if err := os.WriteFile(filepath.Join(s.Dir, PIDName), fmt.Appendf(nil, "%d\n", pid), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.Dir, PIDName), fmt.Appendf(nil, "%d %d\n", pid, procStart(pid)), 0o600); err != nil {
 		_ = cmd.Process.Kill()
 		return 0, err
 	}
@@ -115,25 +115,31 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 // firecracker serving THIS directory's socket. PIDs are reused, and a daemon that slept a VM
 // yesterday must not kill whatever inherited its number today.
 func (ExecLauncher) Kill(ctx context.Context, dir string) error {
-	pid, err := ReadPID(dir)
+	pid, start, err := readPIDFile(dir)
 	if err != nil {
 		return nil // never started, or already cleaned up
 	}
 
-	if !ownsPID(pid, filepath.Join(dir, APISockName)) {
+	sock := filepath.Join(dir, APISockName)
+
+	switch {
+	case ownsPID(pid, sock):
+		if err := killPID(pid); err != nil {
+			return fmt.Errorf("killing firecracker pid %d: %w", pid, err)
+		}
+	case start == 0 || !holding(pid, start):
+		// Not ours any more (a reused pid, or an old pid file with no start time and a process
+		// that no longer names this socket): nothing of ours to wait for.
 		_ = os.Remove(filepath.Join(dir, PIDName))
 		return nil
 	}
 
-	if err := killPID(pid); err != nil {
-		return fmt.Errorf("killing firecracker pid %d: %w", pid, err)
-	}
-
-	// Wait for it to be gone, so the next Launch's socket and rootfs are not still held.
+	// Wait until it has let go of everything, not until its command line empties: see holding.
+	// A firecracker still closing its tap makes the next one's snapshot/load fail with EBUSY.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		if !ownsPID(pid, filepath.Join(dir, APISockName)) {
+		if !ownsPID(pid, sock) && !holding(pid, start) {
 			_ = os.Remove(filepath.Join(dir, PIDName))
-			_ = os.Remove(filepath.Join(dir, APISockName))
+			_ = os.Remove(sock)
 
 			return nil
 		}
@@ -145,15 +151,37 @@ func (ExecLauncher) Kill(ctx context.Context, dir string) error {
 		}
 	}
 
-	return fmt.Errorf("firecracker pid %d did not exit after SIGKILL; it is stuck in the kernel "+
-		"(check `cat /proc/%d/stack` as root)", pid, pid)
+	return fmt.Errorf("firecracker pid %d did not exit within 5s of SIGKILL; it may still hold its tap "+
+		"and drives (check `cat /proc/%d/stack` as root)", pid, pid)
 }
 
 // Alive is the recorded PID, checked to still be a firecracker serving this directory's socket.
 func (ExecLauncher) Alive(dir string) bool {
-	pid, err := ReadPID(dir)
+	pid, start, err := readPIDFile(dir)
+	if err != nil {
+		return false
+	}
 
-	return err == nil && ownsPID(pid, filepath.Join(dir, APISockName))
+	return ownsPID(pid, filepath.Join(dir, APISockName)) || (start != 0 && holding(pid, start))
+}
+
+// readPIDFile is the PID file: the pid, and its start time when Launch recorded one (0 for a file
+// written before it did).
+func readPIDFile(dir string) (int, uint64, error) {
+	pid, err := ReadPID(dir)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	b, _ := os.ReadFile(filepath.Join(dir, PIDName))
+
+	var p int
+
+	var start uint64
+
+	_, _ = fmt.Sscanf(string(b), "%d %d", &p, &start)
+
+	return pid, start, nil
 }
 
 // ReadPID reads the PID file in dir.

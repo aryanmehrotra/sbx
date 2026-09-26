@@ -1626,3 +1626,79 @@ func TestWakesAreCappedByTheBootSlots(t *testing.T) {
 		t.Fatalf("%d VMs restored at once with one boot slot", most)
 	}
 }
+
+// lateExit is a launcher whose killed VMM goes on holding its files (Alive) for a while after
+// Kill returns - what a real firecracker does between dropping its memory and closing its tap.
+type lateExit struct {
+	*fakeLauncher
+	mu         sync.Mutex
+	linger     time.Duration
+	until      map[string]time.Time
+	violations int
+}
+
+func (l *lateExit) Kill(ctx context.Context, dir string) error {
+	err := l.fakeLauncher.Kill(ctx, dir)
+
+	l.mu.Lock()
+	l.until[dir] = time.Now().Add(l.linger)
+	l.mu.Unlock()
+
+	return err
+}
+
+func (l *lateExit) Alive(dir string) bool {
+	l.mu.Lock()
+	late := time.Now().Before(l.until[dir])
+	l.mu.Unlock()
+
+	return late || l.fakeLauncher.Alive(dir)
+}
+
+func (l *lateExit) Launch(ctx context.Context, s fc.LaunchSpec) (int, error) {
+	if l.Alive(s.Dir) {
+		l.mu.Lock()
+		l.violations++
+		l.mu.Unlock()
+	}
+
+	return l.fakeLauncher.Launch(ctx, s)
+}
+
+// A wake right after a sleep must not start a VMM while the killed one still holds the tap: on
+// real KVM that is snapshot/load failing with EBUSY on the tap. It waits, and a VMM that never
+// lets go is an error rather than a second VMM on the same tap.
+func TestAWakeWaitsForTheKilledVMMToLetGo(t *testing.T) {
+	r := newRig(t)
+	ref := r.create(t, "late", redis)
+
+	le := &lateExit{fakeLauncher: r.l, linger: 150 * time.Millisecond, until: map[string]time.Time{}}
+	r.p.launch = le
+
+	for range 3 {
+		if err := r.p.Start(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := r.p.Stop(r.ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if le.violations != 0 {
+		t.Fatalf("%d VMMs were launched while the previous one still held the VM's files", le.violations)
+	}
+
+	saved := previousExitWait
+	previousExitWait = 50 * time.Millisecond
+	t.Cleanup(func() { previousExitWait = saved })
+
+	le.linger = time.Hour
+
+	_ = r.p.Stop(r.ctx, ref)
+	_ = le.Kill(r.ctx, r.p.dir(ref))
+
+	if err := r.p.Start(r.ctx, ref); err == nil || !strings.Contains(err.Error(), "has not exited") {
+		t.Fatalf("a VMM that never lets go = %v", err)
+	}
+}

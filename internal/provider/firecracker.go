@@ -764,6 +764,10 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		return err
 	}
 
+	if err := p.awaitPrevious(ctx, vm.Ref); err != nil {
+		return err
+	}
+
 	clearVsock(dir)
 
 	if _, err := p.launch.Launch(ctx, fc.LaunchSpec{Binary: vm.Binary, Dir: dir, ID: vm.Instance}); err != nil {
@@ -967,6 +971,10 @@ func (p *fcProvider) running(ctx context.Context, ref string) (string, error) {
 		return info.State, nil
 	case ctx.Err() != nil:
 		return "", ctx.Err()
+	case errors.Is(err, fc.ErrUnreachable):
+		// Nothing is serving the API: gone, or a killed VMM still closing its files. Not running
+		// either way (Start waits for the files - awaitPrevious - before it launches another).
+		return "", nil
 	case !p.launch.Alive(p.dir(ref)):
 		return "", nil
 	default:
@@ -1040,12 +1048,43 @@ func (p *fcProvider) bootSlot(ctx context.Context) (func(), error) {
 	}
 }
 
+// previousExitWait bounds how long a new VMM waits for the last one in the same directory to let go.
+var previousExitWait = 5 * time.Second
+
+// awaitPrevious holds a launch until the previous firecracker in this VM's directory has exited
+// and closed its files. They share a tap, and a new VMM that opens it while the old one still
+// holds it fails its snapshot/load with EBUSY (seen on the first CI run on real KVM). Bounded: a
+// process that will not let go is an error that names it, not a wait for ever.
+func (p *fcProvider) awaitPrevious(ctx context.Context, ref string) error {
+	dir := p.dir(ref)
+	deadline := time.Now().Add(previousExitWait)
+
+	for p.launch.Alive(dir) {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s: the previous firecracker in %s has not exited after %s and may still hold "+
+				"this VM's tap; not starting a second one on it", ref, dir, previousExitWait)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	return nil
+}
+
 // restore loads the snapshot and resumes it. The caller holds the lock.
 func (p *fcProvider) restore(ctx context.Context, vm *fcVM) error {
 	dir := p.dir(vm.Ref)
 	a := vm.addr()
 
 	if err := p.net.EnsureTap(ctx, a); err != nil {
+		return err
+	}
+
+	if err := p.awaitPrevious(ctx, vm.Ref); err != nil {
 		return err
 	}
 
