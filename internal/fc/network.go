@@ -131,6 +131,8 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 				return fmt.Errorf("creating bridge %s: %w", br, err)
 			}
 		}
+	} else {
+		n.recheck(ctx, a)
 	}
 
 	if !n.exists(ctx, tap) {
@@ -180,6 +182,41 @@ func (n *IPNetwork) guard(ctx context.Context, a Addr) {
 		warn("could not close the host to %s's guests (%v): they can reach every host service "+
 			"bound to 0.0.0.0 at %s - see SECURITY.md", a.Bridge(), err, a.Gateway())
 	}
+}
+
+// recheck puts the guard back if something removed it while the bridge stood. A host with no
+// iptables was told so when the bridge was made, and is not told again on every wake.
+func (n *IPNetwork) recheck(ctx context.Context, a Addr) {
+	if n.Guard == nil {
+		return
+	}
+
+	repaired, err := n.Guard.Ensure(ctx, a)
+
+	switch {
+	case errors.Is(err, ErrNoFirewall):
+	case err != nil:
+		if n.Warn != nil {
+			n.Warn(fmt.Sprintf("%s's host rules were missing and could not be put back (%v): its guests "+
+				"can reach host services at %s - see SECURITY.md", a.Bridge(), err, a.Gateway()))
+		}
+	case repaired:
+		if n.Warn != nil {
+			n.Warn(fmt.Sprintf("%s's host rules had been removed (a firewall reload or flush?) and were put back",
+				a.Bridge()))
+		}
+	}
+}
+
+// EnsureGuard is recheck for the daemon's reconcile: a bridge that exists gets its guard checked
+// and, if something removed it, put back. No bridge, nothing to guard.
+func (n *IPNetwork) EnsureGuard(ctx context.Context, slot int) {
+	a := Addr{Slot: slot}
+	if n.Guard == nil || a.Valid() != nil || !n.exists(ctx, a.Bridge()) {
+		return
+	}
+
+	n.recheck(ctx, a)
 }
 
 // RemoveTap deletes the VM's tap; one already gone is success.

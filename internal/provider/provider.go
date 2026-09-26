@@ -804,6 +804,13 @@ type Forwarder interface {
 	Forward(ctx context.Context, ref string) ([]Forward, error)
 }
 
+// Maintainer is a provider with host-side state that can drift while nothing is being created or
+// woken - firewall rules a reload removed, a log a guest keeps writing. The daemon calls Maintain
+// once per discovery pass. Optional like the rest; it must be cheap when nothing has drifted.
+type Maintainer interface {
+	Maintain(ctx context.Context)
+}
+
 // Meter reports what running services are costing.
 //
 // Optional like the rest. A service that is asleep has no sample and is not an error: it is a

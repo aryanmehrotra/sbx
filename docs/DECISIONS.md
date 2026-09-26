@@ -829,9 +829,13 @@ a guest's link-local address has nothing to talk to. What makes it safe to own:
   as before, never half a chain.
 - **Never a reason a sandbox will not boot.** No `iptables`, or one that refuses: the bridge comes
   up anyway and the create and the daemon's log say the host is open, which is what it was before.
-- **Off the wake path.** Made when the bridge is made, not per wake: one exec per rule on a create
-  or the first wake after a reboot, none on an ordinary wake. The price is that a rule flushed by
-  hand stays gone until the bridge is next made.
+- **Checked, not rewritten, on the wake path.** Made when the bridge is made; on every wake and every
+  daemon reconcile, six `iptables -C` checks (each hook and each chain's final `DROP`) and no write
+  while the guard is whole. A rule a firewall reload or `iptables -F` removed is put back on the next
+  wake or within one refresh interval, and said so in the log. A repair leaves a chain that is
+  still whole alone - flushing one that a hook still jumps to would open the bridge while it is
+  empty. (Until v0.12 a flushed rule stayed gone until the sandbox was recreated; security review
+  M4.)
 
 Measured in the same helper VM, with a host listener on `0.0.0.0:18999`: the host reached
 `10.231.0.1:18999`; the guest timed out on it, and got 403 asking the filter for it.

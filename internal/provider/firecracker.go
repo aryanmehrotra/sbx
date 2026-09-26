@@ -2080,3 +2080,31 @@ var (
 	_ NamedVolumes = (*fcProvider)(nil)
 	_ Puller       = (*fcProvider)(nil)
 )
+
+// guardChecker is a Network that can re-check a bridge's host rules (fc.IPNetwork).
+type guardChecker interface {
+	EnsureGuard(ctx context.Context, slot int)
+}
+
+// Maintain re-checks the host rules of every bridge a VM of this provider is on, and puts back
+// any that a firewall reload or a flush removed (fc.Guard.Ensure: `-C` only while they are whole).
+func (p *fcProvider) Maintain(ctx context.Context) {
+	vms, err := p.all()
+	if err != nil {
+		return
+	}
+
+	g, ok := p.net.(guardChecker)
+	if !ok {
+		return
+	}
+
+	seen := map[int]bool{}
+
+	for _, vm := range vms {
+		if !seen[vm.Slot] {
+			seen[vm.Slot] = true
+			g.EnsureGuard(ctx, vm.Slot)
+		}
+	}
+}

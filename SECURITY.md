@@ -106,7 +106,8 @@ threat model is not "untrusted users share one daemon".**
     port accepted, the rest dropped) and another in mangle PREROUTING that drops what a guest starts
     before docker's DNAT can turn it into forwarded traffic - so a docker-published port, a
     container's IP and a NodePort are closed too, not only services bound to the host - plus
-    mangle FORWARD drops from and to the bridge, and IPv6 off, made with the bridge and removed with it
+    mangle FORWARD drops from and to the bridge, and IPv6 off - made with the bridge, re-checked on
+    every wake and daemon reconcile (a flushed rule is put back), and removed with it
     (DECISIONS.md, "A microVM's only door is its filter"). **Where `iptables` is missing or refuses,
     the bridge still comes up and a guest reaches every host service bound to `0.0.0.0` at
     `10.231.<slot>.1`**; the create and the daemon's log say so. Bridges made by v0.11 are not

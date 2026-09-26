@@ -272,14 +272,14 @@ func TestABridgeIsGuardedBeforeItIsUpAndReleasedWithIt(t *testing.T) {
 		t.Fatalf("guard (%d), ipv6 off (%d) and bridge up (%d) out of order:\n%s", jump, v6, up, strings.Join(order, "\n"))
 	}
 
-	// A second VM on the bridge costs no iptables call: the wake path stays as it was.
+	// A second VM on the bridge costs checks, never a write: six `-C`s while the guard is whole.
 	before := len(tables.cmds)
 	if err := n.EnsureTap(context.Background(), Addr{Slot: 5, Index: 1}); err != nil {
 		t.Fatal(err)
 	}
 
-	if len(tables.cmds) != before {
-		t.Fatalf("EnsureTap on an existing bridge ran iptables: %q", tables.cmds[before:])
+	if w := writes(tables.cmds[before:]); len(w) > 0 || len(tables.cmds)-before > 6 {
+		t.Fatalf("EnsureTap on an existing bridge ran %q", tables.cmds[before:])
 	}
 
 	if err := n.RemoveBridge(context.Background(), 5); err != nil {

@@ -50,9 +50,9 @@ import (
 // read, written or reordered, and all of it goes away with the bridge (Release), so a host with
 // no microVM sandbox has no rule of sbx's at all.
 //
-// It is made when the bridge is made, not on every wake: a wake is on the latency path, and the
-// bridge and its chain have the same life - a reboot takes both, and the next wake remakes both.
-// A rule flushed by hand while the bridge exists stays gone until the sandbox is next recreated.
+// It is made when the bridge is made, and checked (Ensure: `-C` only, no write while it is whole)
+// on every wake and every daemon reconcile, so a rule flushed by hand, or by a firewall reload,
+// is put back within one refresh interval rather than staying gone until the sandbox is recreated.
 //
 // IPv6 is closed by disabling it on the bridge: a guest kernel brings up an fe80:: address on its
 // own, and the host's bridge would answer it with every service bound to [::].
@@ -189,6 +189,12 @@ func (g *Guard) install(ctx context.Context, a Addr) error {
 			if lerr := g.ipt(ctx, s.table, "-n", "-L", chain); lerr != nil {
 				return errors.Join(err, g.release(ctx, a))
 			}
+
+			// Already whole - a repair after a hook went missing: left alone, because flushing a
+			// chain something still jumps to would open the bridge for as long as it is empty.
+			if g.holds(ctx, s, chain) {
+				continue
+			}
 		}
 
 		if err := g.ipt(ctx, s.table, "-F", chain); err != nil {
@@ -269,4 +275,59 @@ func Available() error {
 	}
 
 	return nil
+}
+
+// holds reports whether chain in s's table has every rule s gives it.
+func (g *Guard) holds(ctx context.Context, s share, chain string) bool {
+	for _, r := range s.rules {
+		if g.ipt(ctx, s.table, append([]string{"-C", chain}, r...)...) != nil {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Ensure puts back a guard something removed while its bridge stood - a `iptables -F`, a
+// firewall reload, a docker restart that flushed mangle - and is otherwise a handful of `-C`
+// checks and no write. Called on every wake and every daemon reconcile, so a rule flushed by hand
+// is gone for one refresh interval at most, not until the sandbox is recreated.
+//
+// What it checks is what a flush removes: each hook, and each chain's final DROP. A rule edited
+// out of the middle of a chain by hand is not looked for; an `iptables -F` of either table is.
+func (g *Guard) Ensure(ctx context.Context, a Addr) (repaired bool, err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	chain := a.Chain()
+	whole := true
+
+	for _, s := range g.shares(a) {
+		checks := [][]string{{"-C", chain, "-j", "DROP"}}
+		for _, h := range s.hooks {
+			checks = append(checks, append([]string{"-C"}, h...))
+		}
+
+		for _, c := range checks {
+			if err := g.ipt(ctx, s.table, c...); err != nil {
+				if errors.Is(err, ErrNoFirewall) {
+					return false, err
+				}
+
+				whole = false
+
+				break
+			}
+		}
+
+		if !whole {
+			break
+		}
+	}
+
+	if whole {
+		return false, nil
+	}
+
+	return true, g.install(ctx, a)
 }

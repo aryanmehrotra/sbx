@@ -428,6 +428,11 @@ func (d *daemon) discover(ctx context.Context) {
 		return
 	}
 
+	// Host state that drifts on its own - a microVM bridge's firewall rules after a reload.
+	if m, ok := d.provider.(provider.Maintainer); ok {
+		m.Maintain(ctx)
+	}
+
 	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
 	// filters, correctAwake - ever holds a unit outside --only, or an API sandbox this daemon
 	// does not own, to act on.
