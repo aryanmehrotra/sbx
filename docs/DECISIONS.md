@@ -967,14 +967,20 @@ defensible without it.
   from the directory's path, so two state roots with the same ref never share a cgroup. Rejected:
   `<state>/jail`. Inside, everything that already removes a VM's directory (`sbx rm`, a failed
   create, the warm pool) removes its jail, and the hard links below stay on one filesystem.
-- **What the root holds**: `/vmlinux` (a hard link when the kernel is world-readable, a copy
-  otherwise - never re-owned, since it is shared); `/agent.ext4`, `/rootfs.ext4`, `/vol<N>.ext4`
-  and, for a restore, `/vm.state` and `/vm.mem` - hard links to the VM's own files, owned by its
-  uid, so what the guest writes is on the VM's disk (a copy would be a disk the host never sees, so
+- **What the root holds**: `/vmlinux` (a hard link when the kernel - symlink resolved - is
+  root's, readable by all and writable by nobody else; a root-owned 0444 copy otherwise; never
+  re-owned, since it is one inode for every VM, and re-checked and forced back to root's and
+  read-only once the jailer has finished with the root); `/agent.ext4`, `/rootfs.ext4`,
+  `/vol<N>.ext4` and, for a restore, `/vm.state` and `/vm.mem` - hard links to the VM's own files,
+  owned by its uid (except the drives it only reads - the agent drive and read-only volumes - kept
+  root's and other-readable, so a compromised VMM cannot rewrite them for the next VM), so what the guest writes is on the VM's disk (a copy would be a disk the host never sees, so
   a VM's file that cannot be linked fails the launch); what the jailer adds (the binary, the device
   nodes); and the VMM's `/api.sock` and `/vsock.sock`. `<vm dir>/api.sock` and `vsock.sock` are
   symlinks into the root, so the API client, the vsock dialer and the wake proxy keep their paths,
   and the 108-byte socket limit applies to the short one.
+  Dialled through that link, but not blindly: the entry in the root is the VMM's to replace, so it
+  must be a socket owned by the jail's uid, and the process that answers must be that uid
+  (`SO_PEERCRED`) - never a symlink to another VM's socket (fc.DialVMM).
 - **Emptied on every launch and every Kill**, with the VM's cgroup (`<cgroup2>/sbx-fc/<id>`, which
   the jailer never removes): a stale `/dev/kvm` fails the next jailer, and a stale hard link to a
   replaced `vm.mem` would keep its blocks allocated.
@@ -990,6 +996,11 @@ defensible without it.
   no `--cgroup` and an existing `--parent-cgroup` *moves* the process into the parent, which fails
   once a sibling has enabled memory there. No `fsize` limit: it would kill a VM for writing past
   that offset of its own disk.
+- **A VM's record says how its running VMM was launched** (`jail_uid`, saved before the launch; a
+  record without it is unjailed). Every call to that VMM - a snapshot, a commit - takes its paths
+  from the record, not from this process's `SBX_FC_JAILER`, which only decides the NEXT launch: a
+  v0.12 VMM slept by a jailed daemon would otherwise be told `/vm.state.new` and write its RAM into
+  the host's `/`.
 - **A snapshot records which kind it is** (`snapshot_jailed`): its drive paths are the root's or the
   host's, and a VMM of the other kind cannot open them. A wake with the jailer switched the other
   way cold-boots (disk kept, memory lost, said); a saved memory snapshot of the other kind is
