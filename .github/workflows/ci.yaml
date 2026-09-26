@@ -558,15 +558,31 @@ jobs:
           SBX_OSB_POOL: python:3.11-slim=4
           # Its own directory: a pooled failure's evidence must not overwrite the cold tier's.
           OSB_LOGS_DIR: ${{ runner.temp }}/osb-logs/pool
-        run: scripts/osb-conformance.sh --files sandbox,command,filesystem --provider firecracker --timeout 30m
+        # Watched as the cold tier is: every member's VMM - booted, then restored per claim into
+        # a fresh jail - must run chrooted as its own non-root uid.
+        run: |
+          set -eu
+          sudo scripts/fc-jail-watch.sh start "$RUNNER_TEMP/fc-jail-pool.txt" &
+          watch=$!
+          rc=0
+          scripts/osb-conformance.sh --files sandbox,command,filesystem --provider firecracker --timeout 30m || rc=$?
+          sudo kill "$watch" 2>/dev/null || true
+          sudo pkill -f 'fc-jail-watch.sh start' || true
+          sudo scripts/fc-jail-watch.sh check "$RUNNER_TEMP/fc-jail-pool.txt"
+          exit "$rc"
 
       # create -> first command, cold against pooled, members asleep and then frozen: which of the
       # two is faster is measured here, on real KVM, and read into docs/BENCHMARKS.md - reported,
       # not gated. Each run says how many creates its pool actually served.
       - name: warm pool against cold create on microVMs (asleep, frozen)
         if: steps.kvm.outputs.have == 'true'
+        # Watched too: frozen members keep a paused VMM for as long as they wait, and each must be
+        # jailed like any other.
         run: |
           set -euo pipefail
+          sudo scripts/fc-jail-watch.sh start "$RUNNER_TEMP/fc-jail-bench.txt" &
+          watch=$!
+          trap 'sudo kill "$watch" 2>/dev/null || true; sudo pkill -f "fc-jail-watch.sh start" || true' EXIT
           for mode in asleep frozen; do
             set -- --provider firecracker --burst 4 --rounds 3 --pool node:22-slim=4 --burst-modes default,cold
             if [ "$mode" = frozen ]; then set -- "$@" --pool-freeze; fi
@@ -575,6 +591,9 @@ jobs:
           done
           # An asleep member's memory file is as big as its RAM: what the pool cost this runner's disk.
           df -h "$RUNNER_TEMP"
+          sudo kill "$watch" 2>/dev/null || true
+          sudo pkill -f 'fc-jail-watch.sh start' || true
+          sudo scripts/fc-jail-watch.sh check "$RUNNER_TEMP/fc-jail-bench.txt"
 
       # Last in the job, so a failure in any conformance step above - cold or pooled - still
       # has its evidence uploaded.
