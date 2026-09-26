@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"strings"
 )
@@ -26,6 +27,10 @@ import (
 // it, so two processes computing the address of the same service always agree - which matters
 // because Create, the daemon's Start and a restore after a host reboot may each be a different
 // sbx process.
+
+// Plan is every address the arithmetic below can produce: each sandbox's bridge gateway (the
+// host) and every guest. Nothing else is ever in it, so a filter on the host can refuse it whole.
+var Plan = netip.MustParsePrefix("10.231.0.0/16")
 
 // Addr is one VM's place on the network.
 type Addr struct {

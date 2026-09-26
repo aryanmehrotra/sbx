@@ -46,6 +46,13 @@ type Filter struct {
 	// which would let a second answer (DNS rebinding) walk around the first check.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 
+	// Refuse widens what counts as host-local (see hostLocal) for a filter that runs on the very
+	// host its sandbox is kept off: a microVM's filter is a listener on that host's bridge, so
+	// "CONNECT 10.231.5.1:22" through it would reach the host's sshd, and 10.231.7.2 another
+	// sandbox's guest - both of which the guest cannot reach on its own. Like loopback, an
+	// address it reports is refused unless an allow rule names it. Nil adds nothing.
+	Refuse func(netip.Addr) bool
+
 	pol atomic.Pointer[compiled]
 
 	once      sync.Once
@@ -93,10 +100,17 @@ func (f *Filter) Permits(host string) bool {
 	c := f.pol.Load()
 
 	if a, err := netip.ParseAddr(host); err == nil {
-		return c.allowsAddr(a)
+		return c.allowsAddr(a) && !f.refused(c, a)
 	}
 
 	return c.allowsName(host)
+}
+
+// refused reports an address Refuse keeps out that no allow rule names.
+func (f *Filter) refused(c *compiled, a netip.Addr) bool {
+	a = a.Unmap()
+
+	return f.Refuse != nil && f.Refuse(a) && !contains(c.allow, a)
 }
 
 // errDenied is a destination the policy refuses, as opposed to one that could not be reached.
@@ -109,7 +123,7 @@ func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 	c := f.pol.Load()
 
 	if a, err := netip.ParseAddr(host); err == nil {
-		if !c.allowsAddr(a) {
+		if !c.allowsAddr(a) || f.refused(c, a) {
 			return nil, &errDenied{why: host}
 		}
 
@@ -128,7 +142,7 @@ func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 	// Every address, not the first: a name whose answer set includes one denied address is a
 	// name that can be steered to it, and which one a client dials is not ours to choose.
 	for _, a := range addrs {
-		if c.deniesResolved(a) {
+		if c.deniesResolved(a) || f.refused(c, a) {
 			return nil, &errDenied{why: fmt.Sprintf("%s resolves to %s, which the policy denies", host, a)}
 		}
 	}

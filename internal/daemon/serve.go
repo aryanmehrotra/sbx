@@ -124,6 +124,10 @@ type daemon struct {
 	egressCtl  *EgressControl
 	egressDir  string
 
+	// egressPort is where hosted filters listen; 0 is provider.EgressProxyPort. A field so a
+	// test can host one without contending for the real port.
+	egressPort int
+
 	// discovering serialises discover(). The ticker was its only caller until the OpenSandbox
 	// API began asking for a pass right after it creates a sandbox; two passes interleaving
 	// would each see the new unit as unknown and both bind its port.
