@@ -79,7 +79,11 @@ func (s *Server) createPicked(ctx context.Context, id string, svc spec.Service, 
 	s.trace.mark(id, "slot allocated")
 
 	eps := s.p.Endpoints(id, service, slot, 0, svc.Ports)
-	err = s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer)
+
+	err = s.recheckHostMounts(svc)
+	if err == nil {
+		err = s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer)
+	}
 
 	s.slotMu.Lock()
 	if err != nil {

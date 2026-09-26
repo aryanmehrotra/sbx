@@ -265,8 +265,8 @@ func Serve(args []string) error {
 	//
 	// A scoped daemon is the exception, because it cannot fight: everything outside --only is
 	// invisible to it, so the listeners it wants are not the ones the machine's daemon holds.
-	// It also does not claim the presence record below - it is not the daemon `sbx create`
-	// should be told about.
+	// It also does not claim the machine's presence record below: it writes its own, carrying its
+	// scope, which the CLI consults per sandbox - see Announce.
 	if running, ok := Running(); ok && running.PID != os.Getpid() && len(scope) == 0 {
 		return fmt.Errorf("sbx serve is already running (pid %d, since %s). One per machine - "+
 			"it fronts every sandbox's ports.\n     Stop that one first, or leave it: it is "+
@@ -358,9 +358,7 @@ func Serve(args []string) error {
 		name = p.Name()
 	}
 
-	if len(scope) == 0 {
-		defer MarkRunning(name)()
-	}
+	defer Announce(name, scope)()
 
 	logs.Default.Info("", "", "sbx %s · provider %s · idle %s · in-cluster %v · scope %s",
 		logs.Version, name, d.idle, InCluster(), scope)

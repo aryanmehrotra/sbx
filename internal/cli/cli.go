@@ -125,7 +125,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 	}
 
 	fmt.Println()
-	fmt.Println(readiness(created))
+	fmt.Println(readiness(sandbox, created))
 
 	return nil
 }
@@ -141,7 +141,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 // So it is checked rather than asserted. `sbx ready` already refuses on the same evidence;
 // this is the same question asked one step earlier, where it is a warning rather than an
 // error - the sandbox really was created, and starting the daemon afterwards fixes it.
-func readiness(eps []provider.Endpoint) string {
+func readiness(sandbox string, eps []provider.Endpoint) string {
 	var local []provider.Endpoint
 
 	for _, e := range eps {
@@ -169,7 +169,9 @@ func readiness(eps []provider.Endpoint) string {
 
 	// Two different problems that look identical from a refused connection, and they need
 	// opposite advice: start a daemon, versus wait a moment for the one you have.
-	if _, ok := daemon.Running(); !ok {
+	// Asked for THIS sandbox: a daemon started with --only fronts the names in its scope, and is
+	// the daemon to wait for when this one is among them.
+	if _, ok := daemon.Serving(sandbox); !ok {
 		return "no `sbx serve` is running, so nothing accepts on the ports `sbx env` exports.\n" +
 			"Start one - once per machine, not once per sandbox:\n\n" +
 			"    sbx serve --idle 5m &\n\n" +
@@ -180,13 +182,16 @@ func readiness(eps []provider.Endpoint) string {
 	// after create, the exported ports are still dead. Waiting here rather than handing back
 	// an address that is about to work is the difference between the README's three-line
 	// quickstart being true and being true-eventually.
-	if waitReachable(local, 30*time.Second) {
+	if waitReachable(local, pickupWait) {
 		return "ready. Nothing needs starting again - connecting wakes it, idleness sleeps it."
 	}
 
 	return "created, but the running `sbx serve` has not picked it up yet.\n" +
 		"It looks for new sandboxes on its --refresh interval; give it one, or restart it."
 }
+
+// pickupWait is how long create waits for a running daemon to bind a new sandbox's ports.
+var pickupWait = 30 * time.Second
 
 // waitReachable blocks until every endpoint accepts, or the deadline passes.
 func waitReachable(eps []provider.Endpoint, timeout time.Duration) bool {
@@ -1181,10 +1186,10 @@ func List(ctx context.Context, p provider.Provider, asJSON bool) error {
 	// to have matched and closed the pipe - and the write that followed then took SIGPIPE and
 	// killed the process, so the pipeline exited 141 under `set -o pipefail`. The table had
 	// already been printed in full and correctly; only the exit status was wrong.
-	if _, running := daemon.Running(); !running {
-		fmt.Fprint(os.Stderr, "\nno `sbx serve` is running, so nothing accepts on the addresses "+
-			"above -\na container can be awake and still unreachable. "+
-			"Start one:  sbx serve --idle 5m &\n")
+	if gone := unserved(units); len(gone) > 0 {
+		fmt.Fprintf(os.Stderr, "\nno `sbx serve` is running for %s, so nothing accepts on "+
+			"those addresses above -\na container can be awake and still unreachable. "+
+			"Start one:  sbx serve --idle 5m &\n", strings.Join(gone, ", "))
 	}
 
 	return nil
@@ -1273,4 +1278,30 @@ func wantsAllowList(sp *spec.Spec, withOptional bool) bool {
 	}
 
 	return false
+}
+
+// unserved lists, once each and in order, the local sandboxes no running daemon fronts - neither
+// the machine's nor one started with --only whose scope names them.
+func unserved(units []provider.Unit) []string {
+	if _, running := daemon.Running(); running {
+		return nil
+	}
+
+	seen := map[string]bool{}
+
+	var out []string
+
+	for _, u := range units {
+		if !isLocal(u) || seen[u.Sandbox] {
+			continue
+		}
+
+		seen[u.Sandbox] = true
+
+		if _, ok := daemon.Serving(u.Sandbox); !ok {
+			out = append(out, u.Sandbox)
+		}
+	}
+
+	return out
 }

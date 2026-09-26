@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -233,7 +234,7 @@ func (d *dash) refresh(ctx context.Context) {
 
 	// Asked before the lock: it reads a file and signals a pid, and the comment below promises
 	// this region is arithmetic only.
-	noDaemon := warnNoDaemon(d.remote, rows, daemonRunning())
+	noDaemon := warnNoDaemon(d.remote, rows, daemonServes(rows))
 
 	// Everything below is arithmetic and assignment, so the lock is held for microseconds.
 	d.mu.Lock()
@@ -1202,7 +1203,7 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 	// the other door.
 	fmt.Fprintln(out, "\nthis is not a terminal, so the live dashboard is not available here")
 
-	if warnNoDaemon(opt.Remote, rows, daemonRunning()) {
+	if warnNoDaemon(opt.Remote, rows, daemonServes(rows)) {
 		fmt.Fprintln(os.Stderr, "\nno `sbx serve` is running, so nothing accepts on the addresses above -")
 		fmt.Fprintln(os.Stderr, "a container can be awake and still unreachable. Start one:  sbx serve --idle 5m &")
 	}
@@ -1210,15 +1211,27 @@ func printOnce(ctx context.Context, opt Options, out *os.File) error {
 	return nil
 }
 
-// daemonRunning reports whether a local `sbx serve` owns the ports this dashboard is printing.
+// daemonServes reports whether a local `sbx serve` owns the ports this dashboard is printing: the
+// machine's daemon, or for every row a daemon started with --only whose scope names its sandbox.
 //
 // pid-verified rather than a file's existence: a stale record from a daemon that died with its
 // terminal would otherwise say the addresses are being fronted when nothing is listening, which
 // is the exact confusion this line exists to remove.
-func daemonRunning() bool {
-	_, ok := daemon.Running()
+func daemonServes(rows []row) bool {
+	if _, ok := daemon.Running(); ok {
+		return true
+	}
 
-	return ok
+	// Read once, not once per row: this runs on every dashboard tick.
+	scoped := daemon.Scoped()
+
+	for _, r := range rows {
+		if !slices.ContainsFunc(scoped, func(p daemon.Presence) bool { return p.Scope.Match(r.Sandbox) }) {
+			return false
+		}
+	}
+
+	return len(rows) > 0
 }
 
 // localFleet reports whether these rows are fronted by a daemon on THIS machine.
