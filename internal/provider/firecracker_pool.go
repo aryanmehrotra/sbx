@@ -107,6 +107,14 @@ func (p *fcProvider) claimAsleep(ctx context.Context, vm *fcVM) error {
 		return fmt.Errorf("%s has no valid snapshot to restore; it is no longer warm", vm.Ref)
 	}
 
+	// Parked with the jailer the other way: its snapshot names drive paths this VMM cannot open
+	// (jail-root paths, or host paths a chroot hides). Start cold-boots such a VM; a member that
+	// would need a cold boot is no warmer than a cold create, so it is refused, never loaded.
+	if vm.SnapshotJailed != (p.jail != nil) {
+		return fmt.Errorf("%s was parked with the jailer %s and it is %s now: its snapshot names drive "+
+			"paths this VMM cannot open, so it is no longer warm", vm.Ref, onOff(vm.SnapshotJailed), onOff(p.jail != nil))
+	}
+
 	release, err := p.bootSlot(ctx)
 	if err != nil {
 		return err

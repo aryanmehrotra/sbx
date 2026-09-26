@@ -723,6 +723,13 @@ guest IP and every secret userspace made before the snapshot, and re-key replace
 ("The OpenSandbox API on a microVM"). The helper-VM path on a Mac or Windows has no `PoolParker`
 and still refuses `--osb-pool` at startup.
 
+A member is jailed like any VM (v0.13 ships the pool and the jailer together): every launch -
+its boot, a frozen member's paused VMM, an asleep claim's restore into a fresh root - runs as the
+uid of its address, and the claim's re-key reaches execd through `<dir>/vsock.sock`, the symlink
+into that root. A member parked with the jailer one way and claimed with it the other is refused
+at the claim, not loaded: its snapshot names drive paths the VMM cannot open, and a member that
+would need a cold boot is no warmer than a cold create.
+
 ---
 
 ### One host probe decides the microVM path, and a Mac is sent to a helper VM, not refused
