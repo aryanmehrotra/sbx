@@ -50,9 +50,9 @@ func TestOnThisHostIsTheRangesAndEveryInterfaceAddress(t *testing.T) {
 }
 
 // Under default-allow, a filter on the host would otherwise carry a guest to the host's own
-// services and to other sandboxes - neither reachable from the guest directly. An explicit allow
-// rule for the address still opens it, as it does for loopback.
-func TestAFilterOnTheHostRefusesTheHostUnlessARuleNamesIt(t *testing.T) {
+// services and to other sandboxes - neither reachable from the guest directly. Not even an allow
+// rule naming the address opens it: the policy is the sandbox's, and the door is the host's.
+func TestAFilterOnTheHostRefusesTheHostEvenWhenARuleNamesIt(t *testing.T) {
 	open := Policy{DefaultAction: ActionAllow, Egress: []Rule{}}
 
 	f := NewPolicy(open)
@@ -90,8 +90,8 @@ func TestAFilterOnTheHostRefusesTheHostUnlessARuleNamesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !f.Permits("10.231.0.1") || f.Permits("10.231.0.2") {
-		t.Error("an allow rule naming the address did not open exactly it")
+	if f.Permits("10.231.0.1") || f.Permits("10.231.0.2") {
+		t.Error("an allow rule in the sandbox's own policy opened the host")
 	}
 
 	// And end to end: the CONNECT gets 403, and the listener on the "host" is never dialled.

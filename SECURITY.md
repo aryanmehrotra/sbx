@@ -100,7 +100,8 @@ threat model is not "untrusted users share one daemon".**
   Each sandbox is a bridge (`10.231.<slot>.0/24`, the host at `.1`) with no NAT, so a guest has no
   route off the host; a filtered one (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches
   the internet only through the egress filter on `10.231.<slot>.1:20999`, which refuses the host's
-  own addresses and every other sandbox's unless a rule names them. Two consequences:
+  own addresses, its loopback and every other sandbox's - and no rule in the sandbox's own policy
+  can open them (only the operator, on `sbx serve`). Two consequences:
   - **The host is closed to a guest except for that filter port** - where sbx could install it.
     Each bridge gets a chain `SBX-FC<slot>` in INPUT (replies returned to your rules, the filter
     port accepted, the rest dropped) and another in mangle PREROUTING that drops what a guest starts

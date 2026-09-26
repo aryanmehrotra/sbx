@@ -203,9 +203,15 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		// must not carry them back onto it: not to the gateway's other ports, not to the host's
 		// other addresses, not to another sandbox's guests (DECISIONS.md, "A microVM's only
 		// door is its filter, and the host behind it is closed").
+		//
+		// Any filter hosted here is on the host, so its loopback and link-local (cloud metadata)
+		// are the host's: refused whatever the sandbox's own policy allows, because that policy is
+		// written by the sandbox's caller and the filter dials as this daemon.
+		filter.Refuse = egress.HostLocal
 		if want.bridge != "" {
 			filter.Refuse = egress.OnThisHost(fc.Plan)
 		}
+
 		srv := &http.Server{Handler: filter}
 		go func() { _ = srv.Serve(ln) }()
 

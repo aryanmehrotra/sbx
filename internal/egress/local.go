@@ -6,7 +6,8 @@ import (
 )
 
 // OnThisHost is a Filter.Refuse for a filter that runs on the host its sandbox is kept off: it
-// reports any address in ranges, and any address assigned to one of this host's interfaces.
+// reports any address in ranges, any address assigned to one of this host's interfaces, and
+// everything HostLocal does (loopback, link-local, unspecified, multicast).
 //
 // The interfaces are read per call rather than once, because the set changes under a running
 // filter - every microVM sandbox created after it adds a bridge address - and one read is a
@@ -20,6 +21,10 @@ func OnThisHost(ranges ...netip.Prefix) func(netip.Addr) bool {
 func onThisHost(addrs func() ([]net.Addr, error), ranges []netip.Prefix) func(netip.Addr) bool {
 	return func(a netip.Addr) bool {
 		a = a.Unmap()
+
+		if hostLocal(a) {
+			return true
+		}
 
 		for _, p := range ranges {
 			if p.Contains(a) {

@@ -809,9 +809,18 @@ the filter was listening on `10.231.0.1:20999` with no `sbxfc0` link, holding th
 
 **The filter refuses its own host.** Under an open default a filter on the host would carry a guest
 to `10.231.<slot>.1:22` - the host's sshd - or to another sandbox's guest, neither of which the
-guest can reach itself. A VM's filter refuses `10.231.0.0/16` and every address on the host's
-interfaces unless an allow rule names them, as it already refused loopback. Docker's filters are
-unchanged.
+guest can reach itself. A VM's filter refuses `10.231.0.0/16`, every address on the host's
+interfaces, loopback and link-local.
+
+**No rule in the sandbox's policy opens that refusal** (security review of v0.12, H2). It first
+shipped overridable, like the policy's own loopback default: an allow rule naming the address opened
+it. But the policy is the sandbox's - its API caller writes it - and the filter dials as the root
+daemon, so `allow 0.0.0.0/0`, `allow 10.0.0.0/8` or `allow 127.0.0.1` let a sandbox CONNECT to the
+host's loopback (the OpenSandbox API, the daemon's ports), the host's addresses and other guests.
+Now `Filter.Refuse` is absolute; widening it is an operator setting on `sbx serve`, never a policy
+rule. A docker filter the daemon hosts on the host gets the same treatment for loopback and
+link-local (`egress.HostLocal`) - its loopback is the host's too; a filter running in its own
+container keeps the overridable default, since its loopback is its own.
 
 **The host's INPUT chain is closed to the bridge, except the filter port** (SECURITY.md M3). The
 network entry above said sbx writes no rule, and the docker entry rejected rules in `DOCKER-USER` as

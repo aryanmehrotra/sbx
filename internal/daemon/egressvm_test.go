@@ -68,17 +68,40 @@ func TestAMicroVMFilterIsHostedAndRefusesTheHostBehindIt(t *testing.T) {
 		t.Fatalf("CONNECT to the gateway's sshd through the filter = %d, want 403", got)
 	}
 
-	// A docker bridge's filter is not given the refusal: nothing about docker changed.
+	// A docker bridge's filter hosted here is on the host too: its loopback is the host's, and no
+	// rule in the sandbox's policy opens it. The host's other addresses and the VM plan are not
+	// refused - a container can reach its own gateway directly, so that is no new door.
 	dock := vmUnit
 	dock.Sandbox, dock.EgressBridge = "ctr", ""
 
 	d2 := &daemon{egressDir: t.TempDir(), egress: map[string]*egressProxy{}, egressPort: freePort(t)}
 	d2.reconcileEgress([]provider.Unit{dock})
 
-	if px2 := d2.egress["127.0.0.1"]; px2 == nil || px2.filter.Refuse != nil {
-		t.Fatalf("docker's hosted filter changed: %+v", px2)
-	} else {
-		_ = px2.ln.Close()
+	px2 := d2.egress["127.0.0.1"]
+	if px2 == nil {
+		t.Fatal("no docker filter hosted")
+	}
+
+	_ = px2.ln.Close()
+
+	loop, _ := egress.Policy{DefaultAction: egress.ActionAllow,
+		Egress: []egress.Rule{{Action: egress.ActionAllow, Target: "127.0.0.1"}}}.Normalize()
+	for _, f := range []*egress.Filter{px.filter, px2.filter} {
+		if err := f.SetPolicy(loop); err != nil {
+			t.Fatal(err)
+		}
+
+		if f.Permits("127.0.0.1") || f.Permits("169.254.169.254") {
+			t.Fatal("a hosted filter's policy opened the host's loopback or metadata")
+		}
+	}
+
+	if !px2.filter.Permits("10.231.0.1") {
+		t.Fatal("docker's hosted filter took on the microVM refusal")
+	}
+
+	if err := px.filter.SetPolicy(open); err != nil {
+		t.Fatal(err)
 	}
 
 	// A live change through the daemon's own API reaches the hosted VM filter in place.
