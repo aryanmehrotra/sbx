@@ -125,6 +125,11 @@ func (p *fcProvider) CreateVolume(ctx context.Context, name string, labels map[s
 		return err
 	}
 
+	// Under the lock a VM create holds from its volume check to its save: two creates of one name
+	// must not both pass the "exists" check below and write over each other's image.
+	p.volMu.Lock()
+	defer p.volMu.Unlock()
+
 	dir := filepath.Join(p.root, "volumes")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -176,6 +181,11 @@ func (p *fcProvider) RemoveVolume(_ context.Context, name string) error {
 	if !fcVolumeName.MatchString(name) {
 		return fmt.Errorf("%q is not a volume name", name)
 	}
+
+	// Held through the delete: a VM create between its check that this volume is free and the
+	// save that attaches it would otherwise lose the volume under it.
+	p.volMu.Lock()
+	defer p.volMu.Unlock()
 
 	if by := p.attachedTo(name, ""); by != "" {
 		return fmt.Errorf("volume %s is attached to %s; remove that first", name, by)
