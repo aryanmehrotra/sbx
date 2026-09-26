@@ -355,6 +355,10 @@ osb_teardown() {
     if [ "$OSB_KEEP_WORK" = 1 ] || { [ "$rc" -ne 0 ] &&
       { [ -e "$OSB_WORK/daemon.log" ] || [ -e "$OSB_WORK/go-test.json" ] || [ -e "$OSB_WORK/compile.log" ]; }; }; then
       osb_say "logs kept in $OSB_WORK"
+      # CI sets OSB_LOGS_DIR to a path it uploads as an artifact.
+      if [ -n "${OSB_LOGS_DIR:-}" ]; then
+        mkdir -p "$OSB_LOGS_DIR" && cp -R "$OSB_WORK/." "$OSB_LOGS_DIR/" && osb_say "and copied to $OSB_LOGS_DIR"
+      fi
     else
       rm -rf "$OSB_WORK"
     fi
@@ -403,8 +407,11 @@ osb_fc_arch() {
 }
 
 osb_fc_sbx_env() {
-  printf 'HOME=%s/home SBX_FC_STATE=%s SBX_PROVIDER_KIND=firecracker SBX_NO_UPDATE_CHECK=1 SBX_HISTORY=%s/home/history.jsonl' \
-    "$OSB_FC_DIR" "$OSB_FC_STATE" "$OSB_FC_DIR"
+  # SBX_OSB_TRACE: every create's phases, with their times, in the daemon log. SBX_FC_KEEP_CONSOLES:
+  # a removed VM's console is copied there first - the suite deletes every sandbox it made, and a
+  # failed one's console is the evidence (osb_fc_evidence).
+  printf 'HOME=%s/home SBX_FC_STATE=%s SBX_PROVIDER_KIND=firecracker SBX_NO_UPDATE_CHECK=1 SBX_HISTORY=%s/home/history.jsonl SBX_OSB_TRACE=1 SBX_FC_KEEP_CONSOLES=%s/consoles' \
+    "$OSB_FC_DIR" "$OSB_FC_STATE" "$OSB_FC_DIR" "$OSB_FC_DIR"
 }
 
 osb_fc_start_daemon() {
@@ -507,7 +514,39 @@ osb_fc_teardown() {
 
   if [ "$OSB_KEEP_WORK" = 1 ] || [ "${1:-0}" -ne 0 ]; then
     osb_fc_sh "cat $OSB_FC_DIR/daemon.log" > "$OSB_WORK/daemon.log" 2>/dev/null
+    osb_fc_evidence
   fi
 
   osb_fc_sh "rm -rf $OSB_FC_DIR"
+}
+
+# osb_fc_evidence - after a failed run, everything that says why, into $OSB_WORK: each removed
+# VM's console (kept by SBX_FC_KEEP_CONSOLES), the history (every Failed with its cause), and the
+# host's disk and memory - and, on stdout, each Failed sandbox's cause with its console's tail, so
+# the step log says what happened without anyone downloading anything.
+osb_fc_evidence() {
+  local ids id f
+  mkdir -p "$OSB_WORK/consoles"
+  osb_fc_sh "cd $OSB_FC_DIR && tar -cf - consoles 2>/dev/null" | tar -C "$OSB_WORK" -xf - 2>/dev/null
+  osb_fc_sh "cat $OSB_FC_DIR/home/history.jsonl 2>/dev/null" > "$OSB_WORK/history.jsonl"
+  osb_fc_sh "df -h; echo; free -m; echo; nproc; echo; du -sh $OSB_FC_STATE/* 2>/dev/null" > "$OSB_WORK/host.txt" 2>&1
+
+  ids="$(grep 'osb: Failed' "$OSB_WORK/daemon.log" 2>/dev/null | grep -o 'osb-[0-9a-f]\{12\}' | sort -u)"
+  [ -n "$ids" ] || return 0
+
+  echo
+  echo "── Failed sandboxes: cause, create timeline, console tail ──"
+  for id in $ids; do
+    echo
+    echo "### $id"
+    grep "$id" "$OSB_WORK/daemon.log" | grep -E 'osb: Failed|trace |microVM .* serving|osb: Running' | cut -c1-400
+    for f in "$OSB_WORK/consoles/$id"-*.console.log; do
+      [ -e "$f" ] || continue
+      echo "--- $(basename "$f") (last 30 lines)"
+      tail -n 30 "$f" | cut -c1-300
+    done
+  done
+  echo
+  echo "── host ──"
+  cat "$OSB_WORK/host.txt"
 }

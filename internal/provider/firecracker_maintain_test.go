@@ -127,3 +127,27 @@ func TestHostWarningsNameAnUnguardedBridge(t *testing.T) {
 		t.Fatalf("no iptables = %q", w)
 	}
 }
+
+// With SBX_FC_KEEP_CONSOLES set (CI), a removed VM leaves its console behind in that directory:
+// the suite deletes every sandbox it made, and a failed one's console is the evidence.
+func TestRemoveKeepsTheConsoleWhereAsked(t *testing.T) {
+	keep := t.TempDir()
+	t.Setenv(KeepConsolesEnv, keep)
+
+	r := newRig(t)
+	ref := r.create(t, "kept", redis)
+	vm := r.vm(t, ref)
+
+	if err := os.WriteFile(filepath.Join(r.p.dir(ref), fc.ConsoleName), []byte("jupyter: address in use\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.p.Remove(r.ctx, "kept"); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(keep, "kept-cache-"+vm.Instance+"."+fc.ConsoleName))
+	if err != nil || !strings.Contains(string(b), "address in use") {
+		t.Fatalf("kept console = %q, %v", b, err)
+	}
+}

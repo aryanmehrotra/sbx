@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -105,4 +106,52 @@ func bytesIEC(n int64) string {
 	default:
 		return fmt.Sprintf("%d KiB", n>>10)
 	}
+}
+
+// KeepConsolesEnv names a directory a removed VM's console is copied into first - for CI, where
+// the suite deletes each sandbox it made, and a failure's only evidence is what its guest printed.
+// Unset (the default) keeps nothing.
+const KeepConsolesEnv = "SBX_FC_KEEP_CONSOLES"
+
+// keepConsole copies the last MiB of dir's console.log and vmm.log to $SBX_FC_KEEP_CONSOLES, named
+// for the VM. Best effort: it is evidence, not state.
+func keepConsole(dir string, vm *fcVM) {
+	to := os.Getenv(KeepConsolesEnv)
+	if to == "" {
+		return
+	}
+
+	if err := os.MkdirAll(to, 0o755); err != nil {
+		return
+	}
+
+	for _, f := range []string{fc.ConsoleName, fc.VMMLogName} {
+		var b bytes.Buffer
+		if tailBytes(filepath.Join(dir, f), 1<<20, &b) != nil {
+			continue
+		}
+
+		_ = os.WriteFile(filepath.Join(to, fmt.Sprintf("%s-%s-%s.%s", vm.Sandbox, vm.Service, vm.Instance, f)),
+			b.Bytes(), 0o644)
+	}
+}
+
+func tailBytes(path string, n int64, w *bytes.Buffer) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	_, err = f.Seek(max(0, st.Size()-n), 0)
+	if err == nil {
+		_, err = w.ReadFrom(f)
+	}
+
+	return err
 }

@@ -1643,6 +1643,8 @@ func (p *fcProvider) Remove(ctx context.Context, sandbox string) error {
 			return err
 		}
 
+		keepConsole(dir, vm)
+
 		err := os.RemoveAll(dir)
 
 		unlock()
