@@ -232,6 +232,9 @@ jobs:
       - name: measurement maths
         run: bash scripts/lib/measure_test.sh
 
+      - name: harness process match (no self-match)
+        run: bash scripts/lib/osb_test.sh
+
       - name: harness gating (injected failures)
         # The teardown-after-kill case needs docker and skips itself where there is none,
         # which is most of the point of running this on macOS at all: the gating logic is
