@@ -29,6 +29,11 @@ type FirecrackerUsage struct {
 	// kernel have another name, and are counted there (or are the artifact cache's).
 	Jails int64
 
+	// SharesRootFS: the state directory is on the same filesystem as /, so what the VMs write -
+	// disks, memory files, and anything a compromised VMM writes in its jail as its own uid - can
+	// fill the host's /. sbx sets no per-VM disk quota (SECURITY.md).
+	SharesRootFS bool
+
 	// PoolMembers are VMs parked as OpenSandbox warm-pool members, and PoolMemory the part of
 	// Memory they hold: a member waiting asleep costs no RAM and a memory file as big as its RAM.
 	PoolMembers int
@@ -49,6 +54,7 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 	}
 
 	u := FirecrackerUsage{Root: root}
+	u.SharesRootFS = sameFilesystem(root, "/")
 
 	vms, err := os.ReadDir(filepath.Join(root, "vms"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

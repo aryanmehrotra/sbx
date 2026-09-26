@@ -133,13 +133,20 @@ threat model is not "untrusted users share one daemon".**
   VMM as unconfined root, so a guest-to-VMM escape landed as root on the host - is closed where the
   jailer is on. Each VMM is started through the jailer pinned from the same v1.17.0 release
   tarball (same sha256): chrooted into `<vm dir>/jail/firecracker/<id>/root`, which holds only its
-  kernel (a link to a world-readable file, never re-owned), its own drives and snapshot files (hard
-  links, owned by its uid), `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and its sockets; running as
+  kernel (a link to the one root-owned, read-only file every VM shares - never re-owned, a symlink
+  resolved first, a root-owned copy when it is not that, and held to root's and read-only again
+  after the jailer has run), its own drives and snapshot files (hard links, owned by its uid -
+  except what it only reads: the agent drive and read-only volumes stay root's, readable, never
+  writable, by the jail, so a compromised VMM cannot rewrite a read-only volume for the next
+  sandbox), `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and its sockets; running as
   **its own uid and gid** (`900000 + slot*256 + index`, never 0, never shared by two VMs, so one VMM
   cannot signal, trace or open another's files), with no capabilities; in its own cgroup v2
   (`cpu.max` from the spec's CPUs, `memory.max` its memory + 128 MiB). What it writes (a snapshot)
   is taken back only as a plain file with one name, so a compromised VMM cannot plant a symlink or
-  hard link for the host to follow as root. `sbx doctor` shows it (`vm jailer`).
+  hard link for the host to follow as root. Each VM's record says how its running VMM was launched
+  (`jail_uid`), and every later call to it speaks in that mode, whatever `SBX_FC_JAILER` says now. A
+  VM resumed in place (a paused one started, a frozen warm-pool member claimed) gets the same
+  host-guard recheck as a wake. `sbx doctor` shows it (`vm jailer`).
   **What remains:**
   - **`SBX_FC_JAILER=off` restores v0.12's risk exactly**, for a development host where the jailer
     cannot run (no cgroup v2, no mknod). Warned on every use; the OpenSandbox API refuses to serve on
@@ -155,6 +162,13 @@ threat model is not "untrusted users share one daemon".**
     to be that uid (`SO_PEERCRED`, which a swap between the check and the connect cannot fake).
     Anything else is refused as a foreign socket, never read as "asleep". What such a VMM can still
     do is refuse to answer, or answer its own API wrongly - about itself only.
+  - **No disk quota per VM.** A VM's disk, memory snapshot and anything its VMM writes in its jail
+    (as its own uid) are on the state filesystem (`SBX_FC_STATE`), with no per-VM or per-uid limit:
+    one sandbox - or a compromised VMM - can fill that filesystem (ENOSPC) for the host and every
+    other sandbox on it. Where that is `/`, the host itself. The mitigation is the operator's: put
+    `SBX_FC_STATE` on a filesystem of its own (a dedicated partition or volume), or enable project
+    quotas (XFS / ext4 `prjquota`) on it. `sbx doctor` warns when the state directory shares `/`
+    (`microVM state filesystem`).
   - **The daemon still runs as root** (taps, bridges, iptables, the jailer itself), and the guest
     kernel plus Firecracker's own seccomp filters are the first boundary, as before.
   - Snapshots taken before v0.13 name host paths the jailed VMM cannot open: those VMs cold-boot

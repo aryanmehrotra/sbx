@@ -15,3 +15,6 @@ func allocated(path string) int64 {
 
 // links is 1: nothing is jailed on Windows.
 func links(string) uint64 { return 1 }
+
+// sameFilesystem is false: the provider never runs on Windows.
+func sameFilesystem(string, string) bool { return false }

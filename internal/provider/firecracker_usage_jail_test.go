@@ -60,3 +60,21 @@ func TestFirecrackerDiskUsageCountsWhatOnlyAJailHolds(t *testing.T) {
 		t.Fatalf("Total %d leaves the jails out: %+v", u.Total(), u)
 	}
 }
+
+// Two directories on one filesystem are the same filesystem; the state directory and /dev (a
+// filesystem of its own on Linux and macOS) are not.
+func TestSameFilesystemTellsTheStateDirFromAnother(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+
+	if !sameFilesystem(a, b) {
+		t.Fatalf("%s and %s are one filesystem", a, b)
+	}
+
+	if sameFilesystem(a, "/dev") {
+		t.Fatalf("%s and /dev read as one filesystem", a)
+	}
+
+	if sameFilesystem(filepath.Join(a, "never-made"), a) {
+		t.Fatal("a directory that does not exist shares nothing")
+	}
+}

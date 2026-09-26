@@ -36,6 +36,16 @@ func firecrackerCapabilities(kind hostcap.Backend, mkfs string, iso fc.BridgeIso
 			Detail: iso.Detail, Meaning: iso.Meaning})
 	}
 
+	// No disk quota per VM (SECURITY.md): on /, one sandbox - or a compromised VMM writing in its jail
+	// as its own uid - can fill the host's disk. Before the disk row, which tests read as the last.
+	if usage != nil && usage.SharesRootFS {
+		caps = append(caps, Capability{Name: "microVM state filesystem", Have: false,
+			Detail: usage.Root + " is on the same filesystem as /",
+			Meaning: "sbx sets no per-VM disk quota, so one sandbox's disk, snapshots or jail can fill / (ENOSPC) " +
+				"for the host and every other sandbox; put SBX_FC_STATE on a filesystem of its own, or one with " +
+				"project quotas - SECURITY.md"})
+	}
+
 	// What sleeping VMs cost: each one's memory file is as big as its RAM, and nothing else in
 	// doctor would show a fleet of them filling the disk.
 	if usage != nil {

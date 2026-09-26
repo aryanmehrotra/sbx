@@ -134,3 +134,27 @@ func TestDoctorReportsTheGuardAndTheJailer(t *testing.T) {
 		t.Fatalf("no cgroup v2: %+v", j)
 	}
 }
+
+// With no disk quota per VM, a state directory on / lets one sandbox fill the host's disk:
+// doctor says so, with the fix, and says nothing when the state has a filesystem of its own.
+func TestDoctorWarnsWhenMicroVMStateSharesRoot(t *testing.T) {
+	find := func(u *provider.FirecrackerUsage) (Capability, bool) {
+		for _, c := range firecrackerCapabilities(hostcap.Direct, "/sbin/mkfs.ext4", fc.CheckBridgeIsolation("0", nil), u) {
+			if c.Name == "microVM state filesystem" {
+				return c, true
+			}
+		}
+
+		return Capability{}, false
+	}
+
+	u := &provider.FirecrackerUsage{Root: "/root/.sbx/fc", SharesRootFS: true}
+	if c, ok := find(u); !ok || c.Have || !strings.Contains(c.Meaning, "SBX_FC_STATE") || !strings.Contains(c.Meaning, "quota") {
+		t.Fatalf("state on / = %+v (found %v)", c, ok)
+	}
+
+	u.SharesRootFS = false
+	if c, ok := find(u); ok {
+		t.Fatalf("state on its own filesystem still warned: %+v", c)
+	}
+}
