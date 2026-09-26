@@ -247,8 +247,12 @@ func (s *Server) routes() {
 		// ?ready=code is readiness, not liveness: an image that configures Jupyter is not usable
 		// until Jupyter answers, and the API reports a sandbox Running on this. One probe, no
 		// wait - the caller polls - and nothing at all for an image with no Jupyter configured.
+		//
+		// The check does not take its lifetime from the request: Available bounds itself (3 s),
+		// and a transport that cancels a request's context early - vsock once did, on every
+		// keep-alive request after the first - must not turn a running Jupyter into a 503.
 		if r.URL.Query().Get("ready") == "code" && !s.codeUp.Load() {
-			err := s.code.Available(r.Context())
+			err := s.code.Available(context.WithoutCancel(r.Context()))
 
 			switch {
 			case err == nil:

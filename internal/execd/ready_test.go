@@ -3,8 +3,10 @@
 package execd
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -58,5 +60,27 @@ func TestPingReadyCodeIsImmediateWithoutJupyter(t *testing.T) {
 	start := time.Now()
 	if code, _ := getPing(t, s, "?ready=code"); code != http.StatusOK || time.Since(start) > time.Second {
 		t.Fatalf("/ping?ready=code without Jupyter = %d after %s", code, time.Since(start))
+	}
+}
+
+// The readiness probe is not killed by its own request's context. On a microVM every probe after
+// the first arrived with r.Context() already cancelled (a transport fault, fixed in fileConn), and
+// the Jupyter check - which takes its deadline from that context - failed instantly with "context
+// canceled" for three minutes while Jupyter was up. The check has its own bounded timeout; a
+// caller that has gone away costs at most that, and a transport that cancels early cannot turn a
+// running Jupyter into a 503.
+func TestPingReadyCodeSurvivesACancelledRequestContext(t *testing.T) {
+	f := newMiniJupyter(t)
+	s := newTestServer(t, Options{Jupyter: f.engine()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rec := httptest.NewRecorder()
+	s.srv.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/ping?ready=code", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/ping?ready=code with Jupyter up and the request context cancelled = %d %q, want 200",
+			rec.Code, rec.Body.String())
 	}
 }
