@@ -53,8 +53,9 @@ func TestAJailedVMIsGivenOnlyPathsInsideItsRoot(t *testing.T) {
 	}
 
 	j := specs[0].Jail
-	if j.Jailer != "/pinned/jailer" || j.UID != r.p.jail.UID(vm.addr()) || j.GID != j.UID || j.UID == 0 {
-		t.Fatalf("jail = %+v, want the pinned jailer as uid %d", j, r.p.jail.UID(vm.addr()))
+	uid := 900000 + vm.Slot*256 + vm.Index // SECURITY.md's scheme, not the code's own arithmetic
+	if j.Jailer != "/pinned/jailer" || j.UID != uid || j.GID != j.UID || vm.JailUID != uid {
+		t.Fatalf("jail = %+v (recorded uid %d), want the pinned jailer as uid %d", j, vm.JailUID, uid)
 	}
 
 	if j.CPUs != vm.VCPU || j.MemMiB != vm.MemMiB {

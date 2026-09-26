@@ -36,7 +36,13 @@ func TestAJailedAsleepMemberIsParkedAndClaimedThroughItsJail(t *testing.T) {
 	}
 
 	vm := r.vm(t, ref)
-	uid := r.p.jail.UID(vm.addr())
+
+	// The documented scheme (SECURITY.md: 900000 + slot*256 + index), computed here rather than by
+	// the code under test, so a change to the arithmetic fails this test instead of moving with it.
+	uid := 900000 + vm.Slot*256 + vm.Index
+	if vm.JailUID != uid {
+		t.Fatalf("the record says its VMM was jailed as uid %d, want %d", vm.JailUID, uid)
+	}
 
 	for i, s := range r.l.specs {
 		if s.Jail == nil || s.Jail.UID != uid || s.Jail.UID == 0 {
@@ -134,7 +140,7 @@ func TestAJailedFrozenMemberIsResumedAndReKeyed(t *testing.T) {
 	}
 
 	launches := len(r.l.specs)
-	if last := r.l.specs[launches-1]; last.Jail == nil || last.Jail.UID != r.p.jail.UID(r.vm(t, ref).addr()) {
+	if last := r.l.specs[launches-1]; last.Jail == nil || last.Jail.UID != 900000+r.vm(t, ref).Slot*256+r.vm(t, ref).Index {
 		t.Fatalf("the frozen member's VMM is not jailed: %+v", last.Jail)
 	}
 

@@ -74,15 +74,15 @@ func TestJailUIDIsPerVMArithmeticAndNeverRoot(t *testing.T) {
 			}
 
 			seen[u] = a
-
-			if c.UID(a) != u {
-				t.Fatal("the same address got a different uid")
-			}
 		}
 	}
 
-	if c.UID(Addr{Slot: 253, Index: 250}) != DefaultJailUIDBase+253*256+250 {
-		t.Fatal("the scheme is base + slot*256 + index")
+	// The scheme as documented (SECURITY.md), in literal numbers: arithmetic the test does itself
+	// would move with the code.
+	for a, want := range map[Addr]int{{Slot: 0, Index: 0}: 900000, {Slot: 1, Index: 2}: 900258, {Slot: 253, Index: 250}: 965018} {
+		if got := c.UID(a); got != want {
+			t.Fatalf("UID(%+v) = %d, want %d (900000 + slot*256 + index)", a, got, want)
+		}
 	}
 }
 
