@@ -234,7 +234,15 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) capture(ctx context.Context, snapper provider.Snapshotter, id, sandbox, ref string) {
 	img := snapRepo + ":" + id
 
-	err := snapper.Commit(ctx, ref, img, scrubbedEnv()...)
+	// A provider that runs the agent itself snapshots the disk only, and the token is not on
+	// it (it rides on the VM's own agent drive), so there is no env to scrub - and a microVM
+	// snapshot is not an image config that could take one.
+	changes := scrubbedEnv()
+	if s.runsAgent() {
+		changes = nil
+	}
+
+	err := snapper.Commit(ctx, ref, img, changes...)
 	if err != nil {
 		s.setSnap(id, func(r *snapshotRecord) {
 			r.transition(snapFailed, "snapshot_capture_failed", fmt.Sprintf("docker commit of %s "+

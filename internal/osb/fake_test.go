@@ -149,6 +149,7 @@ func (f *fakeDocker) Copy(context.Context, string, string, string) error        
 func (f *fakeDocker) VolumeRuns(context.Context, string, string, string) bool        { return true }
 func (f *fakeDocker) SeedFile(context.Context, string, string, string, string) error { return nil }
 func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) error    { return nil }
+func (f *fakeDocker) HostVolumes()                                                   {}
 
 func (f *fakeDocker) Pull(_ context.Context, image string) error {
 	f.mu.Lock()

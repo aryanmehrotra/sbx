@@ -198,7 +198,7 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 			fmt.Sprintf("%s is not supported by this sbx yet; it arrives in sbx %s", what, release)
 	}
 
-	if _, err := provider.InjectorFor(s.p); err != nil {
+	if _, err := s.inspector(); err != nil {
 		return plan{}, http.StatusNotImplemented, "SANDBOX::API_NOT_SUPPORTED", err.Error()
 	}
 
@@ -472,7 +472,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		logs.Default.Error(id, service, "osb: %s: %s", reason, msg)
 	}
 
-	inj, err := provider.InjectorFor(s.p)
+	insp, err := s.inspector()
 	if err != nil {
 		fail("unsupported", err.Error())
 		return
@@ -482,7 +482,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 	// tag that is already here still asks the registry for its manifest - 2.8-3.2 s per create
 	// on colima, measured, most of a cold create - and learns nothing unless the tag moved,
 	// which is what an explicit `docker pull` on this machine is for.
-	info, err := s.images.info(ctx, pl.rec.Image, inj.ImageInfo)
+	info, err := s.images.info(ctx, pl.rec.Image, insp.ImageInfo)
 	if err != nil {
 		if pu, ok := s.p.(provider.Puller); ok && !pl.localImage {
 			// Never for a snapshot's image: it exists only on this engine, and a registry has
@@ -499,7 +499,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 
 			s.images.forget(pl.rec.Image)
 
-			info, err = s.images.info(ctx, pl.rec.Image, inj.ImageInfo)
+			info, err = s.images.info(ctx, pl.rec.Image, insp.ImageInfo)
 		}
 
 		if err != nil {
@@ -533,14 +533,6 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		s.update(id, func(r *record) { r.Entrypoint = entry })
 	}
 
-	vol, err := s.placeExecd(ctx, inj, arch, pl.rec.Image)
-	if err != nil {
-		fail("execd_unavailable", err.Error())
-		return
-	}
-
-	s.trace.mark(id, "execd placed")
-
 	env := maps.Clone(pl.env)
 	if env == nil {
 		env = map[string]string{}
@@ -552,9 +544,6 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		Image: pl.rec.Image,
 		Ports: pl.rec.Ports,
 		Env:   env,
-		Entrypoint: append([]string{execdMount + "/" + execdBinary, "execd",
-			"--addr", ":" + strconv.Itoa(execdPort), "--"}, entry...),
-		ReadOnlyVolumes: map[string]string{vol: execdMount},
 
 		// Declared so the daemon's wake path can verify execd is serving rather than sleeping
 		// two seconds and hoping - the fallback it takes for a service with no health check.
@@ -575,6 +564,33 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		OnIdle:              pl.onIdle,
 		EgressPolicy:        pl.egressPolicy,
 		VolumeMounts:        pl.volumes,
+	}
+
+	if s.runsAgent() {
+		// The provider's PID 1 is execd already, with this as its child and env[tokenEnv] as its
+		// token: nothing to seed, mount or wrap. No health command either - it runs the agent
+		// from the /opt/sbx volume through /bin/sh, and the provider's readiness is execd
+		// accepting on its own port (a VM's port is its own TCP stack, not a proxy's).
+		svc.Entrypoint = entry
+		svc.Health, svc.HealthInterval, svc.HealthStartInterval = "", "", ""
+	} else {
+		inj, err := provider.InjectorFor(s.p)
+		if err != nil {
+			fail("unsupported", err.Error())
+			return
+		}
+
+		vol, err := s.placeExecd(ctx, inj, arch, pl.rec.Image)
+		if err != nil {
+			fail("execd_unavailable", err.Error())
+			return
+		}
+
+		s.trace.mark(id, "execd placed")
+
+		svc.Entrypoint = append([]string{execdMount + "/" + execdBinary, "execd",
+			"--addr", ":" + strconv.Itoa(execdPort), "--"}, entry...)
+		svc.ReadOnlyVolumes = map[string]string{vol: execdMount}
 	}
 
 	if err := svc.Validate(service); err != nil {

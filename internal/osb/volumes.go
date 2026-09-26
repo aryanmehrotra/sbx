@@ -222,6 +222,12 @@ func checkSubPath(sub string) error {
 // symlink could be in - and the canonical path is what gets mounted, so the check and the mount
 // are about the same directory.
 func (s *Server) hostSource(v volumeJSON) (string, *volumeErr) {
+	// First: no allow-list can make a mount the provider has no way to do.
+	if err := provider.HostVolumesFor(s.p); err != nil {
+		return "", &volumeErr{status: http.StatusNotImplemented, code: "SANDBOX::API_NOT_SUPPORTED",
+			msg: fmt.Sprintf("volume %q (host.path): %v", v.Name, err)}
+	}
+
 	if len(s.hostPaths) == 0 {
 		return "", &volumeErr{status: http.StatusBadRequest, code: "VOLUME::HOST_PATH_NOT_ALLOWED",
 			msg: fmt.Sprintf("volume %q: host volumes are off on this server. Start it with "+

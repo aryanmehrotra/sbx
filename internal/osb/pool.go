@@ -166,6 +166,15 @@ func poolKey(pl plan) string {
 // newPools builds one pool per spec. A spec that does not validate is a startup error: a pool
 // that can never fill is a misconfiguration to say at once, not a log line every few seconds.
 func (s *Server) newPools(specs []PoolSpec) error {
+	// A warm member on a provider that runs the agent itself is a VM snapshotted asleep and
+	// restored per claim, which is the next phase - refused by name until it exists, rather
+	// than a pool of running VMs claimed through the container path's re-key.
+	if len(specs) > 0 && s.runsAgent() {
+		return fmt.Errorf("--osb-pool on the %s provider: a warm pool of microVMs (members "+
+			"snapshotted asleep, restored and re-keyed per claim) is not built yet - start without "+
+			"--osb-pool; every create is a cold boot until it is", s.p.Name())
+	}
+
 	for _, sp := range specs {
 		tpl := createRequest{
 			Image:          &imageSpec{URI: sp.Image},
