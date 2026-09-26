@@ -27,6 +27,13 @@ func TestMain(m *testing.M) {
 		return
 	}
 
+	// Exec'd by the REAL jailer as its "firecracker" (TestTheRealJailer): the jailer clears the
+	// environment, so this mode is told by argv - the jailer always passes --id first. After the fake jailer: its argv starts --id too.
+	if len(os.Args) > 1 && os.Args[1] == "--id" {
+		jailedFirecracker()
+		return
+	}
+
 	os.Exit(m.Run())
 }
 
@@ -141,4 +148,24 @@ func TestExecLauncherStartsTheVMMThroughTheJailer(t *testing.T) {
 	if st, err := os.Stat(rootfs); err != nil || st.Size() != 4 {
 		t.Fatalf("releasing the jail took the VM's own disk: %v", err)
 	}
+}
+
+// jailedFirecracker is this test binary run by the real jailer in firecracker's place: it binds
+// the API socket it was given - inside the chroot - and says on its console who and where it is.
+func jailedFirecracker() {
+	sock := ""
+	if i := slices.Index(os.Args, "--api-sock"); i >= 0 && i+1 < len(os.Args) {
+		sock = os.Args[i+1]
+	}
+
+	_, hostEtc := os.Stat("/etc/passwd")
+	os.Stdout.WriteString("jailed firecracker uid=" + strconv.Itoa(os.Getuid()) + " gid=" + strconv.Itoa(os.Getgid()) +
+		" host-etc=" + strconv.FormatBool(hostEtc == nil) + "\n")
+
+	if _, err := fcfake.Start(sock); err != nil {
+		os.Stderr.WriteString("jailed firecracker: " + err.Error() + "\n")
+		os.Exit(2)
+	}
+
+	select {}
 }
