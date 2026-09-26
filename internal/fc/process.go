@@ -136,6 +136,14 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 	return pid, nil
 }
 
+// The process table as Kill and Alive read it and the signal Kill sends: variables so what they
+// decide is tested on every OS, not only where /proc is.
+var (
+	ownsProc    = owns
+	holdingProc = holding
+	killProc    = killPID
+)
+
 // Kill sends SIGKILL to the recorded PID, but only after checking that PID is still a
 // firecracker serving THIS directory's socket. PIDs are reused, and a daemon that slept a VM
 // yesterday must not kill whatever inherited its number today.
@@ -149,11 +157,14 @@ func (ExecLauncher) Kill(ctx context.Context, dir string) error {
 	sock := filepath.Join(dir, APISockName)
 
 	switch {
-	case owns(pid, dir):
-		if err := killPID(pid); err != nil {
+	// Its argv names this VM, or the kernel says it is still the very process Launch started (the
+	// pid AND its start time): a VMM can overwrite its own command line, never those. Waiting on
+	// one that erased its argv without signalling it would wait for ever.
+	case ownsProc(pid, dir) || (start != 0 && holdingProc(pid, start)):
+		if err := killProc(pid); err != nil {
 			return fmt.Errorf("killing firecracker pid %d: %w", pid, err)
 		}
-	case start == 0 || !holding(pid, start):
+	case start == 0 || !holdingProc(pid, start):
 		// Not ours any more (a reused pid, or an old pid file with no start time and a process
 		// that no longer names this socket): nothing of ours to wait for.
 		_ = os.Remove(filepath.Join(dir, PIDName))
@@ -165,7 +176,7 @@ func (ExecLauncher) Kill(ctx context.Context, dir string) error {
 	// Wait until it has let go of everything, not until its command line empties: see holding.
 	// A firecracker still closing its tap makes the next one's snapshot/load fail with EBUSY.
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		if !owns(pid, dir) && !holding(pid, start) {
+		if !ownsProc(pid, dir) && !holdingProc(pid, start) {
 			_ = os.Remove(filepath.Join(dir, PIDName))
 			_ = os.Remove(sock)
 
