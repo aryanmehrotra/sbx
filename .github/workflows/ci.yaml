@@ -443,14 +443,18 @@ jobs:
   # --provider firecracker had no CI at all: every unit test runs against fcfake, and the only
   # proof a real VM boots, snapshots, restores and re-keys was a run by hand. This runs the Go
   # end-to-end test (TestFirecrackerE2E: create, restore, first byte, Diff sleep, restore again,
-  # exec over vsock, rm) wherever the runner exposes /dev/kvm - GitHub's Linux runners do, but it
-  # is the runner's to give, so a runner without it SKIPS this with a notice rather than failing
-  # a change that cannot have broken anything it could see.
+  # exec over vsock, rm) wherever the runner exposes /dev/kvm. GitHub's Linux runners do, so on
+  # this repository a runner without it FAILS the job - skipping green would pass a change nobody
+  # tested on a VM. A fork's runner may lack it, and there the job skips with a notice.
+  #
+  # Timeouts nest so the inner ones fire first and still tear down and report: the e2e step at
+  # 25m, the suite at go test -timeout 35m (the script's trap removes its sandboxes and keeps the
+  # daemon log), the job at 75m to leave room for the prewarm.
   microvm:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -463,13 +467,20 @@ jobs:
           if [ -c /dev/kvm ]; then
             ls -l /dev/kvm
             echo "have=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REPOSITORY" = "aryanmehrotra/sbx" ]; then
+            # This repo's runners have KVM, so its absence here is a broken runner, not a pass:
+            # a job that skips green would let a change that breaks every microVM merge.
+            echo "::error title=no /dev/kvm::the microVM job runs on this repository's ubuntu runners, which have /dev/kvm; this one does not, so nothing about microVMs was tested"
+            exit 1
           else
-            echo "::notice title=microVM e2e skipped::this runner has no /dev/kvm, so no Firecracker VM can boot here - the microVM e2e was skipped, not failed"
+            # A fork's runner may not; there the job says so and skips.
+            echo "::notice title=microVM e2e skipped::this fork's runner has no /dev/kvm, so no Firecracker VM can boot here - skipped, not failed"
             echo "have=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: a real Firecracker VM, end to end
         if: steps.kvm.outputs.have == 'true'
+        timeout-minutes: 25
         # As root: taps and bridges need CAP_NET_ADMIN. A compiled test binary, because the
         # agent drive is built from SBX_EXECD_BINARY - a real linux sbx - and `go test` under
         # sudo would find neither the module cache nor the toolchain.
@@ -491,7 +502,7 @@ jobs:
         # The code interpreter image is ~2.5 GB: prewarmed, so the suite's first creates of it
         # clone a built root filesystem instead of each exporting and mkfs-ing it at once.
         run: >-
-          scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 40m
+          scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 35m
           --prewarm "python:3.11-slim opensandbox/code-interpreter:latest"
 
   # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
