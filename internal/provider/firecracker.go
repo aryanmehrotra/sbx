@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/agentbin"
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -750,23 +751,36 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	made = vm
 
+	// execd's two secrets are sbx's alone, appended below, once. execd reads them with getenv,
+	// which takes the FIRST occurrence: left in the image's ENV (a committed snapshot carries
+	// `ENV EXECD_ACCESS_TOKEN=`) or the spec's, they would win over sbx's - an image-chosen token
+	// until the first re-key and again after every cold boot, and a re-key that fails.
+	secret := func(k string) bool { return k == AgentTokenEnv || k == execdctl.EnvControlSecret }
+
 	keys := make([]string, 0, len(svc.Env))
 	for k := range svc.Env {
-		if k != AgentTokenEnv { // appended below, once
+		if !secret(k) {
 			keys = append(keys, k)
 		}
 	}
 
 	sort.Strings(keys)
 
-	env := fc.MergeEnv(cfg.Env, svc.Env, keys)
+	image := make([]string, 0, len(cfg.Env))
+	for _, kv := range cfg.Env {
+		if k, _, _ := strings.Cut(kv, "="); !secret(k) {
+			image = append(image, kv)
+		}
+	}
+
+	env := fc.MergeEnv(image, svc.Env, keys)
 	// execd reads both and removes them from its own environment before it starts anything,
 	// so the workload does not inherit either. That keeps them out of `env` and logs; it does
 	// not hide them from root in the guest, which can read /proc/1/environ and /init.json on
 	// the agent drive. Harmless by construction (SECURITY.md): each is this guest's own, control
 	// is reachable only over vsock from the host, the control secret rotates at every restore,
 	// and a fork of a VM's memory is refused.
-	env = append(env, AgentTokenEnv+"="+vm.AccessToken, "EXECD_CONTROL_SECRET="+vm.ControlSecret)
+	env = append(env, AgentTokenEnv+"="+vm.AccessToken, execdctl.EnvControlSecret+"="+vm.ControlSecret)
 
 	if svc.Filtered() {
 		if vm.EgressPolicy, err = declaredJSON(svc); err != nil {

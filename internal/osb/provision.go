@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/egress"
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -342,6 +343,12 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 
 		if k == tokenEnv {
 			return bad("env %s is reserved: it carries execd's access token, which sbx mints", tokenEnv)
+		}
+
+		// A microVM's execd reads its control secret from here; one the caller set would win
+		// over sbx's at boot and the re-key that wakes the sandbox would then fail.
+		if k == execdctl.EnvControlSecret {
+			return bad("env %s is reserved: it carries execd's control secret, which sbx mints", k)
 		}
 	}
 
