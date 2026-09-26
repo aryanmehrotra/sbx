@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/daemon"
@@ -232,6 +233,16 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 
 	errc := make(chan error, 3)
 
+	// Front returns only once what it bound is closed: the mirror's local ports and the API
+	// listener. Returning on ctx while they were still being torn down left a mirrored port
+	// accepting after Front said it was done - a restart of `sbx serve` could then fail to bind it.
+	var listeners sync.WaitGroup
+
+	defer func() {
+		cancel()
+		listeners.Wait()
+	}()
+
 	go func() {
 		if err := wait(); err != nil && ctx.Err() == nil {
 			errc <- fmt.Errorf("the tunnel to the helper VM closed: %w", err)
@@ -247,7 +258,11 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 	// WSL2 already forwards every guest loopback port to the host at the same number; binding
 	// them a second time would only collide with its own relay.
 	if !m.Driver.NativeForwarding() {
+		listeners.Add(1)
+
 		go func() {
+			defer listeners.Done()
+
 			errc <- daemon.Mirror(ctx, daemon.MirrorOptions{
 				Endpoint: daemon.Endpoint{Label: m.Config.Name, URL: eps.Connect, Token: tok},
 				Refresh:  opt.Refresh, Shift: opt.Shift, Out: m.Out,
@@ -263,7 +278,13 @@ func (m *Manager) Front(ctx context.Context, opt FrontOptions) error {
 
 		m.say("OpenSandbox API on http://%s (proxied into %s)", srv.Addr, m.Config.Name)
 
-		go func() { errc <- serveUntil(ctx, srv) }()
+		listeners.Add(1)
+
+		go func() {
+			defer listeners.Done()
+
+			errc <- serveUntil(ctx, srv)
+		}()
 	}
 
 	select {
