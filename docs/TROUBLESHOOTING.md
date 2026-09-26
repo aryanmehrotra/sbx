@@ -148,6 +148,23 @@ connections it holds.
 
 ---
 
+## A microVM "could not sleep: execd did not confirm its seal"
+
+**The guest did not answer its seal in time** - almost always a host short of memory, which
+starves the guest's vCPUs. sbx asked three times (10 s, 20 s, 30 s), took no snapshot (an unsealed
+one would restore with this VM's identity), re-keyed execd to prove it is serving, and **left the
+VM running with its memory**. Nothing is lost; the daemon tries the sleep again on its next idle
+check.
+
+The third such sleep in a row stops the VM instead (`... the 3 sleeps in a row it has not`), and
+its next wake is a cold boot: its disk is kept, its memory is not. So is a sleep whose re-key failed
+too (`... the re-key that would have proved it unsealed failed too`).
+
+If you see it often: `sbx doctor` (memory, swap), fewer sandboxes awake at once, or a smaller
+`memory` per microVM.
+
+---
+
 ## Wakes are slower than the numbers in BENCHMARKS.md
 
 **A service with no `health` command costs a flat 2 s per wake.** With nothing to probe - docker

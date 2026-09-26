@@ -157,6 +157,10 @@ type fcVM struct {
 	// resets Firecracker's dirty bitmap and would make the next Diff miss pages.
 	Restored bool `json:"restored"`
 
+	// SealStrikes counts the sleeps in a row whose seal execd did not confirm, each of which left the
+	// VM running and re-keyed; at maxSealStrikes the next is a stop. Zeroed by every snapshot.
+	SealStrikes int `json:"seal_strikes,omitempty"`
+
 	// EgressPolicy is the egress policy the spec declared, as JSON, when the service reaches the
 	// network through the filter the daemon serves on this sandbox's bridge gateway; "" when it
 	// has no way out at all. What the filter STARTS with and what a reset returns to: a policy
@@ -187,6 +191,9 @@ type fcVM struct {
 }
 
 type fcProvider struct {
+	// sealBudgets replaces defaultSealBudgets (tests).
+	sealBudgets []time.Duration
+
 	root   string // <state>/fc
 	arch   string
 	arts   *fc.ArtifactCache
@@ -1021,19 +1028,50 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 	return nil
 }
 
-// sealTimeout bounds execd's answer to Seal. A guest that stalls it is vetoing its own sleep.
+// sealTimeout bounds execd's answer to one Seal, and the guest-side fssync before a disk snapshot.
 const sealTimeout = 10 * time.Second
+
+// defaultSealBudgets is how long each Seal attempt of a sleep is given: longer each time, because
+// what makes a Seal late is a guest starved of CPU or memory (the v0.11 known issue: 1 in 46
+// rounds under host memory pressure), and asking again with the same short bound fails the same
+// way. Asking again is safe: Seal is idempotent in execd (it sets sealed and forgets the last
+// re-key, nothing else), so a 204 on any attempt proves the guest is sealed, whatever became of
+// the answers before it. The total bounds how long a sleep holds the VM's lock (maxSealWait).
+var defaultSealBudgets = []time.Duration{sealTimeout, 20 * time.Second, 30 * time.Second}
+
+// maxSealWait bounds the sum of defaultSealBudgets: a wake waits behind a sleep's lock that long.
+const maxSealWait = time.Minute
+
+// maxSealStrikes is how many sleeps in a row a guest may fail to confirm its seal before the next
+// one stops it anyway. Below it, a VM whose seal was never confirmed keeps running with its memory
+// (re-keyed, so provably unsealed); at it, the sleep is v0.11's: the VMM is killed and the next
+// wake cold-boots, so a guest that stalls every seal cannot hold its RAM for ever.
+const maxSealStrikes = 3
 
 // sleep snapshots a running VM and ends its process. The caller holds the lock.
 //
-// Whatever fails, the VM does not stay up. After a Seal execd answers nobody until re-keyed, and a
-// Start that finds the process running (or paused) only resumes it, so a VM left behind by a
-// failed sleep would be up and permanently deaf. And a Seal that fails or times out is the guest
-// refusing to be slept - PID 1 is the workload's to stall - which must not let it pin host
-// memory. So a failure kills the VMM: the record already says SnapshotValid=false for a running
-// VM, so the next wake cold-boots it from its disk. Memory is lost; the disk and the service are
-// not.
+// Nothing is snapshotted unsealed: the snapshot is a second copy of execd's identity, and one
+// taken unsealed would restore already serving with it. Nor is it paused first and sealed after:
+// a paused VM runs no guest code, so execd could never answer.
+//
+// A seal that is not confirmed after every attempt leaves the guest in an unknown state - the
+// last answer may be the one that was lost. It is re-keyed: a 204 there proves execd unsealed,
+// holding a fresh secret, and serving, and the VM stays up with its memory while the sleep
+// reports ErrStillRunning (the daemon's next idle check tries again). Only when that re-key also
+// fails, or this is the maxSealStrikes-th sleep in a row it could not seal, is it stopped: a VM
+// that may be sealed must not stay up - after a Seal execd answers nobody until re-keyed, and a
+// Start that finds it running only resumes it - and a guest must not pin host memory by stalling.
+//
+// A failure after the seal was confirmed kills the VMM as before: it is sealed, and the record
+// already says SnapshotValid=false for a running VM, so the next wake cold-boots it from its
+// disk. Memory is lost; the disk and the service are not.
 func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
+	if p.guest.Available() {
+		if err := p.seal(ctx, vm); err != nil {
+			return p.sealUnconfirmed(ctx, vm, err)
+		}
+	}
+
 	err := p.snapshotAndEnd(ctx, vm)
 	if err == nil {
 		return nil
@@ -1043,11 +1081,90 @@ func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
 		"its next wake is a cold boot", vm.Ref, err), p.abandon(ctx, vm))
 }
 
-// seal asks execd to seal, with the secret it holds: the recorded one, or - when that is refused
-// and a re-key's answer was never recorded - the pending one. Bounded: a guest that stalls it is
-// vetoing its own sleep.
+// sealUnconfirmed is a sleep whose Seal no attempt confirmed; see sleep. The caller holds the lock.
+func (p *fcProvider) sealUnconfirmed(ctx context.Context, vm *fcVM, cause error) error {
+	vm.SealStrikes++
+
+	if vm.SealStrikes >= maxSealStrikes {
+		strikes := vm.SealStrikes
+		vm.SealStrikes = 0
+
+		return errors.Join(fmt.Errorf("sleeping %s: execd did not confirm its seal (%w), the %d sleeps in a "+
+			"row it has not - its VM was stopped without a usable snapshot rather than let it hold its "+
+			"memory, and its next wake is a cold boot", vm.Ref, cause, strikes), p.abandon(ctx, vm))
+	}
+
+	// Newer than anything execd has applied, or it refuses the re-key as stale.
+	vm.Generation++
+
+	budgets := p.budgets()
+	rctx, cancel := context.WithTimeout(ctx, budgets[len(budgets)-1])
+	rerr := p.rekey(rctx, vm)
+	cancel()
+
+	if rerr != nil {
+		vm.SealStrikes = 0
+
+		return errors.Join(fmt.Errorf("sleeping %s: execd did not confirm its seal (%v), and the re-key that "+
+			"would have proved it unsealed failed too (%w) - it may be sealed, so its VM was stopped "+
+			"without a usable snapshot, and its next wake is a cold boot", vm.Ref, cause, rerr), p.abandon(ctx, vm))
+	}
+
+	if err := p.save(vm); err != nil {
+		// execd now holds a secret this record does not: left running, it could never be sealed.
+		vm.SealStrikes = 0
+
+		return errors.Join(fmt.Errorf("sleeping %s: recording the re-key after an unconfirmed seal: %w - its "+
+			"VM was stopped, and its next wake is a cold boot", vm.Ref, err), p.abandon(ctx, vm))
+	}
+
+	return fmt.Errorf("sleeping %s: execd did not confirm its seal (%v), so no snapshot was taken; it was "+
+		"re-keyed and is serving with its memory, and the next idle check tries again (%d of %d before "+
+		"it is stopped instead): %w", vm.Ref, cause, vm.SealStrikes, maxSealStrikes, ErrStillRunning)
+}
+
+// budgets is each Seal attempt's bound: p.sealBudgets where a test set them, else the default.
+func (p *fcProvider) budgets() []time.Duration {
+	if len(p.sealBudgets) > 0 {
+		return p.sealBudgets
+	}
+
+	return defaultSealBudgets
+}
+
+// seal asks execd to seal until one attempt is confirmed, each bounded by the next of budgets,
+// with a short pause between. See defaultSealBudgets for why asking again is safe and useful.
 func (p *fcProvider) seal(ctx context.Context, vm *fcVM) error {
-	ctx, cancel := context.WithTimeout(ctx, sealTimeout)
+	var errs []error
+
+	for i, budget := range p.budgets() {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(append(errs, ctx.Err())...)
+			case <-time.After(budget / 40):
+			}
+		}
+
+		err := p.sealOnce(ctx, vm, budget)
+		if err == nil {
+			return nil
+		}
+
+		errs = append(errs, fmt.Errorf("attempt %d of %s: %w", i+1, budget, err))
+
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// sealOnce asks execd to seal, with the secret it holds: the recorded one, or - when that is
+// refused and a re-key's answer was never recorded - the pending one.
+func (p *fcProvider) sealOnce(ctx context.Context, vm *fcVM, budget time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	err := p.guest.Seal(ctx, p.guestVM(vm), vm.secret())
@@ -1100,12 +1217,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	c := p.client(vm.Ref)
 	v := p.view(vm)
 
-	if p.guest.Available() {
-		if err := p.seal(ctx, vm); err != nil {
-			return fmt.Errorf("sealing execd before the snapshot: %w", err)
-		}
-	}
-
+	// execd was sealed by the caller (sleep).
 	if err := c.Pause(ctx); err != nil {
 		return err
 	}
@@ -1170,6 +1282,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	vm.SnapshotValid = true
 	vm.SnapshotJailed = vm.JailUID != 0
 	vm.Restored = false
+	vm.SealStrikes = 0
 
 	return p.save(vm)
 }

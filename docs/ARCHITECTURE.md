@@ -236,7 +236,8 @@ Windows branch - installed as `provider.DecideHost` and used by the provider, th
 |---|---|
 | Create | build/reuse the rootfs, clone it, write the agent drive, cold boot, wait for the first port, **Seal**, Pause, Full snapshot, kill |
 | Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override` and `network_overrides`, **Rekey** before returning |
-| Stop | **Seal**, Pause, Diff snapshot if this process was restored (else Full), kill, fold the Diff into `vm.mem` by extent, mark valid |
+| Stop | **Seal** (asked again, with a longer bound each time, until one attempt is confirmed), Pause, Diff snapshot if this process was restored (else Full), kill, fold the Diff into `vm.mem` by extent, mark valid |
+| a Stop whose Seal is never confirmed | **Rekey** (proves execd unsealed), keep the VM running with its memory, report `ErrStillRunning` so the daemon retries on its next tick; the third such sleep in a row, or a Rekey that fails too, kills the VMM and the next wake cold-boots |
 | a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk instead of restoring stale memory over it |
 
 The guest is PID 1 `sbx fc-init` on the agent drive: it mounts the image root, gives it proc, sys, dev,
@@ -249,7 +250,10 @@ The guest's address comes from the kernel command line (`ip=`, `CONFIG_IP_PNP=y`
 (`fcProvider.DialGuestPort`) all reach execd over vsock. `fc.NoGuest` - what a non-Linux build of
 the provider gets - refuses all four; with it the provider still sleeps and wakes (same identity,
 nothing to re-key) and refuses exec, copy, `health` and forking by name. A sleep or snapshot that fails
-after Seal stops the VM (its next wake is a cold boot) rather than leave execd sealed.
+after a confirmed Seal stops the VM (its next wake is a cold boot) rather than leave execd sealed; a
+sleep whose Seal was never confirmed keeps the VM only once a Rekey has proved execd unsealed
+(DECISIONS.md, "A sleep whose seal is not confirmed keeps the VM, re-keyed, and a guest cannot keep it
+for ever").
 
 Nothing in the provider assumes it is the process that started a VM or the one facing the user:
 every fact is in `vm.json` or answered by the API socket, and every operation takes the VM's

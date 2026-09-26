@@ -814,6 +814,41 @@ this process was loaded from, so it is taken only then - never after a cold boot
 `SEEK_DATA` extents, because a page the guest dirtied to all zeroes is data, and a non-zero scan would
 restore what was under it.
 
+### A sleep whose seal is not confirmed keeps the VM, re-keyed, and a guest cannot keep it for ever
+
+v0.11 stopped a VM whose Seal failed or timed out: its next wake cold-booted, and whatever was only
+in memory was gone. Two reasons, both still held: a VM left up after a Seal that DID apply answers
+nobody until re-keyed, and a Start that finds it running only resumes it (up and permanently deaf);
+and a guest that stalls its seal must not be able to hold its RAM. Its known issue - under host
+memory pressure a Seal answer is late or lost (1 in 46 rounds) - paid for both with the workload's
+memory, for a failure that was usually the host's, not the guest's.
+
+What changed, and why each step is safe:
+
+- **Asked again, with longer each time** (10 s, 20 s, 30 s; a minute in all, which is how long a
+  wake can wait behind the sleep's lock). Seal is idempotent in execd - it sets `sealed` and
+  forgets the last re-key, nothing else - so a 204 on any attempt proves the guest is sealed, and
+  the sleep snapshots exactly as if the first answer had come. A starved guest given the same short
+  bound again fails the same way; given longer, it answers.
+- **Never paused first.** A paused VM runs no guest code; execd could not answer a Seal at all.
+- **Never snapshotted unconfirmed.** A snapshot of an unsealed execd restores already serving with
+  its identity - the thing sealing exists to prevent. "The answer was probably lost" is not proof.
+- **Unconfirmed after every attempt: re-keyed and kept.** The guest's state is unknown - the last
+  answer may be the one that was lost - and a re-key settles it: a 204 means execd is unsealed,
+  holds a fresh secret (so no earlier secret can seal it), and serves. The VM stays up with its
+  memory and the sleep returns `provider.ErrStillRunning`; the daemon keeps the unit awake, so its
+  next idle check tries again. That is not "half-sealed": the one state v0.11 refused to leave up
+  is exactly the one the re-key rules out.
+- **Stopped as before when it cannot be settled, or will not be.** A re-key that fails too leaves
+  execd possibly sealed, so the VM is stopped (next wake cold). And the third sleep in a row that
+  the guest does not confirm stops it regardless (`maxSealStrikes`, counted in the record, reset by
+  any snapshot): a guest can defer its sleep by about three idle intervals, not for ever, and holds
+  no more than the memory it was already given while awake.
+
+A memory snapshot of a running VM (`sbx snapshot` of a `sandbox.json` microVM) retries its Seal the
+same way but still stops the VM when it stays unconfirmed: the caller asked for a snapshot and gets
+an error either way. (An API sandbox's snapshot is its disk and seals nothing.)
+
 ### A firecracker snapshot restores only as itself
 
 The VM state names its drives by host path, and the guest's IP was set by the kernel at first boot
