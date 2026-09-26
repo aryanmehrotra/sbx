@@ -2127,3 +2127,58 @@ func (p *fcProvider) Maintain(ctx context.Context) {
 		}
 	}
 }
+
+// guardWholer is a Network that can say whether a bridge's host rules are in place (fc.IPNetwork).
+type guardWholer interface {
+	GuardWhole(ctx context.Context, slot int) (bool, error)
+}
+
+// HostWarnings says when this sandbox's host is open to its guests: no iptables at all, or its
+// bridge's guard not in place (it could not be installed, or something removed it and the
+// daemon has not put it back yet). The API carries it to the caller; stderr alone reaches nobody.
+func (p *fcProvider) HostWarnings(ctx context.Context, sandbox string) []string {
+	vms, err := p.all()
+	if err != nil {
+		return nil
+	}
+
+	slot := -1
+
+	for _, vm := range vms {
+		if vm.Sandbox == sandbox {
+			slot = vm.Slot
+			break
+		}
+	}
+
+	if slot < 0 {
+		return nil
+	}
+
+	gw := fc.Addr{Slot: slot}.Gateway()
+
+	if p.guardCheck != nil {
+		if err := p.guardCheck(); err != nil {
+			return []string{fmt.Sprintf("this host could not be closed to the sandbox's guests (%v): they "+
+				"reach every host service bound to 0.0.0.0 at %s, and docker-published ports - see SECURITY.md", err, gw)}
+		}
+	}
+
+	g, ok := p.net.(guardWholer)
+	if !ok {
+		return nil
+	}
+
+	whole, err := g.GuardWhole(ctx, slot)
+	if err == nil && whole {
+		return nil
+	}
+
+	why := "its host rules are not in place"
+	if err != nil {
+		why += " (" + err.Error() + ")"
+	}
+
+	return []string{fmt.Sprintf("this sandbox's bridge is not guarded - %s: its guests can reach host "+
+		"services at %s and docker-published ports until the daemon puts the rules back - see SECURITY.md", why, gw)}
+}

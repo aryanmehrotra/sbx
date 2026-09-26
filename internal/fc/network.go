@@ -251,3 +251,13 @@ func (n *IPNetwork) RemoveBridge(ctx context.Context, slot int) error {
 
 	return err
 }
+
+// GuardWhole reports whether slot's bridge has its guard in place, writing nothing. With no Guard
+// configured there is nothing sbx promised, and the answer is yes.
+func (n *IPNetwork) GuardWhole(ctx context.Context, slot int) (bool, error) {
+	if n.Guard == nil {
+		return true, nil
+	}
+
+	return n.Guard.Whole(ctx, Addr{Slot: slot})
+}

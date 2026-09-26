@@ -3,9 +3,11 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -86,5 +88,42 @@ func TestWarmBuildsTheRootfsOnceAndACreateReusesIt(t *testing.T) {
 
 	if !r.p.rootfs.Cached(r.ctx, redis.Image) {
 		t.Fatal("the rootfs Warm built is not in the cache a create reads")
+	}
+}
+
+// wholeNet is fakeNet whose bridges' guards are as the test says.
+type wholeNet struct {
+	*fakeNet
+	whole bool
+}
+
+func (n *wholeNet) GuardWhole(context.Context, int) (bool, error) { return n.whole, nil }
+
+// The provider says, per sandbox, when its bridge's guard is not in place - so the API can tell
+// the caller - and says nothing when it is.
+func TestHostWarningsNameAnUnguardedBridge(t *testing.T) {
+	r := newRig(t)
+	n := &wholeNet{fakeNet: r.n, whole: true}
+	r.p.net = n
+
+	r.create(t, "hw", redis)
+
+	var hw HostWarner = r.p
+	if w := hw.HostWarnings(r.ctx, "hw"); len(w) != 0 {
+		t.Fatalf("a guarded bridge warned: %q", w)
+	}
+
+	n.whole = false
+	if w := hw.HostWarnings(r.ctx, "hw"); len(w) != 1 || !strings.Contains(w[0], "10.231.") || !strings.Contains(w[0], "SECURITY.md") {
+		t.Fatalf("an unguarded bridge = %q", w)
+	}
+
+	if w := hw.HostWarnings(r.ctx, "nosuch"); len(w) != 0 {
+		t.Fatalf("a sandbox that is not here warned: %q", w)
+	}
+
+	r.p.guardCheck = func() error { return errors.New("iptables is not on PATH") }
+	if w := hw.HostWarnings(r.ctx, "hw"); len(w) != 1 || !strings.Contains(w[0], "iptables is not on PATH") {
+		t.Fatalf("no iptables = %q", w)
 	}
 }

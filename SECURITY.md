@@ -112,8 +112,9 @@ threat model is not "untrusted users share one daemon".**
     every wake and daemon reconcile (a flushed rule is put back), and removed with it
     (DECISIONS.md, "A microVM's only door is its filter"). **Where `iptables` is missing or refuses,
     the bridge still comes up and a guest reaches every host service bound to `0.0.0.0` at
-    `10.231.<slot>.1`**; the create and the daemon's log say so. Bridges made by v0.11 are not
-    guarded until the sandbox is recreated.
+    `10.231.<slot>.1`**; the create and the daemon's log say so, and an API sandbox's Running status
+    message and history carry the same warning, so its caller sees it too. Bridges made by v0.11
+    are guarded on their next wake or daemon reconcile.
   - **Isolation between sandboxes is sbx's where the guard is installed** (the mangle FORWARD
     drops), and the host's FORWARD policy where it is not. With `ip_forward=1` (docker turns it on)
     an unguarded bridge's VMs can reach another's unless the policy is `DROP`. `sbx doctor` checks it (`vm bridges isolated`), and every

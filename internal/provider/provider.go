@@ -805,6 +805,14 @@ type Forwarder interface {
 	Forward(ctx context.Context, ref string) ([]Forward, error)
 }
 
+// HostWarner is a provider that can say, per sandbox, where the host is more open to it than it
+// should be - a microVM bridge whose guard could not be installed. The API puts the answer on a
+// sandbox's Running status and in its history, because the daemon's stderr is not somewhere its
+// caller ever looks. Optional; nil or empty is nothing to say.
+type HostWarner interface {
+	HostWarnings(ctx context.Context, sandbox string) []string
+}
+
 // Maintainer is a provider with host-side state that can drift while nothing is being created or
 // woken - firewall rules a reload removed, a log a guest keeps writing. The daemon calls Maintain
 // once per discovery pass. Optional like the rest; it must be cheap when nothing has drifted.

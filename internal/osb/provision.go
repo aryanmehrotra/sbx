@@ -801,13 +801,21 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 						eps = append(eps, c.String())
 					}
 
+					warn := s.hostWarnings(ctx, id)
+
 					s.update(id, func(r *record) {
 						if r.State == statePending {
-							r.transition(stateRunning, "", "", s.now())
+							r.transition(stateRunning, "", warn, s.now())
 						}
 
 						r.Endpoints = eps
 					})
+
+					if warn != "" {
+						logs.Default.Warn(id, service, "osb: %s", warn)
+						s.history(history.Record{Kind: "event", Sandbox: id, Event: "warning", Actor: "osb",
+							Message: warn})
+					}
 
 					s.mu.Lock()
 					delete(s.provisioning, id)
@@ -952,4 +960,18 @@ func (s *Server) reap(ctx context.Context) {
 
 		logs.Default.Info(id, service, "osb: expired and removed")
 	}
+}
+
+// hostWarnings is what the provider says about the host being open to this sandbox (a microVM
+// bridge whose guard is not in place), as one sentence for its Running status - or "".
+func (s *Server) hostWarnings(ctx context.Context, id string) string {
+	hw, ok := s.p.(provider.HostWarner)
+	if !ok {
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	return strings.Join(hw.HostWarnings(ctx, id), "; ")
 }
