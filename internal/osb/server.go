@@ -184,6 +184,10 @@ type Server struct {
 	poolSem    chan struct{}
 	poolFreeze bool
 
+	// poolMisses is when each distinct pool miss was last logged - see notePoolMiss.
+	poolMissMu sync.Mutex
+	poolMisses map[string]time.Time
+
 	// dockerSem bounds container creation; reserved holds the slots handed to creates whose
 	// containers no list can show yet - see createPicked.
 	dockerSem  chan struct{}
