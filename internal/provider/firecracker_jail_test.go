@@ -215,3 +215,21 @@ func TestCreateIsRefusedWhereTheHostGuardCannotRun(t *testing.T) {
 	r.p.firewall = fc.FirewallUnmanaged
 	r.create(t, "g1", redis)
 }
+
+// Unmanaged, the operator has declared the host firewall theirs: no rule of sbx's is missing, so
+// the API caller is not told the host is open because iptables is absent.
+func TestAnUnmanagedHostReportsNoMissingGuard(t *testing.T) {
+	r := newRig(t)
+	r.p.firewall = fc.FirewallUnmanaged
+	r.create(t, "u1", redis)
+
+	r.p.guardCheck = func() error { return fc.ErrNoFirewall }
+	if w := r.p.HostWarnings(r.ctx, "u1"); len(w) != 0 {
+		t.Fatalf("unmanaged: %q", w)
+	}
+
+	r.p.firewall = fc.FirewallManaged
+	if w := r.p.HostWarnings(r.ctx, "u1"); len(w) != 1 {
+		t.Fatalf("managed without iptables: %q", w)
+	}
+}

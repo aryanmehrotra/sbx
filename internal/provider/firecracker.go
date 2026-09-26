@@ -2242,6 +2242,12 @@ func (p *fcProvider) HostWarnings(ctx context.Context, sandbox string) []string 
 		return nil
 	}
 
+	// Unmanaged, the host firewall is the operator's by declaration (SBX_FC_FIREWALL): sbx writes
+	// no rule, so it has none to report missing.
+	if p.firewall == fc.FirewallUnmanaged {
+		return nil
+	}
+
 	gw := fc.Addr{Slot: slot}.Gateway()
 
 	if p.guardCheck != nil {
