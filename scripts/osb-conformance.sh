@@ -21,6 +21,8 @@
 #                                    # the caller made and deletes; implies --provider firecracker
 #
 # On firecracker, skip@firecracker lines in test/osb/expectations are allowances too.
+# --prewarm "IMG ..." (firecracker) builds those images' root filesystems with `sbx prewarm` before
+# the daemon starts, so a first create of a large image is not a build racing the SDK's wait.
 #
 # "Compatible" is not a feature table here. It is upstream's tests/go at the commit pinned in
 # test/osb/UPSTREAM, fetched and run as-is, reported per test. A SKIP is not a PASS: any skip
@@ -61,6 +63,7 @@ while [ $# -gt 0 ]; do
     --keep-logs)   OSB_KEEP_WORK=1; shift ;;
     --provider)    PROVIDER="${2:?--provider needs docker or firecracker}"; shift 2 ;;
     --vm)          VM="${2:?--vm needs a colima profile}"; PROVIDER=firecracker; shift 2 ;;
+    --prewarm)     OSB_FC_PREWARM="${2:?--prewarm needs image names}"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     *)             usage >&2; osb_die "unknown argument '$1'" ;;
   esac

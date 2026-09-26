@@ -379,6 +379,7 @@ OSB_VM=""
 OSB_FC=0
 OSB_FC_DIR=""
 OSB_FC_STATE=""
+OSB_FC_PREWARM="${OSB_FC_PREWARM:-}" # images whose root filesystems to build before the daemon starts
 OSB_FC_VOLS_BEFORE=""
 
 # osb_fc_sh SCRIPT - run a bash script as root where the daemon runs.
@@ -435,6 +436,14 @@ osb_fc_start_daemon() {
   n="$(osb_fc_sh "env $(osb_fc_sbx_env) $OSB_FC_DIR/sbx list 2>/dev/null | grep -c '^osb-' || true")"
   [ "${n:-0}" = 0 ] || osb_die "$OSB_FC_STATE already holds $n osb-* sandbox(es); point SBX_FC_STATE at an empty directory"
   OSB_FC_VOLS_BEFORE="$(osb_fc_sh "ls $OSB_FC_STATE/volumes 2>/dev/null || true" | tr '\n' ' ')"
+
+  # Before the daemon and the suite's clock: a first create of a 2.5 GB image is otherwise a
+  # docker export and an mkfs racing the SDK's wait for Running.
+  if [ -n "$OSB_FC_PREWARM" ]; then
+    osb_say "prewarming $OSB_FC_PREWARM"
+    osb_fc_sh "env $(osb_fc_sbx_env) $OSB_FC_DIR/sbx prewarm --provider firecracker $OSB_FC_PREWARM" >&2 ||
+      osb_die "sbx prewarm --provider firecracker $OSB_FC_PREWARM failed (above)"
+  fi
 
   port=$((18100 + RANDOM % 800))
   key="osb-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"

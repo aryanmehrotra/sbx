@@ -69,3 +69,22 @@ func TestMaintainCapsAConsoleTheGuestKeepsWritingTo(t *testing.T) {
 		t.Fatalf("console.log is %d bytes after reconcile, want at most about %d", st.Size(), fc.ConsoleKeep)
 	}
 }
+
+// Prewarm on firecracker builds the image's root filesystem, once; a create after it builds
+// nothing, and a second prewarm says there was nothing to do.
+func TestWarmBuildsTheRootfsOnceAndACreateReusesIt(t *testing.T) {
+	r := newRig(t)
+
+	var w Warmer = r.p
+
+	for i, want := range []bool{true, false} {
+		built, err := w.Warm(r.ctx, redis.Image)
+		if err != nil || built != want {
+			t.Fatalf("Warm #%d = %v, %v; want %v", i+1, built, err, want)
+		}
+	}
+
+	if !r.p.rootfs.Cached(r.ctx, redis.Image) {
+		t.Fatal("the rootfs Warm built is not in the cache a create reads")
+	}
+}

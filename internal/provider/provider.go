@@ -857,6 +857,14 @@ type UnitGetter interface {
 	UnitOf(ctx context.Context, sandbox, service string) (Unit, bool, error)
 }
 
+// Warmer is a provider whose create needs more than the image to be present - a microVM's root
+// filesystem, built from the image by docker export and mkfs.ext4. Warm pulls the image if it is
+// absent and builds whatever else a create would, and reports whether it had anything to do.
+// Prewarm uses it in place of Pull where a provider has it.
+type Warmer interface {
+	Warm(ctx context.Context, image string) (built bool, err error)
+}
+
 type Puller interface {
 	// Pull fetches image, and is a no-op if it is already present.
 	Pull(ctx context.Context, image string) error

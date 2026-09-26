@@ -26,6 +26,10 @@ func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []str
 		return err
 	}
 
+	if wm, ok := p.(provider.Warmer); ok {
+		return warm(ctx, wm, w, images)
+	}
+
 	// Present-checking is a capability too, and a provider that can pull but cannot inspect
 	// still works here - it just pulls, and docker's own pull is a no-op when the digest is
 	// already local.
@@ -75,6 +79,53 @@ func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []str
 		}
 
 		return fmt.Errorf("%d of %d images could not be pulled", len(failed), len(images))
+	}
+
+	fmt.Fprintln(w)
+
+	return nil
+}
+
+// warm is Prewarm for a provider whose create needs more than the pull (provider.Warmer): on
+// firecracker, the image's root filesystem, which for a large image is most of a first create.
+func warm(ctx context.Context, wm provider.Warmer, w io.Writer, images []string) error {
+	var (
+		built   int
+		already int
+		failed  []string
+	)
+
+	for _, img := range images {
+		start := time.Now()
+
+		did, err := wm.Warm(ctx, img)
+
+		switch {
+		case err != nil:
+			fmt.Fprintf(w, "  %-64s FAILED\n", img)
+
+			failed = append(failed, fmt.Sprintf("%s: %v", img, err))
+		case did:
+			fmt.Fprintf(w, "  %-64s built in %s\n", img, time.Since(start).Round(100*time.Millisecond))
+
+			built++
+		default:
+			fmt.Fprintf(w, "  %-64s already present\n", img)
+
+			already++
+		}
+	}
+
+	fmt.Fprintf(w, "\n%d built, %d already present", built, already)
+
+	if len(failed) > 0 {
+		fmt.Fprintf(w, ", %d failed\n", len(failed))
+
+		for _, f := range failed {
+			fmt.Fprintf(w, "  %s\n", f)
+		}
+
+		return fmt.Errorf("%d of %d images could not be prewarmed", len(failed), len(images))
 	}
 
 	fmt.Fprintln(w)

@@ -488,7 +488,11 @@ jobs:
         if: steps.kvm.outputs.have == 'true'
         env:
           SBX_FC_STATE: ${{ runner.temp }}/fc-osb
-        run: scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 40m
+        # The code interpreter image is ~2.5 GB: prewarmed, so the suite's first creates of it
+        # clone a built root filesystem instead of each exporting and mkfs-ing it at once.
+        run: >-
+          scripts/osb-conformance.sh --tier v0.10.0 --provider firecracker --timeout 40m
+          --prewarm "python:3.11-slim opensandbox/code-interpreter:latest"
 
   # zeropod is the only rival that beats sbx: it CRIU-checkpoints and restores memory and
   # processes, where sbx restores a disk and starts the process cold. It went unmeasured for

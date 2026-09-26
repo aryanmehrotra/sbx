@@ -48,6 +48,19 @@ func (p *fcProvider) ImageInfo(ctx context.Context, image string) (ImageInfo, er
 	return ImageInfo{Entrypoint: c.Entrypoint, Cmd: c.Cmd, OS: c.OS, Arch: c.Arch}, nil
 }
 
+// Warm builds image's root filesystem now (pulling the image if it is absent), so a create does
+// not: for a large image that build, not the pull, is most of a first create. Concurrent creates
+// of the image share the build (fc.RootfsBuilder.Build), including one prewarm is running.
+func (p *fcProvider) Warm(ctx context.Context, image string) (bool, error) {
+	if p.rootfs.Cached(ctx, image) {
+		return false, nil
+	}
+
+	_, err := p.rootfs.Build(ctx, image)
+
+	return err == nil, err
+}
+
 // Pull fetches an image into the engine that builds root filesystems.
 func (p *fcProvider) Pull(ctx context.Context, image string) error {
 	return p.rootfs.Engine.Pull(ctx, image)
