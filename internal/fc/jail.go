@@ -137,9 +137,11 @@ type Stage struct {
 	Name string
 	Host string
 
-	// Shared: not this VM's (the kernel). Never re-owned; hard-linked only when any user may
-	// read it, and copied otherwise. A VM's own file is hard-linked and given to its uid, so
-	// what the guest writes to its disk is on the VM's disk.
+	// Shared: not this VM's (the kernel). Symlinks resolved; never given to the VM's uid;
+	// hard-linked only when it is root's, readable by anyone and writable by nobody else (sharable),
+	// and held to that after the jailer has run (secureShared) - otherwise a root-owned 0444 copy.
+	// A VM's own file is hard-linked and given to its uid, so what the guest writes to its disk is
+	// on the VM's disk.
 	Shared bool
 
 	// ReadOnly: the VMM opens it read-only (a read-only volume, the agent drive). Linked like a VM's
@@ -238,17 +240,31 @@ func stage(root string, f Stage, uid, gid int) error {
 	dst := filepath.Join(root, f.Name)
 
 	if f.Shared {
-		// Linked only when the VMM could read the original anyway: re-owning a shared file would
-		// hand it to one VM, and a link to a root-only one would be unreadable in the jail.
-		if st.Mode().Perm()&0o004 != 0 && os.Link(f.Host, dst) == nil {
-			return nil
-		}
-
-		if _, err := CloneFile(f.Host, dst); err != nil {
+		// The file a symlink names (SBX_FC_KERNEL may be one): link(2) on Linux links the symlink
+		// itself, which in the chroot names nothing - or, relative, something in the VM's root.
+		host, err := filepath.EvalSymlinks(f.Host)
+		if err != nil {
 			return err
 		}
 
-		return own(dst, uid, gid)
+		// Linked only when it is one no VM may change and every VM may read: root's (sbx's), and
+		// writable by nobody else. It is ONE inode for every VM on the host, in a root the VM's
+		// uid owns, so re-owning it would hand it to one VM, a link to a root-only one would be
+		// unreadable in the jail, and a link to one the jail uid can write would let one VM
+		// change every other VM's kernel. Anything else is a copy of the VM's own.
+		if sharable(st) && os.Link(host, dst) == nil {
+			return nil
+		}
+
+		if _, err := CloneFile(host, dst); err != nil {
+			return err
+		}
+
+		if err := own(dst, 0, 0); err != nil {
+			return err
+		}
+
+		return os.Chmod(dst, 0o444)
 	}
 
 	// A VM's own drive or snapshot must be the SAME file: a copy would be a disk the guest
@@ -344,3 +360,57 @@ var (
 	geteuid = os.Geteuid
 	chown   = os.Chown
 )
+
+// sharable is a file every jail may be given by link: owned by the one running sbx (root, in
+// production), readable by anyone, and writable by nobody else.
+func sharable(st os.FileInfo) bool {
+	uid, known := fileOwner(st)
+	perm := st.Mode().Perm()
+
+	return (!known || uid == geteuid()) && perm&0o004 != 0 && perm&0o022 == 0
+}
+
+// secureShared holds every shared file in root to what stage left, after the jailer has been at
+// the root: root's, and writable by nobody else. The jailer chowns the root to the VM's uid, and
+// nothing in sbx controls what a future one does inside it; a shared file it re-owned or loosened
+// would be every VM's kernel, writable by one. Put back and re-read, or refused.
+func secureShared(root string, files []Stage) error {
+	for _, f := range files {
+		if !f.Shared {
+			continue
+		}
+
+		p := filepath.Join(root, f.Name)
+
+		st, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+
+		if !st.Mode().IsRegular() {
+			return fmt.Errorf("the shared %s in the VMM's jail is a %s after the jailer ran, not the file sbx put there",
+				f.Name, st.Mode().Type())
+		}
+
+		if sharable(st) {
+			continue
+		}
+
+		if uid, known := fileOwner(st); known && uid != geteuid() {
+			if err := own(p, 0, 0); err != nil {
+				return err
+			}
+		}
+
+		if err := os.Chmod(p, 0o444); err != nil {
+			return err
+		}
+
+		if st, err = os.Lstat(p); err != nil || !sharable(st) {
+			return fmt.Errorf("the shared %s in the VMM's jail could not be made root's and read-only again "+
+				"after the jailer ran (%v); refused - every VM shares that file", f.Name, err)
+		}
+	}
+
+	return nil
+}

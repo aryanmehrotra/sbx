@@ -56,10 +56,17 @@ func TestTheRealJailer(t *testing.T) {
 	must(t, err)
 	t.Logf("the rootfs was cloned by %s", how)
 
+	// The kernel every VM shares, as the artifact cache leaves it: root's, 0644.
+	kernel := filepath.Join(state, "vmlinux")
+	must(t, os.WriteFile(kernel, []byte("kernel"), 0o644))
+
 	uid := JailConfig{UIDBase: DefaultJailUIDBase}.UID(Addr{Slot: 2, Index: 3})
 	s := LaunchSpec{Binary: bin, Dir: dir, ID: "x", Jail: &JailSpec{
 		Jailer: jailer, UID: uid, GID: uid, CPUs: 1, MemMiB: 256,
-		Files: []Stage{{Name: RootfsName, Host: filepath.Join(dir, RootfsName)}},
+		Files: []Stage{
+			{Name: RootfsName, Host: filepath.Join(dir, RootfsName)},
+			{Name: "vmlinux", Host: kernel, Shared: true},
+		},
 	}}
 
 	for round := 1; round <= 2; round++ {
@@ -103,6 +110,19 @@ func TestTheRealJailer(t *testing.T) {
 
 		if st, ok := j.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid || int(st.Gid) != uid {
 			t.Fatalf("the cloned rootfs in the jail is not owned by the VM's uid %d: %+v", uid, j.Sys())
+		}
+
+		// The shared kernel, after the real jailer chowned the root to the VM's uid: still the host's
+		// one inode, still root's, and writable by nobody else - or every VM's kernel is one VM's.
+		k, _ := os.Stat(root + "vmlinux")
+		hk, _ := os.Stat(kernel)
+
+		if k == nil || hk == nil || !os.SameFile(k, hk) {
+			t.Fatal("the shared kernel was not linked into the jail")
+		}
+
+		if st, ok := k.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 || st.Gid != 0 || k.Mode().Perm()&0o022 != 0 {
+			t.Fatalf("the shared kernel in the jail is %v owned %+v: it must stay root's and read-only to the jail", k.Mode(), k.Sys())
 		}
 
 		cg, _ := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cgroup")

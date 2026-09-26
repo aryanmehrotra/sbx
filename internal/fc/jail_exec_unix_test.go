@@ -97,3 +97,71 @@ func TestExecLauncherStartsTheVMMThroughTheJailer(t *testing.T) {
 		t.Fatalf("releasing the jail took the VM's own disk: %v", err)
 	}
 }
+
+// The shared kernel is linked into a root the VM's uid owns, so whatever the jailer does to that
+// root after sbx filled it, the kernel must come out of the launch still root's and writable by
+// nobody else - it is one inode for every VM on the host.
+func TestASharedFileIsNotWritableByTheJailAfterTheLaunch(t *testing.T) {
+	dir, err := os.MkdirTemp("", "fcs")
+	must(t, err)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	t.Setenv(fakeJailerEnv, filepath.Join(dir, "argv"))
+	t.Setenv(fakeJailerLoosenEnv, "vmlinux")
+
+	bin := filepath.Join(dir, "firecracker")
+	must(t, os.WriteFile(bin, []byte("fc"), 0o755))
+
+	kernel := filepath.Join(dir, "vmlinux")
+	must(t, os.WriteFile(kernel, []byte("kernel"), 0o644))
+
+	s := LaunchSpec{Binary: bin, Dir: dir, ID: "instance", Jail: &JailSpec{
+		Jailer: os.Args[0], UID: os.Getuid(), GID: os.Getgid(),
+		Files: []Stage{{Name: "vmlinux", Host: kernel, Shared: true}},
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pid, err := ExecLauncher{}.Launch(ctx, s)
+	if err == nil {
+		t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	}
+
+	st, serr := os.Stat(kernel)
+	must(t, serr)
+
+	if m := st.Mode().Perm(); m&0o022 != 0 {
+		t.Fatalf("after the launch (err %v) the host's shared kernel is %v: writable by the jail", err, m)
+	}
+}
+
+// A kernel given as a symlink (SBX_FC_KERNEL=/boot/vmlinux -> vmlinux-6.1) is linked as the file
+// it names: link(2) on Linux links the symlink itself, which in the chroot names nothing.
+func TestASharedSymlinkIsStagedAsTheFileItNames(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "vm")
+	must(t, os.MkdirAll(dir, 0o700))
+
+	real := filepath.Join(base, "vmlinux-6.1")
+	must(t, os.WriteFile(real, []byte("kernel"), 0o644))
+
+	link := filepath.Join(base, "vmlinux")
+	must(t, os.Symlink("vmlinux-6.1", link))
+
+	root, err := PrepareJail(LaunchSpec{Binary: filepath.Join(base, "firecracker"), Dir: dir, Jail: &JailSpec{
+		Jailer: "/nonexistent/jailer", UID: os.Getuid(), GID: os.Getgid(),
+		Files: []Stage{{Name: "vmlinux", Host: link, Shared: true}},
+	}})
+	must(t, err)
+
+	st, err := os.Lstat(filepath.Join(root, "vmlinux"))
+	must(t, err)
+
+	want, err := os.Stat(real)
+	must(t, err)
+
+	if !st.Mode().IsRegular() || !os.SameFile(st, want) {
+		t.Fatalf("the jail's vmlinux is %v, not the kernel the symlink names", st.Mode())
+	}
+}

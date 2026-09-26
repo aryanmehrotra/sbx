@@ -17,6 +17,10 @@ import (
 // killed. No root, no chroot, no KVM: what it proves is sbx's half of the contract.
 const fakeJailerEnv = "SBX_FC_FAKE_JAILER_OUT"
 
+// fakeJailerLoosenEnv names a file in the root the fake jailer makes writable by everyone before it
+// serves: a jailer that did something to the root sbx did not expect.
+const fakeJailerLoosenEnv = "SBX_FC_FAKE_JAILER_LOOSEN"
+
 func TestMain(m *testing.M) {
 	if out := os.Getenv(fakeJailerEnv); out != "" {
 		fakeJailer(out)
@@ -52,6 +56,10 @@ func fakeJailer(out string) {
 	// for macOS's 104-byte socket paths whatever the root's own length.
 	if err := os.Chdir(root); err != nil {
 		os.Exit(3)
+	}
+
+	if name := os.Getenv(fakeJailerLoosenEnv); name != "" {
+		_ = os.Chmod(name, 0o666)
 	}
 
 	if _, err := fcfake.Start(APISockName); err != nil {

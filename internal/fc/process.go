@@ -88,9 +88,11 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 
 	bin, args := s.Binary, []string{"--api-sock", sock, "--id", s.ID}
 
+	var root string
+
 	if s.Jail != nil {
 		// sock becomes a symlink into the root, where the jailed VMM binds /api.sock.
-		if _, err := PrepareJail(s); err != nil {
+		if root, err = PrepareJail(s); err != nil {
 			return 0, err
 		}
 
@@ -131,6 +133,15 @@ func (ExecLauncher) Launch(ctx context.Context, s LaunchSpec) (int, error) {
 		}
 
 		return 0, fmt.Errorf("%w - %s %s", err, why, filepath.Join(s.Dir, VMMLogName))
+	}
+
+	// The jailer has finished with the root once its VMM answers, and no guest has run yet: the
+	// moment to hold the files every VM shares to what stage left.
+	if s.Jail != nil {
+		if err := secureShared(root, s.Jail.Files); err != nil {
+			_ = cmd.Process.Kill()
+			return 0, err
+		}
 	}
 
 	return pid, nil

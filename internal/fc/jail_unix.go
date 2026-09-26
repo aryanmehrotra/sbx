@@ -15,3 +15,12 @@ func linkCount(fi os.FileInfo) uint64 {
 
 	return 0
 }
+
+// fileOwner is the file's uid, and whether the platform says.
+func fileOwner(fi os.FileInfo) (int, bool) {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return int(st.Uid), true
+	}
+
+	return 0, false
+}
