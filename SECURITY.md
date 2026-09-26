@@ -148,9 +148,13 @@ threat model is not "untrusted users share one daemon".**
     guarded as above. A VMM escape reaches what a non-root uid on the host's network can.
   - **The uid range must hold no real account** (`SBX_FC_JAILER_UID_BASE` moves it); sbx does not
     check `/etc/passwd`.
-  - **A compromised VMM owns its chroot's `/`** and can replace its API or vsock socket with a
-    symlink; sbx's client connects through `<vm dir>/api.sock` and would follow it, so such a VMM
-    can point sbx's own API calls or vsock handshake at another unix socket on the host.
+  - **A compromised VMM owns its chroot's `/`** and can replace its API or vsock socket there with
+    a symlink to another VM's (the path is predictable). sbx no longer follows it: it takes its own
+    `<vm dir>/api.sock` / `vsock.sock` link into the jail, and then requires the entry in the root to
+    be a socket (not a symlink) owned by the jail's uid, and - on Linux - the process that answers
+    to be that uid (`SO_PEERCRED`, which a swap between the check and the connect cannot fake).
+    Anything else is refused as a foreign socket, never read as "asleep". What such a VMM can still
+    do is refuse to answer, or answer its own API wrongly - about itself only.
   - **The daemon still runs as root** (taps, bridges, iptables, the jailer itself), and the guest
     kernel plus Firecracker's own seccomp filters are the first boundary, as before.
   - Snapshots taken before v0.13 name host paths the jailed VMM cannot open: those VMs cold-boot

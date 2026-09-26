@@ -30,7 +30,7 @@ func (g VsockGuest) Dial(ctx context.Context, vm GuestVM, port int) (net.Conn, e
 		return nil, fmt.Errorf("vsock port %d is out of range (1..4294967294)", port)
 	}
 
-	return fcvsock.Dialer{UDSPath: vm.VsockUDS, Port: uint32(port), Timeout: g.Timeout}.DialContext(ctx)
+	return fcvsock.Dialer{UDSPath: vm.VsockUDS, Port: uint32(port), Timeout: g.Timeout, Unix: DialVMM}.DialContext(ctx)
 }
 
 func (g VsockGuest) control(vm GuestVM) execdctl.Client {
