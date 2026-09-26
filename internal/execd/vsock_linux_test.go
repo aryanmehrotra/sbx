@@ -132,3 +132,34 @@ func TestVsockListenerServesTheAPI(t *testing.T) {
 		t.Fatal("Close did not wake a pending Accept")
 	}
 }
+
+// TestVsockConnKeepsRequestContextsLive runs the keep-alive check against the real vsockConn,
+// built by newVsockConn over a non-blocking accepted-style fd exactly as Accept builds it: a
+// guard that the conn execd serves is the one with net.Error-shaped errors, not a bare *os.File.
+func TestVsockConnKeepsRequestContextsLive(t *testing.T) {
+	fd, client := socketPair(t)
+	conn := newVsockConn(fd, vsockAddr{CID: vmaddrCIDAny, Port: 1}, vsockAddr{CID: 2, Port: 9})
+
+	errs := make(chan error, 3)
+
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		errs <- r.Context().Err()
+	})
+
+	c := serveOneConn(t, conn, client, h)
+
+	for i := range 3 {
+		resp, err := c.Get("http://execd/ping")
+		if err != nil {
+			t.Fatalf("request %d: %v", i+1, err)
+		}
+
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		if err := <-errs; err != nil {
+			t.Errorf("request %d over one keep-alive vsock conn: r.Context().Err() = %v; want nil", i+1, err)
+		}
+	}
+}

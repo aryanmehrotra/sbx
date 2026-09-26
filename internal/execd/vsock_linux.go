@@ -144,20 +144,17 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 	}
 }
 
-// vsockConn is an accepted vsock stream. *os.File over a non-blocking fd already has
-// everything net.Conn needs that is not an address - Read, Write, Close and deadlines through
-// the poller - so it is embedded rather than re-implemented.
+// vsockConn is an accepted vsock stream: a fileConn - *os.File over the non-blocking fd, for
+// Close and deadlines through the poller, with Read and Write errors reported as net.Errors so
+// net/http does not cancel the context of every request after a keep-alive connection's first
+// (see fileConn).
 type vsockConn struct {
-	*os.File
-	local, remote vsockAddr
+	fileConn
 }
 
 func newVsockConn(fd int, local, remote vsockAddr) *vsockConn {
-	return &vsockConn{File: os.NewFile(uintptr(fd), "vsock-conn"), local: local, remote: remote}
+	return &vsockConn{fileConn{File: os.NewFile(uintptr(fd), "vsock-conn"), local: local, remote: remote}}
 }
-
-func (c *vsockConn) LocalAddr() net.Addr  { return c.local }
-func (c *vsockConn) RemoteAddr() net.Addr { return c.remote }
 
 // vsockTransport marks this conn as having arrived over vsock; see controlTransport.
 func (c *vsockConn) vsockTransport() {}
