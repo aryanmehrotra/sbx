@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
@@ -163,12 +164,31 @@ func TestDockerAPISandboxLabelIsReadBack(t *testing.T) {
 	}
 }
 
-func TestOSBIsRefusedOnFirecrackerAtStartup(t *testing.T) {
-	for _, kind := range []string{"firecracker", "fc"} {
-		if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); !errors.Is(err, provider.ErrOSBOnFirecracker) {
-			t.Errorf("%s: %v", kind, err)
+// Through a helper VM the API is refused at startup; on a Linux host that runs Firecracker
+// directly it is served.
+func TestOSBOnFirecrackerIsRefusedOnlyThroughAHelperVM(t *testing.T) {
+	old := provider.DecideHost
+	t.Cleanup(func() { provider.DecideHost = old })
+
+	for _, backend := range []hostcap.Backend{hostcap.HelperVM, hostcap.Refused, hostcap.KataRuntimeClass} {
+		provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: backend} }
+
+		for _, kind := range []string{"firecracker", "fc"} {
+			if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); !errors.Is(err, provider.ErrOSBOnFirecracker) {
+				t.Errorf("%s on %v: %v", kind, backend, err)
+			}
 		}
 	}
+
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.Direct} }
+
+	for _, kind := range []string{"firecracker", "fc"} {
+		if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); err != nil {
+			t.Errorf("%s on a direct host: %v", kind, err)
+		}
+	}
+
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.HelperVM} }
 
 	if refuseOSBOnMicroVM("firecracker", "") != nil || refuseOSBOnMicroVM("docker", "127.0.0.1:8080") != nil {
 		t.Error("refused something that works")
