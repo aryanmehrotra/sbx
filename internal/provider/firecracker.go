@@ -183,11 +183,11 @@ type fcProvider struct {
 	// bridgeCheck reads whether this host drops traffic between sandbox bridges
 	// (fc.HostBridgeIsolation); nil skips it. warn is where Create says so; nil is stderr.
 	bridgeCheck func() fc.BridgeIsolation
+	warn        io.Writer
 
 	// guardCheck reports whether this host can close itself to a bridge's guests (fc.Guard);
 	// nil skips the check. A host that cannot is warned about on every create.
 	guardCheck func() error
-	warn        io.Writer
 
 	// boots caps how many VMs restore or cold-boot at once: each is a burst of page faults and a
 	// vCPU spinning up, and a fleet woken together (a host reboot, a burst of connections) would
