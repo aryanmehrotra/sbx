@@ -316,3 +316,47 @@ func TestACommitUsesTheJailModeTheVMMWasLaunchedWith(t *testing.T) {
 		t.Fatalf("an unjailed VMM was told %q, want a host path under %s", got, filepath.Dir(want))
 	}
 }
+
+// Every drive the VMM is told to open read-only is staged read-only, so the jail never hands it
+// to the VMM's uid (fc.Stage.ReadOnly), and every drive it writes is staged as the VM's own. The
+// expectation is what the VMM was actually told - each PUT /drives call's path and is_read_only.
+func TestEveryReadOnlyDriveIsStagedReadOnly(t *testing.T) {
+	r := jailRig(t)
+	r.g.available = false
+	r.create(t, "ro", redis)
+
+	staged := map[string]bool{}
+	for _, f := range r.l.specs[0].Jail.Files {
+		staged[f.Name] = f.ReadOnly
+	}
+
+	drives := 0
+
+	for _, c := range r.l.history[0].Calls() {
+		if c.Method != "PUT" || !strings.HasPrefix(c.Path, "/drives/") {
+			continue
+		}
+
+		drives++
+		name := strings.TrimPrefix(c.Body["path_on_host"].(string), "/")
+		ro, _ := c.Body["is_read_only"].(bool)
+
+		if got, ok := staged[name]; !ok || got != ro {
+			t.Fatalf("%s: the VMM opens it read-only=%v, staged read-only=%v (staged at all: %v)", name, ro, got, ok)
+		}
+	}
+
+	if drives == 0 {
+		t.Fatal("no drive was attached; the test proves nothing")
+	}
+
+	// A volume carries its own mode from the record into the stage.
+	vm := &fcVM{Ref: "sbx-x-y", Volumes: []fcVolume{{Name: "ro", ReadOnly: true}, {Name: "rw"}}}
+	for _, s := range r.p.driveStages(vm) {
+		for i, v := range vm.Volumes {
+			if s.Name == volumeStage(i) && s.ReadOnly != v.ReadOnly {
+				t.Fatalf("volume %s (read-only %v) staged read-only=%v", v.Name, v.ReadOnly, s.ReadOnly)
+			}
+		}
+	}
+}

@@ -60,16 +60,17 @@ func (p *fcProvider) launchSpec(ctx context.Context, vm *fcVM, stage []fc.Stage)
 }
 
 // driveStages are vm's drives, by the names its VMM opens them at: each is the VM's own file,
-// hard-linked into the jail and given to its uid.
+// hard-linked into the jail - given to its uid when the VMM writes it, and kept root's when it
+// only reads it (fc.Stage.ReadOnly: the agent drive, a read-only volume).
 func (p *fcProvider) driveStages(vm *fcVM) []fc.Stage {
 	dir := p.dir(vm.Ref)
 	out := []fc.Stage{
-		{Name: "agent.ext4", Host: filepath.Join(dir, "agent.ext4")},
+		{Name: "agent.ext4", Host: filepath.Join(dir, "agent.ext4"), ReadOnly: true},
 		{Name: fc.RootfsName, Host: filepath.Join(dir, fc.RootfsName)},
 	}
 
 	for i, v := range vm.Volumes {
-		out = append(out, fc.Stage{Name: volumeStage(i), Host: p.volumePath(v.Name)})
+		out = append(out, fc.Stage{Name: volumeStage(i), Host: p.volumePath(v.Name), ReadOnly: v.ReadOnly})
 	}
 
 	return out

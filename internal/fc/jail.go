@@ -141,6 +141,12 @@ type Stage struct {
 	// read it, and copied otherwise. A VM's own file is hard-linked and given to its uid, so
 	// what the guest writes to its disk is on the VM's disk.
 	Shared bool
+
+	// ReadOnly: the VMM opens it read-only (a read-only volume, the agent drive). Linked like a VM's
+	// own file, but never given to its uid: a VMM that owned it could rewrite what is meant to be
+	// read-only for whichever VM attaches it next. It is kept root's - taken back from a uid an
+	// earlier read-write attach gave it - and readable, never writable, by anyone else.
+	ReadOnly bool
 }
 
 // JailerArgs is the jailer's argv (without argv[0]) for s.
@@ -253,7 +259,22 @@ func stage(root string, f Stage, uid, gid int) error {
 			"VM's directory): %w", err)
 	}
 
+	if f.ReadOnly {
+		return keepRootsReadable(dst, st.Mode().Perm())
+	}
+
 	return own(dst, uid, gid)
+}
+
+// keepRootsReadable leaves a file the VMM only reads as root's, and readable - never writable - by
+// the jail's uid, which reaches it as "other". The link is the file itself, so this is the host's
+// copy too.
+func keepRootsReadable(path string, perm os.FileMode) error {
+	if err := own(path, 0, 0); err != nil {
+		return err
+	}
+
+	return os.Chmod(path, perm&^0o022|0o004)
 }
 
 // View is how a VMM sees the host's files. The zero View is an unjailed VMM, which is given the
@@ -310,9 +331,16 @@ func (v View) Adopt(host, name string) error {
 // own gives path to uid:gid. Only root can give a file away, and only root can run the jailer:
 // an unprivileged caller (a test preparing a root it will not jail into) keeps it as it is.
 func own(path string, uid, gid int) error {
-	if os.Geteuid() != 0 && uid != os.Getuid() {
+	if geteuid() != 0 && uid != os.Getuid() {
 		return nil
 	}
 
-	return os.Chown(path, uid, gid)
+	return chown(path, uid, gid)
 }
+
+// geteuid and chown are the privilege own acts with: variables so a test can see what root would
+// be made to do without being root.
+var (
+	geteuid = os.Geteuid
+	chown   = os.Chown
+)
