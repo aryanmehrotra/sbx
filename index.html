@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>sbx — Infrastructure for AI agents</title>
-<meta name="description" content="Give every AI agent its own real Postgres, Redis or browser — a disposable sandbox that wakes on connect and sleeps at 0 B. Deploy to a laptop, VM or Kubernetes; drive it all from one CLI.">
+<meta name="description" content="Give every AI agent its own real Postgres, Redis or browser — a sandbox that wakes on connect and sleeps at 0 B. Speaks the OpenSandbox API, runs on docker, Kubernetes or Firecracker microVMs, one static binary.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cg transform='rotate(-30 12 12)'%3E%3Ccircle cx='7.3' cy='3.2' r='1.45'/%3E%3Crect x='5.5' y='4.7' width='3.6' height='14.6' rx='1.8'/%3E%3Crect x='14.9' y='4.7' width='3.6' height='14.6' rx='1.8'/%3E%3Ccircle cx='16.7' cy='20.8' r='1.45'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -301,6 +301,30 @@
     background:rgba(233,184,146,.1);border:1px solid rgba(233,184,146,.14);padding:6px 10px;border-radius:8px;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   @media (max-width:820px){ html.gsap .usecase-panel{display:none} html.gsap .reveal-window{width:min(600px,92vw)} }
+
+  /* ── OpenSandbox + microVM sections ── */
+  .showcase.inline{padding:0}
+  .term pre .ok{color:#4ade80}
+  .figs{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:22px}
+  .fig{background:var(--panel);border:1px solid var(--soft);border-radius:16px;padding:22px 24px}
+  .fig b{display:block;font-size:26px;font-weight:500;letter-spacing:-.03em;color:#fff;margin-bottom:4px}
+  .fig span{color:#9a9a9a;font-size:13.5px;line-height:1.5}
+  .fine{text-align:center;max-width:640px;margin:16px auto 0;color:#6a6a6a;font-size:12.5px;line-height:1.55;font-family:var(--mono)}
+  .fine a{text-decoration:underline}
+  .hosts{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;margin:0 auto 32px;max-width:860px}
+  .hosts span{font-family:var(--mono);font-size:12px;color:#9a9a9a;border:1px solid var(--soft);border-radius:8px;padding:7px 12px;letter-spacing:.01em}
+  .hosts span b{color:#d8d8d8;font-weight:500}
+  .hosts .v{color:#4ade80}.hosts .u{color:#e9b892}
+  .note{max-width:760px;margin:22px auto 0;padding:16px 20px;border:1px solid rgba(233,184,146,.28);border-radius:12px;
+    background:rgba(233,184,146,.05);color:#b4b0a8;font-size:14px;line-height:1.6}
+  .note b{color:#e9b892;font-weight:600}
+  .note a{color:#e6e6e6;text-decoration:underline}
+  .note .k{font-family:var(--mono);color:#d8d8d8;font-size:.92em}
+  .install{flex-direction:column;align-items:center;gap:10px}
+  .copybox code{min-width:0} .copybox button{flex:0 0 auto}
+  .install .alt{color:#6a6a6a;font-family:var(--mono);font-size:12px}
+  @media (max-width:900px){ .figs{grid-template-columns:1fr} }
+  @media (max-width:560px){ .term pre{font-size:12px;padding:18px 16px} .copybox{padding:12px 12px 12px 14px;gap:10px} }
 </style>
 </head>
 <body style="background:#000;color:#fff">
@@ -309,11 +333,13 @@
   <header class="header">
     <a class="logo appear appear--scale" href="#top" aria-label="sbx" style="--d:.08s">
       <svg viewBox="0 0 24 24" fill="currentColor"><g transform="rotate(-30 12 12)"><circle cx="7.3" cy="3.2" r="1.45"/><rect x="5.5" y="4.7" width="3.6" height="14.6" rx="1.8"/><rect x="14.9" y="4.7" width="3.6" height="14.6" rx="1.8"/><circle cx="16.7" cy="20.8" r="1.45"/></g></svg>
-      <span>sbx</span><span class="ver">v0.6.0</span>
+      <!-- the release version: this is the ONLY place it appears on the page; bump it here -->
+      <span>sbx</span><span class="ver">v0.13.0</span>
     </a>
     <nav id="site-nav" aria-label="Primary">
       <a class="navlink appear appear--soft" href="#how" style="--d:.16s">How it works</a>
       <a class="navlink appear appear--soft" href="#features" style="--d:.24s">Features</a>
+      <a class="navlink appear appear--soft" href="#opensandbox" style="--d:.28s">OpenSandbox</a>
       <a class="navlink appear appear--soft" href="https://github.com/aryanmehrotra/sbx#readme" style="--d:.32s">Docs</a>
       <a class="navlink appear appear--soft" href="https://github.com/aryanmehrotra/sbx" style="--d:.40s">GitHub <span class="ext">↗</span></a>
     </nav>
@@ -333,13 +359,13 @@
       <span class="headline-line appear appear--mask" style="--d:.42s">Give your <em>AI agents</em></span>
       <span class="headline-line appear appear--mask" style="--d:.62s">a real sandbox.</span>
     </h1>
-    <p class="lede appear appear--soft" style="--d:.82s;animation-duration:1.25s">Every agent, task or branch gets its own Postgres, Redis or browser to work in — a disposable sandbox on your laptop, a VM or a Kubernetes cluster, all driven from one CLI. Awake on connect, asleep at 0&nbsp;B.</p>
+    <p class="lede appear appear--soft" style="--d:.82s;animation-duration:1.25s">Every agent, task or branch gets its own Postgres, Redis or browser to work in — in a container or a Firecracker microVM, on your laptop, a VM or a Kubernetes cluster. Speaks the OpenSandbox API. Awake on connect, asleep at 0&nbsp;B.</p>
     <div class="hero-actions">
       <a class="btn btn-solid appear appear--btn" href="#install" style="--d:.96s">Get started</a>
       <a class="btn btn-ghost appear appear--side" href="#how" style="--d:1.10s">See how it works</a>
     </div>
     <div class="badges appear appear--soft" style="--d:1.2s">
-      <span>self-hosted</span><span>no SDK</span><span>docker · kubernetes</span><span>zero deps</span><span>MIT</span>
+      <span>self-hosted</span><span>OpenSandbox-compatible</span><span>docker · kubernetes · firecracker</span><span>zero deps</span><span>MIT</span>
     </div>
     </main>
 
@@ -382,7 +408,10 @@
        <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 8.2v7.6M8.2 6.9l7.6 1M18 10.2c0 4-3.2 4.6-11.8 5.6"/></svg></div><h3>Snapshot &amp; fork</h3><p>Seed a database once, then fork it a hundred times — the migration runs a single time.</p><code>sbx snapshot · sbx fork</code></article>
        <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="14 3 14 9 20 9"/></svg></div><h3>Checkpoint &amp; resume</h3><p>Park a box mid-run — memory and processes — and bring it back exactly where it left off.</p><code>sbx checkpoint · sbx resume</code></article>
        <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V5z"/></svg></div><h3>Locked-down egress</h3><p>Let the agent reach only the APIs you allow — enforced by a proxy, with no route around it.</p><code>egress_allow: ["api.openai.com"]</code></article>
-       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"/><polyline points="2 15.5 12 22 22 15.5"/></svg></div><h3>Stronger isolation</h3><p>Run untrusted code in a userspace kernel or a microVM — not just a shared-kernel container.</p><code>--isolation gvisor · kata</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"/><polyline points="2 15.5 12 22 22 15.5"/></svg></div><h3>A kernel of its own</h3><p>The same spec in a Firecracker microVM — its own guest kernel, and a sleep that keeps memory and processes.</p><code>--provider firecracker</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div><h3>OpenSandbox SDKs, unchanged</h3><p>Code written for OpenSandbox's Go, Python, JS, Kotlin or C# SDKs runs against your own machine.</p><code>sbx serve --osb-addr 127.0.0.1:8080</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div><h3>Sandbox tools over MCP</h3><p>Create, run, read and write files in a sandbox — the same 19 tools as OpenSandbox's MCP server.</p><code>claude mcp add sbx -- sbx mcp</code></article>
+       <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></div><h3>A warm pool</h3><p>Sandboxes made ahead of time, so a create answers in about 14&nbsp;ms instead of a container start.</p><code>--osb-pool python:3.11-slim=8</code></article>
        <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><h3>Wakes on a socket</h3><p>Any TCP connection wakes it; a few idle minutes sleep it back to 0 B. No SDK, no wrapper.</p><code>psql · go test · curl</code></article>
        <article class="uc"><div class="uc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6M10 2v6l-5.2 9.2A2 2 0 0 0 6.5 20h11a2 2 0 0 0 1.7-2.8L14 8V2"/></svg></div><h3>One-shot fixture</h3><p>A sandbox that lives exactly as long as a test — always torn down, even when it fails.</p><code>sbx with test-db -- go test</code></article>
       </div>
@@ -411,18 +440,68 @@
     <div class="wrap">
       <div class="eyebrow">built for branches · agents · CI</div>
       <h2 class="sec-h">Deploy anywhere. <em>Manage from one CLI.</em></h2>
-      <p class="sec-p">Local agents or remote, it runs anywhere docker or kubernetes does — and <span style="font-family:var(--mono);color:#d8d8d8">sbx ui --connect</span> drives every sandbox, wherever it lives.</p>
+      <p class="sec-p">Local agents or remote, it runs anywhere docker, kubernetes or a KVM host does — and <span style="font-family:var(--mono);color:#d8d8d8">sbx ui --connect</span> drives every sandbox, wherever it lives.</p>
       <div class="platforms appear appear--soft" style="--d:.2s">
         <span><b>local</b></span><span><b>GCP</b></span><span><b>AWS</b></span><span><b>Azure</b></span><span><b>self-hosted</b></span><span><b>bare metal</b></span>
       </div>
       <div class="feat">
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg><h3>Wakes on a socket</h3><p>Any TCP connection. No SDK, no client library, no wrapper.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg><h3>Sleeps to 0 B</h3><p>Idle sandboxes cost no memory. Volume intact, back in a second.</p></div>
-        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"></polygon><polyline points="2 15.5 12 22 22 15.5"></polyline></svg><h3>Docker or Kubernetes</h3><p>The same spec local or in a cluster. <span class="k">sbx doctor</span> tells you what a host can do.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"></polygon><polyline points="2 15.5 12 22 22 15.5"></polyline></svg><h3>Docker, Kubernetes or microVM</h3><p>The same spec local, in a cluster or in a Firecracker microVM. <span class="k">sbx doctor</span> tells you what a host can do.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 18v3"></path><polyline points="6 9 9 12 6 15"></polyline></svg><h3>Manage from the CLI</h3><p><span class="k">sbx ui --connect</span> reaches sandboxes on a VM or cluster and drives them from your terminal.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4"></circle><circle cx="6" cy="18" r="2.4"></circle><circle cx="18" cy="8" r="2.4"></circle><path d="M6 8.4v7.2M8.3 6.7l7.5 .9M18 10.4c0 4-3 4.6-11.8 5.4"></path></svg><h3>Snapshot &amp; fork</h3><p>Seed one database, then fork a hundred. The migration runs a single time.</p></div>
         <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg><h3>One committed file</h3><p><span class="k">sandbox.json</span> says what a branch needs. Reads with <span class="k">--json</span> for agents.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg><h3>A warm pool</h3><p><span class="k">--osb-pool</span> keeps sandboxes ready: create to first command in ~14&nbsp;ms, and 100 at once all succeed.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V5z"></path></svg><h3>Egress you choose</h3><p><span class="k">egress_allow</span> or <span class="k">sbx egress --deny</span> — domain, wildcard and CIDR rules, changed live.</p></div>
+        <div class="cell"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg><h3>OpenSandbox API</h3><p><span class="k">sbx serve --osb-addr</span> — its SDKs, <span class="k">osb</span> CLI and MCP tools work unchanged. <a href="#opensandbox" style="color:#d8d8d8;text-decoration:underline">How it's proven</a></p></div>
       </div>
+    </div>
+  </section>
+
+  <section id="opensandbox">
+    <div class="wrap">
+      <div class="eyebrow">opensandbox-compatible</div>
+      <h2 class="sec-h">Code written for OpenSandbox, <em>on your own machine.</em></h2>
+      <p class="sec-p"><span style="font-family:var(--mono);color:#d8d8d8">sbx serve --osb-addr</span> speaks OpenSandbox's lifecycle and execd APIs — no FastAPI server, no database, no Kubernetes. Proven by running OpenSandbox's own e2e suite, unmodified, not by a feature table.</p>
+      <div class="showcase inline">
+        <div class="term">
+          <div class="tb"><i class="tdot r"></i><i class="tdot y"></i><i class="tdot g"></i><span class="tt">sbx · opensandbox</span></div>
+<pre><span class="p">sbx serve --osb-addr 127.0.0.1:8080 --osb-pool python:3.11-slim=8 &amp;</span>
+<span class="p">export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"</span>  <span class="c"># always a key, loopback too</span>
+<span class="p">claude mcp add sbx -- sbx mcp</span>  <span class="c"># the same 19 tools as OpenSandbox's MCP server</span>
+
+<span class="c"># OpenSandbox's own tests/go @ release-1.1.0, run unmodified</span>
+<span class="o">docker    </span> <span class="ok">50 passed</span> · 0 failed · 2 skipped
+<span class="o">microVMs  </span> <span class="ok">48 passed</span> · 0 failed · 4 skipped  <span class="c"># every skip listed by name</span></pre>
+        </div>
+      </div>
+      <div class="figs">
+        <div class="fig"><b>~14 ms</b><span>create → first command from a warm pool, one at a time (median 13.7&nbsp;ms)</span></div>
+        <div class="fig"><b>100 / 100</b><span>created at once from the pool succeed — median 472&nbsp;ms</span></div>
+        <div class="fig"><b>207 ms</b><span>the same create cold, with no pool — median, one at a time</span></div>
+      </div>
+      <p class="fine">Docker provider, ComputeSDK's Burst-TTI method through the upstream Go SDK. Apple M4, colima 3&nbsp;vCPU / 3&nbsp;GiB. A local number, not a leaderboard entry — <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">BENCHMARKS.md</a> has the script.</p>
+    </div>
+  </section>
+
+  <section id="microvm">
+    <div class="wrap">
+      <div class="eyebrow">firecracker microVMs</div>
+      <h2 class="sec-h">A sandbox with <em>its own kernel.</em></h2>
+      <p class="sec-p"><span style="font-family:var(--mono);color:#d8d8d8">--provider firecracker</span> runs the same <span style="font-family:var(--mono);color:#d8d8d8">sandbox.json</span> in a microVM. Sleeping it is a snapshot and waking it a restore, so memory and running processes survive — and the OpenSandbox API serves from microVMs too.</p>
+      <div class="hosts">
+        <span><b>Linux + /dev/kvm</b> · <i class="v">verified</i></span>
+        <span><b>Mac M3+, macOS 15+, colima</b> · <i class="v">verified</i></span>
+        <span><b>Mac on lima</b> · <i class="u">unverified</i></span>
+        <span><b>Windows 11 + WSL2</b> · <i class="u">unit-tested, unverified</i></span>
+        <span><b>Kubernetes kata-fc</b> · <i class="u">unit-tested, unverified</i></span>
+      </div>
+      <div class="steps">
+        <div class="step"><div class="n">jailed</div><h3>Jailer on by default</h3><p>Every VMM runs under Firecracker's pinned jailer — chrooted, as its own non-root uid, with no capabilities, in its own cgroup.</p></div>
+        <div class="step"><div class="n">fail-closed</div><h3>The host stays shut</h3><p>A guest's only way out is its egress filter. If the host guard can't be installed or verified, the create or wake is <span class="k">refused</span> — no bridge left unguarded.</p></div>
+        <div class="step"><div class="n">warm pool</div><h3>Pools on microVMs</h3><p>On Linux with <span class="k">/dev/kvm</span>, <span class="k">--osb-pool</span> keeps members asleep — no RAM held, a memory snapshot on disk — and a claim is a restore.</p></div>
+      </div>
+      <p class="note"><b>⚠ Read before running code you didn't write.</b> Still open: no network namespace per VM, the daemon itself runs as root, and there is no disk quota per VM. <span class="k">SBX_FC_JAILER=off</span> runs the VMM unjailed, as root, again. The OpenSandbox API is not served through the Mac / Windows helper VM, and on a Mac a microVM is dev parity, not speed — there is no bare-metal benchmark yet. <a href="https://github.com/aryanmehrotra/sbx/blob/main/SECURITY.md">SECURITY.md</a> has the threat model.</p>
     </div>
   </section>
 
@@ -457,9 +536,20 @@
     <div class="wrap">
       <div class="eyebrow">one static binary · zero dependencies</div>
       <h2 class="sec-h" id="install">Install in one line.</h2>
+      <p class="sec-p" style="margin-bottom:0">macOS · Linux · FreeBSD, amd64 · arm64; Windows via WSL2. Then <span style="font-family:var(--mono);color:#d8d8d8">sbx doctor</span> says what your machine can do.</p>
       <div class="install">
         <div class="copybox">
-          <code id="cmd">curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code>
+          <code>brew install aryanmehrotra/tap/sbx</code>
+          <button type="button" onclick="copyCmd(this)">Copy</button>
+        </div>
+        <span class="alt">or</span>
+        <div class="copybox">
+          <code>curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code>
+          <button type="button" onclick="copyCmd(this)">Copy</button>
+        </div>
+        <span class="alt">or</span>
+        <div class="copybox">
+          <code>go install github.com/aryanmehrotra/sbx@latest</code>
           <button type="button" onclick="copyCmd(this)">Copy</button>
         </div>
       </div>
@@ -473,9 +563,12 @@
     <span class="stat appear appear--stat" style="--d:.24s">
       <svg viewBox="0 0 24 24"><rect x="2.4" y="2.4" width="19.2" height="19.2" rx="6.2" fill="#fff"/><path d="M11.4 6.6 8 12.8h3l-.7 4.6 3.9-6.4h-3.1z" fill="#111"/></svg>
       191&nbsp;ms redis wake</span>
+    <span class="stat appear appear--stat" style="--d:.31s">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#e8e8e8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+      ~14&nbsp;ms create from a warm pool</span>
     <span class="stat appear appear--stat" style="--d:.38s">
       <svg viewBox="0 0 24 24" fill="none" stroke="#e8e8e8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 3 20 7.2 12 11.4 4 7.2 12 3"/><polyline points="4 12 12 16.2 20 12"/><polyline points="4 16.6 12 20.8 20 16.6"/></svg>
-      laptop, VM or Kubernetes</span>
+      docker, Kubernetes or microVM</span>
   </div>
 
   <footer class="foot">
@@ -499,7 +592,8 @@
     if(nav) nav.addEventListener('click',function(e){ if(e.target.closest('a')) setOpen(false); });
     document.addEventListener('keydown',function(e){ if(e.key==='Escape') setOpen(false); });
     mq.addEventListener('change',function(e){ if(e.matches) setOpen(false); });
-    window.copyCmd=function(b){ navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(function(){ var o=b.textContent; b.textContent='Copied ✓'; setTimeout(function(){b.textContent=o;},1400); }); };
+    window.copyCmd=function(b){ var code=b.parentNode.querySelector('code'); if(!code||!navigator.clipboard) return;
+      navigator.clipboard.writeText(code.textContent).then(function(){ var o=b.textContent; b.textContent='Copied ✓'; setTimeout(function(){b.textContent=o;},1400); }); };
   })();
   </script>
 
