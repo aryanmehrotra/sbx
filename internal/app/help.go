@@ -137,10 +137,11 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx doctor",
 	},
 	"prewarm": {
-		"sbx prewarm [--spec sandbox.json]",
-		"Pull the images now, so the first create is not a download. Useful in a CI image or\n" +
-			"before a demo.",
-		"sbx prewarm --spec sandbox.json",
+		"sbx prewarm [--provider firecracker] [--spec sandbox.json | IMAGE...]",
+		"Pull the images now, so the first create is not a download. On firecracker it also\n" +
+			"builds each image's root filesystem, which for a large image is most of a first create.\n" +
+			"Useful in a CI image or before a demo.",
+		"sbx prewarm --provider firecracker python:3.11-slim",
 	},
 	"init": {
 		"sbx init [--template NAME] [--yes]",

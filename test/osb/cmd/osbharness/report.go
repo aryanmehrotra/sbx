@@ -363,12 +363,13 @@ func runReport(args []string, in io.Reader, out io.Writer) error {
 	expPath := fs.String("expectations", "", "path to test/osb/expectations")
 	expectedPath := fs.String("expected", "", "file of <Test>\\t<file> lines, from `osbharness tests`")
 	savePath := fs.String("save", "", "also write the raw go test -json stream here")
+	prov := fs.String("provider", "docker", "the provider the server ran on: selects skip@<provider> allowances")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	exp, err := loadExpectations(*expPath)
+	exp, err := loadExpectationsFor(*expPath, *prov)
 	if err != nil {
 		return err
 	}

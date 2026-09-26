@@ -11,15 +11,17 @@ import (
 const (
 	CloneReflink = "reflink"
 	CloneCopy    = "copy"
+	CloneExtents = "extents"
 )
 
 // CloneFile makes dst a private, writable copy of src and says how.
 //
 // A reflink (FICLONE) first: on btrfs and XFS - and on overlay/bcachefs where supported - it
 // shares every block until one side writes, so a clone of a 2 GiB root filesystem is a
-// metadata operation. Where the filesystem cannot (ext4 has no reflinks), a sparse copy: blocks
-// that are all zeroes become holes, so a mostly-empty rootfs costs what it holds rather than its
-// apparent size. Which one happened is returned so it can be reported, never assumed.
+// metadata operation. Where the filesystem cannot (ext4 has no reflinks), only the source's data
+// extents are copied (extentCopy: SEEK_DATA/SEEK_HOLE, copy_file_range on Linux) and its holes -
+// a rootfs's 2 GiB of headroom - stay holes and are never read. Only where the OS cannot say
+// where the data is, a sparse copy that reads everything and seeks over zero blocks. Which one happened is returned so it can be reported, never assumed.
 func CloneFile(src, dst string) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -36,15 +38,25 @@ func CloneFile(src, dst string) (string, error) {
 		return CloneReflink, out.Close()
 	}
 
-	if err := sparseCopy(out, in); err != nil {
+	mode := CloneExtents
+
+	err = extentCopy(out, in)
+	if errors.Is(err, errNoExtents) {
+		mode, err = CloneCopy, sparseCopy(out, in)
+	}
+
+	if err != nil {
 		out.Close()
 		_ = os.Remove(dst)
 
 		return "", err
 	}
 
-	return CloneCopy, out.Close()
+	return mode, out.Close()
 }
+
+// errNoExtents is a filesystem (or OS) that cannot say where a file's data is.
+var errNoExtents = errors.New("no SEEK_DATA here")
 
 // sparseCopy copies in to out, seeking over zero blocks instead of writing them.
 func sparseCopy(out, in *os.File) error {

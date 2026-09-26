@@ -898,6 +898,11 @@ func dispatch(cmd string, args []string) error {
 		specPath := fs.String("spec", "", "pull the images this spec needs instead of every template's")
 		_ = fs.Parse(args)
 
+		named := fs.Args()
+		if len(named) > 0 && *specPath != "" {
+			return fmt.Errorf("prewarm takes --spec or image names, not both")
+		}
+
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
 		if err != nil {
 			return err
@@ -920,6 +925,10 @@ func dispatch(cmd string, args []string) error {
 			}
 
 			sort.Strings(images)
+		}
+
+		if len(named) > 0 {
+			images = named
 		}
 
 		return cli.Prewarm(context.Background(), p, os.Stdout, images)
@@ -1215,7 +1224,7 @@ Finding out
   sbx history  [sandbox] [--events|--commands]  what happened, and who did it
   sbx templates                                 the built-in specs, and when they were pinned
   sbx validate [sandbox.json]                   check a spec without creating anything
-  sbx prewarm  [--spec sandbox.json]            pull images now, so a create is not a download
+  sbx prewarm  [--spec FILE | IMAGE...]         pull images (on firecracker, build rootfs) before a create needs them
 
 Any command touching a sandbox also takes:
   --provider docker|kubernetes|firecracker   --namespace NS   --isolation container|gvisor|kata|firecracker

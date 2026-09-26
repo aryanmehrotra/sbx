@@ -246,6 +246,14 @@ keep sandboxes away from the API. Pass `--osb-key` (or `SBX_OSB_KEY`) to choose 
 one is generated once and reused. `--osb-insecure-no-key` turns it off, loopback only, and says
 why that is dangerous every time it starts.
 
+**Warm pools** (`sbx serve --osb-pool IMAGE[=N]`) answer a create in milliseconds, but only a
+create whose container would be identical: members are keyed on **image, entrypoint and
+resourceLimits** (plus ports, platform and `sbx.idle`). A pool is built with what the SDKs send
+when those are left out - entrypoint `["tail", "-f", "/dev/null"]`, `cpu: "1"`, `memory: "2Gi"` -
+so a plain SDK `create(image)` hits it, and a hand-written request that omits `resourceLimits`
+or sets another entrypoint goes cold. The daemon log says so, once per distinct miss every ten
+minutes: `pool miss for image python:3.11-slim: resourceLimits.cpu is unset, the pool's is "1"`.
+
 | group | tools |
 |---|---|
 | sandbox | `sandbox_create` `sandbox_connect` `sandbox_kill` `sandbox_get_info` `sandbox_list` `sandbox_renew` `sandbox_healthcheck` `sandbox_get_metrics` `sandbox_get_endpoint` |
@@ -297,6 +305,10 @@ Knowing these saves an agent a turn spent fighting them:
   recreate the sandbox. A cluster can, and is allowed to.
 - **`sbx connect` to an `http://` URL not on this machine.** The token would cross the network in
   the clear.
+- **`sbx serve --provider firecracker --osb-addr` as a user without CAP_NET_ADMIN.** It runs as
+  root: every microVM is a tap on a bridge the daemon makes and guards with iptables rules, and a
+  daemon that could not do that would accept every create and fail it on the tap. The VMM then
+  runs as root too, with no jailer yet - SECURITY.md says what that means for untrusted code.
 
 Every refusal names the field or the flag it came from, so the message is usually the fix.
 

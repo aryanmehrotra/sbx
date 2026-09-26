@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
@@ -163,14 +164,72 @@ func TestDockerAPISandboxLabelIsReadBack(t *testing.T) {
 	}
 }
 
-func TestOSBIsRefusedOnFirecrackerAtStartup(t *testing.T) {
+// Through a helper VM the API is refused at startup with the helper-VM reason; on a host with no
+// path at all (or only a cluster's kata) with the host's own reason, not the helper VM's; on a
+// Linux host that runs Firecracker directly it is served.
+func TestOSBOnFirecrackerIsRefusedOnlyThroughAHelperVM(t *testing.T) {
+	old := provider.DecideHost
+	t.Cleanup(func() { provider.DecideHost = old })
+
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.HelperVM} }
+
 	for _, kind := range []string{"firecracker", "fc"} {
 		if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); !errors.Is(err, provider.ErrOSBOnFirecracker) {
-			t.Errorf("%s: %v", kind, err)
+			t.Errorf("%s through a helper VM: %v", kind, err)
 		}
 	}
 
+	for _, backend := range []hostcap.Backend{hostcap.Refused, hostcap.KataRuntimeClass} {
+		provider.DecideHost = func() hostcap.Decision {
+			return hostcap.Decision{Backend: backend, Reason: "no KVM on this box", Next: "use a KVM host"}
+		}
+
+		err := refuseOSBOnMicroVM("firecracker", "127.0.0.1:8080")
+		if err == nil || errors.Is(err, provider.ErrOSBOnFirecracker) || !strings.Contains(err.Error(), "no KVM on this box") {
+			t.Errorf("%v: %v, want the host's own reason", backend, err)
+		}
+	}
+
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.Direct} }
+
+	oldCap := hasNetAdmin
+	hasNetAdmin = func() bool { return true }
+	t.Cleanup(func() { hasNetAdmin = oldCap })
+
+	for _, kind := range []string{"firecracker", "fc"} {
+		if err := refuseOSBOnMicroVM(kind, "127.0.0.1:8080"); err != nil {
+			t.Errorf("%s on a direct host: %v", kind, err)
+		}
+	}
+
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.HelperVM} }
+
 	if refuseOSBOnMicroVM("firecracker", "") != nil || refuseOSBOnMicroVM("docker", "127.0.0.1:8080") != nil {
 		t.Error("refused something that works")
+	}
+}
+
+// `sbx serve --provider firecracker --osb-addr` as a user who cannot make taps, bridges or
+// iptables rules served the API, and every create then failed on the tap. It is refused at
+// startup, saying it runs as root.
+func TestOSBOnFirecrackerWithoutNetAdminIsRefusedAtStartup(t *testing.T) {
+	oldHost, oldCap := provider.DecideHost, hasNetAdmin
+	t.Cleanup(func() { provider.DecideHost, hasNetAdmin = oldHost, oldCap })
+
+	provider.DecideHost = func() hostcap.Decision { return hostcap.Decision{Backend: hostcap.Direct} }
+	hasNetAdmin = func() bool { return false }
+
+	err := refuseOSBOnMicroVM("firecracker", "127.0.0.1:8080")
+	if err == nil || !strings.Contains(err.Error(), "root") || !strings.Contains(err.Error(), "CAP_NET_ADMIN") {
+		t.Fatalf("OSB on firecracker without CAP_NET_ADMIN = %v, want a refusal naming root", err)
+	}
+
+	if refuseOSBOnMicroVM("docker", "127.0.0.1:8080") != nil || refuseOSBOnMicroVM("firecracker", "") != nil {
+		t.Fatal("refused a daemon that needs no network privileges")
+	}
+
+	hasNetAdmin = func() bool { return true }
+	if err := refuseOSBOnMicroVM("firecracker", "127.0.0.1:8080"); err != nil {
+		t.Fatalf("as root: %v", err)
 	}
 }

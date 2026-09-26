@@ -97,21 +97,48 @@ threat model is not "untrusted users share one daemon".**
   downgraded. If you are running code you did not write, use one of those or use a tool built
   on microVMs; [COMPARISON.md](docs/COMPARISON.md) names them.
 - **A microVM sandbox (`--provider firecracker`) is on the host's network, not behind it.**
-  Each sandbox is a bridge (`10.231.<slot>.0/24`, the host at `.1`) with no NAT, and sbx writes
-  no firewall rule. Two consequences, both yours to close on a shared host:
-  - **A guest reaches every host service bound to `0.0.0.0`** (or to the bridge address) at
-    `10.231.<slot>.1` - the host's INPUT chain decides, not sbx. Bind host services to
-    `127.0.0.1`, or drop INPUT from `sbxfc+` interfaces except established traffic.
-  - **Isolation between sandboxes is the host's FORWARD policy.** With `ip_forward=1` (docker
-    turns it on) one sandbox's VMs can reach another's unless the policy is `DROP`, which docker
-    sets but sbx neither sets nor owns. `sbx doctor` checks it (`vm bridges isolated`), and every
+  Each sandbox is a bridge (`10.231.<slot>.0/24`, the host at `.1`) with no NAT, so a guest has no
+  route off the host; a filtered one (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches
+  the internet only through the egress filter on `10.231.<slot>.1:20999`, which refuses the host's
+  own addresses, its loopback, every other sandbox's guests, private ranges (RFC 1918, CGNAT, ULA)
+  and every neighbour on a host interface's subnet - and no rule in the sandbox's own policy can
+  open them. Only the operator can, for private ranges only: `sbx serve --vm-egress-allow <CIDR,...>`. Two consequences:
+  - **The host is closed to a guest except for that filter port** - where sbx could install it.
+    Each bridge gets a chain `SBX-FC<slot>` in INPUT (replies returned to your rules, the filter
+    port accepted, the rest dropped) and another in mangle PREROUTING that drops what a guest starts
+    before docker's DNAT can turn it into forwarded traffic - so a docker-published port, a
+    container's IP and a NodePort are closed too, not only services bound to the host - plus
+    mangle FORWARD drops from and to the bridge, and IPv6 off - made with the bridge, re-checked on
+    every wake and daemon reconcile (a flushed rule is put back), and removed with it
+    (DECISIONS.md, "A microVM's only door is its filter"). **Where `iptables` is missing or refuses,
+    the bridge still comes up and a guest reaches every host service bound to `0.0.0.0` at
+    `10.231.<slot>.1`**; the create and the daemon's log say so, and an API sandbox's Running status
+    message and history carry the same warning, so its caller sees it too. Bridges made by v0.11
+    are guarded on their next wake or daemon reconcile.
+  - **Isolation between sandboxes is sbx's where the guard is installed** (the mangle FORWARD
+    drops), and the host's FORWARD policy where it is not. With `ip_forward=1` (docker turns it on)
+    an unguarded bridge's VMs can reach another's unless the policy is `DROP`. `sbx doctor` checks it (`vm bridges isolated`), and every
     create warns when it is not confirmed.
+- **`sbx serve --provider firecracker` runs as root** (or with `CAP_NET_ADMIN`): it makes a tap
+  and a bridge per sandbox and writes the iptables rules that guard them, and `--osb-addr` is
+  refused at startup without that privilege rather than failing every create on its tap.
+- **The VMM runs as unconfined root: no jailer yet (accepted for v0.12).** Firecracker is started
+  by the root daemon as a plain root process - no jailer, no chroot, no seccomp beyond
+  Firecracker's own default filters, no dropped uid, no cgroup of its own. The guest kernel is the
+  boundary; a guest-to-VMM escape would land as root on the host. That is an accepted risk for
+  v0.12, where the operator chooses what runs. **The jailer is v0.13, and a prerequisite for
+  anonymous or public use** of the OpenSandbox API on microVMs: until it ships, do not expose
+  `--osb-addr` with `--provider firecracker` to callers you would not give a root shell.
 - **In a microVM, the guest's root can read execd's own secrets** - the access token and the
   boot control secret, from `/proc/1/environ` and `/init.json` on the agent drive. execd strips
   them from what it starts, which keeps them out of `env` and logs, not from root. They are
   harmless there by construction: each belongs to that guest alone, control is reachable only
   over vsock from the host, the control secret is rotated at every restore and every snapshot
-  (the running VM and a saved one never share it), and forking a VM is refused.
+  (the running VM and a saved one never share it), and forking a VM's memory is refused (a
+  snapshot fork copies the disk only). Neither can be chosen by anyone else: sbx strips both from
+  the image's ENV and the spec's env before appending its own (getenv takes the first occurrence,
+  so an image's would otherwise have won), and the OpenSandbox API refuses a create that sets
+  either (400).
 - **`egress: "deny"` is coarse.** It removes routed egress by putting the service on a bridge
   with IP masquerade disabled. It is not a filtering firewall: it cannot allow one domain and
   deny another, and it is enforced by docker's networking rather than by anything sbx

@@ -688,6 +688,14 @@ existed before its caller did, and a secret minted ahead of the caller can be sh
 of a snapshot carries it. The round trip is the price (docs/BENCHMARKS.md). What a member may
 serve is a whitelist of request fields; anything else, including a field this sbx does not know,
 takes the cold path rather than being dropped by a member made without it.
+
+A create that takes the cold path while pools exist is logged at info, naming the field that
+differed from the nearest pool (or the field no member can carry), once per distinct miss per
+ten minutes. Silent, it cost a test run its warm path unnoticed: curl creates omitting
+`resourceLimits` never matched members built with the SDKs' cpu 1 / memory 2Gi. Once per miss
+rather than per create, because a client that misses does so on every create, and a line each
+time would bury the log it is meant to explain. Not a warning: going cold is correct, only slower.
+
 ---
 
 ### One host probe decides the microVM path, and a Mac is sent to a helper VM, not refused
@@ -764,6 +772,10 @@ parent's execd token and every key userspace made before the snapshot (the spike
 identical in every clone at N=2..50). Forking needs per-clone drive paths (a jailer or mount
 namespace) and the guest agent's re-key; until both exist it is refused, not approximated.
 
+An OpenSandbox API sandbox's snapshot is different in kind, not an exception: it is its disk alone,
+and a sandbox made from it is a new VM cold-booted from a copy (see "The OpenSandbox API on a
+microVM"). No memory is forked, so nothing above applies to it.
+
 ### Guest networking is arithmetic, and has no way out
 
 Each sandbox gets a bridge, `sbxfc<slot>` on `10.231.<slot>.0/24`, and each service a tap and the
@@ -773,6 +785,117 @@ no iptables rule, so nothing masquerades and nothing leaves - the no-NAT model `
 already uses - and `egress_allow`/`egress_policy` are refused until the filter listens on a VM bridge.
 Between bridges the host routes only if `ip_forward` is on and FORWARD allows it; docker sets that
 policy to DROP, and `sbx doctor` shows `ip_forward` rather than sbx writing a rule to be sure.
+
+*Amended in v0.12.* The filter now listens on a VM bridge, so `egress_allow`/`egress_policy`/`egress:
+"allow"` are no longer refused, and sbx now writes firewall rules - INPUT only, for its own bridges
+only. Both are the next entry. FORWARD is still docker's, and still only reported.
+
+### A microVM's only door is its filter, and the host behind it is closed
+
+A filtered microVM gets exactly what a filtered container gets: the daemon's egress filter, on its
+bridge's gateway (`10.231.<slot>.1:20999`), as `HTTP(S)_PROXY` in the environment fc-init hands
+execd and the workload - and still no route of its own, because the bridge still has no NAT. So
+`egress_allow`, `egress_policy`, `egress: "allow"`, live `PUT`/`PATCH`/`DELETE` through
+`EgressControl`, CIDR and wildcard rules, and "traffic through the filter is activity" are the
+docker behaviours unchanged, served from the one place a VM's traffic can go. `egress: "allow"` is
+the same door with an open default, and costs raw TCP exactly as it does on docker.
+
+Three things are different, because here the filter and the host are the same machine.
+
+**The filter binds before the bridge exists** (`IP_FREEBIND`). A reboot takes the bridge, and the
+first wake remakes it; a filter that could bind only once the address existed would miss that
+wake's first requests. Measured in a colima helper VM: bridge and tap deleted, daemon restarted -
+the filter was listening on `10.231.0.1:20999` with no `sbxfc0` link, holding the live policy.
+
+**The filter refuses its own host.** Under an open default a filter on the host would carry a guest
+to `10.231.<slot>.1:22` - the host's sshd - or to another sandbox's guest, neither of which the
+guest can reach itself. A VM's filter refuses `10.231.0.0/16`, every address on the host's
+interfaces, loopback and link-local.
+
+**No rule in the sandbox's policy opens that refusal** (security review of v0.12, H2). It first
+shipped overridable, like the policy's own loopback default: an allow rule naming the address opened
+it. But the policy is the sandbox's - its API caller writes it - and the filter dials as the root
+daemon, so `allow 0.0.0.0/0`, `allow 10.0.0.0/8` or `allow 127.0.0.1` let a sandbox CONNECT to the
+host's loopback (the OpenSandbox API, the daemon's ports), the host's addresses and other guests.
+Now `Filter.Refuse` is absolute; widening it is an operator setting on `sbx serve`, never a policy
+rule. A docker filter the daemon hosts on the host gets the same treatment for loopback and
+link-local (`egress.HostLocal`) - its loopback is the host's too; a filter running in its own
+container keeps the overridable default, since its loopback is its own.
+
+**A VM's filter refuses private ranges and the host's subnets by default** (security review of
+v0.12, M2 and S4). `egress: "allow"` on a VM carried a guest to docker container IPs
+(`172.16.0.0/12`), the host's LAN and the cloud VPC - none reachable from a no-NAT bridge, all
+reachable through a filter that dials as the host. Now a VM's filter (`egress.VMRefuse`) also
+refuses RFC 1918, CGNAT (`100.64.0.0/10`), IPv6 ULA (`fc00::/7`), `0.0.0.0/8`, and every address on
+the prefix of any host interface (`Contains`, not equality - the LAN `/24`, the VPC subnet, a
+docker bridge's containers), on top of link-local. No sandbox policy opens it. The operator can:
+`sbx serve --vm-egress-allow 10.20.0.0/16` (or `SBX_VM_EGRESS_ALLOW`) lifts the private and subnet
+layer for the ranges named - never the host's own addresses, its loopback or the `10.231.0.0/16`
+plan. Docker's filters are unchanged here: a container on docker's bridge reaches those ranges
+through docker's own routing anyway, so refusing them in its filter would close nothing.
+
+**The host's INPUT chain is closed to the bridge, except the filter port** (SECURITY.md M3). The
+network entry above said sbx writes no rule, and the docker entry rejected rules in `DOCKER-USER` as
+sbx reaching around docker. Neither argument applies here: this bridge is sbx's, made and deleted by
+sbx with nobody else's rules on it, and the exposure - every host service bound to `0.0.0.0` - is
+one a VM user cannot see from inside the spec. So each `sbxfc<slot>` gets a chain `SBX-FC<slot>`
+(replies `RETURN` to the host's own rules, the filter port `ACCEPT`, everything else `DROP`) and one
+jump at the top of INPUT matched to that bridge by name, and IPv6 is switched off on the bridge so
+a guest's link-local address has nothing to talk to. What makes it safe to own:
+
+- **Scoped by name.** Nothing outside the `SBX-FC<slot>` chains and the rules that match `sbxfc<slot>`
+  is read, written or reordered; a host with no microVM sandbox has no rule of sbx's.
+- **Made with the bridge, before it is up; removed with it** - and collected by `RemoveBridge` even
+  when the bridge was deleted by hand. A failure halfway removes what was made: guarded, or exactly
+  as before, never half a chain.
+- **Never a reason a sandbox will not boot.** No `iptables`, or one that refuses: the bridge comes
+  up anyway and the create and the daemon's log say the host is open, which is what it was before.
+- **Checked, not rewritten, on the wake path.** Made when the bridge is made; on every wake and every
+  daemon reconcile, six `iptables -C` checks (each hook and each chain's final `DROP`) and no write
+  while the guard is whole. A rule a firewall reload or `iptables -F` removed is put back on the next
+  wake or within one refresh interval, and said so in the log. A repair leaves a chain that is
+  still whole alone - flushing one that a hook still jumps to would open the bridge while it is
+  empty. (Until v0.12 a flushed rule stayed gone until the sandbox was recreated; security review
+  M4.)
+
+Measured in the same helper VM, with a host listener on `0.0.0.0:18999`: the host reached
+`10.231.0.1:18999`; the guest timed out on it, and got 403 asking the filter for it.
+
+**INPUT alone did not close it: a docker-published port is not an INPUT packet** (security review
+of v0.12, H1). Docker's nat `PREROUTING` DNATs every packet for a local address (`addrtype LOCAL`)
+on a published port onto the container behind it. A guest dialling `10.231.<slot>.1:<published
+port>` is therefore FORWARD traffic by the time the filter table sees it, and `DOCKER`'s chain
+accepts it - `SBX-FC<slot>` in INPUT is never consulted. A container's own IP and a kube-proxy
+NodePort are the same shape. So the guard has a second half, in `mangle`:
+
+- `SBX-FC<slot>` in mangle (replies `RETURN`, `-p tcp -d <gw> --dport 20999` `RETURN`, the rest
+  `DROP`), reached from the top of mangle `PREROUTING` by `-i sbxfc<slot>`. Mangle runs after
+  conntrack, so the reply to a host's own dial is still known as one, and before nat, so a guest's
+  packet is dropped before DNAT can rewrite it.
+- `-i sbxfc<slot> -j DROP` and `-o sbxfc<slot> -j DROP` at the top of mangle `FORWARD`. Nothing is
+  ever meant to be routed from or onto a guest bridge: it has no NAT, and the host reaches its
+  guests as OUTPUT. This also makes isolation between sandboxes sbx's own rather than the host's
+  FORWARD policy, wherever the guard is installed.
+
+Mangle rather than filter `FORWARD` or `DOCKER-USER` because docker writes nothing to mangle: a
+docker restart re-inserts its jumps at the top of filter `FORWARD`, which would put `DOCKER`'s
+accepts back in front of ours. The two tables are installed and removed as one: every chain filled
+before any rule jumps to one, and a failure anywhere removes what was made in both.
+
+Verified two ways. The rule-set tests in `internal/fc` (`guard_forward_test.go`: the exact mangle
+chain, the hooks, idempotence, and nothing left behind by a failure at any step) run against a
+fake iptables that interprets the commands. `TestGuardLive` (`SBX_GUARD_LIVE=1`, root, Linux; the
+CI `microvm` job runs it) rebuilds docker's shape by hand on the real kernel - a nat DNAT for local
+addresses onto a namespace, a FORWARD accept - puts a guest namespace on an `sbxfc` bridge, and
+checks that the guest reaches the published port and a host service before `Install` and neither
+after, while the filter port and the host-to-guest direction still work. It cannot run on the
+development Mac, so its first run is CI's.
+
+**Rejected: nftables directly.** It is the better API, and docker - the other writer on every host
+that runs this - still speaks `iptables`, which on current distributions is the nft backend anyway.
+One tool, the one the operator already reads.
+
+**Rejected: a firewall on the guest side** (rules inside the VM). The guest's root owns them.
 ### An API sandbox's health check runs once a minute, and quickly only while it starts
 
 Every docker health check is a runc exec inside the container. At the 5s interval API sandboxes
@@ -804,7 +927,10 @@ container's health config is fixed at create, so dropping it means recreating th
 never declaring one, and then the wake path has nothing to run and falls back to sleeping two
 seconds and hoping, which is exactly what declaring it avoided.
 
-### The OpenSandbox API is docker-only, for now
+### The OpenSandbox API is not on a cluster, for now
+
+(Until v0.12 this entry was "docker-only". A microVM runs the agent itself and serves the API on
+Linux - the next entry. A cluster still does not.)
 
 Every API sandbox runs sbx's agent, execd, inside an image the caller chose and sbx did not build.
 On docker that is a named volume seeded once and mounted read-only at `/opt/sbx` - the `Injector`
@@ -820,6 +946,85 @@ does not pause with a note saying so - the stub the capability pattern exists to
 
 **Rejected: a kubernetes path that bakes execd into a derived image.** It would mean sbx building
 and pushing images to the operator's registry on every create, for every image anyone names.
+
+### The OpenSandbox API on a microVM: the agent is PID 1, the token is the API's, a snapshot is the disk
+
+v0.12 serves every API route on `--provider firecracker` (Linux with `/dev/kvm`), because the
+point of a microVM - untrusted code that must not share the host kernel - is exactly what a public
+API sandbox is. Each difference from the container path is a decision, not an accident:
+
+- **`RunsAgent`, not `Injector`.** A VM's PID 1 is `sbx fc-init`, which already becomes execd with
+  the workload as its child (the agent rides on its own drive - "The image rootfs holds the image").
+  So the provider declares the capability *this sandbox answers execd without being given it*, and
+  the API skips the execd volume seed, the `/opt/sbx` mount, the entrypoint wrapper and the
+  `/bin/sh` health command that runs the agent from that volume. Readiness is execd's own port
+  accepting on the guest's TCP stack, which in a VM is the listener itself, not a proxy.
+- **The token is the API's.** The API mints it and hands it to callers in endpoint headers; the
+  provider boots execd with that `EXECD_ACCESS_TOKEN` (exactly once in the guest env) and re-keys a
+  restored execd with it. It mints its own only for a `sandbox.json` service, which has no API to
+  mint one. Two tokens for one sandbox is a sandbox that refuses the credentials the API handed out.
+- **Born running.** A `sandbox.json` VM is created asleep (booted, snapshotted, killed). An API
+  sandbox's contract is a process that runs, and the API reports Running only once execd answers,
+  so a snapshot and restore at create would cost a second boot's worth of time to end where the VM
+  already is. It is left running with `SnapshotValid=false`; its first sleep takes the Full
+  snapshot, and if it dies awake its next wake cold-boots its disk.
+- **Pause is a VM pause; idle is a VM pause.** `Pauser` is Firecracker's own pause (memory kept, no
+  vCPU), so the API's pause and `on_idle: freeze` both mean what they mean on docker.
+- **A snapshot is the disk, and a fork cold-boots a copy of it.** The plan allowed a memory restore
+  as a new sandbox (per-VM drive copies, `network_overrides`, a mandatory re-key) if it proved safe.
+  It is not safe yet, for reasons measured or read, not guessed: the guest's IP is set by the kernel
+  at boot (`ip=` on the command line) and lives in its memory, so a clone in another slot comes up
+  on a bridge whose subnet it does not have - every TCP port but execd's (vsock) unreachable, and
+  egress on the wrong gateway; and a memory clone carries every secret userspace made before the
+  snapshot (the spike measured execd's token identical in every clone at N=2..50 before re-key
+  existed; re-key fixes execd's, nothing fixes the workload's). A disk fork has neither problem
+  and is exactly what docker's API snapshot already is (`docker commit`: filesystem, no memory -
+  "An API snapshot is the container"). So `Commit` of an API sandbox runs the agent's own `fssync`
+  in the guest through execd (an image with no `sync` still has `/opt/sbx/sbx`), pauses the VM,
+  copies (reflinks where it can) the root filesystem, and resumes it - or leaves it frozen if it was.
+  The saved record keeps the image config (command, env, working directory) and no token or
+  secret; a create from it is a new VM with its own agent drive, token, slot and address.
+  A memory fork stays a follow-up, gated on the guest re-addressing itself on re-key.
+- **`pvc` is an ext4 image on its own drive.** One sparse file per claim (`SBX_FC_VOLUME_SIZE`,
+  default 10G, costing what is written), namespaced `sbx-osb-pvc-<claim>` as on docker, attached
+  after the rootfs and mounted by fc-init at the mount path (a `subPath` bound over it,
+  `readOnly` kept on both). Where docker lets two containers share a named volume, two kernels
+  mounting one ext4 corrupt it: a volume is attached to **one VM at a time**, once per VM, and
+  removing one that is attached is refused (a sleeping VM's snapshot names its path).
+- **`host` volumes are refused by name** (`HostVolumes`, which docker has): Firecracker has no
+  virtio-fs, and the refusal comes before the operator's allow-list, so it names the provider.
+- **Running means usable, Jupyter included.** A cold boot plus Jupyter's own start is slower in a
+  VM than in a container, and the first CI run reported a code-interpreter sandbox Running while
+  its Jupyter was still starting: the SDK's first `/code` call then spent its whole deadline
+  waiting inside execd and failed `context canceled`. The API's readiness probe is now
+  `/ping?ready=code`: execd answers 503 with a sentence while an image-configured Jupyter
+  (`JUPYTER_HOST`/`JUPYTER_PORT`) does not answer, and 200 at once for an image with none - so
+  nothing else waits longer. The same on docker, where it is the same execd. Once execd answers, the
+  wait for Jupyter has its own bound (3 minutes by default, `CodeReadyTimeout`), and a Jupyter that
+  never comes up fails the create with "Jupyter did not answer within N (execd up after M ...)".
+  Every create logs one line saying how long execd and then Jupyter took. Plain `/ping`
+  is still liveness, which is what the wake proxy wants.
+- **A guest's console is bounded** (security review of v0.12, M3). `console.log` is the guest's
+  serial console, appended to by firecracker for the VM's life, so a guest printing in a loop could
+  fill the host's disk. It (and `vmm.log`) is cut back in place to its newest 4 MiB of whole lines
+  once past 16 MiB - at every launch and on every daemon reconcile - with a line saying so; in place
+  because firecracker holds it `O_APPEND`. Not a pipe through sbx: firecracker outlives the `sbx`
+  process that started it, and a pipe reader would die with that process. Between two reconciles
+  (the refresh interval, 15s by default) a guest can overshoot the cap by what its UART can write.
+- **A frozen sandbox runs briefly while it is snapshotted.** A disk snapshot of a paused VM resumes
+  it for the guest's `fssync` (bounded by the seal timeout), pauses it for the copy and leaves it
+  paused - so its workload gets CPU for that moment. Copying an unsynced disk instead would lose
+  whatever the guest had written but not flushed; a caller who froze a sandbox and then snapshots
+  it gets a consistent disk at the price of those few hundred milliseconds of execution.
+- **A disk snapshot keeps the image's env, not the create's.** The saved record is the image config
+  (command, env, working directory) the VM was built from; the `env` a caller passed at create is
+  not in it, so a sandbox created from the snapshot does not inherit it. Docker differs - `docker
+  commit` bakes the container's env into the image. Passing the env again on the create from the
+  snapshot is the workaround; carrying it in the record (less execd's secrets) is a follow-up.
+- **Not yet:** the warm pool (`--osb-pool` is a startup error on firecracker until members are
+  snapshotted asleep and restored per claim) and the helper-VM path on a Mac or Windows
+  (`--osb-addr` still refused there at startup). Egress on VM bridges shipped in v0.12 ("A
+  microVM's only door is its filter").
 
 ### What the API remembers lives in its record file, not in labels
 

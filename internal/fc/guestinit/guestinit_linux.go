@@ -86,6 +86,13 @@ func Main(_ []string) int {
 
 	_ = syscall.Mount("", target, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
 
+	// Extra drives (OpenSandbox pvc volumes), into the image root before it becomes /.
+	for _, st := range drivePlan(root, cfg.Mounts) {
+		if err := doMount(st); err != nil {
+			return fail("mounting " + st.Source + " at " + st.Target + ": " + err.Error())
+		}
+	}
+
 	// eth0 was configured by the kernel (ip= on the command line); lo was not, and a workload
 	// that talks to itself on 127.0.0.1 - most databases' own health checks - needs it.
 	if err := loopbackUp(); err != nil {
@@ -111,6 +118,7 @@ func Main(_ []string) int {
 	}
 
 	writeHostname("/etc/hostname", cfg.Hostname)
+	writeHosts("/etc/hosts", cfg.Hostname)
 
 	wd := cfg.WorkingDir
 	if wd == "" {
@@ -153,4 +161,26 @@ func loopbackUp() error {
 	}
 
 	return nil
+}
+
+// doMount carries out one planned step.
+func doMount(st mountStep) error {
+	if st.MkdirAll != "" {
+		if err := os.MkdirAll(st.MkdirAll, 0o755); err != nil {
+			return err
+		}
+	}
+
+	var flags uintptr
+
+	switch {
+	case st.Remount:
+		flags = syscall.MS_BIND | syscall.MS_REMOUNT | syscall.MS_RDONLY
+	case st.Bind:
+		flags = syscall.MS_BIND
+	case st.ReadOnly:
+		flags = syscall.MS_RDONLY
+	}
+
+	return syscall.Mount(st.Source, st.Target, st.FSType, flags, "")
 }

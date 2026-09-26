@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"strings"
 )
@@ -11,21 +12,26 @@ import (
 // Networking: a tap per VM on a bridge per sandbox, addressed from the slot.
 //
 // The model is the one `egress: "deny"` already uses for docker (DECISIONS.md, "Egress is denied
-// by a bridge without NAT"): sbx writes no iptables rule, so nothing masquerades traffic from
-// these bridges and nothing routed leaves the host. The host reaches every guest directly on its
+// by a bridge without NAT"): nothing masquerades traffic from these bridges and nothing routed
+// leaves the host. The only rules sbx writes are the guard's (guard.go), which close the host and
+// drop forwarding for the bridges sbx owns. The host reaches every guest directly on its
 // bridge address, which is all the wake proxy needs - it dials the guest's IP and port, exactly
 // as it dials a container's backing port.
 //
 // One bridge per sandbox rather than one for the machine, so two sandboxes do not share a
-// layer-2 segment. Between bridges the host routes only if ip_forward is on and the FORWARD
-// policy lets it; docker turns forwarding on and sets that policy to DROP, and sbx does not
-// write a rule of its own to make sure - `sbx doctor` reports ip_forward so it is visible.
+// layer-2 segment. Between bridges the guard's mangle FORWARD drops keep them apart; where the
+// guard could not be installed the host routes only if ip_forward is on and the FORWARD policy
+// lets it - `sbx doctor` reports both.
 //
 // Addresses are arithmetic, never allocated: 10.231.<slot>.0/24, the bridge at .1, a service at
 // .<its port index + 2>. A slot is already unique per sandbox and an index per service within
 // it, so two processes computing the address of the same service always agree - which matters
 // because Create, the daemon's Start and a restore after a host reboot may each be a different
 // sbx process.
+
+// Plan is every address the arithmetic below can produce: each sandbox's bridge gateway (the
+// host) and every guest. Nothing else is ever in it, so a filter on the host can refuse it whole.
+var Plan = netip.MustParsePrefix("10.231.0.0/16")
 
 // Addr is one VM's place on the network.
 type Addr struct {
@@ -71,6 +77,12 @@ type IPNetwork struct {
 	// Owner is the uid firecracker runs as, given to the tap so a non-root firecracker can open
 	// it. -1 leaves the tap root-owned.
 	Owner int
+
+	// Guard closes the host to the bridge's guests except for the egress filter's port; nil
+	// leaves the host's INPUT chain to its operator, as it always was. Warn is told when it
+	// could not be installed, which leaves the bridge working and the host as open as before.
+	Guard *Guard
+	Warn  func(string)
 }
 
 // NewIPNetwork runs the real `ip`.
@@ -106,8 +118,13 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 	br, tap := a.Bridge(), a.Tap()
 
 	if !n.exists(ctx, br) {
+		if _, err := n.Run(ctx, "link", "add", br, "type", "bridge"); err != nil && !n.exists(ctx, br) {
+			return fmt.Errorf("creating bridge %s: %w", br, err)
+		}
+
+		n.guard(ctx, a)
+
 		for _, args := range [][]string{
-			{"link", "add", br, "type", "bridge"},
 			{"addr", "add", a.Gateway() + "/24", "dev", br},
 			{"link", "set", br, "up"},
 		} {
@@ -115,6 +132,8 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 				return fmt.Errorf("creating bridge %s: %w", br, err)
 			}
 		}
+	} else {
+		n.recheck(ctx, a)
 	}
 
 	if !n.exists(ctx, tap) {
@@ -140,6 +159,67 @@ func (n *IPNetwork) EnsureTap(ctx context.Context, a Addr) error {
 	return nil
 }
 
+// guard closes the new bridge to the host before it is up, so there is no moment when a guest
+// could reach the host through it. A failure is reported and the bridge used anyway: the host is
+// then exactly as open as it was before sbx guarded anything, which SECURITY.md describes, and a
+// sandbox that stopped booting because a firewall module was missing would be a regression.
+func (n *IPNetwork) guard(ctx context.Context, a Addr) {
+	if n.Guard == nil {
+		return
+	}
+
+	warn := func(format string, args ...any) {
+		if n.Warn != nil {
+			n.Warn(fmt.Sprintf(format, args...))
+		}
+	}
+
+	if err := n.Guard.NoIPv6(a); err != nil {
+		warn("could not turn IPv6 off on %s, so its guests may reach host services bound to [::] "+
+			"over link-local: %v", a.Bridge(), err)
+	}
+
+	if err := n.Guard.Install(ctx, a); err != nil {
+		warn("could not close the host to %s's guests (%v): they can reach every host service "+
+			"bound to 0.0.0.0 at %s - see SECURITY.md", a.Bridge(), err, a.Gateway())
+	}
+}
+
+// recheck puts the guard back if something removed it while the bridge stood. A host with no
+// iptables was told so when the bridge was made, and is not told again on every wake.
+func (n *IPNetwork) recheck(ctx context.Context, a Addr) {
+	if n.Guard == nil {
+		return
+	}
+
+	repaired, err := n.Guard.Ensure(ctx, a)
+
+	switch {
+	case errors.Is(err, ErrNoFirewall):
+	case err != nil:
+		if n.Warn != nil {
+			n.Warn(fmt.Sprintf("%s's host rules were missing and could not be put back (%v): its guests "+
+				"can reach host services at %s - see SECURITY.md", a.Bridge(), err, a.Gateway()))
+		}
+	case repaired:
+		if n.Warn != nil {
+			n.Warn(fmt.Sprintf("%s's host rules had been removed (a firewall reload or flush?) and were put back",
+				a.Bridge()))
+		}
+	}
+}
+
+// EnsureGuard is recheck for the daemon's reconcile: a bridge that exists gets its guard checked
+// and, if something removed it, put back. No bridge, nothing to guard.
+func (n *IPNetwork) EnsureGuard(ctx context.Context, slot int) {
+	a := Addr{Slot: slot}
+	if n.Guard == nil || a.Valid() != nil || !n.exists(ctx, a.Bridge()) {
+		return
+	}
+
+	n.recheck(ctx, a)
+}
+
 // RemoveTap deletes the VM's tap; one already gone is success.
 func (n *IPNetwork) RemoveTap(ctx context.Context, a Addr) error {
 	if !n.exists(ctx, a.Tap()) {
@@ -154,6 +234,15 @@ func (n *IPNetwork) RemoveTap(ctx context.Context, a Addr) error {
 // RemoveBridge deletes the sandbox's bridge once nothing is on it.
 func (n *IPNetwork) RemoveBridge(ctx context.Context, slot int) error {
 	br := Addr{Slot: slot}.Bridge()
+
+	// First, and whether or not the bridge is still there: a bridge deleted by hand leaves its
+	// chain behind, and this is the one place that can collect it.
+	if n.Guard != nil {
+		if err := n.Guard.Release(ctx, Addr{Slot: slot}); err != nil {
+			return fmt.Errorf("removing %s's host rules: %w", br, err)
+		}
+	}
+
 	if !n.exists(ctx, br) {
 		return nil
 	}
@@ -161,4 +250,14 @@ func (n *IPNetwork) RemoveBridge(ctx context.Context, slot int) error {
 	_, err := n.Run(ctx, "link", "del", br)
 
 	return err
+}
+
+// GuardWhole reports whether slot's bridge has its guard in place, writing nothing. With no Guard
+// configured there is nothing sbx promised, and the answer is yes.
+func (n *IPNetwork) GuardWhole(ctx context.Context, slot int) (bool, error) {
+	if n.Guard == nil {
+		return true, nil
+	}
+
+	return n.Guard.Whole(ctx, Addr{Slot: slot})
 }

@@ -391,11 +391,11 @@ func TestCloneFileIsSparseAndExact(t *testing.T) {
 		t.Fatal("clone differs from source")
 	}
 
-	if runtime.GOOS != "linux" && how != CloneCopy {
+	if runtime.GOOS != "linux" && how == CloneReflink {
 		t.Fatalf("how = %s off linux", how)
 	}
 
-	if how == CloneCopy {
+	if how != CloneReflink {
 		if used, ok := allocated(dst); ok && used > 16<<20 {
 			t.Fatalf("copy allocated %d bytes for 3 MiB of data; holes were written out", used)
 		}

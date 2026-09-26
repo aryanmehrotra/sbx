@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -166,6 +167,15 @@ func poolKey(pl plan) string {
 // newPools builds one pool per spec. A spec that does not validate is a startup error: a pool
 // that can never fill is a misconfiguration to say at once, not a log line every few seconds.
 func (s *Server) newPools(specs []PoolSpec) error {
+	// A warm member on a provider that runs the agent itself is a VM snapshotted asleep and
+	// restored per claim, which is the next phase - refused by name until it exists, rather
+	// than a pool of running VMs claimed through the container path's re-key.
+	if len(specs) > 0 && s.runsAgent() {
+		return fmt.Errorf("--osb-pool on the %s provider: a warm pool of microVMs (members "+
+			"snapshotted asleep, restored and re-keyed per claim) is not built yet - start without "+
+			"--osb-pool; every create is a cold boot until it is", s.p.Name())
+	}
+
 	for _, sp := range specs {
 		tpl := createRequest{
 			Image:          &imageSpec{URI: sp.Image},
@@ -195,12 +205,26 @@ func (s *Server) newPools(specs []PoolSpec) error {
 // having written nothing, when there is no pool for the plan or no member ready - the caller
 // then takes the cold path.
 func (s *Server) fromPool(w http.ResponseWriter, r *http.Request, raw []byte, req createRequest, pl plan) bool {
-	if !poolable(raw, req) {
+	if len(s.pools) == 0 {
 		return false
 	}
 
-	p := s.pools[poolKey(pl)]
+	if why := poolBlocker(raw, req); why != "" {
+		if req.Extensions["sbx.pool"] != "off" { // asked for, so not worth a line
+			s.notePoolMiss(pl.rec.ID, why)
+		}
+
+		return false
+	}
+
+	key := poolKey(pl)
+
+	p := s.pools[key]
 	if p == nil {
+		if key != "" {
+			s.notePoolMiss(pl.rec.ID, s.poolDiff(key))
+		}
+
 		return false
 	}
 
@@ -601,27 +625,131 @@ var poolFields = map[string]bool{
 // poolExtensions are the extensions a claim can carry: none change the container.
 var poolExtensions = map[string]bool{"sbx.pool": true}
 
-func poolable(raw []byte, req createRequest) bool {
+func poolable(raw []byte, req createRequest) bool { return poolBlocker(raw, req) == "" }
+
+// poolBlocker is why a request can never be served from a pool, or "" when it can be.
+func poolBlocker(raw []byte, req createRequest) string {
 	if req.Extensions["sbx.pool"] == "off" {
-		return false
+		return `extensions["sbx.pool"] is "off"`
 	}
 
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
-		return false
+		return "the body is not a JSON object"
 	}
 
-	for k, v := range fields {
+	for _, k := range slices.Sorted(maps.Keys(fields)) {
+		v := fields[k]
 		if !poolFields[k] && present(v) && string(v) != "[]" && string(v) != `""` && string(v) != "false" {
-			return false
+			return fmt.Sprintf("for this create: it sets %q, which a pool member cannot carry", k)
 		}
 	}
 
-	for k := range req.Extensions {
+	for _, k := range slices.Sorted(maps.Keys(req.Extensions)) {
 		if !poolExtensions[k] {
-			return false
+			return fmt.Sprintf("for this create: it sets extensions[%q], which a pool member cannot carry", k)
 		}
 	}
 
-	return true
+	return ""
+}
+
+// poolKeyFields names poolKey's parts, in its order, as a caller would spell them.
+var poolKeyFields = []string{"image", "entrypoint", "resourceLimits.cpu", "resourceLimits.memory",
+	"resourceLimits.gpu", `extensions["sbx.idle"]`, `extensions["sbx.ports"]`, "platform"}
+
+// poolDiff says which fields of a plan's key differ from the nearest pool's: the pool with the
+// fewest differences, the same image first. A create that omits resourceLimits while the pool
+// was built with the SDKs' defaults is the case this exists for - it looks like a pool hit and
+// quietly takes the cold path.
+func (s *Server) poolDiff(key string) string {
+	got := strings.Split(key, "\x01")
+
+	best, bestN := "", -1
+
+	for _, pk := range slices.Sorted(maps.Keys(s.pools)) {
+		want := strings.Split(pk, "\x01")
+		if len(want) != len(got) || len(got) != len(poolKeyFields) {
+			continue
+		}
+
+		var diffs []string
+
+		for i := range got {
+			switch {
+			case got[i] == want[i]:
+			case poolKeyFields[i] == "entrypoint":
+				// The caller's argv: it can carry a secret, and is not ours to write to a log.
+				diffs = append(diffs, "entrypoint differs from the pool's")
+			default:
+				diffs = append(diffs, fmt.Sprintf("%s is %s, the pool's is %s", poolKeyFields[i],
+					keyPart(got[i]), keyPart(want[i])))
+			}
+		}
+
+		n := len(diffs)
+		if got[0] != want[0] {
+			n += len(poolKeyFields) // another image is never the nearest pool
+		}
+
+		if bestN < 0 || n < bestN {
+			best, bestN = "for image "+strconv.Quote(got[0])+": "+strings.Join(diffs, "; "), n
+		}
+	}
+
+	if best == "" {
+		best = "for image " + strconv.Quote(got[0]) + ": no pool has this shape"
+	}
+
+	return best
+}
+
+// keyPart is one of a key's values as a log line may show it: quoted, so a value can never break
+// the line. Never the entrypoint, which poolDiff names without its value.
+func keyPart(v string) string {
+	if v == "" {
+		return "unset"
+	}
+
+	return strconv.Quote(v)
+}
+
+// poolMissEvery is how often one distinct pool miss is logged. A client that always misses the
+// same way sends the same create all day; one line per window says so without a line per create.
+const poolMissEvery = 10 * time.Minute
+
+// notePoolMiss logs why a create was not served from a pool, once per distinct reason per
+// poolMissEvery. Reasons carry request values (an image, a limit), so the set is bounded: past
+// poolMissKeep entries the stale ones go, and at most half of it survives.
+func (s *Server) notePoolMiss(id, why string) {
+	const poolMissKeep = 256
+
+	now := s.now()
+
+	s.poolMissMu.Lock()
+
+	if last, ok := s.poolMisses[why]; ok && now.Sub(last) < poolMissEvery {
+		s.poolMissMu.Unlock()
+		return
+	}
+
+	if s.poolMisses == nil || len(s.poolMisses) >= poolMissKeep {
+		kept := map[string]time.Time{}
+
+		for k, t := range s.poolMisses {
+			if now.Sub(t) < poolMissEvery && len(kept) < poolMissKeep/2 {
+				kept[k] = t
+			}
+		}
+
+		s.poolMisses = kept
+	}
+
+	s.poolMisses[why] = now
+	s.poolMissMu.Unlock()
+
+	logs.Default.Info(id, service, "osb: pool miss %s - it takes the cold path. Pool members are "+
+		"keyed on image, entrypoint, resourceLimits, ports, platform and idle mode; the SDKs send "+
+		"entrypoint [tail -f /dev/null] and resourceLimits cpu 1, memory 2Gi when those are left "+
+		"out, which is what --osb-pool builds", why)
 }

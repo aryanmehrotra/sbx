@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -124,6 +126,10 @@ type daemon struct {
 	egressCtl  *EgressControl
 	egressDir  string
 
+	// egressPort is where hosted filters listen; 0 is provider.EgressProxyPort. A field so a
+	// test can host one without contending for the real port.
+	egressPort int
+
 	// discovering serialises discover(). The ticker was its only caller until the OpenSandbox
 	// API began asking for a pass right after it creates a sandbox; two passes interleaving
 	// would each see the new unit as unknown and both bind its port.
@@ -152,6 +158,9 @@ type daemon struct {
 	// osbNoKey is --osb-insecure-no-key: serve the OpenSandbox API with no key at all. Only ever
 	// typed, never defaulted - see osb/key.go for why loopback is not enough on its own.
 	osbNoKey bool
+
+	// vmWiden is --vm-egress-allow: private ranges a microVM's filter may reach anyway.
+	vmWiden []netip.Prefix
 
 	// servesOSB is set when this daemon serves --osb-addr. An unscoped daemon without it leaves
 	// containers the API created (label sbx.osb) to the daemon that does - see scope.go.
@@ -197,11 +206,21 @@ func Serve(args []string) error {
 	var pools stringList
 	fs.Var(&pools, "osb-pool", "keep warm OpenSandbox sandboxes of this image ready, IMAGE[=N] (default 8; repeatable; or $SBX_OSB_POOL, comma-separated): a matching create is answered from one in milliseconds")
 
+	// What a microVM's egress filter may carry a guest to that it otherwise refuses as private
+	// (RFC 1918, CGNAT, ULA, a host interface's subnet). The operator's, never a sandbox's: a
+	// sandbox's policy cannot open any of it. Never the host itself, its loopback or a guest.
+	vmEgressAllow := fs.String("vm-egress-allow", envOr("SBX_VM_EGRESS_ALLOW", ""), "comma-separated CIDRs a microVM's egress filter may reach although they are private or on a host subnet (e.g. 10.20.0.0/16 for a registry on the VPC); none unless set")
+
 	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim")
 
 	var only stringList
 	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
 	_ = fs.Parse(args)
+
+	vmWiden, err := parseCIDRs(*vmEgressAllow)
+	if err != nil {
+		return fmt.Errorf("--vm-egress-allow: %w", err)
+	}
 
 	if len(only) == 0 {
 		if v := os.Getenv("SBX_ONLY"); v != "" {
@@ -295,6 +314,7 @@ func Serve(args []string) error {
 		egressSeen: map[string]int64{},
 		scope:      scope,
 		osbNoKey:   *osbNoKey,
+		vmWiden:    vmWiden,
 	}
 
 	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, splitPaths(*osbHostPaths), scope, pools, *poolFreeze)
@@ -421,6 +441,11 @@ func (d *daemon) discover(ctx context.Context) {
 	if err != nil {
 		logs.Default.Error("", "", "discovery failed: %v", err)
 		return
+	}
+
+	// Host state that drifts on its own - a microVM bridge's firewall rules after a reload.
+	if m, ok := d.provider.(provider.Maintainer); ok {
+		m.Maintain(ctx)
 	}
 
 	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
@@ -843,12 +868,39 @@ func (d *daemon) lifetime(caller context.Context) context.Context {
 	return caller
 }
 
-// refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup: every create
-// through that API would fail, and a listener that can only refuse is worse than no listener.
+// hasNetAdmin is hostcap.NetAdmin, a variable so a test can say what this process may do.
+var hasNetAdmin = hostcap.NetAdmin
+
+// refuseOSBOnMicroVM stops `sbx serve --provider firecracker --osb-addr` at startup where the VMs
+// would run in a helper VM: the API is not fronted into it, so every create would fail, and a
+// listener that can only refuse is worse than no listener. On a Linux host that runs Firecracker
+// directly the API serves microVMs (the provider RunsAgent), and nothing is refused here. A host
+// that cannot run Firecracker at all is refused with its own reason (hostcap.Decision).
 func refuseOSBOnMicroVM(kind, osbAddr string) error {
-	if osbAddr != "" && (kind == "firecracker" || kind == "fc") {
-		return provider.ErrOSBOnFirecracker
+	if osbAddr == "" || (kind != "firecracker" && kind != "fc") {
+		return nil
 	}
 
-	return nil
+	switch d := provider.DecideHost(); d.Backend {
+	case hostcap.Direct:
+		if !hasNetAdmin() {
+			return errors.New("--osb-addr with --provider firecracker runs as root (or with CAP_NET_ADMIN): " +
+				"every sandbox is a tap on a bridge the daemon makes, guarded by iptables rules it " +
+				"writes, and this process may do none of that, so every create would fail on its tap. " +
+				"Run `sudo sbx serve --provider firecracker --osb-addr ...` (SECURITY.md says what that means)")
+		}
+
+		return nil
+	case hostcap.HelperVM:
+		return provider.ErrOSBOnFirecracker
+	default:
+		// No helper VM is involved: the host cannot run Firecracker at all, and saying why is
+		// the host's reason, not the helper VM's.
+		why := d.Reason
+		if d.Next != "" {
+			why += " - " + d.Next
+		}
+
+		return fmt.Errorf("--osb-addr with --provider firecracker: firecracker cannot run on this host: %s", why)
+	}
 }

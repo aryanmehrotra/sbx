@@ -308,13 +308,13 @@ func (s *Server) buildTemplate(ctx context.Context, id string) {
 		}
 	}
 
-	inj, err := provider.InjectorFor(s.p)
+	insp, err := s.inspector()
 	if err != nil {
 		fail(err.Error())
 		return
 	}
 
-	info, err := inj.ImageInfo(ctx, t.RunImage)
+	info, err := insp.ImageInfo(ctx, t.RunImage)
 	if err != nil {
 		fail(err.Error())
 		return

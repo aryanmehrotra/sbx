@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -78,6 +79,11 @@ type Options struct {
 
 	// ReadyTimeout bounds Pending: from the container existing to execd answering /ping.
 	ReadyTimeout time.Duration
+
+	// CodeReadyTimeout bounds the wait for an image-configured Jupyter once execd answers: a
+	// microVM cold boot plus Jupyter's own start can outlast ReadyTimeout, and a sandbox is
+	// Running only once it is usable. Zero means 3 minutes.
+	CodeReadyTimeout time.Duration
 
 	// CreateWait is how long a create holds its response for the sandbox to become Running
 	// before answering Pending. Zero means 20s; negative answers at once.
@@ -156,6 +162,7 @@ type Server struct {
 	version string
 
 	readyTimeout time.Duration
+	codeReady    time.Duration
 	createWait   time.Duration
 	reapEvery    time.Duration
 
@@ -183,6 +190,10 @@ type Server struct {
 	pools      map[string]*pool
 	poolSem    chan struct{}
 	poolFreeze bool
+
+	// poolMisses is when each distinct pool miss was last logged - see notePoolMiss.
+	poolMissMu sync.Mutex
+	poolMisses map[string]time.Time
 
 	// dockerSem bounds container creation; reserved holds the slots handed to creates whose
 	// containers no list can show yet - see createPicked.
@@ -240,6 +251,7 @@ func New(o Options) (*Server, error) {
 		store:        store{dir: o.StateDir},
 		version:      o.Version,
 		readyTimeout: o.ReadyTimeout,
+		codeReady:    o.CodeReadyTimeout,
 		createWait:   o.CreateWait,
 		reapEvery:    o.ReapEvery,
 		now:          o.Now,
@@ -255,6 +267,10 @@ func New(o Options) (*Server, error) {
 
 	if s.readyTimeout <= 0 {
 		s.readyTimeout = 2 * time.Minute
+	}
+
+	if s.codeReady <= 0 {
+		s.codeReady = 3 * time.Minute
 	}
 
 	if s.createWait == 0 {
@@ -457,10 +473,8 @@ func (s *Server) recover(ctx context.Context) {
 
 	for _, r := range pending {
 		if !have[r.ID] {
-			s.update(r.ID, func(r *record) {
-				r.transition(stateFailed, "interrupted", "sbx serve restarted before this "+
-					"sandbox's container was created; delete it and create it again", s.now())
-			})
+			s.failed(r.ID, "interrupted", "sbx serve restarted before this sandbox's container "+
+				"was created; delete it and create it again", "")
 
 			continue
 		}
@@ -674,7 +688,10 @@ func pingExecd(ctx context.Context, hostport string) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+hostport+"/ping", nil)
+	// Readiness, not liveness: an image that configures Jupyter is Running once Jupyter answers
+	// too (execd checks; an image without one costs nothing). An execd too old to know the query
+	// ignores it and answers as it always did.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+hostport+"/ping?ready=code", nil)
 	if err != nil {
 		return err
 	}
@@ -686,8 +703,27 @@ func pingExecd(ctx context.Context, hostport string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode/100 != 2 {
+		var e struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+
+		if b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)); json.Unmarshal(b, &e) == nil && e.Message != "" {
+			if e.Code == "JUPYTER_NOT_READY" {
+				return &jupyterNotReady{msg: e.Message}
+			}
+
+			return fmt.Errorf("execd /ping answered %s: %s", resp.Status, e.Message)
+		}
+
 		return fmt.Errorf("execd /ping answered %s", resp.Status)
 	}
 
 	return nil
 }
+
+// jupyterNotReady is execd answering while the image's Jupyter does not: the sandbox is up and
+// not yet usable, which waitReady waits out on its own, longer, bound (CodeReadyTimeout).
+type jupyterNotReady struct{ msg string }
+
+func (e *jupyterNotReady) Error() string { return e.msg }

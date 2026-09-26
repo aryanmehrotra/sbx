@@ -45,8 +45,10 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/agentbin"
+	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
+	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -140,6 +142,24 @@ type fcVM struct {
 	// top of vm.mem is a correct snapshot. False after a cold boot, and after a Commit, which
 	// resets Firecracker's dirty bitmap and would make the next Diff miss pages.
 	Restored bool `json:"restored"`
+
+	// EgressPolicy is the egress policy the spec declared, as JSON, when the service reaches the
+	// network through the filter the daemon serves on this sandbox's bridge gateway; "" when it
+	// has no way out at all. What the filter STARTS with and what a reset returns to: a policy
+	// changed on the running VM lives with the filter (DECISIONS.md, "A live egress policy is
+	// held by the filter and pushed to it").
+	EgressPolicy string `json:"egress_policy,omitempty"`
+
+	// OSB is the spec's OSBOwner: set for a VM the OpenSandbox API created. Such a VM is born
+	// running, and its snapshot is its disk (firecracker_osb.go).
+	OSB string `json:"osb,omitempty"`
+
+	// Config is the image config the VM was built from, kept so a disk snapshot of it can be
+	// booted again with the same command, environment and working directory.
+	Config *fc.ImageConfig `json:"image_config,omitempty"`
+
+	// Volumes are named volumes attached as extra drives, in drive order.
+	Volumes []fcVolume `json:"volumes,omitempty"`
 }
 
 type fcProvider struct {
@@ -178,6 +198,10 @@ type fcProvider struct {
 	bridgeCheck func() fc.BridgeIsolation
 	warn        io.Writer
 
+	// guardCheck reports whether this host can close itself to a bridge's guests (fc.Guard);
+	// nil skips the check. A host that cannot is warned about on every create.
+	guardCheck func() error
+
 	// boots caps how many VMs restore or cold-boot at once: each is a burst of page faults and a
 	// vCPU spinning up, and a fleet woken together (a host reboot, a burst of connections) would
 	// otherwise contend so hard that every wake is slow. Sized to the host's CPUs; nil is no cap.
@@ -185,6 +209,9 @@ type fcProvider struct {
 
 	mu    sync.Mutex
 	locks map[string]*refLock
+
+	// volMu holds a volume's "attached nowhere else" check through the save that attaches it.
+	volMu sync.Mutex
 }
 
 func stateRoot() (string, error) {
@@ -214,7 +241,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		arch:  runtime.GOARCH,
 		arts:  fc.NewArtifactCache(filepath.Join(root, "artifacts")),
 		ext4:  mkfs,
-		net:   fc.NewIPNetwork(os.Getuid()),
+		net:   guardedNetwork(),
 		guest: fc.NewGuest(),
 		rootfs: &fc.RootfsBuilder{
 			Dir:    filepath.Join(root, "rootfs"),
@@ -224,6 +251,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		},
 		launch:      fc.ExecLauncher{},
 		bridgeCheck: fc.HostBridgeIsolation,
+		guardCheck:  fc.Available,
 		boots:       make(chan struct{}, max(1, runtime.NumCPU())),
 		bootTimeout: 60 * time.Second,
 		locks:       map[string]*refLock{},
@@ -454,15 +482,19 @@ func unsupported(svc spec.Service) error {
 	add(svc.Build != nil, "build", "build the image with docker first and name it with `image`")
 	add(len(svc.Files) > 0, "files", "not written into a VM yet: execd can copy into a running VM, but create "+
 		"does not do it before the first snapshot")
-	add(len(svc.Mounts) > 0 || len(svc.VolumeMounts) > 0 || len(svc.ReadOnlyVolumes) > 0,
-		"mounts", "a host directory cannot be bind-mounted into a VM; it would be a virtio-fs device")
+	hostMount := len(svc.Mounts) > 0 || len(svc.ReadOnlyVolumes) > 0
+	for _, m := range svc.VolumeMounts {
+		hostMount = hostMount || m.Host != ""
+	}
+
+	add(hostMount, "mounts", "a host directory cannot be bind-mounted into a VM; it would be a virtio-fs "+
+		"device (a named volume can be mounted: it is attached as an ext4 drive)")
 	add(len(svc.Init) > 0, "init", "not run in a VM yet: execd can run commands, but create does not run them "+
 		"after the first healthy check")
 	add(svc.GPUs != "", "gpus", "Firecracker has no device passthrough")
 	add(len(svc.CapAdd) > 0, "cap_add", "the workload is root in its own kernel; there is no capability set to widen")
-	add(len(svc.EgressAllow) > 0 || svc.EgressPolicy != nil, "egress_allow/egress_policy",
-		"the egress filter does not listen on a VM bridge yet; a VM has no egress at all, which is egress: deny")
-	add(svc.Egress != "" && svc.Egress != "deny", "egress", "a VM bridge has no NAT, so the only egress it has is deny")
+	add(svc.Egress != "" && svc.Egress != spec.EgressDeny && svc.Egress != spec.EgressAllow, "egress",
+		"a VM bridge has no NAT: its egress is deny, or the filter (allow, egress_allow, egress_policy)")
 
 	if len(why) == 0 {
 		return nil
@@ -552,6 +584,8 @@ func (p *fcProvider) findAgent(ctx context.Context, arch string) (string, error)
 func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal int, service string,
 	svc spec.Service, eps []Endpoint, _ string, _ Isolation,
 ) error {
+	began := time.Now()
+
 	// Every isolation tier is met: a VM is a stronger boundary than gVisor or a container, and
 	// the same boundary kata gives. Nothing is downgraded, so nothing is refused here.
 	if err := unsupported(svc); err != nil {
@@ -580,6 +614,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 			}
 
 			fmt.Fprintf(w, "  warning: microVM sandboxes may not be isolated from each other: %s - %s\n", iso.Detail, iso.Meaning)
+		}
+	}
+
+	if p.guardCheck != nil {
+		if err := p.guardCheck(); err != nil {
+			fmt.Fprintf(p.warnTo(), "  warning: this host cannot close itself to microVM guests (%v): they reach every "+
+				"host service bound to 0.0.0.0 at their gateway, 10.231.%d.1 - see SECURITY.md\n", err, slot)
 		}
 	}
 
@@ -620,14 +661,35 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		}
 	}()
 
+	// Where the root filesystem comes from: a saved snapshot of that name, or the image. A memory
+	// snapshot restores only as itself (createFromSnapshot); a disk snapshot of an API sandbox is
+	// a root filesystem to cold-boot a new VM from, with the image config it was saved with.
+	var (
+		rootfsSrc string
+		cfg       fc.ImageConfig
+	)
+
 	if snap, found := p.snapshotFor(svc.Image); found {
-		if err := p.createFromSnapshot(ctx, snap, svc.Image, ref, slot, eps); err != nil {
-			return err
+		if !snap.DiskOnly {
+			if err := p.createFromSnapshot(ctx, snap, svc, ref, slot, eps); err != nil {
+				return err
+			}
+
+			ok = true
+
+			return nil
 		}
 
-		ok = true
+		if snap.VM.Config == nil {
+			return fmt.Errorf("the disk snapshot %s does not say what its image runs; it cannot be booted", svc.Image)
+		}
 
-		return nil
+		src, found := p.savedSnapshotDir(svc.Image)
+		if !found {
+			return fmt.Errorf("the firecracker snapshot %s is gone", svc.Image)
+		}
+
+		rootfsSrc, cfg = filepath.Join(src, fc.RootfsName), *snap.VM.Config
 	}
 
 	arts, err := p.arts.Resolve(ctx, p.arch)
@@ -639,16 +701,20 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return errors.New("the firecracker provider boots an image; the service names none")
 	}
 
-	rfs, err := p.rootfs.Build(ctx, svc.Image)
-	if err != nil {
-		return err
+	if rootfsSrc == "" {
+		rfs, err := p.rootfs.Build(ctx, svc.Image)
+		if err != nil {
+			return err
+		}
+
+		rootfsSrc, cfg = rfs.Path, rfs.Config
 	}
 
-	if !rootUser(rfs.Config.User) {
+	if !rootUser(cfg.User) {
 		return fmt.Errorf("%s runs as USER %q, and the firecracker provider runs every process in the VM "+
 			"as root: fc-init and execd do not switch users yet, and running it as root anyway would "+
 			"quietly drop the boundary the image asked for - use --provider docker, or an image whose "+
-			"USER is root", svc.Image, rfs.Config.User)
+			"USER is root", svc.Image, cfg.User)
 	}
 
 	agent, err := p.agent(ctx, p.arch)
@@ -656,10 +722,14 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return err
 	}
 
-	clone, err := fc.CloneFile(rfs.Path, filepath.Join(dir, fc.RootfsName))
+	cloneAt := time.Now()
+
+	clone, err := fc.CloneFile(rootfsSrc, filepath.Join(dir, fc.RootfsName))
 	if err != nil {
 		return fmt.Errorf("cloning the root filesystem: %w", err)
 	}
+
+	cloned := time.Since(cloneAt)
 
 	index := blockSize + ordinal // a service with no ports still needs an address
 	if len(eps) > 0 {
@@ -668,11 +738,14 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	vm := &fcVM{
 		Sandbox: sandbox, Service: service, Ref: ref, Instance: randomHex(8),
-		Slot: slot, Index: index, Image: svc.Image, ImageID: rfs.Config.ID,
+		Slot: slot, Index: index, Image: svc.Image, ImageID: cfg.ID,
 		VCPU: vcpu, MemMiB: mem, Ports: svc.Ports, DependsOn: svc.DependsOn, Health: svc.Health,
 		Idle: svc.Idle, OnIdle: svc.OnIdle, Kernel: arts.Kernel, Binary: arts.Firecracker,
 		Clone: clone, Created: time.Now().UTC(),
-		AccessToken: randomHex(16), ControlSecret: randomHex(32),
+		// The API's token when it minted one (RunsAgent): execd must answer the token the API
+		// hands its callers, and a second one minted here would be a sandbox that refuses them.
+		AccessToken: agentToken(svc), ControlSecret: randomHex(32),
+		OSB: svc.OSBOwner, Config: &cfg,
 	}
 
 	for _, e := range eps {
@@ -685,38 +758,76 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	made = vm
 
+	// execd's two secrets are sbx's alone, appended below, once. execd reads them with getenv,
+	// which takes the FIRST occurrence: left in the image's ENV (a committed snapshot carries
+	// `ENV EXECD_ACCESS_TOKEN=`) or the spec's, they would win over sbx's - an image-chosen token
+	// until the first re-key and again after every cold boot, and a re-key that fails.
+	secret := func(k string) bool { return k == AgentTokenEnv || k == execdctl.EnvControlSecret }
+
 	keys := make([]string, 0, len(svc.Env))
 	for k := range svc.Env {
-		keys = append(keys, k)
+		if !secret(k) {
+			keys = append(keys, k)
+		}
 	}
 
 	sort.Strings(keys)
 
-	env := fc.MergeEnv(rfs.Config.Env, svc.Env, keys)
+	image := make([]string, 0, len(cfg.Env))
+	for _, kv := range cfg.Env {
+		if k, _, _ := strings.Cut(kv, "="); !secret(k) {
+			image = append(image, kv)
+		}
+	}
+
+	env := fc.MergeEnv(image, svc.Env, keys)
 	// execd reads both and removes them from its own environment before it starts anything,
 	// so the workload does not inherit either. That keeps them out of `env` and logs; it does
 	// not hide them from root in the guest, which can read /proc/1/environ and /init.json on
 	// the agent drive. Harmless by construction (SECURITY.md): each is this guest's own, control
 	// is reachable only over vsock from the host, the control secret rotates at every restore,
-	// and a fork of a VM is refused.
-	env = append(env, "EXECD_ACCESS_TOKEN="+vm.AccessToken, "EXECD_CONTROL_SECRET="+vm.ControlSecret)
+	// and a fork of a VM's memory is refused.
+	env = append(env, AgentTokenEnv+"="+vm.AccessToken, execdctl.EnvControlSecret+"="+vm.ControlSecret)
 
-	init := fc.InitConfig{
-		Argv:       fc.Compose(rfs.Config.Entrypoint, rfs.Config.Cmd, svc.Entrypoint, svc.Args),
-		Env:        env,
-		WorkingDir: rfs.Config.WorkingDir,
-		Hostname:   service,
-		RootDevice: fc.GuestRootfsDevice,
+	if svc.Filtered() {
+		if vm.EgressPolicy, err = declaredJSON(svc); err != nil {
+			return err
+		}
+
+		env = withEgressProxy(env, vm.addr())
 	}
 
-	if err := fc.BuildAgentDrive(ctx, p.ext4, fc.AgentDrive{Agent: agent, Config: init},
-		filepath.Join(dir, "agent.ext4")); err != nil {
+	// The volumes are checked and the record that attaches them saved under one lock, so two
+	// creates cannot both attach one volume.
+	if err := func() error {
+		p.volMu.Lock()
+		defer p.volMu.Unlock()
+
+		var err error
+		if vm.Volumes, err = p.volumesFor(ref, svc.VolumeMounts); err != nil {
+			return err
+		}
+
+		init := fc.InitConfig{
+			Argv:       fc.Compose(cfg.Entrypoint, cfg.Cmd, svc.Entrypoint, svc.Args),
+			Env:        env,
+			WorkingDir: cfg.WorkingDir,
+			Hostname:   service,
+			RootDevice: fc.GuestRootfsDevice,
+			Mounts:     initMounts(vm.Volumes),
+		}
+
+		if err := fc.BuildAgentDrive(ctx, p.ext4, fc.AgentDrive{Agent: agent, Config: init},
+			filepath.Join(dir, "agent.ext4")); err != nil {
+			return err
+		}
+
+		return p.save(vm)
+	}(); err != nil {
 		return err
 	}
 
-	if err := p.save(vm); err != nil {
-		return err
-	}
+	slotAt := time.Now()
 
 	release, err := p.bootSlot(ctx)
 	if err != nil {
@@ -724,6 +835,8 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	}
 
 	defer release() // safe twice: released early below once the VM serves
+
+	bootAt := time.Now()
 
 	if err := p.coldBoot(ctx, vm); err != nil {
 		return err
@@ -745,6 +858,27 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	}
 
 	release()
+
+	// Where a create's time went, one line per VM: a slow create (a big image cloned by copy on a
+	// filesystem without reflinks, boots queued behind a burst) says which part was slow.
+	logs.Default.Info(sandbox, service, "microVM %s serving %s after create began: rootfs %s in %s (%s of data), "+
+		"waited %s for a boot slot, booted and served in %s", ref, time.Since(began).Round(time.Millisecond),
+		clone, cloned.Round(time.Millisecond), cloneSize(rootfsSrc), bootAt.Sub(slotAt).Round(time.Millisecond),
+		time.Since(bootAt).Round(time.Millisecond))
+
+	// An API sandbox is born running: the API's contract is a process that runs, it reports
+	// Running once execd answers, and a snapshot and restore here would be a second boot's worth
+	// of time spent to end where this already is. SnapshotValid is false, so if it dies awake its
+	// next wake is a cold boot from its disk, and its first sleep takes a Full snapshot.
+	if vm.OSB != "" {
+		if err := p.save(vm); err != nil {
+			return err
+		}
+
+		ok = true
+
+		return nil
+	}
 
 	if err := p.sleep(ctx, vm); err != nil {
 		return err
@@ -780,7 +914,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 	// which the provider reads as asleep-without-a-snapshot and cold-boots next time.
 	args := "console=ttyS0 reboot=k panic=1 quiet loglevel=3 init=/sbx " + a.BootArg() + " -- fc-init"
 
-	for _, step := range []func() error{
+	steps := []func() error{
 		func() error { return c.PutBootSource(ctx, fc.BootSource{KernelImagePath: vm.Kernel, BootArgs: args}) },
 		func() error {
 			return c.PutDrive(ctx, fc.Drive{DriveID: "agent", PathOnHost: filepath.Join(dir, "agent.ext4"), IsRootDevice: true, IsReadOnly: true})
@@ -788,6 +922,15 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		func() error {
 			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: filepath.Join(dir, fc.RootfsName)})
 		},
+	}
+
+	// Volumes after the rootfs, in order: the guest sees them as vdc, vdd, ... (fc.GuestExtraDevice).
+	for i, v := range vm.Volumes {
+		drive := fc.Drive{DriveID: volumeDriveID(i), PathOnHost: p.volumePath(v.Name), IsReadOnly: v.ReadOnly}
+		steps = append(steps, func() error { return c.PutDrive(ctx, drive) })
+	}
+
+	for _, step := range append(steps, []func() error{
 		func() error {
 			return c.PutMachineConfig(ctx, fc.MachineConfig{VcpuCount: vm.VCPU, MemSizeMib: vm.MemMiB, TrackDirtyPages: true})
 		},
@@ -799,7 +942,7 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		},
 		func() error { return c.PutEntropy(ctx) },
 		func() error { return c.InstanceStart(ctx) },
-	} {
+	}...) {
 		if err := step(); err != nil {
 			_ = p.launch.Kill(context.WithoutCancel(ctx), dir)
 			return err
@@ -1425,7 +1568,12 @@ func (p *fcProvider) List(ctx context.Context, sandbox string) ([]Unit, error) {
 		u := Unit{
 			Sandbox: vm.Sandbox, Service: vm.Service, Slot: vm.Slot, Ref: vm.Ref,
 			Instance: vm.Instance, Running: state == fc.StateRunning || serr != nil, Paused: state == fc.StatePaused,
-			Index: vm.Index % blockSize, DependsOn: vm.DependsOn, Idle: vm.Idle, OnIdle: vm.OnIdle,
+			Index: vm.Index % blockSize, DependsOn: vm.DependsOn, Idle: vm.Idle, OnIdle: vm.OnIdle, OSB: vm.OSB,
+		}
+
+		if vm.EgressPolicy != "" {
+			a := vm.addr()
+			u.EgressGateway, u.EgressBridge, u.EgressPolicy = a.Gateway(), a.Bridge(), vm.EgressPolicy
 		}
 
 		for i, pub := range vm.Public {
@@ -1494,6 +1642,8 @@ func (p *fcProvider) Remove(ctx context.Context, sandbox string) error {
 			unlock()
 			return err
 		}
+
+		keepConsole(dir, vm)
 
 		err := os.RemoveAll(dir)
 
@@ -1641,6 +1791,10 @@ func (p *fcProvider) savedSnapshotDir(image string) (string, bool) {
 type fcSnapshot struct {
 	VM  fcVM   `json:"vm"`
 	Dir string `json:"dir"` // the VM directory it was taken in: drive paths in vm.state point there
+
+	// DiskOnly: the root filesystem alone, with no memory - an API sandbox's snapshot
+	// (commitDisk). It boots as a new VM; a memory snapshot restores only as itself.
+	DiskOnly bool `json:"disk_only,omitempty"`
 }
 
 func (p *fcProvider) snapshotFor(image string) (*fcSnapshot, bool) {
@@ -1707,6 +1861,24 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 	state, err := p.running(ctx, ref)
 	if err != nil {
 		return err
+	}
+
+	// An API sandbox's snapshot is its disk (commitDisk), saved with no identity of its own.
+	if vm.OSB != "" {
+		if err := p.commitDisk(ctx, vm, state, dst); err != nil {
+			return err
+		}
+
+		if err := os.WriteFile(filepath.Join(dst, "name"), []byte(image+"\n"), 0o600); err != nil {
+			return err
+		}
+
+		b, err := json.Marshal(fcSnapshot{VM: forgetSecrets(*vm), Dir: dir, DiskOnly: true})
+		if err != nil {
+			return err
+		}
+
+		return os.WriteFile(filepath.Join(dst, "snapshot.json"), b, 0o600)
 	}
 
 	// The record the snapshot is saved with: the identity execd holds inside it.
@@ -1818,8 +1990,8 @@ func (p *fcProvider) commitLive(ctx context.Context, vm *fcVM, state, dst string
 // service in the same slot, and nowhere else, until drives are re-pointed per clone (a jailer or
 // a mount namespace) and the guest agent re-addresses the network. A clone under another name
 // is also a fork, which needs the guest to re-key - refused for both reasons, each stated.
-func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image, ref string, slot int, eps []Endpoint) error {
-	dir := p.dir(ref)
+func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, svc spec.Service, ref string, slot int, eps []Endpoint) error {
+	dir, image := p.dir(ref), svc.Image
 
 	switch {
 	case s.Dir != dir:
@@ -1830,6 +2002,15 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 		return fmt.Errorf("the firecracker snapshot for %s was taken in slot %d, and this sandbox "+
 			"got slot %d: the guest's address is part of its memory. Free slot %d and retry",
 			ref, s.VM.Slot, slot, s.VM.Slot)
+	case svc.Filtered() != (s.VM.EgressPolicy != ""):
+		// HTTP(S)_PROXY is in the environment of every process the snapshot holds, set or not
+		// at its first boot. Restoring a filtered snapshot as an unfiltered service would leave
+		// clients pointed at a filter nobody serves; the other way round, at none at all, with
+		// the filter serving nothing. Neither is the spec, so neither is done.
+		return fmt.Errorf("the firecracker snapshot for %s was taken %s, and the spec now asks for "+
+			"it %s: the proxy setting is in the environment of every process in the snapshot's "+
+			"memory. Keep the snapshot's egress, or remove the snapshot and create afresh",
+			ref, filteredWord(s.VM.EgressPolicy != ""), filteredWord(svc.Filtered()))
 	}
 
 	// Create holds the lock and removes dir if this fails.
@@ -1850,6 +2031,16 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, image,
 	vm.SnapshotValid = true
 	vm.Restored = false
 	vm.Public = nil
+
+	// The policy itself may differ from the snapshot's: it is held by the filter, not the guest.
+	vm.EgressPolicy = ""
+
+	if svc.Filtered() {
+		var err error
+		if vm.EgressPolicy, err = declaredJSON(svc); err != nil {
+			return err
+		}
+	}
 
 	for _, e := range eps {
 		vm.Public = append(vm.Public, e.Port)
@@ -1917,4 +2108,97 @@ var (
 	_ Snapshotter = (*fcProvider)(nil)
 	_ Pauser      = (*fcProvider)(nil)
 	_ Limiter     = (*fcProvider)(nil)
+
+	// The OpenSandbox API's needs (firecracker_osb.go).
+	_ RunsAgent    = (*fcProvider)(nil)
+	_ NamedVolumes = (*fcProvider)(nil)
+	_ Puller       = (*fcProvider)(nil)
 )
+
+// guardChecker is a Network that can re-check a bridge's host rules (fc.IPNetwork).
+type guardChecker interface {
+	EnsureGuard(ctx context.Context, slot int)
+}
+
+// Maintain re-checks the host rules of every bridge a VM of this provider is on, and puts back
+// any that a firewall reload or a flush removed (fc.Guard.Ensure: `-C` only while they are whole),
+// and cuts back any VM's console.log a guest has printed past fc.ConsoleMax.
+func (p *fcProvider) Maintain(ctx context.Context) {
+	vms, err := p.all()
+	if err != nil {
+		return
+	}
+
+	for _, vm := range vms {
+		_ = fc.CapLogs(p.dir(vm.Ref))
+	}
+
+	g, ok := p.net.(guardChecker)
+	if !ok {
+		return
+	}
+
+	seen := map[int]bool{}
+
+	for _, vm := range vms {
+		if !seen[vm.Slot] {
+			seen[vm.Slot] = true
+			g.EnsureGuard(ctx, vm.Slot)
+		}
+	}
+}
+
+// guardWholer is a Network that can say whether a bridge's host rules are in place (fc.IPNetwork).
+type guardWholer interface {
+	GuardWhole(ctx context.Context, slot int) (bool, error)
+}
+
+// HostWarnings says when this sandbox's host is open to its guests: no iptables at all, or its
+// bridge's guard not in place (it could not be installed, or something removed it and the
+// daemon has not put it back yet). The API carries it to the caller; stderr alone reaches nobody.
+func (p *fcProvider) HostWarnings(ctx context.Context, sandbox string) []string {
+	vms, err := p.all()
+	if err != nil {
+		return nil
+	}
+
+	slot := -1
+
+	for _, vm := range vms {
+		if vm.Sandbox == sandbox {
+			slot = vm.Slot
+			break
+		}
+	}
+
+	if slot < 0 {
+		return nil
+	}
+
+	gw := fc.Addr{Slot: slot}.Gateway()
+
+	if p.guardCheck != nil {
+		if err := p.guardCheck(); err != nil {
+			return []string{fmt.Sprintf("this host could not be closed to the sandbox's guests (%v): they "+
+				"reach every host service bound to 0.0.0.0 at %s, and docker-published ports - see SECURITY.md", err, gw)}
+		}
+	}
+
+	g, ok := p.net.(guardWholer)
+	if !ok {
+		return nil
+	}
+
+	whole, err := g.GuardWhole(ctx, slot)
+	if err == nil && whole {
+		return nil
+	}
+
+	why := "its host rules are not in place"
+	if err != nil {
+		why += " (" + err.Error() + ")"
+	}
+
+	return []string{fmt.Sprintf("this sandbox's bridge is not guarded - %s: its guests can reach host "+
+		"services at %s and docker-published ports until the daemon puts the rules back - see SECURITY.md", why, gw)}
+}

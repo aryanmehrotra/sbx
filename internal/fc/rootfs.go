@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // OCI image → ext4 root filesystem.
@@ -83,6 +84,16 @@ type RootfsBuilder struct {
 	// Headroom is free space added on top of the image's content, for the workload to write
 	// into. The file is sparse, so this costs nothing on disk until it is used.
 	Headroom int64
+
+	mu       sync.Mutex
+	inflight map[string]*buildFlight // image -> the build every concurrent caller shares
+}
+
+// buildFlight is one build of an image that concurrent callers wait on together.
+type buildFlight struct {
+	done chan struct{}
+	r    Rootfs
+	err  error
 }
 
 // DefaultHeadroom is what a sandbox can write before its root filesystem is full.
@@ -94,8 +105,60 @@ type Rootfs struct {
 	Config ImageConfig
 }
 
+// Cached reports whether image's rootfs is already built: the image is present and its ID's
+// cache entry is complete. It pulls nothing and builds nothing.
+func (b *RootfsBuilder) Cached(ctx context.Context, image string) bool {
+	cfg, err := b.Engine.Inspect(ctx, image)
+	if err != nil {
+		return false
+	}
+
+	_, err = os.Stat(filepath.Join(b.Dir, strings.TrimPrefix(cfg.ID, "sha256:"), builtSentinel))
+
+	return err == nil
+}
+
 // Build returns the cached rootfs for image, pulling and building it on first use.
+//
+// Concurrent calls for one image share one build: a burst of creates of a 2.5 GB image on a fresh
+// host would otherwise each pull, export and mkfs it, and all of them finish late. The shared
+// build runs to completion even if the caller that started it gives up - the others still want it,
+// and so will the next create - while each caller stops waiting when its own ctx ends.
 func (b *RootfsBuilder) Build(ctx context.Context, image string) (Rootfs, error) {
+	b.mu.Lock()
+
+	f, ok := b.inflight[image]
+	if !ok {
+		f = &buildFlight{done: make(chan struct{})}
+
+		if b.inflight == nil {
+			b.inflight = map[string]*buildFlight{}
+		}
+
+		b.inflight[image] = f
+
+		go func() {
+			f.r, f.err = b.build(context.WithoutCancel(ctx), image)
+
+			b.mu.Lock()
+			delete(b.inflight, image)
+			b.mu.Unlock()
+
+			close(f.done)
+		}()
+	}
+
+	b.mu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.r, f.err
+	case <-ctx.Done():
+		return Rootfs{}, ctx.Err()
+	}
+}
+
+func (b *RootfsBuilder) build(ctx context.Context, image string) (Rootfs, error) {
 	cfg, err := b.Engine.Inspect(ctx, image)
 	if errors.Is(err, ErrNoImage) {
 		if err := b.Engine.Pull(ctx, image); err != nil {

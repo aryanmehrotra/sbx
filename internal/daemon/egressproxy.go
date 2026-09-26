@@ -2,14 +2,18 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/egress"
+	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
@@ -103,6 +107,7 @@ func (d *daemon) effectivePolicy(sandbox string, declared egress.Policy) (egress
 func (d *daemon) reconcileEgress(found []provider.Unit) {
 	type want struct {
 		sandbox string
+		bridge  string // an sbx-owned bridge (a microVM's), or ""
 		units   []provider.Unit
 	}
 
@@ -123,7 +128,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 
 		w := wants[u.EgressGateway]
 		if w == nil {
-			w = &want{sandbox: u.Sandbox}
+			w = &want{sandbox: u.Sandbox, bridge: u.EgressBridge}
 			wants[u.EgressGateway] = w
 		}
 
@@ -132,6 +137,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 
 	type desired struct {
 		sandbox  string
+		bridge   string
 		declared egress.Policy
 		policy   egress.Policy
 		savedAt  time.Time
@@ -142,7 +148,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 	for gw, w := range wants {
 		declared := provider.DeclaredPolicy(w.units)
 		p, at := d.effectivePolicy(w.sandbox, declared)
-		next[gw] = desired{sandbox: w.sandbox, declared: declared, policy: p, savedAt: at}
+		next[gw] = desired{sandbox: w.sandbox, bridge: w.bridge, declared: declared, policy: p, savedAt: at}
 	}
 
 	d.mu.Lock()
@@ -175,9 +181,19 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 			continue
 		}
 
-		addr := net.JoinHostPort(gw, strconv.Itoa(provider.EgressProxyPort))
+		port := d.egressPort
+		if port == 0 {
+			port = provider.EgressProxyPort
+		}
 
-		ln, err := net.Listen("tcp", addr)
+		addr := net.JoinHostPort(gw, strconv.Itoa(port))
+
+		listen := net.Listen
+		if want.bridge != "" {
+			listen = func(_, a string) (net.Listener, error) { return listenFree(a) }
+		}
+
+		ln, err := listen("tcp", addr)
 		if err != nil {
 			logs.Default.Warn("", "", "egress filter could not bind %s: %v", addr, err)
 			continue
@@ -185,6 +201,20 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 
 		filter := egress.NewPolicy(want.policy)
 		filter.OnActivity = func() { d.touchEgress(gw) }
+
+		// On an sbx-owned bridge the filter runs on the host its guests are kept off, so it
+		// must not carry them back onto it: not to the gateway's other ports, not to the host's
+		// other addresses, not to another sandbox's guests (DECISIONS.md, "A microVM's only
+		// door is its filter, and the host behind it is closed").
+		//
+		// Any filter hosted here is on the host, so its loopback and link-local (cloud metadata)
+		// are the host's: refused whatever the sandbox's own policy allows, because that policy is
+		// written by the sandbox's caller and the filter dials as this daemon.
+		filter.Refuse = egress.HostLocal
+		if want.bridge != "" {
+			filter.Refuse = egress.VMRefuse(fc.Plan, d.vmWiden)
+		}
+
 		srv := &http.Server{Handler: filter}
 		go func() { _ = srv.Serve(ln) }()
 
@@ -319,4 +349,24 @@ func (d *daemon) stampGateway(gw string) {
 			u.touch()
 		}
 	}
+}
+
+// parseCIDRs reads a comma-separated list of CIDRs; empty is none.
+func parseCIDRs(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+
+		p, err := netip.ParsePrefix(f)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a CIDR (e.g. 10.20.0.0/16)", f)
+		}
+
+		out = append(out, p.Masked())
+	}
+
+	return out, nil
 }

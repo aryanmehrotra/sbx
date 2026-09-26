@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,14 @@ type Unit struct {
 	// It is what the filter starts with and what a reset returns to; a policy changed on the
 	// running service lives with the filter, not here.
 	EgressPolicy string
+
+	// EgressBridge is the host bridge the gateway is on when that bridge is sbx's own - a
+	// microVM sandbox's sbxfc<slot> - rather than one docker made; "" otherwise. Such a bridge
+	// comes and goes with its VMs (a host reboot takes it until the next wake), so the daemon
+	// binds the filter there even while the address is absent. And because that filter runs on
+	// the very host the guests are kept off, it refuses the host's own addresses and the rest of
+	// the VM plan unless a rule names them.
+	EgressBridge string
 
 	// DependsOn is what this service declared it needs. Carried to the daemon so that waking
 	// it wakes those too: a stopped container is absent from the network's DNS, so a service
@@ -418,6 +427,57 @@ type ImageInfo struct {
 	Arch       string // GOARCH spelling: amd64, arm64
 }
 
+// ImageInspector reads what an image runs, and on what. Injector carries it for docker; a
+// provider that runs the agent itself (RunsAgent) answers it too, because the OpenSandbox API
+// records a sandbox's command from it whichever way the agent gets in.
+type ImageInspector interface {
+	ImageInfo(ctx context.Context, image string) (ImageInfo, error)
+}
+
+// RunsAgent is implemented by a provider whose every sandbox already runs sbx's agent, execd, as
+// the sandbox's agent: a microVM, whose PID 1 (`sbx fc-init`) becomes execd with the workload as
+// its child. Named for the want - "this sandbox answers execd's API without being given it" -
+// not for how: a provider that bakes the agent in some other way is the same capability.
+//
+// The OpenSandbox API skips, for such a provider, everything Injector is for: seeding execd into
+// a volume, mounting it at /opt/sbx, and wrapping the entrypoint in it. What it keeps is the
+// token. The API mints the sandbox's execd access token and puts it in the spec's env as
+// EXECD_ACCESS_TOKEN; a RunsAgent provider boots execd with that token, and re-keys a restored
+// execd with it, and never mints one of its own for such a sandbox - two tokens for one sandbox
+// is a sandbox the API hands out credentials for that its agent refuses.
+type RunsAgent interface {
+	ImageInspector
+
+	// RunsAgent is a marker: implementing it is the promise above.
+	RunsAgent()
+}
+
+// AgentTokenEnv is the env var the API puts the execd access token in, and the one execd reads.
+const AgentTokenEnv = "EXECD_ACCESS_TOKEN"
+
+// HostVolumes is implemented by a provider that can bind a directory of this machine into a
+// sandbox. Docker can; a microVM cannot (Firecracker has no virtio-fs), and the OpenSandbox API
+// refuses a `host` volume by name on a provider without it rather than creating a sandbox whose
+// mount silently is not there.
+type HostVolumes interface {
+	HostVolumes()
+}
+
+// HostVolumesFor returns nil when p can mount host directories, or the refusal naming it.
+func HostVolumesFor(p Provider) error {
+	if _, ok := p.(HostVolumes); ok {
+		return nil
+	}
+
+	if p.Name() == "firecracker" {
+		return errors.New("the firecracker provider cannot mount a host directory: a microVM's " +
+			"only way to share one would be virtio-fs, which Firecracker does not have - use a pvc " +
+			"volume (an ext4 image attached as a drive), or the docker provider")
+	}
+
+	return fmt.Errorf("the %s provider cannot mount a host directory into a sandbox", p.Name())
+}
+
 // Injector runs a program sbx supplies inside an image that does not carry it.
 //
 // This is how a sandbox created through the OpenSandbox API gets its agent (`sbx execd`) into
@@ -430,7 +490,7 @@ type ImageInfo struct {
 // provider does not implement it, and API sandboxes are refused there with that reason.
 type Injector interface {
 	// ImageInfo reads an image's default command and platform. The image must be present.
-	ImageInfo(ctx context.Context, image string) (ImageInfo, error)
+	ImageInspector
 
 	// VolumeRuns reports whether volume already holds an executable at name that runs inside
 	// image - the check is to run it, because a file that is present but built for the wrong
@@ -447,12 +507,13 @@ type Injector interface {
 }
 
 // ErrOSBOnFirecracker is why `sbx serve --provider firecracker --osb-addr` is refused at startup
-// rather than answering every create with a 501: an OpenSandbox API sandbox gets sbx's agent
-// through a read-only volume and an entrypoint, and a microVM takes neither yet.
-var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker: an OpenSandbox API " +
-	"sandbox runs sbx's agent from a read-only volume mounted into an arbitrary image, and a microVM " +
-	"cannot take a host volume yet, so every create would fail. Serve the OpenSandbox API from a " +
-	"docker-backed `sbx serve --osb-addr`, and use the CLI or sandbox.json for microVM sandboxes")
+// where the microVMs run in a helper VM (a Mac, Windows): the API sandboxes would be created one
+// level down, and the host half does not front the API into the VM yet. On a Linux host with
+// /dev/kvm the API serves microVMs directly (RunsAgent).
+var ErrOSBOnFirecracker = errors.New("--osb-addr with --provider firecracker through a helper VM: the " +
+	"OpenSandbox API serves microVMs on a Linux host with /dev/kvm, and this machine runs them inside " +
+	"a helper VM, which the API is not fronted into yet. Serve the OpenSandbox API from a docker-backed " +
+	"`sbx serve --osb-addr` here, or run `sbx serve --provider firecracker --osb-addr` on Linux")
 
 // InjectorFor returns the provider's injection support, or a refusal naming the backend and
 // what it would take.
@@ -464,9 +525,8 @@ func InjectorFor(p Provider) (Injector, error) {
 
 	switch p.Name() {
 	case "firecracker":
-		return nil, errors.New("the firecracker provider cannot run sbx's agent inside an arbitrary " +
-			"image: that takes a read-only volume and an entrypoint, and a microVM cannot mount a host " +
-			"volume yet - use the docker provider for OpenSandbox API sandboxes")
+		return nil, errors.New("the firecracker provider does not inject sbx's agent into an image: " +
+			"its VMs run the agent as PID 1 already (RunsAgent)")
 	default:
 		return nil, fmt.Errorf("the %s provider cannot run sbx's agent inside an arbitrary image: "+
 			"on a cluster that is an init container copying from a pullable image, which sbx "+
@@ -745,6 +805,21 @@ type Forwarder interface {
 	Forward(ctx context.Context, ref string) ([]Forward, error)
 }
 
+// HostWarner is a provider that can say, per sandbox, where the host is more open to it than it
+// should be - a microVM bridge whose guard could not be installed. The API puts the answer on a
+// sandbox's Running status and in its history, because the daemon's stderr is not somewhere its
+// caller ever looks. Optional; nil or empty is nothing to say.
+type HostWarner interface {
+	HostWarnings(ctx context.Context, sandbox string) []string
+}
+
+// Maintainer is a provider with host-side state that can drift while nothing is being created or
+// woken - firewall rules a reload removed, a log a guest keeps writing. The daemon calls Maintain
+// once per discovery pass. Optional like the rest; it must be cheap when nothing has drifted.
+type Maintainer interface {
+	Maintain(ctx context.Context)
+}
+
 // Meter reports what running services are costing.
 //
 // Optional like the rest. A service that is asleep has no sample and is not an error: it is a
@@ -788,6 +863,14 @@ type SlotPicker interface {
 // question for a caller that already knows which sandbox it means. Absent is (Unit{}, false, nil).
 type UnitGetter interface {
 	UnitOf(ctx context.Context, sandbox, service string) (Unit, bool, error)
+}
+
+// Warmer is a provider whose create needs more than the image to be present - a microVM's root
+// filesystem, built from the image by docker export and mkfs.ext4. Warm pulls the image if it is
+// absent and builds whatever else a create would, and reports whether it had anything to do.
+// Prewarm uses it in place of Pull where a provider has it.
+type Warmer interface {
+	Warm(ctx context.Context, image string) (built bool, err error)
 }
 
 type Puller interface {
@@ -834,4 +917,61 @@ func FirecrackerRuntimeClass(getenv func(string) string) string {
 	}
 
 	return "kata-fc"
+}
+
+// ExitReporter says why a workload is not running, in the runtime's own terms: its state, its
+// exit code, whether the kernel killed it for memory, and any error the runtime recorded while
+// starting it. A caller that has to report a sandbox as failed asks this, because the workload's
+// own output is often empty - a process killed by a signal prints nothing - and "it exited" with
+// no cause is a failure nobody can act on.
+type ExitReporter interface {
+	ExitOf(ctx context.Context, ref string) (ExitState, error)
+}
+
+// ExitState is a stopped workload's last state, as the runtime recorded it.
+type ExitState struct {
+	Status    string // the runtime's word: "exited", "created", "dead", ...
+	ExitCode  int
+	OOMKilled bool
+	Error     string // the runtime's own error, e.g. an OCI start failure
+}
+
+// String renders the state as one clause for a failure message.
+func (e ExitState) String() string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "state %s, exit code %d", orUnknown(e.Status), e.ExitCode)
+
+	switch {
+	case e.OOMKilled:
+		b.WriteString(", killed by the kernel for exceeding its memory limit (OOMKilled)")
+	case e.ExitCode == 137:
+		b.WriteString(" (SIGKILL: killed from outside, or by the kernel for memory)")
+	case e.ExitCode == 143:
+		b.WriteString(" (SIGTERM: stopped from outside)")
+	}
+
+	if e.Status == "created" {
+		b.WriteString(" - the container was created but never started")
+	}
+
+	if s := strings.TrimSpace(e.Error); s != "" {
+		b.WriteString("; the runtime reported: " + hostPaths.ReplaceAllString(s, "<host path>"))
+	}
+
+	return b.String()
+}
+
+// hostPaths are the host-side paths a runtime writes into its start errors: volume data
+// directories, containerd's and docker's state, an operator's home. A failure message goes to
+// the API's caller, and these are the operator's; the container's own paths ("/data", "/app")
+// are not under these roots and are kept.
+var hostPaths = regexp.MustCompile(`/(?:var/lib|var/run|run|home|Users|root|tmp|private|snap|mnt)/[^\s"':,;]*`)
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+
+	return s
 }

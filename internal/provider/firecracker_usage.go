@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,10 +20,11 @@ type FirecrackerUsage struct {
 	Memory    int64 // vm.mem, diff.mem and vm.state of every VM
 	Disks     int64 // every VM's root filesystem and agent drive
 	Snapshots int64 // everything under snapshots/
+	Volumes   int64 // every pvc's ext4 image under volumes/
 }
 
 // Total is every byte counted.
-func (u FirecrackerUsage) Total() int64 { return u.Memory + u.Disks + u.Snapshots }
+func (u FirecrackerUsage) Total() int64 { return u.Memory + u.Disks + u.Snapshots + u.Volumes }
 
 // FirecrackerDiskUsage walks the provider's state directory (SBX_FC_STATE, else ~/.sbx/fc). A
 // state directory that does not exist is zero, not an error: nothing was ever created here.
@@ -56,7 +59,22 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 		}
 	}
 
-	err = filepath.WalkDir(filepath.Join(root, "snapshots"), func(p string, d fs.DirEntry, err error) error {
+	u.Snapshots, err = allocatedUnder(filepath.Join(root, "snapshots"))
+	if err != nil {
+		return u, err
+	}
+
+	u.Volumes, err = allocatedUnder(filepath.Join(root, "volumes"))
+
+	return u, err
+}
+
+// allocatedUnder is what every regular file under dir holds on disk; a dir that does not exist
+// holds nothing.
+func allocatedUnder(dir string) (int64, error) {
+	var n int64
+
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil
@@ -66,11 +84,74 @@ func FirecrackerDiskUsage() (FirecrackerUsage, error) {
 		}
 
 		if d.Type().IsRegular() {
-			u.Snapshots += allocated(p)
+			n += allocated(p)
 		}
 
 		return nil
 	})
 
-	return u, err
+	return n, err
+}
+
+// cloneSize is what a rootfs holds on disk, for the create log: a copy costs this, not the
+// file's apparent size.
+func cloneSize(path string) string { return bytesIEC(allocated(path)) }
+
+func bytesIEC(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%d KiB", n>>10)
+	}
+}
+
+// KeepConsolesEnv names a directory a removed VM's console is copied into first - for CI, where
+// the suite deletes each sandbox it made, and a failure's only evidence is what its guest printed.
+// Unset (the default) keeps nothing.
+const KeepConsolesEnv = "SBX_FC_KEEP_CONSOLES"
+
+// keepConsole copies the last MiB of dir's console.log and vmm.log to $SBX_FC_KEEP_CONSOLES, named
+// for the VM. Best effort: it is evidence, not state.
+func keepConsole(dir string, vm *fcVM) {
+	to := os.Getenv(KeepConsolesEnv)
+	if to == "" {
+		return
+	}
+
+	if err := os.MkdirAll(to, 0o755); err != nil {
+		return
+	}
+
+	for _, f := range []string{fc.ConsoleName, fc.VMMLogName} {
+		var b bytes.Buffer
+		if tailBytes(filepath.Join(dir, f), 1<<20, &b) != nil {
+			continue
+		}
+
+		_ = os.WriteFile(filepath.Join(to, fmt.Sprintf("%s-%s-%s.%s", vm.Sandbox, vm.Service, vm.Instance, f)),
+			b.Bytes(), 0o644)
+	}
+}
+
+func tailBytes(path string, n int64, w *bytes.Buffer) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	_, err = f.Seek(max(0, st.Size()-n), 0)
+	if err == nil {
+		_, err = w.ReadFrom(f)
+	}
+
+	return err
 }

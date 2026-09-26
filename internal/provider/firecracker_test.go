@@ -766,13 +766,13 @@ func TestSizing(t *testing.T) {
 
 func TestUnsupportedFieldsAreRefusedNotIgnored(t *testing.T) {
 	for field, svc := range map[string]spec.Service{
-		"build":        {Build: &spec.Build{}},
-		"files":        {Files: map[string]string{"a": "b"}},
-		"mounts":       {Mounts: map[string]string{"/a": "/b"}},
-		"init":         {Init: []string{"x"}},
-		"gpus":         {GPUs: "all"},
-		"cap_add":      {CapAdd: []string{"NET_ADMIN"}},
-		"egress_allow": {EgressAllow: []string{"example.com"}},
+		"build":   {Build: &spec.Build{}},
+		"files":   {Files: map[string]string{"a": "b"}},
+		"mounts":  {Mounts: map[string]string{"/a": "/b"}},
+		"init":    {Init: []string{"x"}},
+		"gpus":    {GPUs: "all"},
+		"cap_add": {CapAdd: []string{"NET_ADMIN"}},
+		"egress":  {Egress: "open"},
 	} {
 		if err := unsupported(svc); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("%s: %v", field, err)

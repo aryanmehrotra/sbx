@@ -481,6 +481,10 @@ func contains(set []netip.Prefix, a netip.Addr) bool {
 // default-allow policy must not turn the proxy into a door onto its own host. An explicit
 // allow rule for the address or a range containing it still opens it, because then somebody
 // asked for exactly that.
+// HostLocal is hostLocal as a Filter.Refuse: for a filter the daemon hosts on the host itself,
+// whose loopback and link-local (cloud metadata) are the host's, not a container's.
+func HostLocal(a netip.Addr) bool { return hostLocal(a.Unmap()) }
+
 func hostLocal(a netip.Addr) bool {
 	return a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
 		a.IsUnspecified() || a.IsMulticast() || a.IsInterfaceLocalMulticast()

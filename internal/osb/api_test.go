@@ -252,6 +252,7 @@ func TestCreateRefusesWhatItCannotDo(t *testing.T) {
 		{"unknown limit", with("resourceLimits", map[string]string{"ephemeral-storage": "1Gi"}), 400, "SANDBOX::INVALID_PARAMETER", "ephemeral-storage"},
 		{"docker memory", with("resourceLimits", map[string]string{"memory": "512m"}), 400, "SANDBOX::INVALID_PARAMETER", "512Mi"},
 		{"token env", with("env", map[string]string{"EXECD_ACCESS_TOKEN": "x"}), 400, "SANDBOX::INVALID_PARAMETER", "reserved"},
+		{"control secret env", with("env", map[string]string{"EXECD_CONTROL_SECRET": "x"}), 400, "SANDBOX::INVALID_PARAMETER", "reserved"},
 		{"idle", with("extensions", map[string]string{"sbx.idle": "nap"}), 400, "SANDBOX::INVALID_PARAMETER", "sleep"},
 		{"ports", with("extensions", map[string]string{"sbx.ports": "80,x"}), 400, "SANDBOX::INVALID_PARAMETER", "sbx.ports"},
 		{"image auth", with("image", map[string]any{"uri": "x", "auth": map[string]string{"username": "u"}}), 501, "SANDBOX::API_NOT_SUPPORTED", "docker login"},
