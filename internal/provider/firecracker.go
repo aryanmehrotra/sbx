@@ -183,6 +183,10 @@ type fcProvider struct {
 	// bridgeCheck reads whether this host drops traffic between sandbox bridges
 	// (fc.HostBridgeIsolation); nil skips it. warn is where Create says so; nil is stderr.
 	bridgeCheck func() fc.BridgeIsolation
+
+	// guardCheck reports whether this host can close itself to a bridge's guests (fc.Guard);
+	// nil skips the check. A host that cannot is warned about on every create.
+	guardCheck func() error
 	warn        io.Writer
 
 	// boots caps how many VMs restore or cold-boot at once: each is a burst of page faults and a
@@ -221,7 +225,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		arch:  runtime.GOARCH,
 		arts:  fc.NewArtifactCache(filepath.Join(root, "artifacts")),
 		ext4:  mkfs,
-		net:   fc.NewIPNetwork(os.Getuid()),
+		net:   guardedNetwork(),
 		guest: fc.NewGuest(),
 		rootfs: &fc.RootfsBuilder{
 			Dir:    filepath.Join(root, "rootfs"),
@@ -231,6 +235,7 @@ func newFirecracker(dockerHost string) (*fcProvider, error) {
 		},
 		launch:      fc.ExecLauncher{},
 		bridgeCheck: fc.HostBridgeIsolation,
+		guardCheck:  fc.Available,
 		boots:       make(chan struct{}, max(1, runtime.NumCPU())),
 		bootTimeout: 60 * time.Second,
 		locks:       map[string]*refLock{},
@@ -586,6 +591,13 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 			}
 
 			fmt.Fprintf(w, "  warning: microVM sandboxes may not be isolated from each other: %s - %s\n", iso.Detail, iso.Meaning)
+		}
+	}
+
+	if p.guardCheck != nil {
+		if err := p.guardCheck(); err != nil {
+			fmt.Fprintf(p.warnTo(), "  warning: this host cannot close itself to microVM guests (%v): they reach every "+
+				"host service bound to 0.0.0.0 at their gateway, 10.231.%d.1 - see SECURITY.md\n", err, slot)
 		}
 	}
 

@@ -3,7 +3,10 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
+	"os"
 	"strconv"
 
 	"github.com/aryanmehrotra/sbx/internal/fc"
@@ -65,4 +68,22 @@ func (p *fcProvider) EgressFilter(ctx context.Context, sandbox string) (EgressFi
 	}
 
 	return filterOf(sandbox, units)
+}
+
+// guardedNetwork is the host network with the host closed to each bridge's guests except for
+// the egress filter's port (fc.Guard). What it cannot install it says, on the daemon's log.
+func guardedNetwork() *fc.IPNetwork {
+	n := fc.NewIPNetwork(os.Getuid())
+	n.Guard = fc.NewGuard(EgressProxyPort)
+	n.Warn = func(msg string) { fmt.Fprintln(os.Stderr, "  warning: "+msg) }
+
+	return n
+}
+
+func (p *fcProvider) warnTo() io.Writer {
+	if p.warn != nil {
+		return p.warn
+	}
+
+	return os.Stderr
 }
