@@ -822,6 +822,18 @@ rule. A docker filter the daemon hosts on the host gets the same treatment for l
 link-local (`egress.HostLocal`) - its loopback is the host's too; a filter running in its own
 container keeps the overridable default, since its loopback is its own.
 
+**A VM's filter refuses private ranges and the host's subnets by default** (security review of
+v0.12, M2 and S4). `egress: "allow"` on a VM carried a guest to docker container IPs
+(`172.16.0.0/12`), the host's LAN and the cloud VPC - none reachable from a no-NAT bridge, all
+reachable through a filter that dials as the host. Now a VM's filter (`egress.VMRefuse`) also
+refuses RFC 1918, CGNAT (`100.64.0.0/10`), IPv6 ULA (`fc00::/7`), `0.0.0.0/8`, and every address on
+the prefix of any host interface (`Contains`, not equality - the LAN `/24`, the VPC subnet, a
+docker bridge's containers), on top of link-local. No sandbox policy opens it. The operator can:
+`sbx serve --vm-egress-allow 10.20.0.0/16` (or `SBX_VM_EGRESS_ALLOW`) lifts the private and subnet
+layer for the ranges named - never the host's own addresses, its loopback or the `10.231.0.0/16`
+plan. Docker's filters are unchanged here: a container on docker's bridge reaches those ranges
+through docker's own routing anyway, so refusing them in its filter would close nothing.
+
 **The host's INPUT chain is closed to the bridge, except the filter port** (SECURITY.md M3). The
 network entry above said sbx writes no rule, and the docker entry rejected rules in `DOCKER-USER` as
 sbx reaching around docker. Neither argument applies here: this bridge is sbx's, made and deleted by

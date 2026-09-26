@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -158,6 +159,9 @@ type daemon struct {
 	// typed, never defaulted - see osb/key.go for why loopback is not enough on its own.
 	osbNoKey bool
 
+	// vmWiden is --vm-egress-allow: private ranges a microVM's filter may reach anyway.
+	vmWiden []netip.Prefix
+
 	// servesOSB is set when this daemon serves --osb-addr. An unscoped daemon without it leaves
 	// containers the API created (label sbx.osb) to the daemon that does - see scope.go.
 	servesOSB bool
@@ -202,11 +206,21 @@ func Serve(args []string) error {
 	var pools stringList
 	fs.Var(&pools, "osb-pool", "keep warm OpenSandbox sandboxes of this image ready, IMAGE[=N] (default 8; repeatable; or $SBX_OSB_POOL, comma-separated): a matching create is answered from one in milliseconds")
 
+	// What a microVM's egress filter may carry a guest to that it otherwise refuses as private
+	// (RFC 1918, CGNAT, ULA, a host interface's subnet). The operator's, never a sandbox's: a
+	// sandbox's policy cannot open any of it. Never the host itself, its loopback or a guest.
+	vmEgressAllow := fs.String("vm-egress-allow", envOr("SBX_VM_EGRESS_ALLOW", ""), "comma-separated CIDRs a microVM's egress filter may reach although they are private or on a host subnet (e.g. 10.20.0.0/16 for a registry on the VPC); none unless set")
+
 	poolFreeze := fs.Bool("osb-pool-freeze", false, "freeze --osb-pool members while they wait (no idle CPU), at the cost of a thaw per claim")
 
 	var only stringList
 	fs.Var(&only, "only", "touch only sandboxes whose name starts with this prefix or matches this glob (repeatable, or comma-separated); default all")
 	_ = fs.Parse(args)
+
+	vmWiden, err := parseCIDRs(*vmEgressAllow)
+	if err != nil {
+		return fmt.Errorf("--vm-egress-allow: %w", err)
+	}
 
 	if len(only) == 0 {
 		if v := os.Getenv("SBX_ONLY"); v != "" {
@@ -300,6 +314,7 @@ func Serve(args []string) error {
 		egressSeen: map[string]int64{},
 		scope:      scope,
 		osbNoKey:   *osbNoKey,
+		vmWiden:    vmWiden,
 	}
 
 	api, osbLn, err := d.openSandboxAPI(*osbAddr, *osbKey, splitPaths(*osbHostPaths), scope, pools, *poolFreeze)

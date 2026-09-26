@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -209,7 +212,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		// written by the sandbox's caller and the filter dials as this daemon.
 		filter.Refuse = egress.HostLocal
 		if want.bridge != "" {
-			filter.Refuse = egress.OnThisHost(fc.Plan)
+			filter.Refuse = egress.VMRefuse(fc.Plan, d.vmWiden)
 		}
 
 		srv := &http.Server{Handler: filter}
@@ -346,4 +349,24 @@ func (d *daemon) stampGateway(gw string) {
 			u.touch()
 		}
 	}
+}
+
+// parseCIDRs reads a comma-separated list of CIDRs; empty is none.
+func parseCIDRs(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+
+		p, err := netip.ParsePrefix(f)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a CIDR (e.g. 10.20.0.0/16)", f)
+		}
+
+		out = append(out, p.Masked())
+	}
+
+	return out, nil
 }
