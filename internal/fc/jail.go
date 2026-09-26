@@ -242,7 +242,7 @@ func stage(root string, f Stage, uid, gid int) error {
 			return err
 		}
 
-		return os.Chown(dst, uid, gid)
+		return own(dst, uid, gid)
 	}
 
 	// A VM's own drive or snapshot must be the SAME file: a copy would be a disk the guest
@@ -253,7 +253,7 @@ func stage(root string, f Stage, uid, gid int) error {
 			"VM's directory): %w", err)
 	}
 
-	return os.Chown(dst, uid, gid)
+	return own(dst, uid, gid)
 }
 
 // View is how a VMM sees the host's files. The zero View is an unjailed VMM, which is given the
@@ -305,4 +305,14 @@ func (v View) Adopt(host, name string) error {
 	_ = os.Chown(host, os.Geteuid(), os.Getegid())
 
 	return nil
+}
+
+// own gives path to uid:gid. Only root can give a file away, and only root can run the jailer:
+// an unprivileged caller (a test preparing a root it will not jail into) keeps it as it is.
+func own(path string, uid, gid int) error {
+	if os.Geteuid() != 0 && uid != os.Getuid() {
+		return nil
+	}
+
+	return os.Chown(path, uid, gid)
 }
