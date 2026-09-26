@@ -37,7 +37,9 @@ type fakeDocker struct {
 	// lists records the sandbox each List was filtered to ("" for all).
 	lists []string
 
-	exitOnStart bool // new containers are not running: the entrypoint exited
+	exitOnStart bool                // new containers are not running: the entrypoint exited
+	exit        *provider.ExitState // what ExitOf reports; nil is a provider that cannot say
+	createErr   error               // Create fails with this
 	logs        string
 	arch        string
 
@@ -70,6 +72,10 @@ func (f *fakeDocker) Create(_ context.Context, sandbox string, slot, _ int, svc 
 	eps []provider.Endpoint, _ string, _ provider.Isolation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.createErr != nil {
+		return f.createErr
+	}
 
 	f.created[sandbox] = s
 	u := &provider.Unit{Sandbox: sandbox, Service: svc, Slot: slot, Ref: "sbx-" + sandbox + "-" + svc,
@@ -552,4 +558,18 @@ func (f *fakeDocker) snapshotOf(which *[]string) []string {
 	defer f.mu.Unlock()
 
 	return append([]string(nil), (*which)...)
+}
+
+// fakeExitDocker is a fakeDocker whose provider can say why a container stopped.
+type fakeExitDocker struct{ *fakeDocker }
+
+func (f fakeExitDocker) ExitOf(context.Context, string) (provider.ExitState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.exit == nil {
+		return provider.ExitState{}, errors.New("no such container")
+	}
+
+	return *f.exit, nil
 }

@@ -100,10 +100,9 @@ restart_daemon() {
 }
 
 # Anything else driving this engine would make a failure here meaningless, so each case checks
-# for a foreign `sbx serve` and says so rather than blaming the product.
-foreign_daemons() {
-  ps -axo pid=,command= | awk -v me="$OSB_DAEMON" '/ serve / && /--osb-addr/ && $1 != me {print $1}'
-}
+# for a foreign `sbx serve` and says so rather than blaming the product. scripts/lib/osb_test.sh
+# covers the match, including the self-match that made the busy-wait below run its full limit.
+foreign_daemons() { osb_api_daemons "$OSB_DAEMON"; }
 
 osb_init
 # After osb_init, which sets its own EXIT trap: this one must replace it, not be replaced by it.

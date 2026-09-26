@@ -187,6 +187,18 @@ already considers gone. Waiting a moment, or retrying, is the answer there too.
 
 ---
 
+## An API sandbox is `Failed` with `runtime_error`
+
+The container stopped before its agent answered. `status.message` says how, in the engine's
+words, before any output: the docker state, the exit code, `OOMKilled` when the kernel killed it
+for memory, and the engine's own start error (an OCI runtime refusal lands there, never in the
+container's logs). "It printed nothing" with exit code 137 is a SIGKILL - out of memory on the
+host or under the sandbox's `resourceLimits.memory`, or a `docker kill`; 143 is a SIGTERM from
+outside. The same cause is in the daemon log (`Failed (runtime_error): ...`) and in
+`sbx history <id>`, without the container's output.
+
+---
+
 ## A fork is missing the write I just made
 
 `sbx snapshot` does **not** stop the service first. It takes a crash-consistent copy - the state

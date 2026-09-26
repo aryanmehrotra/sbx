@@ -467,10 +467,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 			Message: "accepted for the egress filter, not applied by sbx's filter yet: " + strings.Join(keys, ", ")})
 	}
 
-	fail := func(reason, msg string) {
-		s.update(id, func(r *record) { r.transition(stateFailed, reason, msg, s.now()) })
-		logs.Default.Error(id, service, "osb: %s: %s", reason, msg)
-	}
+	fail := func(reason, msg string) { s.failed(id, reason, msg, "") }
 
 	inj, err := provider.InjectorFor(s.p)
 	if err != nil {
@@ -754,10 +751,8 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 			lastErr = err
 		} else if len(units) == 0 {
 			if _, ok := s.snapshot(id); ok {
-				s.update(id, func(r *record) {
-					r.transition(stateFailed, "container_missing", "the container disappeared "+
-						"before it became ready", s.now())
-				})
+				s.failed(id, "container_missing", "the container disappeared before it became "+
+					"ready - removed outside the API (`docker rm`, `sbx rm`) or by the engine", "")
 			}
 
 			return
@@ -768,10 +763,8 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 			// through the wake port would START an exited container, and the crash would look
 			// like a slow boot until the deadline.
 			if !u.Running && !u.Paused {
-				s.update(id, func(r *record) {
-					r.transition(stateFailed, "runtime_error", "the container exited before execd "+
-						"answered. Its last output:\n"+s.tail(ctx, u.Ref), s.now())
-				})
+				s.failed(id, "runtime_error", "the container stopped before execd answered ("+
+					s.exitCause(ctx, u.Ref)+")", s.output(ctx, u.Ref))
 
 				return
 			}
@@ -810,11 +803,13 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 				ref = units[0].Ref
 			}
 
-			s.update(id, func(r *record) {
-				r.transition(stateFailed, "provision_timeout", fmt.Sprintf("execd did not answer "+
-					"/ping within %s (last error: %v). Its last output:\n%s",
-					s.readyTimeout, lastErr, s.tail(ctx, ref)), s.now())
-			})
+			last := "none - the container never had an address to ping"
+			if lastErr != nil {
+				last = lastErr.Error()
+			}
+
+			s.failed(id, "provision_timeout", fmt.Sprintf("execd did not answer /ping within %s "+
+				"(last error: %s)", s.readyTimeout, last), s.output(ctx, ref))
 
 			return
 		}
@@ -829,9 +824,58 @@ func (s *Server) waitReady(ctx context.Context, id string) {
 	}
 }
 
-func (s *Server) tail(ctx context.Context, ref string) string {
+// failed moves a sandbox to Failed and says why in all three places anyone looks: the status
+// message (cause, then the container's output), the daemon log and the history. The log and the
+// history carry the cause only - never the container's output, which is the workload's to print
+// and can hold anything it printed - and none of it ever carries the token or env.
+//
+// A Failed with no cause is the one failure nobody can act on, so an empty cause is replaced by a
+// sentence saying it was empty rather than written as nothing.
+func (s *Server) failed(id, reason, cause, output string) {
+	cause = strings.TrimSpace(cause)
+	if cause == "" {
+		cause = "no cause was reported for " + reason + " - this is a bug in sbx; the daemon log " +
+			"around this time has whatever else is known"
+	}
+
+	msg := cause
+	if output != "" {
+		msg += "\n" + output
+	}
+
+	if _, ok := s.update(id, func(r *record) { r.transition(stateFailed, reason, msg, s.now()) }); !ok {
+		return
+	}
+
+	logs.Default.Error(id, service, "osb: Failed (%s): %s", reason, cause)
+	s.history(history.Record{Kind: "event", Sandbox: id, Event: "failed", Actor: "osb",
+		Message: reason + ": " + cause})
+}
+
+// exitCause is the runtime's account of why a container is not running - exit code, OOM kill,
+// its own start error - where the provider can say. A workload killed by a signal prints nothing,
+// so without this "it exited" is all a caller would ever learn.
+func (s *Server) exitCause(ctx context.Context, ref string) string {
+	er, ok := s.p.(provider.ExitReporter)
+	if !ok {
+		return "the " + s.p.Name() + " provider does not report exit states"
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	st, err := er.ExitOf(ctx, ref)
+	if err != nil {
+		return "its exit state could not be read: " + err.Error()
+	}
+
+	return st.String()
+}
+
+// output is the container's last lines, introduced, for the end of a failure message.
+func (s *Server) output(ctx context.Context, ref string) string {
 	if ref == "" {
-		return "(no container)"
+		return "There is no container to read output from."
 	}
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -839,10 +883,15 @@ func (s *Server) tail(ctx context.Context, ref string) string {
 
 	var b bytes.Buffer
 	if err := s.p.Logs(ctx, ref, 20, false, &b); err != nil {
-		return "(logs unavailable: " + err.Error() + ")"
+		return "Its output is unavailable: " + err.Error()
 	}
 
-	return strings.TrimSpace(b.String())
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "It printed nothing."
+	}
+
+	return "Its last output:\n" + out
 }
 
 // normalizeArch maps what an image reports to GOARCH spelling.

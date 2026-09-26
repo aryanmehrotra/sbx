@@ -688,6 +688,14 @@ existed before its caller did, and a secret minted ahead of the caller can be sh
 of a snapshot carries it. The round trip is the price (docs/BENCHMARKS.md). What a member may
 serve is a whitelist of request fields; anything else, including a field this sbx does not know,
 takes the cold path rather than being dropped by a member made without it.
+
+A create that takes the cold path while pools exist is logged at info, naming the field that
+differed from the nearest pool (or the field no member can carry), once per distinct miss per
+ten minutes. Silent, it cost a test run its warm path unnoticed: curl creates omitting
+`resourceLimits` never matched members built with the SDKs' cpu 1 / memory 2Gi. Once per miss
+rather than per create, because a client that misses does so on every create, and a line each
+time would bury the log it is meant to explain. Not a warning: going cold is correct, only slower.
+
 ---
 
 ### One host probe decides the microVM path, and a Mac is sent to a helper VM, not refused

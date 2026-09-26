@@ -42,6 +42,24 @@ OSB_REAL_HOME="$HOME"
 OSB_HOSTVOL=""         # a host-volume root this run made, removed on teardown
 OSB_PREEXISTING_PVC="" # sbx-osb-pvc-* volumes that were there before the run
 
+# osb_api_daemons_in [PID] - reads `ps -axo pid=,command=` on stdin and prints the pid of every
+# `sbx serve` running the OpenSandbox API, except PID. Matched on whole arguments - "serve" as
+# the program's first argument, "--osb-addr" (or --osb-addr=...) as any later one - never as
+# substrings of the line: the substring version found its own awk, whose program text holds
+# both words, so on Linux the busy-engine wait always ran its full 900 s against nothing. A shell
+# whose command line quotes such a pattern, or runs a command that merely mentions them, is
+# excluded the same way.
+osb_api_daemons_in() {
+  awk -v me="${1:-}" '$1 != me && $3 == "serve" {
+    for (i = 4; i <= NF; i++) {
+      if ($i == "--osb-addr" || index($i, "--osb-addr=") == 1) { print $1; next }
+    }
+  }'
+}
+
+# osb_api_daemons [PID] - the same, for the processes running on this machine now.
+osb_api_daemons() { ps -axo pid=,command= | osb_api_daemons_in "${1:-}"; }
+
 osb_say() { printf '%s\n' "$*" >&2; }
 osb_die() { printf 'osb: %s\n' "$*" >&2; exit 1; }
 

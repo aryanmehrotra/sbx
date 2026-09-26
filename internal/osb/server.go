@@ -184,6 +184,10 @@ type Server struct {
 	poolSem    chan struct{}
 	poolFreeze bool
 
+	// poolMisses is when each distinct pool miss was last logged - see notePoolMiss.
+	poolMissMu sync.Mutex
+	poolMisses map[string]time.Time
+
 	// dockerSem bounds container creation; reserved holds the slots handed to creates whose
 	// containers no list can show yet - see createPicked.
 	dockerSem  chan struct{}
@@ -457,10 +461,8 @@ func (s *Server) recover(ctx context.Context) {
 
 	for _, r := range pending {
 		if !have[r.ID] {
-			s.update(r.ID, func(r *record) {
-				r.transition(stateFailed, "interrupted", "sbx serve restarted before this "+
-					"sandbox's container was created; delete it and create it again", s.now())
-			})
+			s.failed(r.ID, "interrupted", "sbx serve restarted before this sandbox's container "+
+				"was created; delete it and create it again", "")
 
 			continue
 		}

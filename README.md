@@ -82,6 +82,10 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 The OpenSandbox API always requires a key, loopback included: `sbx serve --osb-addr` generates
 one into `~/.sbx/osb/key`, `sbx mcp` reads it from there, and the SDKs take it as
 `export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"` - see [SECURITY.md](SECURITY.md) for why.
+A warm pool (`--osb-pool IMAGE[=N]`) serves only creates with the same image, entrypoint and
+resourceLimits as its members, which are the SDKs' defaults (`tail -f /dev/null`, cpu 1, memory
+2Gi); anything else goes cold, and the daemon log names the field that differed - see
+[AGENTS.md](docs/AGENTS.md).
 
 **Scale it up**
 | | |

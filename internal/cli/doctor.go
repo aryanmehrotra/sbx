@@ -104,28 +104,7 @@ func Doctor(ctx context.Context) Report {
 	// Where the figures cannot be read - anything but macOS and Linux - the entry says so
 	// rather than being left out. Absent and unsupported are different, and only one of them
 	// is worth going and looking into.
-	mach := hostinfo.Read()
-
-	detail := fmt.Sprintf("%d cores", mach.Cores)
-	if mach.Cores == 1 {
-		detail = "1 core"
-	}
-
-	if mach.MemBytes > 0 {
-		detail += fmt.Sprintf(", %.0f GB of memory", float64(mach.MemBytes)/(1<<30))
-
-		if mach.FreeBytes > 0 {
-			detail += fmt.Sprintf(", %.1f GB free now", float64(mach.FreeBytes)/(1<<30))
-		}
-	} else {
-		detail += ", memory unknown"
-	}
-
-	rep.Capabilities = append(rep.Capabilities, Capability{
-		Name: "this machine", Have: mach.MemBytes > 0, Detail: detail,
-		Meaning: "how much room there is for sandboxes. sbx cannot read memory on " +
-			runtime.GOOS + ", so `sbx ui` shows the container runtime's figures alone",
-	})
+	rep.Capabilities = append(rep.Capabilities, machineRow(runtime.GOOS, hostinfo.Read()))
 
 	dockerOK, dockerWhere := have("docker")
 	rep.Capabilities = append(rep.Capabilities, Capability{
@@ -282,4 +261,44 @@ func orUnknown(s string) string {
 	}
 
 	return s
+}
+
+// machineRow is the "this machine" entry. Its Meaning is what the absence costs, so it is set
+// only when memory could not be read - a row that printed the memory and also said sbx cannot
+// read it contradicted itself. Where sbx does read memory (macOS and Linux), a missing figure is
+// a read that failed, and says where to look; elsewhere it is unsupported, and says that.
+func machineRow(goos string, mach hostinfo.Machine) Capability {
+	detail := fmt.Sprintf("%d cores", mach.Cores)
+	if mach.Cores == 1 {
+		detail = "1 core"
+	}
+
+	c := Capability{Name: "this machine", Have: mach.MemBytes > 0}
+
+	if c.Have {
+		detail += fmt.Sprintf(", %.0f GB of memory", float64(mach.MemBytes)/(1<<30))
+
+		if mach.FreeBytes > 0 {
+			detail += fmt.Sprintf(", %.1f GB free now", float64(mach.FreeBytes)/(1<<30))
+		}
+
+		c.Detail = detail
+
+		return c
+	}
+
+	c.Detail = detail + ", memory unknown"
+
+	const costs = "how much room there is for sandboxes: `sbx ui` shows the container runtime's figures alone"
+
+	switch goos {
+	case "linux":
+		c.Meaning = costs + ". /proc/meminfo could not be read or had no MemTotal"
+	case "darwin":
+		c.Meaning = costs + ". `sysctl hw.memsize` gave no answer"
+	default:
+		c.Meaning = costs + ". sbx cannot read memory on " + goos
+	}
+
+	return c
 }

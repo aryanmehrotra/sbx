@@ -246,6 +246,14 @@ keep sandboxes away from the API. Pass `--osb-key` (or `SBX_OSB_KEY`) to choose 
 one is generated once and reused. `--osb-insecure-no-key` turns it off, loopback only, and says
 why that is dangerous every time it starts.
 
+**Warm pools** (`sbx serve --osb-pool IMAGE[=N]`) answer a create in milliseconds, but only a
+create whose container would be identical: members are keyed on **image, entrypoint and
+resourceLimits** (plus ports, platform and `sbx.idle`). A pool is built with what the SDKs send
+when those are left out - entrypoint `["tail", "-f", "/dev/null"]`, `cpu: "1"`, `memory: "2Gi"` -
+so a plain SDK `create(image)` hits it, and a hand-written request that omits `resourceLimits`
+or sets another entrypoint goes cold. The daemon log says so, once per distinct miss every ten
+minutes: `pool miss for image python:3.11-slim: resourceLimits.cpu is unset, the pool's is "1"`.
+
 | group | tools |
 |---|---|
 | sandbox | `sandbox_create` `sandbox_connect` `sandbox_kill` `sandbox_get_info` `sandbox_list` `sandbox_renew` `sandbox_healthcheck` `sandbox_get_metrics` `sandbox_get_endpoint` |
