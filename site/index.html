@@ -245,7 +245,7 @@ footer .note { margin-left: auto; }
     <div class="chart">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="assets/bench-dark.svg">
-        <img src="assets/bench-light.svg" width="900" height="264" loading="lazy" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5.">
+        <img src="assets/bench-light.svg" width="900" height="378" loading="lazy" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5. OpenSandbox API, create a sandbox and run a first command: sbx 307 ms, OpenSandbox server 1,417 ms.">
       </picture>
     </div>
   </div>
@@ -297,7 +297,7 @@ run = sandbox.commands.run("python -c 'print(6 * 7)'")
 print(run.logs.stdout[0].text)   # 42
 sandbox.destroy()</pre>
     </div>
-    <p class="small" style="margin-top:16px">OpenSandbox's own end-to-end suite runs against sbx in CI. <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents">Agent guide</a></p>
+    <p class="small" style="margin-top:16px">Same SDK, same image: create to first command in 307 ms on sbx, 1,417 ms on OpenSandbox's own server. Its end-to-end suite runs against sbx in CI. <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents">Agent guide</a></p>
   </div>
 </section>
 
