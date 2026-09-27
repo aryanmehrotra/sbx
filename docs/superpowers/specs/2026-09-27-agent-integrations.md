@@ -114,24 +114,41 @@ entries below are a **research starting point**. Every host, variable and flag i
 [Verify before building](#verify-before-building), because vendors move these.
 
 **v1 ships exactly two: Claude Code and Codex.** Both are first-class, with the same flags, the
-same tests and the same docs. For both, an **API key is the default credential**. A subscription
-login is supported as the second option.
+same tests and the same docs. For both, **the subscription login (Claude Pro/Max, ChatGPT
+Plus/Pro) is the default credential**. An API key is the second option, for people without a
+subscription or for billing that has to be per-token.
 
 | | Claude Code | Codex CLI |
 |---|---|---|
 | install | npm `@anthropic-ai/claude-code@<pin>` | npm `@openai/codex@<pin>` (Rust binary) |
 | base | `node:22-slim` + git, ripgrep | same |
-| **API key (default)** | `ANTHROPIC_API_KEY`, read from the host env when `sbx agent … claude` runs | `OPENAI_API_KEY`, read the same way |
-| subscription (`--auth login`) | `CLAUDE_CODE_OAUTH_TOKEN`, made once on the host with `claude setup-token` | `~/.codex/auth.json` from `codex login` (a file, see [Credentials](#credentials)) |
-| egress, minimum | `api.anthropic.com` | `api.openai.com` (+ `chatgpt.com`, `auth.openai.com` only for subscription login) |
+| **subscription (default, `--auth login`)** | `CLAUDE_CODE_OAUTH_TOKEN`, made once on the host with `claude setup-token` (a long-lived token, no refresh) | `~/.codex/auth.json` from `codex login` on the host (a file with a refresh token, see [Credentials](#credentials)) |
+| API key (`--auth key`) | `ANTHROPIC_API_KEY`, read from the host env when `sbx agent … claude` runs | `OPENAI_API_KEY`, read the same way |
+| egress, minimum | `api.anthropic.com` (same host for both kinds of credential) | subscription: `chatgpt.com`, `auth.openai.com` · API key: `api.openai.com`. Only the set for the credential in use is allowed |
 | "sbx is the boundary" | `--dangerously-skip-permissions` (refuses as root → the image runs as uid 1000) | `--sandbox danger-full-access --ask-for-approval never` (its own landlock/seccomp sandbox may not work nested in a container) |
 | headless | `claude -p "<task>"` | `codex exec "<task>"` |
 | proxy | honours `HTTPS_PROXY` (documented) | Rust/reqwest honours `HTTPS_PROXY` |
 | telemetry to quiet | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | - |
 
-When both an API key and a subscription credential are present, the API key wins, unless
-`--auth login` says otherwise. Every run prints which one it used, so a bill never arrives on
-the wrong account unannounced.
+**The resolution order is subscription first, then API key.** `sbx agent … claude` uses
+`CLAUDE_CODE_OAUTH_TOKEN` when it is set. If it is not set, it uses `ANTHROPIC_API_KEY`. If
+neither is set, it refuses before creating anything:
+
+    no Claude subscription token: run `claude setup-token` once and export CLAUDE_CODE_OAUTH_TOKEN
+    (or pass --auth key with ANTHROPIC_API_KEY set)
+
+Codex follows the same order: `~/.codex/auth.json` from `codex login`, then `OPENAI_API_KEY`,
+then the refusal naming `codex login`. `--auth login` or `--auth key` pins one source and turns
+off the fallback. Every run prints which one it used, for example `claude: subscription
+(CLAUDE_CODE_OAUTH_TOKEN)` or `codex: API key (OPENAI_API_KEY)`. That way a per-token bill never
+arrives unannounced because a subscription token had quietly gone missing.
+
+Subscription-first has two consequences the docs must state:
+- **Usage is shared.** An agent in a box draws on the same plan limits as the person's own
+  Claude or ChatGPT use. Five parallel agents hit the limit five times as fast.
+- **Terms.** Subscription credentials are for the subscriber's own use. sbx runs the vendor's
+  own CLI, as that person, on their machine, which is the intended use. The docs link each
+  vendor's terms rather than paraphrasing them, and phase 0 re-reads them.
 
 The "boundary" flags are **not** added when the user passes the agent's own permission flags, and
 `--keep-prompts` leaves them off entirely. Adding them is the point of running inside sbx, and
@@ -156,8 +173,9 @@ snapshot, fork or checkpoint.
 | **env at exec, never at create** | create-time `-e` lands in `docker inspect`, in every `sbx fork`, and in a snapshot. Exec-time env dies with the process |
 | **`docker exec -e NAME` with the value in the CLI's environment, not its argv** | `-e NAME=value` on argv is readable in the host's `ps`. `-e NAME` alone inherits the value from the docker CLI's environment. The same care applies to podman |
 | **firecracker: over the execd channel** | execd already takes env per command. `forgetSecrets` already strips tokens from snapshots (`internal/provider/firecracker_osb.go`). That is the precedent |
-| **file credentials (`auth.json`, OAuth caches) copied in at exec, removed on exit** | written 0600 to a tmpfs path (`/run/sbx-agent/`) and pointed at with `CODEX_HOME` / equivalents. Never a bind mount of `~/.codex`: a writeable bind would let the agent rewrite the host's credential, and a read-only one exposes every other file in that directory |
-| **an explicit source, always** | `--auth key` (default: the API-key variable in the table) · `--auth login` (the subscription token or file) · `--auth none` (the image's own login flow, inside the box, whose token dies with the box) |
+| **file credentials (Codex `auth.json`) copied in at exec, removed on exit** | written 0600 to a tmpfs path (`/run/sbx-agent/`) and pointed at with `CODEX_HOME`. Never a bind mount of `~/.codex`: a writeable bind would let the agent rewrite anything in the host's directory, and a read-only one exposes every other file in it |
+| **a refreshed subscription token is written back, and only that** | Codex refreshes its ChatGPT token during a run. If the refresh token rotates, the host's copy is dead once the box has used it. So on exit sbx compares the box's `auth.json` with what it copied in. If it changed, parses as the same account and is newer, sbx writes it back to `~/.codex/auth.json` atomically (temp file + rename, 0600). One writer at a time, so two parallel agents cannot interleave. This is the only file sbx ever writes into the host's agent config. Claude's `setup-token` token does not refresh, so it needs none of this |
+| **an explicit source, always** | no flag (subscription, then API key) · `--auth login` (subscription only) · `--auth key` (API key only) · `--auth none` (the image's own login flow, inside the box, whose token dies with the box) |
 | **redaction** | `history.Redact` already matches `key|token|auth`, and a test pins that every registry variable matches it |
 
 What this does **not** protect against, stated in the docs: the agent itself can read its own
@@ -196,7 +214,7 @@ Same bar as the rest of the repo: every fix has a test that fails without it.
 - **Unit**: the registry, which checks every entry has hosts, an auth variable and a pinned version,
   and that every auth variable matches `history.Redact`. Credential plumbing asserts that the
   create-time spec never contains a registry variable, and that the exec argv never contains a
-  value. Refusal messages for: gate off, no credential, kubernetes, unknown integration.
+  value. Resolution order (subscription, then key, then refusal; `--auth` pins one). Codex write-back only happens for a changed, same-account, newer file, and is atomic under concurrent runs. Refusal messages for: gate off, no credential, kubernetes, unknown integration.
 - **Fuzz**: `--allow` host parsing, which reuses the `egress_allow` validator rather than a new one.
 - **UAT** (`scripts/commands-e2e.sh`): with the gate off, `sbx agent` is refused and nothing is
   created. With it on and a fake integration (an image whose "agent" is `curl` to an allowed and
@@ -213,7 +231,7 @@ true, never ahead of the code.
 
 | doc | audience | content |
 |---|---|---|
-| **`docs/AGENTS.md`** → new section *"Running an agent inside a sandbox"* | people using sbx with agents | the four locks in one paragraph · the three commands · credentials table (what goes in, when it leaves) · the "what this does not protect against" paragraph · the table of integrations and their hosts |
+| **`docs/AGENTS.md`** → new section *"Running an agent inside a sandbox"* | people using sbx with agents | the four locks in one paragraph · **setup, subscription first**: `claude setup-token` / `codex login` once, then run; the API key as the alternative · the three commands · credentials table (what goes in, when it leaves) · the "what this does not protect against" paragraph · the table of integrations and their hosts |
 | **`docs/USE-CASES.md`** → *16 · An agent that works in a box, not on your laptop* | evaluators | the why (skip-permissions needs a boundary) · N agents × forked DB recipe |
 | **`docs/SPEC.md`** (phase 2) | spec authors | the `agent` field, what it expands to, what it refuses |
 | **`docs/TROUBLESHOOTING.md`** | users stuck | "agent hangs on first call" (proxy not honoured) · "refuses to run as root" · "401 inside the box" (wrong `--auth`) · "sleeps mid-session" (interactive, no model calls for `idle`) |
@@ -234,8 +252,11 @@ phase 0 is for.
 - [ ] Minimum egress host set per agent, with telemetry off. Which hosts are needed for auth only.
 - [ ] `claude --dangerously-skip-permissions` as non-root in a container, no extra env needed.
 - [ ] Codex's own sandbox inside docker: does `danger-full-access` avoid landlock/seccomp errors.
-- [ ] Subscription auth: `CLAUDE_CODE_OAUTH_TOKEN` via env. The Codex `auth.json` copy works with
-      `CODEX_HOME` pointed at tmpfs. Also the vendors' terms on
+- [ ] **Subscription auth, first, since it is the default:** `CLAUDE_CODE_OAUTH_TOKEN` from
+      `claude setup-token` works headless and interactive in the box. The Codex `auth.json` copy
+      works with `CODEX_HOME` pointed at tmpfs. Whether Codex rotates its refresh token, and so
+      whether write-back is required or only polite. The exact hosts a ChatGPT-login Codex calls.
+      Also the vendors' terms on
       using subscription credentials in automation.
 - [ ] Does an open `sbx exec -t` session count as activity? If not, an interactive session where
       the human reads for longer than `idle` sleeps under them. The fix is the exec session
