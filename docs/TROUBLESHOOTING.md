@@ -8,6 +8,12 @@ Run this first; it answers four of the entries below on its own:
 sbx doctor
 ```
 
+When what it reports is a missing tool or runtime rather than something broken, `sbx install`
+installs it - `sbx install gvisor`, `sbx install checkpoint`, or no name for everything it can do
+here. It prints each command and asks first; `--dry-run` only prints. The runtimes are
+registered in `/etc/docker/daemon.json` on a Linux host's own dockerd; where docker runs in a VM
+(Docker Desktop, colima) that VM's manager owns its config, and install says so instead.
+
 ---
 
 ## "connection refused" on the port `sbx env` printed

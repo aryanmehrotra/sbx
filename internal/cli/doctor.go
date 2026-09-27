@@ -258,8 +258,7 @@ func PrintReport(w io.Writer, rep Report, asJSON bool) error {
 		}
 	}
 
-	pm, ok := DetectManager(exec.LookPath)
-	if hint := installHint(rep, pm, ok); hint != "" {
+	if hint := installHint(rep, ReadHost()); hint != "" {
 		fmt.Fprintf(w, "\n%s\n", hint)
 	}
 
