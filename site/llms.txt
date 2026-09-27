@@ -1,8 +1,8 @@
 # sbx
 
 > Self-hosted sandboxes for every branch, test run and AI agent: a real Postgres, Redis or
-> browser that sleeps at 0 B of RAM and wakes when any TCP client connects. One Go binary with
-> zero dependencies. Runs on Docker, Kubernetes or Firecracker microVMs. Serves the OpenSandbox
+> browser that sleeps at 0 B of RAM and wakes when any TCP client connects. Written in Go: one static
+> binary with zero dependencies (standard library only). Runs on Docker, Kubernetes or Firecracker microVMs. Serves the OpenSandbox
 > API and an MCP server.
 
 Install: `brew install aryanmehrotra/tap/sbx` or `go install github.com/aryanmehrotra/sbx@latest`.

@@ -10,7 +10,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://aryanmehrotra.github.io/sbx/">
 <meta property="og:title" content="sbx: a real database for every branch and AI agent">
-<meta property="og:description" content="Sleeps at 0 B. Wakes the moment anything connects. No SDK, self-hosted, one binary.">
+<meta property="og:description" content="Sleeps at 0 B. Wakes the moment anything connects. Written in Go: one binary, zero dependencies, no SDK.">
 <meta property="og:image" content="https://aryanmehrotra.github.io/sbx/assets/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -40,6 +40,8 @@ code, pre { font-family: var(--mono); }
 header { border-bottom: 1px solid var(--line); }
 header .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
 .mark { font: 700 22px/1 var(--mono); text-decoration: none; letter-spacing: -.5px; }
+.gotag { font: 700 13px/1 var(--sans); color: #007d9c; border: 1.5px solid currentColor; border-radius: 6px; padding: 4px 7px; margin-left: -12px; }
+@media (prefers-color-scheme: dark) { .gotag { color: #00add8; } }
 .mark span { display: inline-block; width: 9px; height: 18px; background: var(--accent); margin-left: 3px; vertical-align: -2px; }
 nav { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
 nav a { text-decoration: none; color: var(--muted); }
@@ -192,7 +194,7 @@ footer .note { margin-left: auto; }
 
 <header>
   <div class="wrap">
-    <a class="mark" href="./" aria-label="sbx home">sbx<span></span></a>
+    <a class="mark" href="./" aria-label="sbx home">sbx<span></span></a><span class="gotag">Go</span>
     <nav aria-label="Main">
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md">Docs</a>
       <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">Benchmarks</a>
@@ -207,7 +209,7 @@ footer .note { margin-left: auto; }
     <div>
       <h1>A real database for every branch and AI agent.</h1>
       <p class="lede">Point <code>psql</code>, Playwright or your test runner at a sleeping sandbox.
-        sbx holds the connection while it wakes, then hands it over. One Go binary, no SDK, no account.</p>
+        sbx holds the connection while it wakes, then hands it over. Written in Go: one static binary, no SDK, no account.</p>
 
       <div class="install" id="install">
         <input type="radio" name="inst" id="t-brew" checked>
@@ -220,7 +222,7 @@ footer .note { margin-left: auto; }
         <div class="cmd c-curl"><code>curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code><button class="copy" type="button" hidden>Copy</button></div>
         <div class="cmd c-go"><code>go install github.com/aryanmehrotra/sbx@latest</code><button class="copy" type="button" hidden>Copy</button></div>
       </div>
-      <p class="small">macOS and Linux. Needs Docker or a Kubernetes cluster; <code>sbx doctor</code> tells you what your machine supports.</p>
+      <p class="small">A single static Go binary for macOS and Linux. Needs Docker or a Kubernetes cluster; <code>sbx doctor</code> tells you what your machine supports.</p>
     </div>
 
     <div class="term" role="img" aria-label="A terminal: a Postgres sandbox is created, sleeps at 0 B, and a plain psql query wakes it and is served in 463 ms.">
@@ -240,7 +242,7 @@ footer .note { margin-left: auto; }
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#head-to-head"><b>0 B</b><span>RAM per sleeping sandbox</span></a>
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#sbx-by-itself"><b>348 ms</b><span>to wake Postgres (Redis: 216 ms)</span></a>
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#head-to-head"><b>20/20</b><span>first connections served while waking</span></a>
-      <a href="https://github.com/aryanmehrotra/sbx/blob/main/go.mod"><b>0</b><span>dependencies, one static binary</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/go.mod"><b>Go</b><span>standard library only, zero dependencies</span></a>
     </div>
     <div class="chart">
       <picture>
@@ -366,7 +368,7 @@ sandbox.destroy()</pre>
 
 <footer>
   <div class="wrap">
-    <span>MIT licensed</span>
+    <span>Written in Go · MIT licensed</span>
     <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/release-notes/README.md">Release notes</a>
     <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/COMPARISON.md">Compared with other tools</a>
     <a href="https://github.com/aryanmehrotra/sbx/blob/main/SECURITY.md">Security</a>
