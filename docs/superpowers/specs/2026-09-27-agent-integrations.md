@@ -3,8 +3,9 @@
 **Status:** proposed - research and plan, nothing built
 **Date:** 2026-09-27
 
-> **Short version:** `SBX_FEATURES=agents sbx agent my-task claude` runs Claude Code (or Codex,
-> or Gemini CLI) inside its own sandbox. The repository is mounted at `/work`. The agent reaches
+> **Short version:** `SBX_FEATURES=agents sbx agent my-task claude` runs Claude Code, and
+> `sbx agent my-task codex` runs Codex, each inside its own sandbox. These two are the v1
+> integrations; others come later. The repository is mounted at `/work`. The agent reaches
 > only its own model API plus the hosts you add. Every call it makes keeps the box awake, and it
 > sleeps to 0 B when the agent stops. **Nothing about it is on by default.** It needs a gate to
 > exist, an install to be present, and a credential you hand over on purpose, every time. Most
@@ -53,7 +54,7 @@ a model key copied anywhere.
 |---|---|---|
 | **1. The gate** | `agents` is a **preview** feature. Without `SBX_FEATURES=agents`, `sbx agent` refuses with the one line that turns it on, and the `agent` spec field (phase 2) is refused by name | `internal/features`, same as `ssh` / `devcontainer` |
 | **2. No agent in any default image** | no template, no base image and no activator ships an agent CLI. The agent image is built only when `sbx agent` is run naming that agent, from a pinned version | a generated Dockerfile through the existing `build:` path |
-| **3. No implicit credentials** | sbx never reads `~/.claude`, `~/.codex`, `~/.gemini` or a key variable unless the command names the agent. The credential goes in **per exec**, never into the container's config (see [Credentials](#credentials)) | `sbx agent` only |
+| **3. No implicit credentials** | sbx never reads `~/.claude`, `~/.codex` or a key variable unless the command names the agent. The credential goes in **per exec**, never into the container's config (see [Credentials](#credentials)) | `sbx agent` only |
 | **4. No implicit reach** | the box's egress is the agent's API hosts plus what you pass with `--allow`. There is no "allow everything" shorthand. Unrestricted egress needs `--egress open` spelled out, and it prints a line saying the box is unbounded | the registry + `egress_allow` |
 
 Lock 1 is temporary: the gate is deleted when the feature graduates, as for every gate. Locks 2-4
@@ -112,23 +113,34 @@ one is a reviewed PR with a test that builds its image, which is the same bar as
 entries below are a **research starting point**. Every host, variable and flag is listed under
 [Verify before building](#verify-before-building), because vendors move these.
 
-| | Claude Code | Codex CLI | Gemini CLI |
-|---|---|---|---|
-| install | npm `@anthropic-ai/claude-code@<pin>` | npm `@openai/codex@<pin>` (Rust binary) | npm `@google/gemini-cli@<pin>` |
-| base | `node:22-slim` + git, ripgrep | same | same |
-| API-key auth | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` | `GEMINI_API_KEY` |
-| subscription auth | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on the host) | `~/.codex/auth.json` from `codex login` (a file, see below) | OAuth cache in `~/.gemini` (a file) |
-| egress, minimum | `api.anthropic.com` | `api.openai.com` (+ `chatgpt.com`, `auth.openai.com` for ChatGPT login) | `generativelanguage.googleapis.com` (+ `oauth2.googleapis.com` for OAuth) |
-| "sbx is the boundary" | `--dangerously-skip-permissions` (refuses as root → the image runs as uid 1000) | `--sandbox danger-full-access --ask-for-approval never` (its own landlock/seccomp sandbox may not work nested in a container) | `--yolo` |
-| headless | `claude -p "<task>"` | `codex exec "<task>"` | `gemini -p "<task>"` |
-| proxy | honours `HTTPS_PROXY` (documented) | Rust/reqwest honours `HTTPS_PROXY` | Node: **needs checking**. May need `NODE_USE_ENV_PROXY=1` (Node ≥ 24) or its own proxy setting |
-| telemetry to quiet | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | - | settings file |
+**v1 ships exactly two: Claude Code and Codex.** Both are first-class, with the same flags, the
+same tests and the same docs. For both, an **API key is the default credential**. A subscription
+login is supported as the second option.
+
+| | Claude Code | Codex CLI |
+|---|---|---|
+| install | npm `@anthropic-ai/claude-code@<pin>` | npm `@openai/codex@<pin>` (Rust binary) |
+| base | `node:22-slim` + git, ripgrep | same |
+| **API key (default)** | `ANTHROPIC_API_KEY`, read from the host env when `sbx agent … claude` runs | `OPENAI_API_KEY`, read the same way |
+| subscription (`--auth login`) | `CLAUDE_CODE_OAUTH_TOKEN`, made once on the host with `claude setup-token` | `~/.codex/auth.json` from `codex login` (a file, see [Credentials](#credentials)) |
+| egress, minimum | `api.anthropic.com` | `api.openai.com` (+ `chatgpt.com`, `auth.openai.com` only for subscription login) |
+| "sbx is the boundary" | `--dangerously-skip-permissions` (refuses as root → the image runs as uid 1000) | `--sandbox danger-full-access --ask-for-approval never` (its own landlock/seccomp sandbox may not work nested in a container) |
+| headless | `claude -p "<task>"` | `codex exec "<task>"` |
+| proxy | honours `HTTPS_PROXY` (documented) | Rust/reqwest honours `HTTPS_PROXY` |
+| telemetry to quiet | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | - |
+
+When both an API key and a subscription credential are present, the API key wins, unless
+`--auth login` says otherwise. Every run prints which one it used, so a bill never arrives on
+the wrong account unannounced.
 
 The "boundary" flags are **not** added when the user passes the agent's own permission flags, and
 `--keep-prompts` leaves them off entirely. Adding them is the point of running inside sbx, and
 the docs say so plainly. It is not hidden.
 
-`aider`, `opencode`, `goose` and `cursor-agent` are candidates for later entries. None goes in
+Gemini CLI is the next candidate after v1. It is not in v1 because it is Node-based and its
+proxy support needs checking (`NODE_USE_ENV_PROXY=1` on Node ≥ 24, or its own setting). If it
+ignores `HTTPS_PROXY`, the filter cannot see it. `aider`, `opencode`, `goose` and `cursor-agent`
+are candidates after that. None goes in
 until a user asks and the e2e below is written for it.
 
 ## Credentials
@@ -145,7 +157,7 @@ snapshot, fork or checkpoint.
 | **`docker exec -e NAME` with the value in the CLI's environment, not its argv** | `-e NAME=value` on argv is readable in the host's `ps`. `-e NAME` alone inherits the value from the docker CLI's environment. The same care applies to podman |
 | **firecracker: over the execd channel** | execd already takes env per command. `forgetSecrets` already strips tokens from snapshots (`internal/provider/firecracker_osb.go`). That is the precedent |
 | **file credentials (`auth.json`, OAuth caches) copied in at exec, removed on exit** | written 0600 to a tmpfs path (`/run/sbx-agent/`) and pointed at with `CODEX_HOME` / equivalents. Never a bind mount of `~/.codex`: a writeable bind would let the agent rewrite the host's credential, and a read-only one exposes every other file in that directory |
-| **an explicit source, always** | `--auth env` (default: the variable in the table) · `--auth file` (the subscription file) · `--auth none` (the image's own login flow, inside the box, whose token dies with the box) |
+| **an explicit source, always** | `--auth key` (default: the API-key variable in the table) · `--auth login` (the subscription token or file) · `--auth none` (the image's own login flow, inside the box, whose token dies with the box) |
 | **redaction** | `history.Redact` already matches `key|token|auth`, and a test pins that every registry variable matches it |
 
 What this does **not** protect against, stated in the docs: the agent itself can read its own
@@ -168,9 +180,9 @@ before anything is created.
 
 | phase | what | size (eng-weeks, estimate) |
 |---|---|---|
-| **0 · spike** | By hand, on docker + colima: build each of the three images; run each headless through `egress_allow` with **only** the minimum hosts; confirm the proxy is honoured; confirm the box stays awake through a long run and sleeps after; confirm the non-root / nested-sandbox flags. **Output: the registry table, with every "verify" cleared or changed** | 0.5 |
-| **1 · `sbx agent`, docker/podman, three integrations** | `internal/agents` registry · gate `agents` · the command · exec-time credentials · `--allow`, `--rm`, `--idle`, `--auth` · refusals · docs below | 1.5-2 |
-| **2 · spec field + worktrees** | `"agent": "claude"` on a service (gated, expands to the same build/egress/idle), so a repo can commit its agent box · `--worktree` · firecracker | 1.5 |
+| **0 · spike** | By hand, on docker + colima: build the Claude Code and Codex images; run each headless through `egress_allow` with **only** the minimum hosts; confirm the proxy is honoured; confirm the box stays awake through a long run and sleeps after; confirm the non-root / nested-sandbox flags. **Output: the registry table, with every "verify" cleared or changed** | 0.5 |
+| **1 · `sbx agent`, docker/podman, Claude Code + Codex** | `internal/agents` registry · gate `agents` · the command · exec-time credentials · `--allow`, `--rm`, `--idle`, `--auth` · refusals · docs below | 1.5-2 |
+| **2 · spec field + worktrees + more agents** | Gemini CLI once its proxy behaviour is verified · `"agent": "claude"` on a service (gated, expands to the same build/egress/idle), so a repo can commit its agent box · `--worktree` · firecracker | 1.5 |
 | **3 · graduate** | delete the gate after one release in preview with no contract change. Locks 2-4 stay | - |
 
 Per ROADMAP.md, this item needs a DECISIONS.md entry before it goes on the roadmap. Draft title:
@@ -217,13 +229,13 @@ Everything here came from memory or from the vendors' docs as last read. It is e
 phase 0 is for.
 
 - [ ] Each CLI's current npm package name, and a pinned version that works.
-- [ ] Each CLI honours `HTTPS_PROXY` / `NO_PROXY` through sbx's filter. **This is the one most
-      likely to break the design for a Node-based agent.**
+- [ ] Both CLIs honour `HTTPS_PROXY` / `NO_PROXY` through sbx's filter, with an API key and with a
+      subscription login.
 - [ ] Minimum egress host set per agent, with telemetry off. Which hosts are needed for auth only.
 - [ ] `claude --dangerously-skip-permissions` as non-root in a container, no extra env needed.
 - [ ] Codex's own sandbox inside docker: does `danger-full-access` avoid landlock/seccomp errors.
 - [ ] Subscription auth: `CLAUDE_CODE_OAUTH_TOKEN` via env. The Codex `auth.json` copy works with
-      `CODEX_HOME` pointed at tmpfs. Gemini's OAuth cache location. Also the vendors' terms on
+      `CODEX_HOME` pointed at tmpfs. Also the vendors' terms on
       using subscription credentials in automation.
 - [ ] Does an open `sbx exec -t` session count as activity? If not, an interactive session where
       the human reads for longer than `idle` sleeps under them. The fix is the exec session
