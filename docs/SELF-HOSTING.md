@@ -31,16 +31,17 @@ sbx with test-db --template postgres -- go test ./...
 
 ### What it costs
 
-Hosted sandboxes bill per second of CPU and memory while a sandbox runs. Modal charges
-"$0.00003942 / core / sec" for CPU and "$0.00000667 / GiB / sec" for memory
-([pricing](https://modal.com/pricing), checked 2026-09-27). Vercel Sandbox charges Active CPU at
-"$0.128/hour" and memory at "$0.0212/GB-hour"
-([pricing](https://vercel.com/docs/sandbox/pricing), checked 2026-09-27).
+Hosted sandboxes bill for CPU and memory while a sandbox runs
+([rates](COMPARISON.md#monthly-cost-for-one-developer)).
 
-As an example, take 1 vCPU and 2 GiB, the size the OpenSandbox SDKs request by default, running
-8 h a day for 22 days (633,600 s). At Modal's rates that is 633,600 × $0.00003942 = $24.98 for CPU
-and 633,600 × 2 × $0.00000667 = $8.45 for memory: $33.43 per sandbox per month, before any credit
-on your plan. Other vendors are in [COMPARISON.md](COMPARISON.md#monthly-cost-for-one-developer).
+As an example, take 1 vCPU and 2 GiB, the size the OpenSandbox SDKs (clients for an open API
+standard for agent sandboxes) request by default, running 8 h a day for 22 days (633,600 s). Modal
+bills a "Physical core (2 vCPU equivalent)", so 1 vCPU is half of one of Modal's physical cores.
+CPU is 633,600 × 0.5 × $0.00003942 = $12.49, and memory is 633,600 × 2 × $0.00000667 = $8.45.
+
+That is $20.94 per sandbox per month, before the $30 monthly credit on Modal's Starter plan
+([pricing](https://modal.com/pricing), checked 2026-09-27). Other vendors are in
+[COMPARISON.md](COMPARISON.md#monthly-cost-for-one-developer).
 
 With sbx you pay for servers you already run, and the sandbox's cost is its share of one. An idle
 sandbox costs disk, not RAM. The flip side: someone on your team runs and patches those servers,
@@ -69,10 +70,11 @@ curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/inst
 ```
 
 The script installs to `/usr/local/bin` and checks the binary against the release's `SHA256SUMS`.
-`VERSION=v0.14.0` pins a release and `DIR=~/bin` picks another directory. To do it by hand:
+If that file is missing, it warns and installs unchecked.
+`VERSION=v0.15.0` pins a release and `DIR=~/bin` picks another directory. To do it by hand:
 
 ```sh
-V=v0.14.0
+V=v0.15.0
 curl -fsSLO "https://github.com/aryanmehrotra/sbx/releases/download/$V/sbx_${V}_linux_amd64"
 curl -fsSL "https://github.com/aryanmehrotra/sbx/releases/download/$V/SHA256SUMS" | grep " sbx_${V}_linux_amd64\$" | sha256sum -c
 sudo install -m 0755 "sbx_${V}_linux_amd64" /usr/local/bin/sbx
@@ -82,6 +84,7 @@ sudo install -m 0755 "sbx_${V}_linux_amd64" /usr/local/bin/sbx
 
 ```sh
 sbx doctor          # what this machine can do
+sbx install         # add what doctor reports missing (shows each command, asks first)
 sbx fc backend      # can it run microVMs, and how
 ```
 
@@ -91,9 +94,10 @@ whether guests are closed off from the host and each other. `vm jailer` confirms
 runs under Firecracker's jailer, a confined unprivileged user. `microVM state filesystem` warns
 when VM state shares a filesystem with `/`.
 
-sbx downloads the pinned Firecracker, jailer and guest kernel into its state directory on first
-use, checked by sha256. `sbx prewarm --provider firecracker IMAGE...` pulls images and builds their
-root filesystems ahead of time.
+sbx downloads the pinned Firecracker, jailer and guest kernel into its state directory on first use,
+checked by sha256. `sudo SBX_FC_STATE=/srv/sbx/fc sbx prewarm --provider firecracker IMAGE...` pulls
+images and builds their root filesystems ahead of time, into the state directory the daemon below
+uses.
 
 ## Run the daemon as a service
 
@@ -126,7 +130,7 @@ a network namespace per sandbox and writes the iptables rules that guard the hos
 [Unit]
 Description=sbx microVM daemon
 After=docker.service network-online.target
-Wants=docker.service
+Wants=docker.service network-online.target
 
 [Service]
 Environment=HOME=/root SBX_FC_STATE=/srv/sbx/fc
@@ -174,9 +178,13 @@ sudo SBX_FC_STATE=/srv/sbx/fc sbx list --provider firecracker
 
 ## The API key and MCP
 
-The OpenSandbox API always requires a key. It comes from `--osb-key`, then `SBX_OSB_KEY`, else one
-is generated into `~/.sbx/osb/key` (mode 0600). With the unit above it is the value in
-`/etc/sbx/env`. Prefer the variable to the flag, which other users can read in `ps`.
+MCP is the standard way AI assistants call outside tools. `sbx mcp` offers sandboxes as MCP tools.
+
+The OpenSandbox API requires a key unless you pass `--osb-insecure-no-key`, which can let every
+sandbox drive it. The key comes from `--osb-key`, then `SBX_OSB_KEY`, else one is generated into
+`~/.sbx/osb/key` (mode 0600). With the unit above it is the value in `/etc/sbx/env`.
+
+Prefer the variable to the flag, which other users can read in `ps`.
 
 ```sh
 export OPEN_SANDBOX_DOMAIN=127.0.0.1:8080 OPEN_SANDBOX_API_KEY="$(sudo sed -n 's/^SBX_OSB_KEY=//p' /etc/sbx/env)"
@@ -199,11 +207,8 @@ sandbox endpoints through `sbx connect`. `sbx connect` binds the ports that exis
 a sandbox created later is unreachable until you restart it. That suits a fixed set of sandboxes,
 not an agent that creates them freely, and it is not yet run end to end.
 
-On the server, add a connect endpoint and set `SBX_CONNECT_TOKEN` in `/etc/sbx/env`:
-
-```sh
-sbx serve --provider firecracker --osb-addr 127.0.0.1:8080 --connect-addr 127.0.0.1:7700
-```
+On the server, add `--connect-addr 127.0.0.1:7700` to the unit's `ExecStart`, put
+`SBX_CONNECT_TOKEN=...` in `/etc/sbx/env`, and run `sudo systemctl restart sbx`.
 
 On the other machine, where no `sbx serve` holds the same port numbers:
 
@@ -225,7 +230,7 @@ VPN credential ([SECURITY.md](../SECURITY.md#access-and-exposure)).
 - A sleeping microVM holds no RAM. On disk it keeps a memory file up to the size of its RAM, its
   writable layer (`SBX_FC_DISK_SIZE`, sparse, `10g`) and its volumes (`SBX_FC_VOLUME_SIZE`).
 - Pool members are 1 vCPU and 2 GiB. On firecracker they wait asleep on disk; with
-  `--osb-pool-freeze` they wait paused in RAM, so `--osb-pool IMAGE=8` can hold up to 16 GiB.
+  `--osb-pool-freeze` they wait paused in RAM, so `--osb-pool IMAGE=8` can hold about 17 GiB.
 - On Docker, pool members are running containers; `--osb-pool-freeze` stops their idle CPU.
 - Set `cpu` and `memory` per service in `sandbox.json` ([SPEC.md](SPEC.md#cpu-and-memory)), or
   `resourceLimits` in an API create. On firecracker, `cpu` rounds up to whole vCPUs.
@@ -237,7 +242,7 @@ Measured wake and create times are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Kubernetes
 
-`sbx create my-branch --provider kubernetes --namespace sbx` makes each service a Deployment and
+`sbx create my-branch --template postgres --provider kubernetes --namespace sbx` makes each service a Deployment and
 a Service in that namespace, through `kubectl` and your current context. Install the in-cluster daemon
 once from [`deploy/activator.yaml`](../deploy/activator.yaml). It asks for `sbx-activator:dev`,
 built from [`deploy/Dockerfile`](../deploy/Dockerfile). Each release also publishes

@@ -52,7 +52,7 @@ page. Rules: `AGENTS.md` (docs contract, doc map, `#writing-docs`, lessons).
 - Em-dash or semicolon chains; "Note that", "It's worth noting", "In other words", "Simply",
   "Seamlessly"; a first sentence that restates the heading; a citation closing every paragraph.
 - Length: paragraphs over three sentences, multi-line bullets that could be one line, a term
-  explained twice on one page. The README stays about 100 lines (two paragraphs, four proof bullets,
+  explained twice on one page. The README stays about 100 lines (two paragraphs, three proof bullets,
   install, one usage block, docs links) with no tables, glossary or comparison.
 - Release notes over TEMPLATE's 60-line limit.
 

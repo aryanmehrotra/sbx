@@ -181,7 +181,7 @@ serve the OpenSandbox API:
 sbx serve --osb-addr 127.0.0.1:8080 &     # writes an API key to ~/.sbx/osb/key
 claude mcp add sbx -- sbx mcp             # Claude Code; sbx mcp reads the key file itself
 codex mcp add sbx -- sbx mcp              # Codex CLI
-claude mcp add sbx -e SBX_OSB_KEY="$KEY" -- sbx mcp --url https://osb.example.dev   # a remote server
+claude mcp add sbx -e SBX_OSB_KEY="$KEY" -- sbx mcp --url https://osb.example.dev   # another OpenSandbox server (sbx's own API is loopback only)
 ```
 
 Cursor (`.cursor/mcp.json`), or any client that reads an `mcpServers` block:

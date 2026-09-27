@@ -21,8 +21,14 @@ fail=0
 # ends in "_" is a prefix the code appends to (SBX_CONNECT_TOKEN_<label>), not a variable, so the
 # pattern requires the last character to be a letter or digit. Test-only switches
 # (SBX_FC_E2E...) live in _test.go and are for CONTRIBUTING, not the user reference.
+#
+# The literal match is broad on purpose, so a few strings that only look like variables are
+# listed here with where they come from. SBX_JSON is the heredoc delimiter `sbx install` writes
+# into its daemon.json step (internal/cli/install_runtime.go), not something read from the
+# environment. Add to this list only a name you have checked is never passed to Getenv.
+not_env='^(SBX_JSON)$'
 for v in $(grep -rhoE '"SBX_[A-Z0-9_]*[A-Z0-9]"' --include='*.go' --exclude='*_test.go' internal main.go \
-             | tr -d '"' | sort -u); do
+             | tr -d '"' | sort -u | grep -Ev "$not_env"); do
   if ! grep -q "\`$v\`" docs/CLI.md; then
     printf '  ✗ docs/CLI.md does not document %s, which the code reads\n' "$v"
     fail=1

@@ -109,7 +109,7 @@ Sablier (checked 2026-08-30). Head-to-head numbers against zeropod and Lazytaine
 ## Monthly cost for one developer
 
 One environment of about 2 vCPU and 4 GB, 8 h a day, 20 days (160 h). Computed from each
-vendor's pricing page on 2026-08-30, not quoted.
+vendor's pricing page on 2026-08-30 (Modal rechecked on 2026-09-27), not quoted.
 
 | | per month | what drives it |
 |---|---:|---|
@@ -117,17 +117,24 @@ vendor's pricing page on 2026-08-30, not quoted.
 | Northflank | ~$12 | $0.01667/vCPU-h + $0.00833/GB-h |
 | GitHub Codespaces (Pro) | ~$13 | 180 core-h free, then $0.09/core-h |
 | Daytona | ~$27 | $200 credit covers roughly the first 1,200 h |
-| Modal | ~$31 | after the $30/month Starter credit |
+| Modal | ~$8 | $38 of use (2 vCPU is one "physical core"), less the $30/month Starter credit |
 | Vercel Sandbox | ~$34 | plus $0.08/GB-month for snapshots while stopped |
 | Cloudflare Containers | ~$39 | $5 base; CPU billed on active use |
 | E2B | ~$177 | usage ~$27; Pro at $150/month needed for sessions over 1 h |
+
+Modal charges "$0.00003942 / core / sec" for CPU, where a core is a "Physical core (2 vCPU
+equivalent)", and "$0.00000667 / GiB / sec" for memory ([pricing](https://modal.com/pricing),
+checked 2026-09-27). Vercel Sandbox charges Active CPU at "$0.128/hour" and memory at
+"$0.0212/GB-hour" ([pricing](https://vercel.com/docs/sandbox/pricing), checked 2026-09-27).
 
 sbx is free because it runs on your hardware. For a team that owns none, that is not a saving.
 
 ## Why not use Firecracker directly?
 
 Firecracker boots a VM from a kernel and a disk image. Everything that turns that into a sandbox
-you can hand to an agent is left to you, and in sbx it is about 24,000 lines of Go:
+you can hand to an agent is left to you. In sbx it is about 20,000 lines of Go at v0.14.0, not
+counting the OpenSandbox API (non-test `.go` files in `internal/fc*`, `internal/execd*` and
+`internal/provider/firecracker*.go`):
 
 - Images: Firecracker boots an ext4 disk, not a Docker image. sbx pulls the image, flattens its
   layers into a cached disk, and gives each VM a read-only copy with an empty layer of its own.
@@ -140,14 +147,15 @@ you can hand to an agent is left to you, and in sbx it is about 24,000 lines of 
   limit and no privileges ([SECURITY.md](../SECURITY.md)).
 - Sleep and wake: snapshot a VM's memory to disk, stop it, restore it on demand, and hold the
   client's connection open while that happens.
-- Warm pools of VMs parked asleep or paused, so a create is answered at once.
+- Warm pools of VMs parked asleep or paused, so a create is answered in 144 ms (median) from a
+  frozen microVM pool ([BENCHMARKS](BENCHMARKS.md#sbx-by-itself)).
 - An interface agents already use: the OpenSandbox API and SDKs, and MCP tools.
 - Macs and Windows, where Firecracker cannot run, through a helper Linux VM
   ([status](ARCHITECTURE.md#platform-status)).
 
 Use Firecracker directly, or Kata Containers or firecracker-containerd, if you are building your own
 sandbox platform, need control of VM configuration or snapshots, or serve many untrusted tenants
-on shared hosts: the sbx daemon runs as root on one host and is not a multi-tenant control plane.
+on shared hosts: the sbx microVM daemon runs as root on one host and is not a multi-tenant control plane.
 
 ## Choose something else if
 

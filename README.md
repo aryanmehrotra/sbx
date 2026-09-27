@@ -37,7 +37,8 @@ brew install aryanmehrotra/tap/sbx
 
 Or `curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh`,
 or `go install github.com/aryanmehrotra/sbx@latest`. It needs Docker or a Kubernetes cluster, and
-Linux with `/dev/kvm` for microVMs. Run `sbx doctor` to see what your machine supports.
+Linux with `/dev/kvm` for microVMs. Run `sbx doctor` to see what your machine supports, and `sbx install` to add what it reports
+missing (it shows every command and asks first).
 
 ## Sandboxes for AI agents
 
@@ -57,8 +58,9 @@ sandbox.destroy()
 ```
 
 Add `--provider firecracker` to `sbx serve` and every sandbox is a microVM with its own kernel,
-booted fresh from the image. To give Claude Code, Cursor or Codex sandboxes as tools, run
-`claude mcp add sbx -- sbx mcp` while the daemon runs. More in [GUIDES.md](docs/GUIDES.md#ai-agents).
+booted fresh from the image. To give Claude Code sandboxes as tools, run
+`claude mcp add sbx -- sbx mcp` while the daemon runs. Cursor and Codex are in
+[GUIDES.md](docs/GUIDES.md#mcp).
 
 ## Databases for branches and tests
 
