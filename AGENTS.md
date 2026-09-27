@@ -157,4 +157,4 @@ Never edit or delete earlier lines. Past about 25, move the oldest to [CONTRIBUT
 - 2026-09-27 · Keep history out of reference docs. "Used to", "(v0.13)" and "an earlier draft"
   crept into SPEC, COMPARISON and ROADMAP; state the current behaviour once.
 - 2026-09-27 · Docs written by agents in committee read as AI-generated: bold lead-ins, tables for
-  prose, slogans. One voice, plain bullets, px0-length README.
+  prose, slogans. One voice, plain bullets, a README of about 100 lines.
