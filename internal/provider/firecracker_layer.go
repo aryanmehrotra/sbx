@@ -11,7 +11,7 @@ import (
 
 // A layered VM (fcVM.Layout) boots its image's shared, read-only root filesystem with a writable
 // layer of its own over it - fc/layer.go and DECISIONS.md ("A microVM links its image and writes
-// to a layer of its own"). Every create since v0.13 is layered, unless SBX_FC_ROOTFS=copy or it
+// to a layer of its own"). Every create since v0.14 is layered, unless SBX_FC_ROOTFS=copy or it
 // starts from a disk snapshot saved before layers.
 const layoutLayered = "layered"
 

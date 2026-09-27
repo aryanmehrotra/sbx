@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// A layered VM (v0.13) does not copy its image. Its root drive is its image's root filesystem
+// A layered VM (v0.14) does not copy its image. Its root drive is its image's root filesystem
 // itself - one file per image, built once into the rootfs cache, root's and read-only - linked into
 // the VM's directory and attached read-only; what the guest writes goes to a small drive of the
 // VM's own that `sbx fc-init` lays over it with overlayfs. Before, every VM cloned the whole image:

@@ -20,7 +20,7 @@ const (
 	ConsoleName  = "console.log"
 	VMMLogName   = "vmm.log"
 	PIDName      = "firecracker.pid"
-	RootfsName   = "rootfs.ext4" // a VM's own full copy of its image (the layout before v0.13)
+	RootfsName   = "rootfs.ext4" // a VM's own full copy of its image (the layout before v0.14)
 	BaseName     = "base.ext4"   // a link to its image's shared, read-only root filesystem (layered)
 	UpperName    = "upper.ext4"  // the VM's own writable layer over it (layered)
 	StateName    = "vm.state"

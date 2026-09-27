@@ -120,7 +120,7 @@ func TestWriteHostsGivesLocalhostAndTheHostname(t *testing.T) {
 	}
 }
 
-// A VM with its own copy of its image mounts it read-write at the root, as before v0.13. A layered
+// A VM with its own copy of its image mounts it read-write at the root, as before v0.14. A layered
 // one mounts the image's shared base read-only and without replaying its journal (the drive is
 // read-only; a replay would fail), its own writable layer read-write, and an overlay of the two at
 // the root - whose upper and work directories are on that writable layer, so everything the
