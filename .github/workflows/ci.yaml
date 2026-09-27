@@ -201,6 +201,11 @@ jobs:
         os: ${{ needs.changes.outputs.code == 'true' && fromJSON('["ubuntu-latest","macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # lint-docs.sh checks every tag-pinned link in the release notes against that tag,
+          # and a shallow checkout has no tags - so a link to a file that has since moved
+          # would read as broken. The full history is a few MB.
+          fetch-depth: 0
 
       - name: bash version, for the record
         run: bash --version | head -1
@@ -309,7 +314,7 @@ jobs:
         run: ./scripts/osb-conformance.sh --tier v0.10.0
 
       # Two files from the later tiers that sbx passes, gated so they stay passing. The rest of
-      # those tiers (isolated_session, credential_vault) is not built: docs/ROADMAP.md §4.
+      # those tiers (isolated_session, credential_vault) is not built: docs/ROADMAP.md, "Not built yet in the OpenSandbox API".
       # pool is the SDK's own pool; half of it is backed by Redis and skips without one, and a
       # skip is not a pass.
       - name: upstream tests/go, pool (v0.11.0 tier), with a Redis

@@ -36,6 +36,32 @@ for f in "$ROOT"/docs/*.md "$ROOT"/docs/release-notes/*.md "$ROOT"/README.md; do
   done
 done
 
+# Release notes carry no relative links at all.
+#
+# Each docs/release-notes/vX.Y.Z.md is published verbatim as a GitHub release body
+# (release.yaml's body_path). There a link resolves against /releases/tag/vX.Y.Z, so
+# `../DECISIONS.md` - which the check above passes, because the file is there in the repo -
+# is a 404 on the one page most readers see. Nine published notes shipped like that. Only the
+# tag files are held to this: README.md and TEMPLATE.md in the same directory are read in the
+# repository, where relative links are the right thing.
+for f in "$ROOT"/docs/release-notes/v*.md; do
+  [ -f "$f" ] || continue
+
+  # Inline links and images, reference definitions, and raw HTML attributes. An absolute URL, an
+  # in-page #fragment or a mailto: is fine; anything else is relative.
+  rel=$( { grep -no '\]([^)]*)' "$f" | grep -vE '\]\((https?://|#|mailto:)';
+           grep -nE '^ {0,3}\[[^]]+\]:[[:space:]]*[^[:space:]]' "$f" | grep -vE '\]:[[:space:]]*<?(https?://|#|mailto:)';
+           grep -noE '(src|href)="[^"]*"' "$f" | grep -vE '="(https?://|#|mailto:)'; } 2>/dev/null)
+
+  if [ -n "$rel" ]; then
+    while IFS= read -r line; do
+      printf '  ✗ %s:%s is a relative link - it 404s in the GitHub release body; pin it to the tag\n' \
+        "${f#"$ROOT"/}" "$line"
+    done <<< "$rel"
+    fail=1
+  fi
+done
+
 # A #fragment must match a heading in the file it points at.
 #
 # `](../README.md#use-it)` is not a broken link - the file is there - so the target check
@@ -161,7 +187,8 @@ for f in files:
 
     for pat in pats:
         for ref, target in pat.findall(open(path, encoding="utf-8").read()):
-            target = target.rstrip(".,)")
+            # A #fragment names a heading, not a file; the file is what is checked here.
+            target = target.split("#")[0].rstrip(".,)")
 
             if known(ref):
                 ok = subprocess.run(["git", "-C", root, "cat-file", "-e", "%s:%s" % (ref, target)],
@@ -175,6 +202,11 @@ for f in files:
 
             if not ok:
                 print("  ✗ %s: %s is not in %s" % (f, target, where))
+                if not known(ref) and re.match(r"v\d+\.\d+\.\d+$", ref):
+                    # An old release's note links a file where it was at that tag, and it may
+                    # have moved since. Without the tag - a shallow clone - the only thing to
+                    # check against is today's tree, which is the wrong answer, not a bad link.
+                    print("    (%s is a tag that is not here - a shallow clone? `git fetch --tags`)" % ref)
                 bad = 1
 
 if not bad:

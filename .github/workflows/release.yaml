@@ -65,8 +65,8 @@ jobs:
             echo "::error::no release notes at $notes"
             echo
             echo "Write them before tagging - what changed, why anybody would want it, how to"
-            echo "adopt it, and what it costs. docs/release-notes/ has the last one to follow,"
-            echo "and CONTRIBUTING.md has the checklist."
+            echo "adopt it, and what it costs. Start from docs/release-notes/TEMPLATE.md;"
+            echo "CONTRIBUTING.md has the checklist."
             exit 1
           fi
       - run: go vet ./...
