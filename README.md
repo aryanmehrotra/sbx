@@ -7,224 +7,191 @@
 [![dependencies](https://img.shields.io/badge/dependencies-0-3fb950)](go.mod)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+**Self-hosted sandboxes for every branch and AI agent — a real Postgres, Redis or browser that
+sleeps at 0 B and wakes the moment anything connects. No SDK, no account, one binary.**
+
+<sub>Not Docker Sandboxes' `sbx` CLI (`docker/tap/sbx`), which runs coding agents in microVMs. This is `aryanmehrotra/sbx`.</sub>
+
 <img src="docs/hero.svg" width="900" alt="sbx - a real Postgres, Redis or browser for every branch or agent, that costs 0 B of RAM while idle and wakes when a client connects. A diagram shows four sandboxes on one laptop: main is serving, and feature-x, agent-4711 and review-99 are asleep at 0 B until a psql connection wakes one.">
-
-**Give every branch, task or AI agent its own real Postgres, Redis or browser — one that costs
-nothing while idle, and comes back the instant something needs it.**
-
-`0 B of RAM when idle · wakes in ~191 ms · one static binary, zero dependencies`
-
-## The connection is the wake-up call — and it never gets refused
-
-Point `psql`, a connection pool, Playwright or your test runner at a sleeping sandbox and it
-**just connects.** sbx catches that first connection and holds it open while the container starts,
-then hands over the live socket — the client waits a beat and gets a real answer, and never sees a
-refused port. **The client's own socket is the wake signal:** no SDK call, no `sbx start`, no
-readiness loop in your code. The connection itself is the start command, and it succeeds on the
-first attempt — on any protocol that speaks TCP.
-
-That last part is the piece a hand-rolled `docker start` wrapper can't give you. Everything else
-here is built around it: sandboxes that drop to **0 B** when nobody's using them, and come back the
-moment anyone does.
-
-## Who it's for
-
-- **Teams running many branches at once** — twenty branch databases on one laptop, and you pay RAM
-  for only the one you're looking at. Switch branches and the rest drop to 0 B. No more everyone
-  sharing one staging database and stepping on each other's migrations.
-- **A fleet of AI agents that each need a real database** — hand every agent its own Postgres that
-  dies with the task, woken by its clients (`psql`, a pool, a test runner — none of which can call
-  an SDK) just by connecting. Keeping every agent's stack alive isn't affordable; a shared database
-  is where the flaky, hard-to-reproduce bugs come from.
-
-<img src="docs/demo.svg" width="900" alt="A terminal running sbx: a branch sandbox is created from the web-stack template, its addresses are exported as shell variables and as JSON, a cache is added mid-task, a seeded database is snapshotted and forked, the sandbox sleeps to zero, and a plain redis-cli ping wakes it and is served.">
-
-<sub>A real run, recorded by [`scripts/demo.sh`](scripts/demo.sh).</sub>
-
-## Get a database in three commands
-
-```sh
-sbx serve --idle 5m &                          # once per machine, not per sandbox
-sbx create my-branch --template postgres       # ~492 ms once the image is local
-eval "$(sbx env my-branch)"                    # DATABASE_HOST/PORT are now set
-psql -U app -d app                             # this wakes it — the call blocks, it doesn't refuse
-```
-
-There is no `sbx start` and no `sbx stop`. Opening a socket is the whole signal, so `psql`, a
-connection pool, Playwright and your test runner all wake it without knowing sbx exists.
-
----
-
-## What you can do
-
-**Everyday**
-| | |
-|---|---|
-| **Run twenty branch databases on one laptop** | so the ones you're not looking at cost 0 B — no RAM, no bill |
-| **Point your existing tools at it, unchanged** | so anything that opens a socket connects — no SDK, no client library to add |
-| **Keep one file per repo** | `sandbox.json` says what a branch needs, so a teammate's `sbx create` matches yours → [SPEC](docs/SPEC.md) |
-| **Spin one up with nothing on disk** | `--template postgres`, `browser`, `nginx`, `web-stack` (Postgres + Redis), or `analytics` — so you're never blocked writing a spec first |
-
-**For AI agents**
-| | |
-|---|---|
-| **Give every agent its own workspace** | so one agent's writes can never corrupt another's — `--shell json` when a script is reading, not you |
-| **Add a service mid-task** | `sbx add task cache --image redis:7-alpine` — so an agent that finds it needs a cache doesn't stop to edit a spec |
-| **Hand each agent its own copy of a seeded database** | `sbx snapshot` once, `sbx fork` as many as you want — so a write in one is invisible to the rest |
-| **Park an agent mid-thought and bring it back** | `sbx checkpoint` / `sbx resume` — memory and processes, not just disk |
-| **Run one for a single test, gone after** | `sbx with test-db --template postgres -- go test ./...` — so it's always torn down, even on failure |
-| **Let an agent reach only the APIs you allow** | `egress_allow: ["api.openai.com"]` — the box reaches the listed hosts and nothing else, enforced by a filtering proxy; there's no route around it, and its calls out count as activity so it stays awake while it works |
-| **Keep a box awake while it works** | `idle: "never"` — an agent computing inside sends no traffic through the port, so this stops the idle timer from sleeping it mid-task |
-| **Run code written for OpenSandbox, unchanged** | `sbx serve --osb-addr 127.0.0.1:8080` speaks OpenSandbox's lifecycle and execd APIs, so its Go, Python, JS, Kotlin and C# SDKs work against your own machine — commands, streaming, sessions, files, renew, pause, network policy, snapshots, host and named volumes. Proven by running OpenSandbox's own e2e suite, not a feature table → [test/osb](test/osb/README.md) |
-| **Give an agent sandbox tools over MCP** | `claude mcp add sbx -- sbx mcp` — create, run, read and write files in a sandbox, the same 19 tools OpenSandbox's MCP server has → [AGENTS](docs/AI-AGENTS.md) |
-| **Change what a box may reach while it runs** | `sbx egress <box> --deny '*.example.com' --allow 10.0.0.0/8` — domain, wildcard and CIDR rules, applied live without a restart |
-
-The OpenSandbox API always requires a key, loopback included: `sbx serve --osb-addr` generates
-one into `~/.sbx/osb/key`, `sbx mcp` reads it from there, and the SDKs take it as
-`export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"` - see [SECURITY.md](SECURITY.md) for why.
-A warm pool (`--osb-pool IMAGE[=N]`) serves only creates with the same image, entrypoint and
-resourceLimits as its members, which are the SDKs' defaults (`tail -f /dev/null`, cpu 1, memory
-2Gi); anything else goes cold, and the daemon log names the field that differed - see
-[AI-AGENTS.md](docs/AI-AGENTS.md).
-On an M3+ Mac or Windows, `sbx serve --provider firecracker --osb-addr 127.0.0.1:8080` runs the API
-inside the helper VM (jailer, egress filter and host guard as on Linux) and fronts it here with the
-same key; `--osb-insecure-no-key` and the warm pool are refused on that path. It is unit-tested
-with fakes and **not yet run end to end on a Mac** - see
-[ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-**Scale it up**
-| | |
-|---|---|
-| **Keep twenty sandboxes polite on one laptop** | `cpu`, `memory`, `gpus` per service, so one runaway agent can't starve the rest |
-| **Build your own image** | `build:` instead of `image:`, cached by content hash — so a second create does no rebuild work |
-| **Take the same spec to a cluster** | `--provider kubernetes`, so what worked on your laptop is what runs in CI |
-| **Give each sandbox its own kernel, even on a Mac** | `--provider firecracker` — a Firecracker microVM; directly on Linux with `/dev/kvm`, through a helper VM sbx runs for you on an M3+ Mac (macOS 15+; colima is the verified driver, lima is not yet run end to end) or Windows 11 (built and unit-tested; not yet run on a Windows host), refused with the fix anywhere else. `sbx doctor` says which. Each VM boots its image shared and read-only under a writable layer of its own (no per-VM copy; `SBX_FC_DISK_SIZE` bounds it), and its VMM runs jailed as its own uid in its own network namespace ([SECURITY.md](SECURITY.md)) |
-| **Deploy anywhere and still drive it from your terminal** | `sbx pack` + `sbx connect` turn a one-port platform back into local ports |
-
-**See and drive the fleet**
-| | |
-|---|---|
-| **Watch every sandbox live** | `sbx ui` — cpu and memory against each service's own ceiling, and where it's been |
-| **Drive a deployment from your laptop's terminal** | `sbx ui --connect <url>` — wake, sleep, limit, remove, tail logs, `f` to port-forward here |
-| **Read it from a script instead of a screen** | `--json` on `list`, `doctor`, `history`, `env` → [AGENTS](docs/AI-AGENTS.md) |
-| **Know who changed what, and when** | `sbx history` records every change and every wake, secrets redacted |
-
----
-
-## The dashboard
-
-`sbx ui` — the whole fleet, what each service is using against what it's allowed, and where it's
-been. Every address is a link: cmd- or ctrl-click opens it in iTerm2, WezTerm, Kitty, GNOME
-Terminal or Windows Terminal.
-
-<img src="docs/ui.svg" width="900" alt="The sbx dashboard: a table of every sandbox and service with its state, cpu and memory against the limit it is allowed, a detail block for the selected service showing its address, connect command and a trace of cpu and memory over time, a log of recent wake and sleep events, and the key hints along the bottom.">
-
----
-
-## Speed
-
-Every number below is measured by a script in this repo, on an Apple M4 (16 GB) —
-→ [BENCHMARKS.md](docs/BENCHMARKS.md) has the conditions and how to re-run each one.
-
-**Idle costs nothing**, so twenty sandboxes on one laptop is twenty disks, not twenty running
-databases:
-
-```mermaid
-xychart-beta
-    title "Resident memory - MB, lower is better"
-    x-axis ["sleeping sandbox", "sbx daemon", "mysql tuned", "clickhouse", "mysql stock"]
-    y-axis "megabytes" 0 --> 420
-    bar [0, 9.1, 110, 199, 411]
-```
-
-**Waking is a fraction of a second**, and mostly it's the workload's own startup — a browser is
-slow because Chrome is slow to start, not because of sbx:
-
-```mermaid
-xychart-beta
-    title "Wake latency by workload - median ms, lower is better"
-    x-axis ["redis", "chrome (warm)", "postgres", "kubernetes", "chrome (cold)"]
-    y-axis "milliseconds" 0 --> 4600
-    bar [191, 766, 931, 1534, 3744]
-```
-
-**Once it's awake, you won't feel it.** A query on an already-open connection costs **+15 µs** —
-lost in the noise of a real query, which already crosses a VM boundary at 426 µs. Opening a *new*
-connection adds **+0.1 ms**, inside the normal run-to-run spread. A bulk transfer moves at **6.8
-GB/s** on loopback — an order of magnitude more than a Postgres `COPY` will ever feed it — so the
-database stays the bottleneck a query hits, never sbx.
-
----
 
 ## Install
 
 ```sh
 brew install aryanmehrotra/tap/sbx
+# or: curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh
+# or: go install github.com/aryanmehrotra/sbx@latest
 ```
 
-<details>
-<summary>or curl · go install · other platforms</summary>
+One static binary for macOS, Linux and FreeBSD (amd64, arm64); Windows via WSL2. It drives the
+Docker engine you already have. `sbx doctor` says what this machine can do.
+
+## A database in three commands
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh
-# or
-go install github.com/aryanmehrotra/sbx@latest
+sbx serve --idle 5m &                          # the daemon: once per machine, it owns the ports
+sbx create my-branch --template postgres       # a real Postgres 16 for this branch
+eval "$(sbx env my-branch)"                    # sets PGHOST, PGPORT, DATABASE_HOST, DATABASE_PORT
+PGPASSWORD=app psql -U app -d app              # connecting wakes it; the call waits, never refuses
 ```
 
-One static binary — macOS · Linux · FreeBSD, amd64 · arm64; Windows via WSL2. Then run the
-daemon once (it owns the ports `sbx env` hands out); [`deploy/`](deploy/) has a launchd plist and
-a systemd unit, both running as you, not root.
+After five idle minutes it sleeps at 0 B. The next `psql` wakes it again. There is no
+`sbx start` and no `sbx stop`. The [10-minute quickstart](docs/QUICKSTART.md) adds snapshots,
+forks and an AI agent.
 
-```sh
-sbx doctor       # what this machine can do
-sbx selftest     # create, sleep to zero, wake on a socket, data intact — ~9 s
-```
-</details>
+## Why sbx
 
-### Every command
+Most sandboxes wake when *your code* calls their SDK. sbx wakes when *any client* connects.
+The daemon holds the first TCP connection open (held, not refused) while the service starts, then
+hands over the live socket. So `psql`, a connection pool, Playwright or a test runner someone
+else wrote wakes a sleeping sandbox on its first attempt, over any TCP protocol, unmodified.
+That runs on your laptop or your cluster, with no account and nothing hosted.
+
+Who it's for:
+
+- **Branch environments.** Twenty branch databases on one laptop; you pay RAM only for the one
+  you are using.
+- **AI-agent fleets.** Every agent gets its own Postgres, forked from a seeded snapshot and
+  deleted with the task. Drive it from the CLI, over MCP, or through the OpenSandbox SDKs.
+- **CI fixtures.** `sbx with test-db --template postgres -- go test ./...` creates, runs and
+  always removes, even on failure.
+- **Self-hosting OpenSandbox.** `sbx serve --osb-addr` speaks OpenSandbox's API, so its Python,
+  TypeScript, Go, Java/Kotlin and C# SDKs run against your own machine. Upstream's own e2e suite
+  runs against sbx in CI ([test/osb](test/osb/README.md)).
+
+<img src="docs/demo.svg" width="900" alt="A terminal running sbx: a branch sandbox is created from the web-stack template, its addresses are exported as shell variables and as JSON, a cache is added mid-task, a seeded database is snapshotted and forked, the sandbox sleeps to zero, and a plain redis-cli ping wakes it and is served.">
+
+<sub>A real run, recorded by [`scripts/demo.sh`](scripts/demo.sh).</sub>
+
+## How it compares
+
+● yes · ◐ partial or conditional · ○ no · – not checked. Vendor cells checked 2026-09-27 against
+each vendor's own pages; sources and the full matrix are in [COMPARISON.md](docs/COMPARISON.md).
+
+| | **sbx** | E2B | Daytona | OpenSandbox | Modal | Fly |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Wakes on an unmodified client connection | ● any TCP | ○ SDK | ○ API | ○ API | ○ SDK | ◐ via Fly Proxy; raw TCP needs a dedicated IPv4 |
+| Self-hosted, no account | ● MIT | ◐ infra, Apache-2.0 | ◐ AGPL, frozen 2026-06 | ● Apache-2.0 | ○ | ○ |
+| Hosted, nothing to run | ○ | ● | ● | ○ | ● | ● |
+| Sleep keeps RAM + processes | ● microVM · ○ docker | ● | ◐ VM sandboxes | ● | ◐ alpha | ● suspend |
+| Isolation boundary | container · jailed microVM | Firecracker | container; VM optional | container to Firecracker | gVisor | Firecracker |
+| SDKs | OpenSandbox's 5 · CLI · MCP | Python, JS | 5 languages | 5 languages | Python, JS, Go | REST API |
+| GitHub stars (2026-09-27) | 2 | 13,983 | 71,707 | 15,530 | 519 (client) | 1,713 (flyctl) |
+
+sbx loses on hosting, native SDKs and community. It wins when the client can't call an SDK and
+the machine is yours. Docker Sandboxes does a different job: it runs the coding agent itself in
+a microVM. Neon wakes on a Postgres connection, hosted, for Postgres only.
+
+## What you can do
+
+**Every day**
 
 | | |
 |---|---|
-| `sbx create` / `rm` | make one from `sandbox.json` or `--template`, destroy it with its data |
-| `sbx env` | exports for your tooling — posix, fish, powershell, cmd, **json** |
-| `sbx ready` | wake it and block until it's serving — the CI one-liner |
-| `sbx with` | create, run a command with its env, always remove it — a fixture for a test |
-| `sbx wake` / `sleep` | park a sandbox now or bring it back on demand |
-| `sbx exec [-t]` | run anything inside it; `-t` attaches a terminal for a shell or `psql` |
-| `sbx logs [-f]` | every service on one structured stdout |
-| `sbx cp` | files in and out (`:` marks the inside path) |
-| `sbx add` | drop in a service the spec never declared |
-| `sbx url` | a public link that wakes it when opened |
-| `sbx snapshot` / `fork` | save every service's data, then make as many sandboxes from it as you want |
-| `sbx checkpoint` / `resume` | save memory and processes and bring them back (CRIU, on a Linux podman runtime) |
-| `sbx init` / `validate` | write the spec · check one without creating anything |
-| `sbx prewarm` | pull the images now, so the first create isn't a download |
-| `sbx gc` | reclaim volumes whose sandbox is gone |
-| `sbx doctor` | what this machine can do |
-| `sbx list` · `sbx ui` | what exists and what's awake · the same, live, with cpu and memory |
-| `sbx history` · `sbx templates` | what happened and who did it · the built-in specs |
-| `sbx pack` · `sbx connect` | package a sandbox for a one-port platform · turn it back into local ports |
-| `sbx serve` | **the daemon** — owns the ports, does all waking and sleeping; one per machine |
+| Start from a template | `--template postgres`, `browser`, `nginx`, `web-stack` (Postgres + Redis), `analytics` |
+| Keep one spec per repo | `sandbox.json` declares services, ports, health, seeds → [SPEC](docs/SPEC.md) |
+| Hand addresses to any tool | `sbx env` prints posix, fish, powershell, cmd or `--shell json` |
+| Block until it really serves | `sbx ready my-branch`, the CI one-liner |
+| Run one for a single command | `sbx with` creates, runs, and always removes |
 
-Every sandbox command takes `--provider docker|kubernetes|firecracker`, `--namespace`,
-`--isolation container|gvisor|kata|firecracker` (on kubernetes: the kata-fc RuntimeClass - unit-tested, not yet run on a cluster) and `--socket`; `SBX_PROVIDER_KIND`, `SBX_NAMESPACE`,
-`SBX_ISOLATION` set the defaults and `DOCKER_HOST` is honoured.
+**For AI agents**
 
----
+| | |
+|---|---|
+| Seed once, fork per agent | `sbx snapshot` then `sbx fork`; a write in one fork is invisible to the rest |
+| Add a service mid-task | `sbx add task cache --image redis:7-alpine --port 6379` |
+| Give agents sandbox tools over MCP | `claude mcp add sbx -- sbx mcp`: the 19 tools of OpenSandbox's MCP server |
+| Allow only the APIs you name | `egress_allow: ["api.openai.com"]`; change it live with `sbx egress` |
+| Keep a box awake while it works | `idle: "never"` for an agent computing inside, with no client traffic |
+| Park memory and processes | `sbx checkpoint` / `sbx resume` (CRIU; Linux with podman) |
+
+**Scale and operate**
+
+| | |
+|---|---|
+| Cap each service | `cpu`, `memory`, `gpus` per service, so one runaway agent can't starve the rest |
+| Build your own image | `build:` instead of `image:`, cached by content hash |
+| Take the same spec to a cluster | `--provider kubernetes` |
+| Give each sandbox its own kernel | `--provider firecracker`: a jailed Firecracker microVM ([status](#platform-status)) |
+| Run behind a one-port platform | `sbx pack` to deploy, `sbx connect` to get local ports back |
+| Watch and drive the fleet | `sbx ui` locally, `sbx ui --connect <url>` for a deployment |
+| Audit changes and wakes | `sbx history`, secrets redacted |
+
+`sbx ui`: every sandbox, what each service uses against its limit, and recent wakes and sleeps.
+
+<img src="docs/ui.svg" width="900" alt="The sbx dashboard: a table of every sandbox and service with its state, cpu and memory against the limit it is allowed, a detail block for the selected service showing its address, connect command and a trace of cpu and memory over time, a log of recent wake and sleep events, and the key hints along the bottom.">
+
+## Performance
+
+Each figure comes from a script in this repo. Machine, method and how to re-run it are in
+[BENCHMARKS.md](docs/BENCHMARKS.md).
+
+| What | Figure | Measured on |
+|---|---|---|
+| First connection to a sleeping sandbox served | **5/5** (Lazytainer: 0/5) | v0.1.0, loaded M4 laptop, `compare.sh` |
+| A sleeping sandbox · the daemon at rest | **0 B** · 9.1 MB RSS | v0.1.0, `ps -o rss` |
+| Wake, redis on docker | **191 ms** median, n=20 | v0.1.0; wake path changed in v0.13, not yet re-run |
+| Wake, postgres on docker | 931 ms median, n=5 | v0.1.0, host load 5.37, `compare.sh` |
+| OpenSandbox create → first command, docker warm pool | **13.7 ms** median, n=10; 472 ms at 100 at once | v0.10.0, M4, `osb-bench.sh` |
+| Same, frozen Firecracker microVM pool | **141 ms** median, n=12 | v0.13.0, CI runner with nested KVM |
+| Cost on an open connection | +14 µs per round trip; 7.0 GB/s bulk | v0.8.0, M4, `go test -bench` |
+
+A new connection to an awake sandbox adds about 0.1 ms (v0.1.0). Wake time is mostly the
+workload's own startup, which is why Postgres takes longer than Redis.
+
+## Platform status
+
+Every provider takes the same `sandbox.json`. What has actually been run where, at v0.14.0:
+
+| Provider · host | Status |
+|---|---|
+| docker · Linux | Verified in CI on every change: selftest, concurrent e2e, OpenSandbox conformance |
+| docker · macOS (colima, Docker Desktop) | Unit tests in CI daily; the laptop benchmarks run here (M4, colima) |
+| docker · Windows | Through WSL2 only |
+| docker `--isolation gvisor` | Verified in CI (the `isolation` job) |
+| kubernetes | Run on minikube for benchmarks; unit-tested; not in CI |
+| kubernetes `--isolation firecracker` (kata-fc) | Unit-tested; not yet run on a cluster with kata-fc |
+| firecracker · Linux with `/dev/kvm` | Verified in CI (`microvm` job, nested KVM), jailer on |
+| firecracker · M3+ Mac, macOS 15+, via helper VM | Run end to end with colima at a v0.11 commit; lima unit-tested only |
+| firecracker · Mac, OpenSandbox API through the helper VM | Unit-tested with fakes; not yet run on a Mac |
+| firecracker · Windows 11, via a WSL2 helper VM | Built and unit-tested; not yet run on a Windows host |
+| `sbx checkpoint` / `resume` | Linux with a podman runtime only; not in CI |
+
+`sbx doctor` reports which of these applies to the machine you're on.
+
+## Commands
+
+| | |
+|---|---|
+| `sbx serve` | the daemon: owns the ports, wakes and sleeps everything; one per machine |
+| `sbx create` · `rm` | make a sandbox from `sandbox.json` or `--template`; delete it and its data |
+| `sbx env` · `ready` · `with` | its addresses; block until serving; a create-run-remove fixture |
+| `sbx list` · `ui` · `logs` · `history` | what exists and what's awake, live, its output, what changed |
+| `sbx exec` · `cp` · `add` · `url` | run inside it, copy files, add a service, a public link that wakes it |
+| `sbx snapshot` · `fork` · `checkpoint` · `resume` | save and copy state |
+| `sbx egress` · `mcp` · `fc` | live network policy; an MCP server; the microVM helper |
+| `sbx doctor` · `selftest` · `version` | what works here; prove the full cycle (~9 s); the version |
+
+`sbx help` lists them all, `sbx <command> --help` explains one, and [CLI.md](docs/CLI.md) is
+the full reference: every command, `serve` flag and `SBX_*` variable, including the gated
+previews that `sbx features` lists.
 
 ## Docs
 
+Start at the [docs index](docs/README.md). The pages most people need:
+
 | | |
 |---|---|
-| [AI-AGENTS.md](docs/AI-AGENTS.md) | pointing an agent at sbx — a block to paste, and the non-obvious bits |
-| [USE-CASES.md](docs/USE-CASES.md) | eleven shapes this fits, with the commands |
-| [SPEC.md](docs/SPEC.md) | every field of `sandbox.json`, and a docker-compose mapping |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | the pieces, both data paths, addressing |
-| [BENCHMARKS.md](docs/BENCHMARKS.md) | every number, and the script that produced it |
-| [COMPARISON.md](docs/COMPARISON.md) | how sbx relates to E2B, Modal, Fly, Neon, zeropod and more |
-| [ROADMAP.md](docs/ROADMAP.md) | what is next, what it costs, and what is ruled out |
+| [QUICKSTART.md](docs/QUICKSTART.md) | ten minutes from install to a woken Postgres, a fork, and an AI agent |
+| [AI-AGENTS.md](docs/AI-AGENTS.md) | a block to paste into your agent's instructions, MCP setup, recipes |
+| [USE-CASES.md](docs/USE-CASES.md) | the shapes this fits, with the commands |
+| [SPEC.md](docs/SPEC.md) | every `sandbox.json` field, and a docker-compose mapping |
+| [CLI.md](docs/CLI.md) | every command, flag and environment variable |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | what to do about what you're seeing |
-| [console/](console/) | metrics, health and a read-only API for a running daemon |
-| [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) | how the tests are arranged · the threat model |
 
-MIT. Issues and patches welcome.
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the tests
+are arranged; [AGENTS.md](AGENTS.md) holds the rules for humans and coding agents editing this
+repo. Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+
+MIT licensed. See [LICENSE](LICENSE).
