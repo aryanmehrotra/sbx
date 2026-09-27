@@ -28,7 +28,7 @@ three, and holds itself to a bar it can measure.
 
 | Dimension | Today | The bar |
 |---|---|---|
-| **Wake on connect** | 191 ms Redis on docker; 5/5 first connections served vs Lazytainer's 0/5 | every provider serves the first connection in CI, and a bare-metal microVM wake is published |
+| **Wake on connect** | 216 ms Redis on docker (v0.14.0); 20/20 first connections served vs Lazytainer's 0/5 | every provider serves the first connection in CI, and a bare-metal microVM wake is published |
 | **Idle cost on your hardware** | 0 B RAM asleep; the microVM's disk cost is unpublished | 0 B RAM on every provider, and `sbx doctor` reports each sleeper's disk cost |
 | **Multi-service stacks, laptop to cluster** | one `sandbox.json` on docker, kubernetes and microVM; the microVM refuses `files`, `init`, host mounts | no everyday spec field refused on any provider without a documented reason |
 

@@ -127,16 +127,19 @@ Each figure comes from a script in this repo. Machine, method and how to re-run 
 
 | What | Figure | Measured on |
 |---|---|---|
-| First connection to a sleeping sandbox served | **5/5** (Lazytainer: 0/5) | v0.1.0, loaded M4 laptop, `compare.sh` |
-| A sleeping sandbox · the daemon at rest | **0 B** · 9.1 MB RSS | v0.1.0, `ps -o rss` |
-| Wake, redis on docker | **191 ms** median, n=20 | v0.1.0; wake path changed in v0.13, not yet re-run |
-| Wake, postgres on docker | 931 ms median, n=5 | v0.1.0, host load 5.37, `compare.sh` |
-| OpenSandbox create → first command, docker warm pool | **13.7 ms** median, n=10; 472 ms at 100 at once | v0.10.0, M4, `osb-bench.sh` |
+| First connection to a sleeping sandbox served | **20/20** on postgres (Lazytainer: 0/5) | v0.14.0, Linux cloud VM, `compare.sh` |
+| A sleeping sandbox · the daemon at rest | **0 B** · 12.8 MB RSS | v0.14.0, Linux cloud VM, `ps -o rss` |
+| Wake, redis on docker | **216 ms** median, n=20 | v0.14.0, Linux cloud VM, `bench.sh` |
+| Wake, postgres on docker | 348 ms median, n=20 | v0.14.0, Linux cloud VM, `compare.sh` |
+| OpenSandbox create → first command, docker warm pool | **12.8 ms** median, n=10; 309-460 ms at 100 at once | v0.14.0, Linux cloud VM, `osb-bench.sh` |
 | Same, frozen Firecracker microVM pool | **141 ms** median, n=12 | v0.13.0, CI runner with nested KVM |
-| Cost on an open connection | +14 µs per round trip; 7.0 GB/s bulk | v0.8.0, M4, `go test -bench` |
+| Cost on an open connection | +9.6 µs per round trip; 1.4 GB/s bulk (55% of direct) | v0.14.0, Linux cloud VM, `go test -bench` |
 
-A new connection to an awake sandbox adds about 0.1 ms (v0.1.0). Wake time is mostly the
+A new connection to an awake sandbox adds about 0.17 ms (v0.14.0). Wake time is mostly the
 workload's own startup, which is why Postgres takes longer than Redis.
+
+The cloud VM is a 4 vCPU Xeon at 2.1 GHz, measured 2026-09-27. Older figures from an Apple M4
+are kept beside these in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Platform status
 

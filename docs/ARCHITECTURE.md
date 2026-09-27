@@ -133,7 +133,7 @@ The problem: something has to answer while nothing is running.
    your client                              sbx serve
    (psql, redis-cli, a pool,             ┌──────────────┐
     Playwright, curl)                    │  always up   │
-        │                                │   ~9.1 MB    │
+        │                                │   ~13 MB     │
         │  :20002  ── PUBLIC ────────────▶              │
         │            (owned by sbx)      └──────┬───────┘
         │                                       │

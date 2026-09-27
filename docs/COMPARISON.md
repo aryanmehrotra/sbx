@@ -47,7 +47,7 @@ above plus microsandbox (10 in all). 1 is best. Sources are the links on this pa
 |---|:---:|---|
 | Idle cost | **1** | 0 B RAM asleep on your own hardware, measured. Hosted rivals still bill storage |
 | Multi-service stacks | **1** | one `sandbox.json` with Postgres, Redis and a browser; rivals model one box you exec into |
-| Wake latency (asleep → serving) | **1–2** (low confidence) | 191 ms Redis (docker), 216 ms microVM on a Mac; Fly suspend is close. Not like-for-like |
+| Wake latency (asleep → serving) | **1–2** (low confidence) | 216 ms Redis (docker, v0.14.0, Linux cloud VM), 216 ms microVM on a Mac; Fly suspend is close. Not like-for-like |
 | Self-hosting | **2** | one binary, laptop to cluster; OpenSandbox has more runtimes and a far larger community |
 | Docs (depth, honesty) | 4 | measured numbers with scripts; no docs site, search or cookbook |
 | SDK breadth | 4 | OpenSandbox's 5 SDKs work unchanged, but its isolated sessions and vault are not built |
@@ -112,7 +112,7 @@ runs on your laptop, with no account, for any protocol. Sources: [Vercel persist
 
 | | at rest | wake | what survives |
 |---|---|---|---|
-| **sbx, docker** | **0 B RAM**, plus its volume | **191 ms** Redis · 931 ms Postgres · 1534 ms k8s | disk; processes cold-start |
+| **sbx, docker** | **0 B RAM**, plus its volume | **216 ms** Redis · 348 ms Postgres · 1534 ms k8s | disk; processes cold-start |
 | **sbx, microVM** | 0 B RAM; a memory image on disk | 216 ms to first byte, M4 through the helper VM | **RAM + running processes** |
 | E2B | storage | ~1 s resume [src][e2b-p] | disk, RAM, processes |
 | Fly, suspended · stopped | storage | a few hundred ms · ~2 s+ [src][fly-sr] | RAM · disk |
@@ -121,7 +121,8 @@ runs on your laptop, with no account, for any protocol. Sources: [Vercel persist
 | Neon | storage | a few hundred ms [src][neon-lat] | Postgres data |
 
 sbx figures come from `scripts/bench.sh` and the helper-VM run in [BENCHMARKS.md](BENCHMARKS.md),
-where each carries its machine and date. The 191, 931 and 1534 ms figures predate v0.10.
+where each carries its machine and date. Redis and Postgres are v0.14.0 on a Linux cloud VM.
+The 1534 ms k8s figure is v0.1.0 and has not been re-run.
 
 A microVM sleep is a snapshot, so a woken Postgres resumes rather than replaying its WAL. The cost
 is disk: the memory image is roughly the VM's RAM. On docker, `sbx checkpoint` and `sbx resume`
@@ -144,8 +145,8 @@ the same shape, which is not a leaderboard entry:
 
 | sbx, same shape | median | where |
 |---|---:|---|
-| docker, warm pool, 1 at a time | 13.7 ms | Apple M4, colima |
-| docker, warm pool, 100 at once | 472.1 ms | Apple M4, colima |
+| docker, warm pool, 1 at a time | 12.8 ms | Linux cloud VM, 4 vCPU (v0.14.0); 13.7 ms on Apple M4, colima |
+| docker, warm pool, 100 at once | 309-460 ms | Linux cloud VM, 4 vCPU (v0.14.0); 472.1 ms on Apple M4, colima |
 | microVM, frozen pool, 4 at once | 141 ms | GitHub runner, nested KVM (v0.13) |
 | microVM, cold, 4 at once | 2,821 ms | GitHub runner, nested KVM (v0.13) |
 

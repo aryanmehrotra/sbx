@@ -64,8 +64,16 @@ preflight() {
   # free on Docker Desktop and colima and does NOT exist on native Linux docker, so
   # relying on it would have failed in exactly the Linux CI where the zeropod probe has
   # to run. Docker 20.10+ honours host-gateway on every platform.
-  docker run -d --name "$PGCLIENT" \
-    --add-host=host.docker.internal:host-gateway \
+  # On native Linux, host-gateway is the bridge address (172.17.0.1), and the sbx daemon
+  # listens on 127.0.0.1 only, so every psql through it was refused. There the client
+  # shares the host's network and dials loopback, which reaches both the daemon and any
+  # port docker published.
+  local net_args=(--add-host=host.docker.internal:host-gateway)
+  PGHOST_ADDR=host.docker.internal
+  if [ "$(uname -s)" = Linux ] && ! docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+    net_args=(--network host); PGHOST_ADDR=127.0.0.1
+  fi
+  docker run -d --name "$PGCLIENT" "${net_args[@]}" \
     --entrypoint sleep postgres:16-alpine 86400 >/dev/null 2>&1 \
     || { say "compare: could not start the postgres client container" >&2; exit 2; }
 }
@@ -80,7 +88,7 @@ client_nginx() { # port
 
 client_postgres() { # port
   docker exec -e PGPASSWORD=app "$PGCLIENT" \
-    psql -h host.docker.internal -p "$1" -U app -d app -tAc 'select 1' 2>/dev/null \
+    psql -h "${PGHOST_ADDR:-host.docker.internal}" -p "$1" -U app -d app -tAc 'select 1' 2>/dev/null \
     | grep -q '^1$'
 }
 
