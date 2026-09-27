@@ -1,7 +1,8 @@
 # Guides
 
 One section per task. New to sbx? Start with [QUICKSTART.md](QUICKSTART.md). Every guide assumes
-one `sbx serve --idle 5m &` per machine; [`deploy/`](../deploy/) has units to keep it running.
+one `sbx serve --idle 5m &` per machine; [`deploy/`](../deploy/) has units to keep it running, and
+[SELF-HOSTING.md](SELF-HOSTING.md) runs it on a server for a team.
 
 ## A database per branch
 

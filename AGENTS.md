@@ -78,6 +78,7 @@ fields in SPEC.md, platform caveats and terms in ARCHITECTURE. Grep for the home
 | `README.md` | landing | two paragraphs, four proof bullets, install, one usage block, AI agents, [docs links](README.md#documentation). No tables, glossary or comparison. |
 | `docs/QUICKSTART.md` | tutorial | a first success in ten minutes |
 | `docs/GUIDES.md`, `examples/*/README.md` | how-to | every task, one section each, [AI agents](docs/GUIDES.md#ai-agents); one template each |
+| `docs/SELF-HOSTING.md` | how-to | running sbx on your own servers |
 | `docs/CLI.md`, `docs/SPEC.md`, `docs/TROUBLESHOOTING.md` | reference | commands, flags, env vars; `sandbox.json`; symptom, cause, fix |
 | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` | explanation | how it works, [platform status](docs/ARCHITECTURE.md#platform-status), [terms](docs/ARCHITECTURE.md#terms); why (dated; headings and old entries never changed) |
 | `docs/BENCHMARKS.md`, `docs/COMPARISON.md`, `SECURITY.md` | explanation | every measured number; other tools, with dated vendor links; threat model and reporting |
