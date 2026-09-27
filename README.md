@@ -3,12 +3,14 @@
 <img src="docs/hero.svg" width="900" alt="sbx: a real database for every branch and AI agent. It sleeps at 0 B of RAM and wakes in 216 ms for Redis or 348 ms for Postgres. psql connects, sbx holds the connection while Postgres wakes, then the same socket is served.">
 
 [![CI](https://github.com/aryanmehrotra/sbx/actions/workflows/ci.yaml/badge.svg)](https://github.com/aryanmehrotra/sbx/actions/workflows/ci.yaml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/aryanmehrotra/sbx.svg)](https://pkg.go.dev/github.com/aryanmehrotra/sbx)
+[![Go Report Card](https://goreportcard.com/badge/github.com/aryanmehrotra/sbx)](https://goreportcard.com/report/github.com/aryanmehrotra/sbx)
 [![release](https://img.shields.io/github/v/release/aryanmehrotra/sbx?color=3fb950)](https://github.com/aryanmehrotra/sbx/releases)
 [![dependencies](https://img.shields.io/badge/dependencies-0-3fb950)](go.mod)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-sbx gives every branch, pull request or AI agent its own real Postgres, Redis or browser, on
-your own machine. Each one sleeps at 0 B of RAM when nobody is using it, and wakes the moment
+sbx is a single Go binary that gives every branch, pull request or AI agent its own real
+Postgres, Redis or browser, on your own machine. Each one sleeps at 0 B of RAM when nobody is using it, and wakes the moment
 anything connects to it.
 
 You don't call an SDK to wake it. Point `psql`, a connection pool, Playwright or your test runner
@@ -21,7 +23,7 @@ hands it over. The client waits a moment and gets an answer, never a refused por
 </picture>
 
 - Works with any TCP client: `psql`, connection pools, Playwright, test runners
-- One static Go binary with zero dependencies
+- Written in Go with only the standard library: one static binary, zero dependencies, `go install` and done
 - The same `sandbox.json` runs on Docker, Kubernetes or Firecracker microVMs
 
 Not to be confused with Docker's own `sbx` CLI (`docker/tap/sbx`).
