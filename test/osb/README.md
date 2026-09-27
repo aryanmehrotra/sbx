@@ -67,7 +67,7 @@ Every `Getenv` in `tests/go` and the SDK at the pinned commit, and what the scri
 | `OPENSANDBOX_TEST_DOMAIN` | `base_e2e_test.go` connection config (default `localhost:8080`) | `127.0.0.1:<port>` |
 | `OPENSANDBOX_TEST_PROTOCOL` | same (default `http`) | `http` |
 | `OPENSANDBOX_TEST_API_KEY` | same (default `e2e-test`) | the random `--osb-key`; unset with `--no-key` |
-| `OPENSANDBOX_TEST_USE_SERVER_PROXY` | same; `true` routes execd through the server, header `X-API-Key` | `false` unless already set (v0.11.0 adds server proxy) |
+| `OPENSANDBOX_TEST_USE_SERVER_PROXY` | same; `true` routes execd through the server, header `X-API-Key` | `false` unless already set (server proxy is not built; `true` is refused with 501) |
 | `OPENSANDBOX_SANDBOX_DEFAULT_IMAGE` | image for every test (default `python:3.11-slim`; `e2e_test.go`: `opensandbox/code-interpreter:latest`) | passed through |
 | `OPENSANDBOX_E2E_SANDBOX_CPU` / `_MEMORY` | resource limits in pool and credential-vault tests (default `1` / `2Gi`) | passed through |
 | `OPENSANDBOX_URL` | `e2e_test.go` (default `http://localhost:8080`) | the server URL |

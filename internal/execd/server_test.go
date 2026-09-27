@@ -43,20 +43,25 @@ func TestAccessToken(t *testing.T) {
 	}
 }
 
-func TestLaterReleasesAnswer501NotFound(t *testing.T) {
+func TestUnbuiltEndpointsAnswer501WithoutPromisingARelease(t *testing.T) {
 	s := newTestServer(t, Options{})
 
-	cases := []struct{ method, path, release string }{
-		{"POST", "/v1/isolated/session", "v0.11.0"},
-		{"GET", "/v1/isolated/capabilities", "v0.11.0"},
+	cases := []struct{ method, path, feature string }{
+		{"POST", "/v1/isolated/session", "isolated sessions"},
+		{"GET", "/v1/isolated/capabilities", "isolated sessions"},
 	}
 
 	for _, c := range cases {
 		status, _, body := s.do(c.method, c.path, nil)
 		wantError(t, status, body, http.StatusNotImplemented, codeNotSupported)
 
-		if !strings.Contains(string(body), c.release) {
-			t.Errorf("%s %s: message does not name the release that adds it (%s): %s", c.method, c.path, c.release, body)
+		if !strings.Contains(string(body), c.feature) {
+			t.Errorf("%s %s: message does not name the missing feature (%s): %s", c.method, c.path, c.feature, body)
+		}
+		// v0.11.0 shipped without isolated sessions while this message said it would add them.
+		// A release is named here only once it has shipped the endpoint, never in advance.
+		if strings.Contains(string(body), "sbx v0.") {
+			t.Errorf("%s %s: message promises a release: %s", c.method, c.path, body)
 		}
 	}
 }
