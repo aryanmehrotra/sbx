@@ -136,6 +136,17 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"running, which isolation runtimes exist. Run it first when something is wrong.",
 		"sbx doctor",
 	},
+	"install": {
+		"sbx install [NAME...] [--yes] [--dry-run]",
+		"Install what `sbx doctor` reports missing. With no names, everything missing that can be\n" +
+			"installed here. Tools come from this machine's package manager (apt-get, dnf, pacman,\n" +
+			"apk or brew): docker, kubectl, cloudflared, redis-cli, mkfs.ext4, iptables. The runtimes\n" +
+			"are registered with this machine's dockerd in /etc/docker/daemon.json: gvisor (a pinned,\n" +
+			"sha512-checked release), kata (the distribution's package, needs /dev/kvm) and\n" +
+			"checkpoint (CRIU, and experimental on - this one restarts dockerd). It prints every\n" +
+			"command first and asks before running any; --dry-run stops there, --yes skips the question.",
+		"sbx install gvisor --dry-run",
+	},
 	"prewarm": {
 		"sbx prewarm [--provider firecracker] [--spec sandbox.json | IMAGE...]",
 		"Pull the images now, so the first create is not a download. On firecracker it also\n" +

@@ -177,6 +177,7 @@ a systemd unit, both running as you, not root.
 
 ```sh
 sbx doctor       # what this machine can do
+sbx install      # install what doctor reports missing - shows every command, asks first
 sbx selftest     # create, sleep to zero, wake on a socket, data intact — ~9 s
 ```
 </details>
@@ -201,6 +202,7 @@ sbx selftest     # create, sleep to zero, wake on a socket, data intact — ~9 s
 | `sbx prewarm` | pull the images now, so the first create isn't a download |
 | `sbx gc` | reclaim volumes whose sandbox is gone |
 | `sbx doctor` | what this machine can do |
+| `sbx install` | install what doctor reports missing: tools from your package manager, and gVisor, Kata or checkpoint registered with this machine's dockerd - every command shown, then asked |
 | `sbx list` · `sbx ui` | what exists and what's awake · the same, live, with cpu and memory |
 | `sbx history` · `sbx templates` | what happened and who did it · the built-in specs |
 | `sbx pack` · `sbx connect` | package a sandbox for a one-port platform · turn it back into local ports |
