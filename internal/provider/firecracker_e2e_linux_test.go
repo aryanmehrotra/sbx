@@ -183,7 +183,7 @@ func assertJailed(t *testing.T, p *fcProvider, vm *fcVM) {
 		t.Fatal("the VMM sees the host's /etc: it is not chrooted")
 	}
 
-	// Layered (v0.13): its root is the image's shared base, linked in and held root's and
+	// Layered (v0.14): its root is the image's shared base, linked in and held root's and
 	// read-only, and a writable layer that is its own uid's; neither is a copy.
 	for _, f := range vm.rootfsFiles() {
 		a, _ := os.Stat(dir + "/" + f.name)

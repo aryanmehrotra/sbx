@@ -122,7 +122,7 @@ type fcVM struct {
 
 	// Layout is how the VM's root filesystem is held: "layered" - its image's shared, read-only base
 	// linked in (base.ext4) with its own writable layer (upper.ext4) laid over it by fc-init - or ""
-	// for a whole copy of its image of its own (rootfs.ext4), every VM made before v0.13.
+	// for a whole copy of its image of its own (rootfs.ext4), every VM made before v0.14.
 	Layout string `json:"layout,omitempty"`
 
 	Created time.Time `json:"created"`
@@ -734,7 +734,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	// snapshot restores only as itself (createFromSnapshot); a disk snapshot of an API sandbox is
 	// a root filesystem to cold-boot a new VM from, with the image config it was saved with.
 	var (
-		rootfsSrc string // a whole root filesystem the VM gets a copy of: the layout before v0.13
+		rootfsSrc string // a whole root filesystem the VM gets a copy of: the layout before v0.14
 		baseSrc   string // the shared, read-only base a layered VM links (fc.LinkShared)
 		upperSrc  string // a saved writable layer it starts from (a layered disk snapshot); "" is empty
 		cfg       fc.ImageConfig
@@ -761,7 +761,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		}
 
 		// A layered snapshot is its base (a link to the image's) and its writable layer; one
-		// saved before v0.13 is a whole root filesystem, and a VM made from it copies it as then.
+		// saved before v0.14 is a whole root filesystem, and a VM made from it copies it as then.
 		if snap.VM.Layout == layoutLayered {
 			baseSrc, upperSrc = filepath.Join(src, fc.BaseName), filepath.Join(src, fc.UpperName)
 		} else {

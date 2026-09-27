@@ -152,7 +152,7 @@ func stat(t *testing.T, path string) os.FileInfo {
 }
 
 // SBX_FC_ROOTFS=copy is v0.12's layout, for a guest kernel without overlayfs: a whole copy of the
-// image, read-write, and no writable layer. A VM recorded that way (every VM made before v0.13)
+// image, read-write, and no writable layer. A VM recorded that way (every VM made before v0.14)
 // keeps booting that way whatever the variable says now - its snapshot names its drives.
 func TestTheCopyLayoutIsKeptForTheVMsThatHaveIt(t *testing.T) {
 	r := newRig(t)
