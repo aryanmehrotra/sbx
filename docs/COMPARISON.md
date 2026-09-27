@@ -124,6 +124,31 @@ vendor's pricing page on 2026-08-30, not quoted.
 
 sbx is free because it runs on your hardware. For a team that owns none, that is not a saving.
 
+## Why not use Firecracker directly?
+
+Firecracker boots a VM from a kernel and a disk image. Everything that turns that into a sandbox
+you can hand to an agent is left to you, and in sbx it is about 24,000 lines of Go:
+
+- Images: Firecracker boots an ext4 disk, not a Docker image. sbx pulls the image, flattens its
+  layers into a cached disk, and gives each VM a read-only copy with an empty layer of its own.
+- A pinned guest kernel for each CPU architecture.
+- A way in: Firecracker has no exec or file copy. sbx runs an agent inside each VM for commands,
+  files and logs.
+- Networking: a tap device and bridge per VM, an outbound allow-list, and host rules that fail
+  closed.
+- Confinement: Firecracker's jailer with its own user and network namespace per VM, a file-size
+  limit and no privileges ([SECURITY.md](../SECURITY.md)).
+- Sleep and wake: snapshot a VM's memory to disk, stop it, restore it on demand, and hold the
+  client's connection open while that happens.
+- Warm pools of VMs parked asleep or paused, so a create is answered at once.
+- An interface agents already use: the OpenSandbox API and SDKs, and MCP tools.
+- Macs and Windows, where Firecracker cannot run, through a helper Linux VM
+  ([status](ARCHITECTURE.md#platform-status)).
+
+Use Firecracker directly, or Kata Containers or firecracker-containerd, if you are building your own
+sandbox platform, need control of VM configuration or snapshots, or serve many untrusted tenants
+on shared hosts: the sbx daemon runs as root on one host and is not a multi-tenant control plane.
+
 ## Choose something else if
 
 - You need the fastest hosted create: isorun (43.6 ms median) and createos (124.9 ms) lead ComputeSDK's 100-at-once run of 2026-09-25 ([results][csdk-r]); see [BENCHMARKS](BENCHMARKS.md#hosted-sandboxes-published-figures).
