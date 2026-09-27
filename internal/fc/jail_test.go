@@ -326,3 +326,25 @@ func must(t *testing.T, err error) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// A file-size limit is the jailer's --resource-limit fsize= (v1.17.0: src/jailer/src/main.rs,
+// "resource-limit"; env.rs parse_resource_limits), before the "--" that ends the jailer's own
+// arguments: no file the VMM writes - in its jail or a drive - can grow past it.
+func TestJailerArgvCarriesTheFileSizeLimit(t *testing.T) {
+	s := LaunchSpec{Binary: "/cache/firecracker", Dir: "/state/vms/0123456789abcdef", Jail: &JailSpec{
+		Jailer: "/cache/jailer", UID: 900517, GID: 900517, FileSizeLimit: 11 << 30,
+	}}
+
+	got := JailerArgs(s)
+	end := slices.Index(got, "--")
+	at := slices.Index(got, "--resource-limit")
+
+	if at < 0 || end < 0 || at > end || got[at+1] != "fsize=11811160064" {
+		t.Fatalf("argv %q: want --resource-limit fsize=11811160064 among the jailer's own arguments", got)
+	}
+
+	s.Jail.FileSizeLimit = 0
+	if slices.Contains(JailerArgs(s), "--resource-limit") {
+		t.Fatalf("no limit still passed one: %q", JailerArgs(s))
+	}
+}

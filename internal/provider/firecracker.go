@@ -100,26 +100,32 @@ func forFirecracker(socket string) (Provider, error) {
 
 // fcVM is one VM's record, the file every sbx process agrees on.
 type fcVM struct {
-	Sandbox   string    `json:"sandbox"`
-	Service   string    `json:"service"`
-	Ref       string    `json:"ref"`
-	Instance  string    `json:"instance"` // random per create: a re-created service is a new one
-	Slot      int       `json:"slot"`
-	Index     int       `json:"index"`
-	Image     string    `json:"image"`
-	ImageID   string    `json:"image_id"`
-	VCPU      int       `json:"vcpu"`
-	MemMiB    int       `json:"mem_mib"`
-	Ports     []int     `json:"ports"`  // inside the guest
-	Public    []int     `json:"public"` // where clients connect
-	DependsOn []string  `json:"depends_on,omitempty"`
-	Health    string    `json:"health,omitempty"` // the spec's health command, run by execd
-	Idle      string    `json:"idle,omitempty"`
-	OnIdle    string    `json:"on_idle,omitempty"`
-	Kernel    string    `json:"kernel"`
-	Binary    string    `json:"firecracker"`
-	Clone     string    `json:"clone"` // how the rootfs was cloned: reflink or copy
-	Created   time.Time `json:"created"`
+	Sandbox   string   `json:"sandbox"`
+	Service   string   `json:"service"`
+	Ref       string   `json:"ref"`
+	Instance  string   `json:"instance"` // random per create: a re-created service is a new one
+	Slot      int      `json:"slot"`
+	Index     int      `json:"index"`
+	Image     string   `json:"image"`
+	ImageID   string   `json:"image_id"`
+	VCPU      int      `json:"vcpu"`
+	MemMiB    int      `json:"mem_mib"`
+	Ports     []int    `json:"ports"`  // inside the guest
+	Public    []int    `json:"public"` // where clients connect
+	DependsOn []string `json:"depends_on,omitempty"`
+	Health    string   `json:"health,omitempty"` // the spec's health command, run by execd
+	Idle      string   `json:"idle,omitempty"`
+	OnIdle    string   `json:"on_idle,omitempty"`
+	Kernel    string   `json:"kernel"`
+	Binary    string   `json:"firecracker"`
+	Clone     string   `json:"clone"` // how the rootfs came to be here: link (layered), reflink, extents or copy
+
+	// Layout is how the VM's root filesystem is held: "layered" - its image's shared, read-only base
+	// linked in (base.ext4) with its own writable layer (upper.ext4) laid over it by fc-init - or ""
+	// for a whole copy of its image of its own (rootfs.ext4), every VM made before v0.13.
+	Layout string `json:"layout,omitempty"`
+
+	Created time.Time `json:"created"`
 
 	// Identity the guest agent holds. On disk because every process that wakes this VM must
 	// hand the same token back to it; 0600 like the rest of the directory. ControlSecret is the
@@ -157,6 +163,10 @@ type fcVM struct {
 	// resets Firecracker's dirty bitmap and would make the next Diff miss pages.
 	Restored bool `json:"restored"`
 
+	// SealStrikes counts the sleeps in a row whose seal execd did not confirm, each of which left the
+	// VM running and re-keyed; at maxSealStrikes the next is a stop. Zeroed by every snapshot.
+	SealStrikes int `json:"seal_strikes,omitempty"`
+
 	// EgressPolicy is the egress policy the spec declared, as JSON, when the service reaches the
 	// network through the filter the daemon serves on this sandbox's bridge gateway; "" when it
 	// has no way out at all. What the filter STARTS with and what a reset returns to: a policy
@@ -187,6 +197,9 @@ type fcVM struct {
 }
 
 type fcProvider struct {
+	// sealBudgets replaces defaultSealBudgets (tests).
+	sealBudgets []time.Duration
+
 	root   string // <state>/fc
 	arch   string
 	arts   *fc.ArtifactCache
@@ -721,7 +734,9 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 	// snapshot restores only as itself (createFromSnapshot); a disk snapshot of an API sandbox is
 	// a root filesystem to cold-boot a new VM from, with the image config it was saved with.
 	var (
-		rootfsSrc string
+		rootfsSrc string // a whole root filesystem the VM gets a copy of: the layout before v0.13
+		baseSrc   string // the shared, read-only base a layered VM links (fc.LinkShared)
+		upperSrc  string // a saved writable layer it starts from (a layered disk snapshot); "" is empty
 		cfg       fc.ImageConfig
 	)
 
@@ -745,7 +760,15 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 			return fmt.Errorf("the firecracker snapshot %s is gone", svc.Image)
 		}
 
-		rootfsSrc, cfg = filepath.Join(src, fc.RootfsName), *snap.VM.Config
+		// A layered snapshot is its base (a link to the image's) and its writable layer; one
+		// saved before v0.13 is a whole root filesystem, and a VM made from it copies it as then.
+		if snap.VM.Layout == layoutLayered {
+			baseSrc, upperSrc = filepath.Join(src, fc.BaseName), filepath.Join(src, fc.UpperName)
+		} else {
+			rootfsSrc = filepath.Join(src, fc.RootfsName)
+		}
+
+		cfg = *snap.VM.Config
 	}
 
 	arts, err := p.arts.Resolve(ctx, p.arch)
@@ -757,13 +780,24 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		return errors.New("the firecracker provider boots an image; the service names none")
 	}
 
-	if rootfsSrc == "" {
+	if rootfsSrc == "" && baseSrc == "" {
+		layered, err := layeredRootfs()
+		if err != nil {
+			return err
+		}
+
 		rfs, err := p.rootfs.Build(ctx, svc.Image)
 		if err != nil {
 			return err
 		}
 
-		rootfsSrc, cfg = rfs.Path, rfs.Config
+		cfg = rfs.Config
+
+		if layered {
+			baseSrc = rfs.Path
+		} else {
+			rootfsSrc = rfs.Path
+		}
 	}
 
 	if !rootUser(cfg.User) {
@@ -780,9 +814,9 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	cloneAt := time.Now()
 
-	clone, err := fc.CloneFile(rootfsSrc, filepath.Join(dir, fc.RootfsName))
+	layout, clone, rootfsNote, err := p.makeRootfs(ctx, dir, rootfsSrc, baseSrc, upperSrc)
 	if err != nil {
-		return fmt.Errorf("cloning the root filesystem: %w", err)
+		return err
 	}
 
 	cloned := time.Since(cloneAt)
@@ -797,7 +831,7 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 		Slot: slot, Index: index, Image: svc.Image, ImageID: cfg.ID,
 		VCPU: vcpu, MemMiB: mem, Ports: svc.Ports, DependsOn: svc.DependsOn, Health: svc.Health,
 		Idle: svc.Idle, OnIdle: svc.OnIdle, Kernel: arts.Kernel, Binary: arts.Firecracker,
-		Clone: clone, Created: time.Now().UTC(),
+		Clone: clone, Layout: layout, Created: time.Now().UTC(),
 		// The API's token when it minted one (RunsAgent): execd must answer the token the API
 		// hands its callers, and a second one minted here would be a sandbox that refuses them.
 		AccessToken: agentToken(svc), ControlSecret: randomHex(32),
@@ -870,7 +904,11 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 			WorkingDir: cfg.WorkingDir,
 			Hostname:   service,
 			RootDevice: fc.GuestRootfsDevice,
-			Mounts:     initMounts(vm.Volumes),
+			Mounts:     initMounts(vm.Volumes, vm.layered()),
+		}
+
+		if vm.layered() {
+			init.UpperDevice = fc.GuestUpperDevice
 		}
 
 		if err := fc.BuildAgentDrive(ctx, p.ext4, fc.AgentDrive{Agent: agent, Config: init},
@@ -917,9 +955,9 @@ func (p *fcProvider) Create(ctx context.Context, sandbox string, slot, ordinal i
 
 	// Where a create's time went, one line per VM: a slow create (a big image cloned by copy on a
 	// filesystem without reflinks, boots queued behind a burst) says which part was slow.
-	logs.Default.Info(sandbox, service, "microVM %s serving %s after create began: rootfs %s in %s (%s of data), "+
+	logs.Default.Info(sandbox, service, "microVM %s serving %s after create began: rootfs in %s (%s), "+
 		"waited %s for a boot slot, booted and served in %s", ref, time.Since(began).Round(time.Millisecond),
-		clone, cloned.Round(time.Millisecond), cloneSize(rootfsSrc), bootAt.Sub(slotAt).Round(time.Millisecond),
+		cloned.Round(time.Millisecond), rootfsNote, bootAt.Sub(slotAt).Round(time.Millisecond),
 		time.Since(bootAt).Round(time.Millisecond))
 
 	// An API sandbox is born running: the API's contract is a process that runs, it reports
@@ -984,12 +1022,26 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 		func() error {
 			return c.PutDrive(ctx, fc.Drive{DriveID: "agent", PathOnHost: v.Path(filepath.Join(dir, "agent.ext4")), IsRootDevice: true, IsReadOnly: true})
 		},
-		func() error {
-			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.RootfsName))})
-		},
 	}
 
-	// Volumes after the rootfs, in order: the guest sees them as vdc, vdd, ... (fc.GuestExtraDevice).
+	// The root drive: a copy of its own, read-write; or the image's shared base, read-only, and the
+	// VM's writable layer after it (vdc), which fc-init lays over it.
+	if vm.layered() {
+		steps = append(steps,
+			func() error {
+				return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.BaseName)), IsReadOnly: true})
+			},
+			func() error {
+				return c.PutDrive(ctx, fc.Drive{DriveID: "upper", PathOnHost: v.Path(filepath.Join(dir, fc.UpperName))})
+			})
+	} else {
+		steps = append(steps, func() error {
+			return c.PutDrive(ctx, fc.Drive{DriveID: "rootfs", PathOnHost: v.Path(filepath.Join(dir, fc.RootfsName))})
+		})
+	}
+
+	// Volumes after the root drives, in order: the guest sees them as vdc (vdd layered), ...
+	// (fc.GuestExtraDevice).
 	for i, vol := range vm.Volumes {
 		drive := fc.Drive{DriveID: volumeDriveID(i), PathOnHost: v.At(p.volumePath(vol.Name), volumeStage(i)), IsReadOnly: vol.ReadOnly}
 		steps = append(steps, func() error { return c.PutDrive(ctx, drive) })
@@ -1021,19 +1073,50 @@ func (p *fcProvider) coldBoot(ctx context.Context, vm *fcVM) error {
 	return nil
 }
 
-// sealTimeout bounds execd's answer to Seal. A guest that stalls it is vetoing its own sleep.
+// sealTimeout bounds execd's answer to one Seal, and the guest-side fssync before a disk snapshot.
 const sealTimeout = 10 * time.Second
+
+// defaultSealBudgets is how long each Seal attempt of a sleep is given: longer each time, because
+// what makes a Seal late is a guest starved of CPU or memory (the v0.11 known issue: 1 in 46
+// rounds under host memory pressure), and asking again with the same short bound fails the same
+// way. Asking again is safe: Seal is idempotent in execd (it sets sealed and forgets the last
+// re-key, nothing else), so a 204 on any attempt proves the guest is sealed, whatever became of
+// the answers before it. The total bounds how long a sleep holds the VM's lock (maxSealWait).
+var defaultSealBudgets = []time.Duration{sealTimeout, 20 * time.Second, 30 * time.Second}
+
+// maxSealWait bounds the sum of defaultSealBudgets: a wake waits behind a sleep's lock that long.
+const maxSealWait = time.Minute
+
+// maxSealStrikes is how many sleeps in a row a guest may fail to confirm its seal before the next
+// one stops it anyway. Below it, a VM whose seal was never confirmed keeps running with its memory
+// (re-keyed, so provably unsealed); at it, the sleep is v0.11's: the VMM is killed and the next
+// wake cold-boots, so a guest that stalls every seal cannot hold its RAM for ever.
+const maxSealStrikes = 3
 
 // sleep snapshots a running VM and ends its process. The caller holds the lock.
 //
-// Whatever fails, the VM does not stay up. After a Seal execd answers nobody until re-keyed, and a
-// Start that finds the process running (or paused) only resumes it, so a VM left behind by a
-// failed sleep would be up and permanently deaf. And a Seal that fails or times out is the guest
-// refusing to be slept - PID 1 is the workload's to stall - which must not let it pin host
-// memory. So a failure kills the VMM: the record already says SnapshotValid=false for a running
-// VM, so the next wake cold-boots it from its disk. Memory is lost; the disk and the service are
-// not.
+// Nothing is snapshotted unsealed: the snapshot is a second copy of execd's identity, and one
+// taken unsealed would restore already serving with it. Nor is it paused first and sealed after:
+// a paused VM runs no guest code, so execd could never answer.
+//
+// A seal that is not confirmed after every attempt leaves the guest in an unknown state - the
+// last answer may be the one that was lost. It is re-keyed: a 204 there proves execd unsealed,
+// holding a fresh secret, and serving, and the VM stays up with its memory while the sleep
+// reports ErrStillRunning (the daemon's next idle check tries again). Only when that re-key also
+// fails, or this is the maxSealStrikes-th sleep in a row it could not seal, is it stopped: a VM
+// that may be sealed must not stay up - after a Seal execd answers nobody until re-keyed, and a
+// Start that finds it running only resumes it - and a guest must not pin host memory by stalling.
+//
+// A failure after the seal was confirmed kills the VMM as before: it is sealed, and the record
+// already says SnapshotValid=false for a running VM, so the next wake cold-boots it from its
+// disk. Memory is lost; the disk and the service are not.
 func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
+	if p.guest.Available() {
+		if err := p.seal(ctx, vm); err != nil {
+			return p.sealUnconfirmed(ctx, vm, err)
+		}
+	}
+
 	err := p.snapshotAndEnd(ctx, vm)
 	if err == nil {
 		return nil
@@ -1043,11 +1126,90 @@ func (p *fcProvider) sleep(ctx context.Context, vm *fcVM) error {
 		"its next wake is a cold boot", vm.Ref, err), p.abandon(ctx, vm))
 }
 
-// seal asks execd to seal, with the secret it holds: the recorded one, or - when that is refused
-// and a re-key's answer was never recorded - the pending one. Bounded: a guest that stalls it is
-// vetoing its own sleep.
+// sealUnconfirmed is a sleep whose Seal no attempt confirmed; see sleep. The caller holds the lock.
+func (p *fcProvider) sealUnconfirmed(ctx context.Context, vm *fcVM, cause error) error {
+	vm.SealStrikes++
+
+	if vm.SealStrikes >= maxSealStrikes {
+		strikes := vm.SealStrikes
+		vm.SealStrikes = 0
+
+		return errors.Join(fmt.Errorf("sleeping %s: execd did not confirm its seal (%w), the %d sleeps in a "+
+			"row it has not - its VM was stopped without a usable snapshot rather than let it hold its "+
+			"memory, and its next wake is a cold boot", vm.Ref, cause, strikes), p.abandon(ctx, vm))
+	}
+
+	// Newer than anything execd has applied, or it refuses the re-key as stale.
+	vm.Generation++
+
+	budgets := p.budgets()
+	rctx, cancel := context.WithTimeout(ctx, budgets[len(budgets)-1])
+	rerr := p.rekey(rctx, vm)
+	cancel()
+
+	if rerr != nil {
+		vm.SealStrikes = 0
+
+		return errors.Join(fmt.Errorf("sleeping %s: execd did not confirm its seal (%v), and the re-key that "+
+			"would have proved it unsealed failed too (%w) - it may be sealed, so its VM was stopped "+
+			"without a usable snapshot, and its next wake is a cold boot", vm.Ref, cause, rerr), p.abandon(ctx, vm))
+	}
+
+	if err := p.save(vm); err != nil {
+		// execd now holds a secret this record does not: left running, it could never be sealed.
+		vm.SealStrikes = 0
+
+		return errors.Join(fmt.Errorf("sleeping %s: recording the re-key after an unconfirmed seal: %w - its "+
+			"VM was stopped, and its next wake is a cold boot", vm.Ref, err), p.abandon(ctx, vm))
+	}
+
+	return fmt.Errorf("sleeping %s: execd did not confirm its seal (%v), so no snapshot was taken; it was "+
+		"re-keyed and is serving with its memory, and the next idle check tries again (%d of %d before "+
+		"it is stopped instead): %w", vm.Ref, cause, vm.SealStrikes, maxSealStrikes, ErrStillRunning)
+}
+
+// budgets is each Seal attempt's bound: p.sealBudgets where a test set them, else the default.
+func (p *fcProvider) budgets() []time.Duration {
+	if len(p.sealBudgets) > 0 {
+		return p.sealBudgets
+	}
+
+	return defaultSealBudgets
+}
+
+// seal asks execd to seal until one attempt is confirmed, each bounded by the next of budgets,
+// with a short pause between. See defaultSealBudgets for why asking again is safe and useful.
 func (p *fcProvider) seal(ctx context.Context, vm *fcVM) error {
-	ctx, cancel := context.WithTimeout(ctx, sealTimeout)
+	var errs []error
+
+	for i, budget := range p.budgets() {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(append(errs, ctx.Err())...)
+			case <-time.After(budget / 40):
+			}
+		}
+
+		err := p.sealOnce(ctx, vm, budget)
+		if err == nil {
+			return nil
+		}
+
+		errs = append(errs, fmt.Errorf("attempt %d of %s: %w", i+1, budget, err))
+
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// sealOnce asks execd to seal, with the secret it holds: the recorded one, or - when that is
+// refused and a re-key's answer was never recorded - the pending one.
+func (p *fcProvider) sealOnce(ctx context.Context, vm *fcVM, budget time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	err := p.guest.Seal(ctx, p.guestVM(vm), vm.secret())
@@ -1100,12 +1262,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	c := p.client(vm.Ref)
 	v := p.view(vm)
 
-	if p.guest.Available() {
-		if err := p.seal(ctx, vm); err != nil {
-			return fmt.Errorf("sealing execd before the snapshot: %w", err)
-		}
-	}
-
+	// execd was sealed by the caller (sleep).
 	if err := c.Pause(ctx); err != nil {
 		return err
 	}
@@ -1170,6 +1327,7 @@ func (p *fcProvider) snapshotAndEnd(ctx context.Context, vm *fcVM) error {
 	vm.SnapshotValid = true
 	vm.SnapshotJailed = vm.JailUID != 0
 	vm.Restored = false
+	vm.SealStrikes = 0
 
 	return p.save(vm)
 }
@@ -1936,8 +2094,9 @@ func (p *fcProvider) Commit(ctx context.Context, ref, image string, changes ...s
 	dir := p.dir(ref)
 
 	copyVM := func(withMemory bool) error {
-		for _, f := range []string{fc.RootfsName, "agent.ext4"} {
-			if _, err := fc.CloneFile(filepath.Join(dir, f), filepath.Join(dst, f)); err != nil {
+		// A layered VM's base is linked, never copied: it is the image, and read-only.
+		for _, f := range append(vm.rootfsFiles(), vmFile{name: "agent.ext4"}) {
+			if err := copyVMFile(f, dir, dst); err != nil {
 				return err
 			}
 		}
@@ -2134,9 +2293,9 @@ func (p *fcProvider) createFromSnapshot(_ context.Context, s *fcSnapshot, svc sp
 		return fmt.Errorf("the firecracker snapshot %s is gone", image)
 	}
 
-	for _, f := range []string{fc.RootfsName, "agent.ext4", fc.StateName, fc.MemName} {
-		if _, err := fc.CloneFile(filepath.Join(src, f), filepath.Join(dir, f)); err != nil {
-			return fmt.Errorf("restoring %s from its snapshot: %w", f, err)
+	for _, f := range append(s.VM.rootfsFiles(), vmFile{name: "agent.ext4"}, vmFile{name: fc.StateName}, vmFile{name: fc.MemName}) {
+		if err := copyVMFile(f, src, dir); err != nil {
+			return fmt.Errorf("restoring %s from its snapshot: %w", f.name, err)
 		}
 	}
 

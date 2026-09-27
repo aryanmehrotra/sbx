@@ -506,6 +506,12 @@ type Injector interface {
 	SeedFromImage(ctx context.Context, volume, image, dir string) error
 }
 
+// ErrStillRunning marks a Stop that failed and left the workload running as it was - not stopped,
+// not half-stopped. A microVM whose execd did not confirm its seal is one: it is re-keyed and kept
+// serving with its memory rather than snapshotted unsealed or killed. The caller treats the unit
+// as awake, so its next idle check tries the sleep again.
+var ErrStillRunning = errors.New("the sandbox is still running")
+
 // ErrOSBOnFirecracker is why the daemon itself refuses `--provider firecracker --osb-addr` on a
 // host whose microVMs run in a helper VM (a Mac, Windows): it cannot run a microVM here. The sbx
 // CLI never starts it that way - on such a host `sbx serve --provider firecracker` is the host

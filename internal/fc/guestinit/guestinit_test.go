@@ -1,8 +1,10 @@
 package guestinit
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -82,7 +84,7 @@ func TestDrivePlan(t *testing.T) {
 		{MkdirAll: "/newroot/etc/x/a", Source: "/newroot/etc/x/a", Target: "/newroot/etc/x", Bind: true},
 	}
 
-	if !slices.Equal(got, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plan:\n got %+v\nwant %+v", got, want)
 	}
 }
@@ -116,4 +118,69 @@ func TestWriteHostsGivesLocalhostAndTheHostname(t *testing.T) {
 	if b, _ := os.ReadFile(p); !strings.HasPrefix(string(b), "10.0.0.9\tdb\n") || !strings.Contains(string(b), "127.0.0.1\tlocalhost") {
 		t.Fatalf("/etc/hosts = %q", b)
 	}
+}
+
+// A VM with its own copy of its image mounts it read-write at the root, as before v0.13. A layered
+// one mounts the image's shared base read-only and without replaying its journal (the drive is
+// read-only; a replay would fail), its own writable layer read-write, and an overlay of the two at
+// the root - whose upper and work directories are on that writable layer, so everything the
+// workload writes lands on the VM's own drive and nothing on the base.
+func TestRootPlan(t *testing.T) {
+	own := rootPlan("/newroot", fc.InitConfig{RootDevice: "/dev/vdb"})
+	if want := []mountStep{{Source: "/dev/vdb", Target: "/newroot", FSType: "ext4"}}; !reflect.DeepEqual(own, want) {
+		t.Fatalf("own copy:\n got %+v\nwant %+v", own, want)
+	}
+
+	got := rootPlan("/newroot", fc.InitConfig{RootDevice: fc.GuestRootfsDevice, UpperDevice: fc.GuestUpperDevice})
+	want := []mountStep{
+		{Source: "/dev/vdb", Target: "/lower", FSType: "ext4", ReadOnly: true, Data: "noload"},
+		{Source: "/dev/vdc", Target: "/layer", FSType: "ext4"},
+		{Dirs: []string{"/layer/upper", "/layer/work"}, Source: "overlay", Target: "/newroot", FSType: "overlay",
+			Data: "lowerdir=/lower,upperdir=/layer/upper,workdir=/layer/work"},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("layered:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// The directories the layered plan mounts on must exist on the agent drive, which is read-only in
+// the guest: fc-init cannot make them there.
+func TestTheAgentDriveHoldsTheLayeredMountPoints(t *testing.T) {
+	dir := t.TempDir()
+	rec := &dirRecorder{}
+
+	if err := fc.BuildAgentDrive(t.Context(), rec, fc.AgentDrive{Agent: os.Args[0]}, filepath.Join(dir, "agent.ext4")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, st := range rootPlan("/newroot", fc.InitConfig{RootDevice: "/dev/vdb", UpperDevice: "/dev/vdc"}) {
+		if st.FSType == "overlay" {
+			continue
+		}
+
+		if !slices.Contains(rec.dirs, strings.TrimPrefix(st.Target, "/")) {
+			t.Fatalf("fc-init mounts at %s, which the agent drive does not have (it has %v)", st.Target, rec.dirs)
+		}
+	}
+}
+
+// dirRecorder is an Ext4Builder that notes the top-level directories of what it was asked to build.
+type dirRecorder struct{ dirs []string }
+
+func (*dirRecorder) TakesTar(context.Context) bool { return true }
+
+func (r *dirRecorder) Build(_ context.Context, src, img, _ string) error {
+	ents, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, e := range ents {
+		if e.IsDir() {
+			r.dirs = append(r.dirs, e.Name())
+		}
+	}
+
+	return os.WriteFile(img, nil, 0o600)
 }

@@ -54,9 +54,35 @@ func (p *fcProvider) launchSpec(ctx context.Context, vm *fcVM, stage []fc.Stage)
 	}
 
 	uid := p.jail.UID(vm.addr())
-	s.Jail = &fc.JailSpec{Jailer: jailer, UID: uid, GID: uid, CPUs: vm.VCPU, MemMiB: vm.MemMiB, Files: stage}
+	s.Jail = &fc.JailSpec{Jailer: jailer, UID: uid, GID: uid, CPUs: vm.VCPU, MemMiB: vm.MemMiB, Files: stage,
+		FileSizeLimit: fileSizeLimit(vm, stage), NetNS: fc.NetNSPath(vm.addr())}
 
 	return s, nil
+}
+
+// fileSizeHeadroom is what fileSizeLimit allows past the largest file: slack for a snapshot's
+// state file and the logs, far below anything that could fill a disk.
+const fileSizeHeadroom = 64 << 20
+
+// fileSizeLimit is the jailed VMM's RLIMIT_FSIZE: the largest file it may legitimately write - a
+// drive it writes (the writable layer, a read-write volume: a guest writes inside its size, never
+// past it), a memory snapshot as big as its RAM - plus fileSizeHeadroom. A compromised VMM that
+// writes past it in its jail is killed (SIGXFSZ) rather than fill the state filesystem through
+// that file. It bounds each file, not how many there are (SECURITY.md).
+func fileSizeLimit(vm *fcVM, stage []fc.Stage) int64 {
+	largest := int64(vm.MemMiB) << 20
+
+	for _, f := range stage {
+		if f.Shared || f.ReadOnly {
+			continue
+		}
+
+		if st, err := os.Stat(f.Host); err == nil && st.Size() > largest {
+			largest = st.Size()
+		}
+	}
+
+	return largest + fileSizeHeadroom
 }
 
 // driveStages are vm's drives, by the names its VMM opens them at: each is the VM's own file,
@@ -64,9 +90,12 @@ func (p *fcProvider) launchSpec(ctx context.Context, vm *fcVM, stage []fc.Stage)
 // only reads it (fc.Stage.ReadOnly: the agent drive, a read-only volume).
 func (p *fcProvider) driveStages(vm *fcVM) []fc.Stage {
 	dir := p.dir(vm.Ref)
-	out := []fc.Stage{
-		{Name: "agent.ext4", Host: filepath.Join(dir, "agent.ext4"), ReadOnly: true},
-		{Name: fc.RootfsName, Host: filepath.Join(dir, fc.RootfsName)},
+	out := []fc.Stage{{Name: "agent.ext4", Host: filepath.Join(dir, "agent.ext4"), ReadOnly: true}}
+
+	// A layered VM's base is every VM's of its image: shared, like the kernel - never given to this
+	// VM's uid, held root's and read-only after the jailer has run. Only its writable layer is its.
+	for _, f := range vm.rootfsFiles() {
+		out = append(out, fc.Stage{Name: f.name, Host: filepath.Join(dir, f.name), Shared: f.shared})
 	}
 
 	for i, v := range vm.Volumes {
@@ -102,6 +131,7 @@ func guardedNetwork(firewall fc.FirewallMode, jail *fc.JailConfig) *fc.IPNetwork
 	if jail != nil {
 		n.OwnerOf = jail.UID
 		n.TapOwner = fc.SysTapOwner
+		n.PerVMNetNS = true // the jailer joins it (fc.JailSpec.NetNS); an unjailed VMM could not
 	}
 
 	return n

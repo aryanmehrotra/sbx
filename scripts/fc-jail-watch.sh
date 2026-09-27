@@ -10,9 +10,9 @@
 # this samples /proc beside it: each firecracker's uid and gid (never 0, one uid throughout, and
 # never the same uid as another VMM in the same sweep - a uid is per VM, reused only by a later VM
 # at the same address) and whether the host's /etc is visible from its root (it must not be - it
-# is chrooted). As root: /proc/<pid>/root is readable by nobody else.
+# is chrooted), and whether it shares the host's network namespace (it must not). As root: /proc/<pid>/root is readable by nobody else.
 #
-# A sample line is `<sweep> <pid> <jail|host> <uid x4> <gid x4>`; scripts/fc-jail-watch_test.sh
+# A sample line is `<sweep> <pid> <jail|host|hostnet> <uid x4> <gid x4>`; scripts/fc-jail-watch_test.sh
 # holds check to its verdicts.
 set -euo pipefail
 
@@ -28,7 +28,11 @@ case "$cmd" in
       for pid in $(pgrep -x firecracker || true); do
         ids="$(awk '/^Uid:|^Gid:/ { printf "%s %s %s %s ", $2, $3, $4, $5 }' "/proc/$pid/status" 2>/dev/null)" || continue
         [ -n "$ids" ] || continue
-        if [ -e "/proc/$pid/root/etc/passwd" ]; then where=host; else where=jail; fi
+        # host: it sees the host's /etc (not chrooted). hostnet: chrooted, but in the host's network
+        # namespace (v0.13 gives each jailed VMM its VM's own).
+        if [ -e "/proc/$pid/root/etc/passwd" ]; then where=host
+        elif [ "$(readlink "/proc/$pid/ns/net" 2>/dev/null)" = "$(readlink /proc/1/ns/net)" ]; then where=hostnet
+        else where=jail; fi
         echo "$sweep $pid $where $ids" >>"$out"
       done
       sleep 1
@@ -42,7 +46,7 @@ case "$cmd" in
     fi
     bad="$(awk 'NF { if ($3 != "jail") { print; next } for (i = 4; i <= NF; i++) if ($i == 0 || $i != $4) { print; next } }' "$out" | sort -u)"
     if [ -n "$bad" ]; then
-      echo "fc-jail-watch: a VMM ran unjailed, as root, or with mixed ids (sweep pid where uid*4 gid*4):" >&2
+      echo "fc-jail-watch: a VMM ran unjailed, on the host's network, as root, or with mixed ids (sweep pid where uid*4 gid*4):" >&2
       echo "$bad" | head -20 >&2
       exit 1
     fi
@@ -52,7 +56,7 @@ case "$cmd" in
       echo "$shared" | head -20 >&2
       exit 1
     fi
-    echo "fc-jail-watch: $n VMMs seen, every one chrooted and running as a non-root uid no other running VMM had"
+    echo "fc-jail-watch: $n VMMs seen, every one chrooted, in a network namespace of its own, and running as a non-root uid no other running VMM had"
     ;;
   *)
     echo "usage: $0 start OUT | check OUT" >&2

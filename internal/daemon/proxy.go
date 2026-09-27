@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -722,6 +723,14 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 
 	if err := p.Stop(ctx, u.ref); err != nil {
 		logs.Default.Error(u.sandbox, u.service, "could not sleep: %v", err)
+
+		// Still up as it was (a microVM whose seal was not confirmed): say so, as a failed freeze
+		// does, so the next tick tries again rather than it holding memory until a client
+		// happens by.
+		if errors.Is(err, provider.ErrStillRunning) {
+			u.setAwake(true)
+		}
+
 		return
 	}
 	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",

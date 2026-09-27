@@ -52,3 +52,18 @@ func sameFilesystem(a, b string) bool {
 
 	return ok1 && ok2 && sx.Dev == sy.Dev
 }
+
+// inode is path's identity on disk, for counting a file with several names once.
+func inode(path string) (fileKey, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileKey{}, false
+	}
+
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileKey{}, false
+	}
+
+	return fileKey{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true //nolint:unconvert // int32 dev on darwin
+}

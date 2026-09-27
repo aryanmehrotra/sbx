@@ -174,6 +174,13 @@ type fakeGuest struct {
 	onSeal     func(secret string)
 	onRekey    func(k fc.Rekey)
 	accept     string // when set, the only secret Seal accepts: what execd holds
+
+	// sealLost fails the next N Seals AFTER execd applied them - the answer that never arrived -
+	// and sealStall makes the next N wait out their context, as a guest starved of memory does.
+	// sealBudgets is how long each Seal was given.
+	sealLost    int
+	sealStall   int
+	sealBudgets []time.Duration
 }
 
 func (g *fakeGuest) Available() bool { return g.available }
@@ -182,9 +189,20 @@ func (g *fakeGuest) Dial(context.Context, fc.GuestVM, int) (net.Conn, error) {
 	return nil, errors.New("fake")
 }
 
-func (g *fakeGuest) Seal(_ context.Context, vm fc.GuestVM, secret string) error {
+func (g *fakeGuest) Seal(ctx context.Context, vm fc.GuestVM, secret string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	if d, ok := ctx.Deadline(); ok {
+		g.sealBudgets = append(g.sealBudgets, time.Until(d))
+	}
+
+	if g.sealStall > 0 {
+		g.sealStall--
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
 
 	if secret == "" {
 		return errors.New("sealed without the control secret")
@@ -198,6 +216,12 @@ func (g *fakeGuest) Seal(_ context.Context, vm fc.GuestVM, secret string) error 
 
 	if g.onSeal != nil {
 		g.onSeal(secret)
+	}
+
+	if g.sealLost > 0 {
+		g.sealLost--
+
+		return context.DeadlineExceeded
 	}
 
 	return g.failSeal
@@ -271,6 +295,7 @@ func newRig(t *testing.T) *rig {
 			return nil
 		},
 		bootTimeout: time.Second,
+		sealBudgets: sealBudgetsForTest,
 		portsFree:   func(int) bool { return true },
 		locks:       map[string]*refLock{},
 	}
@@ -329,7 +354,7 @@ func TestCreateLeavesTheVMAsleepWithAFullSnapshot(t *testing.T) {
 		t.Fatalf("record after create = %+v", vm)
 	}
 
-	for _, f := range []string{fc.StateName, fc.MemName, fc.RootfsName, "agent.ext4"} {
+	for _, f := range []string{fc.StateName, fc.MemName, fc.BaseName, fc.UpperName, "agent.ext4"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Fatalf("%s missing after create: %v", f, err)
 		}
@@ -382,9 +407,13 @@ func TestCreateBootsWithTheRightConfig(t *testing.T) {
 				if c.Body["is_root_device"] != true || c.Body["is_read_only"] != true {
 					t.Errorf("agent drive = %v", c.Body)
 				}
-			case "/drives/rootfs":
-				if c.Body["is_root_device"] != false || c.Body["is_read_only"] != false {
+			case "/drives/rootfs": // the image's shared base, never written
+				if c.Body["is_root_device"] != false || c.Body["is_read_only"] != true {
 					t.Errorf("rootfs drive = %v", c.Body)
+				}
+			case "/drives/upper": // the VM's own writable layer
+				if c.Body["is_root_device"] != false || c.Body["is_read_only"] != false {
+					t.Errorf("upper drive = %v", c.Body)
 				}
 			case "/machine-config":
 				if c.Body["track_dirty_pages"] != true || c.Body["vcpu_count"] != float64(2) || c.Body["mem_size_mib"] != float64(512) {
@@ -401,7 +430,7 @@ func TestCreateBootsWithTheRightConfig(t *testing.T) {
 	r.create(t, "t2", svc)
 
 	want := []string{
-		"PUT /boot-source", "PUT /drives/agent", "PUT /drives/rootfs", "PUT /machine-config",
+		"PUT /boot-source", "PUT /drives/agent", "PUT /drives/rootfs", "PUT /drives/upper", "PUT /machine-config",
 		"PUT /network-interfaces/eth0", "PUT /vsock", "PUT /entropy", "PUT /actions",
 	}
 	if !slices.Equal(seen, want) {
@@ -608,15 +637,19 @@ func TestARekeyFailureStopsTheVM(t *testing.T) {
 }
 
 // A sleep that fails anywhere after execd was asked to seal must not leave the VM up: sealed, it
-// answers nobody, and a Start that finds it running or paused only resumes it. A Seal that fails
-// (or stalls) is the guest vetoing its own sleep, which must not pin host memory either. Each
-// kills the VMM, and the next wake cold-boots from the disk.
+// answers nobody, and a Start that finds it running or paused only resumes it. A Seal that is never
+// confirmed leaves the VM up only once a re-key has proved execd unsealed (firecracker_sleep_test.go);
+// when that re-key fails too, the guest may be sealed, and it is stopped like the rest. Each kills
+// the VMM, and the next wake cold-boots from the disk.
 func TestAFailedSleepStopsTheVMAndTheNextWakeColdBoots(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		fail func(r *rig, dir string)
 	}{
-		{"seal", func(r *rig, _ string) { r.g.failSeal = errors.New("execd busy") }},
+		{"seal, and the re-key that would prove it unsealed", func(r *rig, _ string) {
+			r.g.failSeal = errors.New("execd busy")
+			r.g.failRekey = errors.New("execd busy")
+		}},
 		{"pause", func(r *rig, dir string) { r.l.server(dir).Fail["/vm"] = "pause failed" }},
 		{"snapshot", func(r *rig, dir string) { r.l.server(dir).Fail["/snapshot/create"] = "disk full" }},
 	} {
@@ -640,6 +673,7 @@ func TestAFailedSleepStopsTheVMAndTheNextWakeColdBoots(t *testing.T) {
 			}
 
 			r.g.failSeal = nil
+			r.g.failRekey = nil
 
 			if err := r.p.Start(r.ctx, ref); err != nil {
 				t.Fatal(err)
@@ -862,10 +896,15 @@ func TestCommitAndRestoreAsTheSameService(t *testing.T) {
 		t.Fatalf("Images = %v, %v", imgs, err)
 	}
 
-	for _, f := range []string{fc.StateName, fc.MemName, fc.RootfsName, "agent.ext4"} {
+	for _, f := range []string{fc.StateName, fc.MemName, fc.BaseName, fc.UpperName, "agent.ext4"} {
 		if _, err := os.Stat(filepath.Join(r.p.snapshotDir(img), f)); err != nil {
 			t.Fatalf("snapshot lacks %s", f)
 		}
+	}
+
+	// The base is the image, linked, never copied into the snapshot.
+	if a, b := stat(t, filepath.Join(dir, fc.BaseName)), stat(t, filepath.Join(r.p.snapshotDir(img), fc.BaseName)); !os.SameFile(a, b) {
+		t.Fatal("the snapshot holds a copy of the image's base, not the base")
 	}
 
 	if r.p.VolumeFor("t12", "cache") != "" {

@@ -554,6 +554,11 @@ osb_fc_teardown() {
     osb_fc_sh "rm -f $OSB_FC_STATE/volumes/$v $OSB_FC_STATE/volumes/${v%.ext4}.json"
   done
 
+  # What each create's root filesystem cost (layered: the image linked, a writable layer made;
+  # copy: the image's data copied), pass or fail - the numbers the release notes quote.
+  echo "── microVM creates: where the time went (first 40) ──"
+  osb_fc_sh "grep -o 'microVM [^\"]* serving [^\"]*' $OSB_FC_DIR/daemon.log 2>/dev/null | head -40" | cut -c1-400 || true
+
   if [ "$OSB_KEEP_WORK" = 1 ] || [ "${1:-0}" -ne 0 ]; then
     osb_fc_sh "cat $OSB_FC_DIR/daemon.log" > "$OSB_WORK/daemon.log" 2>/dev/null
     osb_fc_evidence

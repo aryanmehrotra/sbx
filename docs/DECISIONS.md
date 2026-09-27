@@ -793,9 +793,45 @@ the sbx binary's hash, so rebuilding sbx - every dev build - would rebuild every
 VM gets a small read-only **agent drive** (`vda`: `/sbx` and a 0600 `/init.json` with the entrypoint and
 environment) that the kernel boots as root; `sbx fc-init` mounts the image (`vdb`), bind-mounts the
 agent at `/opt/sbx/sbx`, switches root and becomes execd. It is an initramfs with a filesystem
-instead of a cpio, so it costs no guest RAM. The rootfs is cloned per VM with `FICLONE` where the
-filesystem can (btrfs, XFS) and a sparse copy where it cannot (ext4): 57 ms for a 256 MiB file
-holding 3 MiB on APFS; the e2e test logs which one a Linux host got.
+instead of a cpio, so it costs no guest RAM. *Amended in v0.13:* the rootfs is no longer cloned per
+VM - see the next section.
+
+### A microVM links its image and writes to a layer of its own
+
+Until v0.12 each VM cloned its image's root filesystem: `FICLONE` where the filesystem can (btrfs,
+XFS), instant; its data extents where it cannot (ext4) - about 16 s for the 7.4 GiB code-interpreter
+image on a CI runner, paid on every create of it. v0.13 copies nothing: a create links the image's
+one cached `rootfs.ext4` into the VM's directory as `base.ext4` (a hard link: the state directory
+holds the cache and the VMs), attaches it **read-only**, and gives the VM a writable drive of its own,
+`upper.ext4` - a sparse, empty ext4 of `SBX_FC_DISK_SIZE` (10G by default). `sbx fc-init` mounts the
+base read-only (`noload`: its journal is never replayed), the writable drive beside it, and lays
+**overlayfs** over them (`upper/` and `work/` on the VM's drive) as the root it switches into - the
+shape a container's root has under docker's overlay2. Both pinned kernels (6.18.48, x86_64 and
+aarch64) have overlayfs built in; the sha256-pinned files were read for it, not assumed.
+
+- **Shared like the kernel.** The base is one inode for every VM of the image, so it is staged into a
+  jail exactly as the kernel is (`Stage.Shared`): linked only while it is root's and read-only, never
+  given to the VM's uid, and forced back to that after the jailer has run. `fc.LinkShared` makes the
+  cache file 0444 before it is linked (the builder wrote it 0600, which a jail would have been given
+  a copy of - the copy this removes). A VMM that could write it would change every other VM's root.
+- **The writable layer is the VM's**, staged as its own file, owned by its uid. Everything the guest
+  writes to `/` lands there; its size is the most one VM can write to its root filesystem on the host
+  (SECURITY.md).
+- **Snapshots capture the layer, and link the base.** A sleep's memory snapshot names both drives;
+  `sbx snapshot` of a `sandbox.json` VM links the base and clones the layer and the agent drive; an API
+  sandbox's disk snapshot is the base (linked) and the layer (cloned), and a sandbox made from it
+  links that base and starts from a clone of that layer. So a snapshot keeps its image alive by
+  link count, whatever `sbx gc` does to the cache, and costs only what the source wrote.
+- **Nothing moves under a VM made before.** The record says how its root is held (`layout`): a VM
+  or snapshot from v0.12 keeps its whole `rootfs.ext4`, read-write, for its life, and a sandbox made
+  from such a snapshot copies it as then. `SBX_FC_ROOTFS=copy` makes new VMs that way too, for a
+  guest kernel without overlayfs (`SBX_FC_KERNEL`); anything but `layered` or `copy` is refused.
+- **Counted once.** `sbx doctor` counts each shared base once (by inode) as "shared images", and a
+  VM's disk is its writable layer and agent drive.
+- **The cost.** A write to a file that came from the image copies it up whole into the layer (as on
+  docker), and the first boot of an image pays nothing more. Every create logs what its root
+  filesystem cost (`microVM ... serving ... rootfs in ...`), and the microVM conformance step prints
+  those lines, pass or fail.
 
 ### A snapshot is invalid from the moment its VM runs
 
@@ -813,6 +849,41 @@ this process was loaded from, so it is taken only then - never after a cold boot
 `sbx snapshot`, which resets Firecracker's dirty bitmap - and it is folded into the base by
 `SEEK_DATA` extents, because a page the guest dirtied to all zeroes is data, and a non-zero scan would
 restore what was under it.
+
+### A sleep whose seal is not confirmed keeps the VM, re-keyed, and a guest cannot keep it for ever
+
+v0.11 stopped a VM whose Seal failed or timed out: its next wake cold-booted, and whatever was only
+in memory was gone. Two reasons, both still held: a VM left up after a Seal that DID apply answers
+nobody until re-keyed, and a Start that finds it running only resumes it (up and permanently deaf);
+and a guest that stalls its seal must not be able to hold its RAM. Its known issue - under host
+memory pressure a Seal answer is late or lost (1 in 46 rounds) - paid for both with the workload's
+memory, for a failure that was usually the host's, not the guest's.
+
+What changed, and why each step is safe:
+
+- **Asked again, with longer each time** (10 s, 20 s, 30 s; a minute in all, which is how long a
+  wake can wait behind the sleep's lock). Seal is idempotent in execd - it sets `sealed` and
+  forgets the last re-key, nothing else - so a 204 on any attempt proves the guest is sealed, and
+  the sleep snapshots exactly as if the first answer had come. A starved guest given the same short
+  bound again fails the same way; given longer, it answers.
+- **Never paused first.** A paused VM runs no guest code; execd could not answer a Seal at all.
+- **Never snapshotted unconfirmed.** A snapshot of an unsealed execd restores already serving with
+  its identity - the thing sealing exists to prevent. "The answer was probably lost" is not proof.
+- **Unconfirmed after every attempt: re-keyed and kept.** The guest's state is unknown - the last
+  answer may be the one that was lost - and a re-key settles it: a 204 means execd is unsealed,
+  holds a fresh secret (so no earlier secret can seal it), and serves. The VM stays up with its
+  memory and the sleep returns `provider.ErrStillRunning`; the daemon keeps the unit awake, so its
+  next idle check tries again. That is not "half-sealed": the one state v0.11 refused to leave up
+  is exactly the one the re-key rules out.
+- **Stopped as before when it cannot be settled, or will not be.** A re-key that fails too leaves
+  execd possibly sealed, so the VM is stopped (next wake cold). And the third sleep in a row that
+  the guest does not confirm stops it regardless (`maxSealStrikes`, counted in the record, reset by
+  any snapshot): a guest can defer its sleep by about three idle intervals, not for ever, and holds
+  no more than the memory it was already given while awake.
+
+A memory snapshot of a running VM (`sbx snapshot` of a `sandbox.json` microVM) retries its Seal the
+same way but still stops the VM when it stays unconfirmed: the caller asked for a snapshot and gets
+an error either way. (An API sandbox's snapshot is its disk and seals nothing.)
 
 ### A firecracker snapshot restores only as itself
 
@@ -987,7 +1058,8 @@ defensible without it.
 - **What the root holds**: `/vmlinux` (a hard link when the kernel - symlink resolved - is
   root's, readable by all and writable by nobody else; a root-owned 0444 copy otherwise; never
   re-owned, since it is one inode for every VM, and re-checked and forced back to root's and
-  read-only once the jailer has finished with the root); `/agent.ext4`, `/rootfs.ext4`,
+  read-only once the jailer has finished with the root); a layered VM's `/base.ext4` exactly as the
+  kernel (v0.13: every VM of the image shares it); `/agent.ext4`, `/upper.ext4` (or `/rootfs.ext4`),
   `/vol<N>.ext4` and, for a restore, `/vm.state` and `/vm.mem` - hard links to the VM's own files,
   owned by its uid (except the drives it only reads - the agent drive and read-only volumes - kept
   root's and other-readable, so a compromised VMM cannot rewrite them for the next VM), so what the guest writes is on the VM's disk (a copy would be a disk the host never sees, so
@@ -1011,8 +1083,15 @@ defensible without it.
   (the VMM's heap and the page cache of its drive and snapshot I/O, which reclaims under the limit
   rather than OOM-killing). No limits means no cgroup flags at all: v1.17 with `--cgroup-version 2`,
   no `--cgroup` and an existing `--parent-cgroup` *moves* the process into the parent, which fails
-  once a sibling has enabled memory there. No `fsize` limit: it would kill a VM for writing past
-  that offset of its own disk.
+  once a sibling has enabled memory there.
+- **`fsize` (RLIMIT_FSIZE, the jailer's `--resource-limit`), since the layered root.** v0.13 first
+  shipped without one, reasoning that it would kill a VM for writing past that offset of its own
+  disk. That holds only for a limit below the disk: a guest writes through a block device whose
+  capacity IS its drive file's size, so it never writes past the largest drive. The limit is the
+  largest file the VMM may write - its writable layer, a read-write volume, a memory snapshot of its
+  RAM - plus 64 MiB, measured from the staged files at each launch (a volume made larger earlier
+  still fits). It bounds each file a compromised VMM writes in the jail it owns; it does not bound
+  how many (SECURITY.md).
 - **A VM's record says how its running VMM was launched** (`jail_uid`, saved before the launch; a
   record without it is unjailed). Every call to that VMM - a snapshot, a commit - takes its paths
   from the record, not from this process's `SBX_FC_JAILER`, which only decides the NEXT launch: a
@@ -1022,9 +1101,20 @@ defensible without it.
   host's, and a VMM of the other kind cannot open them. A wake with the jailer switched the other
   way cold-boots (disk kept, memory lost, said); a saved memory snapshot of the other kind is
   refused by name. Every v0.12 VM's first wake under v0.13 is therefore a cold boot.
-- **Not adopted: a network namespace per VM** (`--netns`). The tap stays on the sandbox's bridge in
-  the host namespace, guarded as above; a namespace would need a veth pair per VM and a second
-  guard.
+- **A network namespace per VM** (`--netns`; *rejected for v0.13, adopted in v0.14*). The first
+  cut kept the tap in the host namespace, reasoning a namespace would need a veth pair per VM "and
+  a second guard". It needs the pair and not the guard: the guard's rules match on the sandbox's
+  bridge (`-i sbxfcN`), and a frame from the guest now reaches that bridge through a veth port
+  instead of a tap port - the same bridge, the same rules. So each VM's namespace
+  (`/var/run/netns/sbxfc<slot>-<index>`) holds its tap - owned by the VM's uid - on a bridge `br0`
+  with `eth0`, the inner end of a veth whose host end (named as the tap was) is a port of the
+  sandbox's bridge; nothing inside has an address (IPv6 `addrgenmode none`) or a route. The jailer
+  joins it before it drops privileges. What that buys: a VMM escape (its uid, no capabilities) has
+  no interface on the host's network at all - no host loopback, no host service, no other link -
+  only the guest's own tap, i.e. exactly what the guest could reach. It is rebuilt from nothing at
+  every launch (a new namespace, tap and pair), so a tap's owner is always this launch's uid and no
+  two VMMs ever open one tap. Unjailed (`SBX_FC_JAILER=off`) there is no namespace: only the jailer
+  can put the VMM in one.
 
 **Escape hatches, each named for what it gives up.** `SBX_FC_JAILER=off`, for a development host
 where the jailer cannot run (no cgroup v2, no mknod): v0.12's behaviour exactly, warned on every

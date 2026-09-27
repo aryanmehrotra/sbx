@@ -69,7 +69,8 @@ func TestAJailedVMIsGivenOnlyPathsInsideItsRoot(t *testing.T) {
 
 	slices.Sort(names)
 
-	if !slices.Equal(names, []string{"agent.ext4", "rootfs.ext4", "vmlinux"}) {
+	// Layered (the default): the image's shared base and the VM's own writable layer.
+	if !slices.Equal(names, []string{"agent.ext4", fc.BaseName, fc.UpperName, "vmlinux"}) {
 		t.Fatalf("staged %v", names)
 	}
 
@@ -78,7 +79,8 @@ func TestAJailedVMIsGivenOnlyPathsInsideItsRoot(t *testing.T) {
 	for key, want := range map[[2]string]string{
 		{"PUT /boot-source", "kernel_image_path"}: "/vmlinux",
 		{"PUT /drives/agent", "path_on_host"}:     "/agent.ext4",
-		{"PUT /drives/rootfs", "path_on_host"}:    "/rootfs.ext4",
+		{"PUT /drives/rootfs", "path_on_host"}:    "/" + fc.BaseName,
+		{"PUT /drives/upper", "path_on_host"}:     "/" + fc.UpperName,
 		{"PUT /vsock", "uds_path"}:                "/vsock.sock",
 		{"PUT /snapshot/create", "snapshot_path"}: "/" + fc.StateName + ".new",
 		{"PUT /snapshot/create", "mem_file_path"}: "/" + fc.MemName + ".new",
@@ -114,7 +116,7 @@ func TestAJailedVMIsGivenOnlyPathsInsideItsRoot(t *testing.T) {
 		t.Fatalf("load snapshot_path = %q", got)
 	}
 
-	if names := stagedNames(r.l.specs[1]); !slices.Equal(names, []string{"agent.ext4", "rootfs.ext4", "vm.mem", "vm.state"}) {
+	if names := stagedNames(r.l.specs[1]); !slices.Equal(names, []string{"agent.ext4", fc.BaseName, fc.UpperName, "vm.mem", "vm.state"}) {
 		t.Fatalf("a restore staged %v", names)
 	}
 
@@ -184,7 +186,7 @@ func TestACommitOfAJailedVMTakesTheSnapshotOutOfTheJail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, f := range []string{fc.StateName, fc.MemName, fc.RootfsName, "agent.ext4"} {
+	for _, f := range []string{fc.StateName, fc.MemName, fc.BaseName, fc.UpperName, "agent.ext4"} {
 		if _, err := os.Stat(filepath.Join(r.p.snapshotDir(img), f)); err != nil {
 			t.Fatalf("snapshot lacks %s: %v", f, err)
 		}
@@ -319,7 +321,8 @@ func TestACommitUsesTheJailModeTheVMMWasLaunchedWith(t *testing.T) {
 }
 
 // Every drive the VMM is told to open read-only is staged read-only, so the jail never hands it
-// to the VMM's uid (fc.Stage.ReadOnly), and every drive it writes is staged as the VM's own. The
+// to the VMM's uid (fc.Stage.ReadOnly, or Shared for a layered VM's base, every VM's of its image),
+// and every drive it writes is staged as the VM's own. The
 // expectation is what the VMM was actually told - each PUT /drives call's path and is_read_only.
 func TestEveryReadOnlyDriveIsStagedReadOnly(t *testing.T) {
 	r := jailRig(t)
@@ -328,7 +331,7 @@ func TestEveryReadOnlyDriveIsStagedReadOnly(t *testing.T) {
 
 	staged := map[string]bool{}
 	for _, f := range r.l.specs[0].Jail.Files {
-		staged[f.Name] = f.ReadOnly
+		staged[f.Name] = f.ReadOnly || f.Shared
 	}
 
 	drives := 0
@@ -407,5 +410,64 @@ func TestAResumeIsRefusedWhenTheHostGuardCannotBeRechecked(t *testing.T) {
 		if slot := r.vm(t, ref).Slot; !slices.Contains(r.n.rechecked, slot) {
 			t.Fatalf("%s: rechecked slots %v, not the VM's %d", name, r.n.rechecked, slot)
 		}
+	}
+}
+
+// Each jailed VMM runs with a file-size limit (RLIMIT_FSIZE): as big as the largest file it may
+// legitimately write - its writable layer, a read-write volume, a memory snapshot of its RAM - and
+// no bigger, so a compromised VMM cannot fill the state filesystem through any one file in its
+// jail. Derived from the files it was staged, not from the code's own constants.
+func TestAJailedVMMCannotWriteAFileBiggerThanItsLargestDrive(t *testing.T) {
+	r := jailRig(t)
+	r.p.ext4 = sizeKeepingExt4{}
+	r.g.available = false
+
+	t.Setenv(DiskSizeEnv, "3g")
+
+	ref := r.create(t, "fs1", redis)
+	vm := r.vm(t, ref)
+	spec := r.l.specs[len(r.l.specs)-1]
+
+	var largest int64 = int64(vm.MemMiB) << 20
+
+	for _, f := range spec.Jail.Files {
+		if f.Shared || f.ReadOnly {
+			continue
+		}
+
+		if st, err := os.Stat(f.Host); err == nil && st.Size() > largest {
+			largest = st.Size()
+		}
+	}
+
+	got := spec.Jail.FileSizeLimit
+	if got < largest {
+		t.Fatalf("FileSizeLimit %d < %d, the largest file the VMM writes: it would be killed (SIGXFSZ) writing it", got, largest)
+	}
+
+	if got > largest+(256<<20) {
+		t.Fatalf("FileSizeLimit %d is far past %d, the largest file the VMM writes: not a bound", got, largest)
+	}
+}
+
+// A jailed VMM joins its VM's own network namespace, where its tap is (fc.IPNetwork.PerVMNetNS);
+// the host network the provider builds for the jailer makes the taps there.
+func TestAJailedVMMRunsInItsVMsOwnNetns(t *testing.T) {
+	r := jailRig(t)
+	r.g.available = false
+
+	ref := r.create(t, "ns1", redis)
+	vm := r.vm(t, ref)
+
+	if got := r.l.specs[len(r.l.specs)-1].Jail.NetNS; got != fc.NetNSPath(vm.addr()) {
+		t.Fatalf("the jailed VMM joins %q, want its VM's namespace %q", got, fc.NetNSPath(vm.addr()))
+	}
+
+	if n := guardedNetwork(fc.FirewallManaged, &fc.JailConfig{UIDBase: fc.DefaultJailUIDBase}); !n.PerVMNetNS {
+		t.Fatal("the jailed provider's network makes taps on the host's network")
+	}
+
+	if n := guardedNetwork(fc.FirewallManaged, nil); n.PerVMNetNS {
+		t.Fatal("an unjailed VMM, which cannot join a namespace, was given taps inside one")
 	}
 }

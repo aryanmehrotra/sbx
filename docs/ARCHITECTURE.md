@@ -193,7 +193,7 @@ Everything the spec declares maps onto both; nothing in `sandbox.json` names a b
 | wake | `docker start` | scale → 1 | snapshot load + resume |
 | sleep | `docker stop` | scale → 0 | snapshot (Diff) + kill the VMM |
 | health | HEALTHCHECK | readinessProbe | the spec's `health`, run by execd over vsock (`/bin/sh -c`) at create (before the snapshot) and after a cold boot; a snapshot wake dials the first port only |
-| storage | named volume | PVC | the VM's own ext4 root, cloned per VM |
+| storage | named volume | PVC | the image's ext4, shared read-only, under a writable layer per VM |
 | isolation | `--runtime` | `runtimeClassName` | a guest kernel, always |
 
 The right-hand column is why the provider is an interface, not a flag: the wake policy above
@@ -221,22 +221,29 @@ Windows branch - installed as `provider.DecideHost` and used by the provider, th
     artifacts/firecracker-v1.17.0-<arch>-<sha>/  pinned by sha256, .built + atomic rename
     artifacts/jailer-v1.17.0-<arch>-<sha>/       the same release tarball, the same sha256
     artifacts/vmlinux-6.18.48-<arch>-<sha>/
-    rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID
+    rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID; root's, 0444:
+                                               every layered VM of the image boots this one file
     vms/<hash of ref>/                         0700, one per service; the socket path fits 108 bytes
       vm.json  api.sock  vsock.sock  console.log  vmm.log  firecracker.pid  lock
-      agent.ext4 (vda, ro: /sbx + /init.json)  rootfs.ext4 (vdb, rw, reflink or sparse copy)
+      agent.ext4 (vda, ro: /sbx + /init.json)
+      base.ext4  (vdb, ro)                     layered (v0.14): a hard link to the image's rootfs.ext4
+      upper.ext4 (vdc, rw)                     layered: the VM's writable layer, sparse, SBX_FC_DISK_SIZE
+                                               (10G) at most; fc-init lays overlayfs over the two
+      rootfs.ext4 (vdb, rw)                    instead of both, before v0.13 or SBX_FC_ROOTFS=copy: a whole
+                                               copy of the image (reflink, extents or sparse copy)
       vm.state  vm.mem                         the asleep state
       jail/firecracker/sbx-<hash>/root/        the jailed VMM's / (v0.13): hard links to the files
                                                above, owned by its uid; api.sock and vsock.sock
                                                above are symlinks into it; emptied on every launch
-    snapshots/<name>/                          sbx snapshot: memory + both drives
+    snapshots/<name>/                          sbx snapshot: memory + the drives (a layered base linked, not copied)
 ```
 
 | verb | what happens |
 |---|---|
 | Create | build/reuse the rootfs, clone it, write the agent drive, cold boot, wait for the first port, **Seal**, Pause, Full snapshot, kill |
 | Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override` and `network_overrides`, **Rekey** before returning |
-| Stop | **Seal**, Pause, Diff snapshot if this process was restored (else Full), kill, fold the Diff into `vm.mem` by extent, mark valid |
+| Stop | **Seal** (asked again, with a longer bound each time, until one attempt is confirmed), Pause, Diff snapshot if this process was restored (else Full), kill, fold the Diff into `vm.mem` by extent, mark valid |
+| a Stop whose Seal is never confirmed | **Rekey** (proves execd unsealed), keep the VM running with its memory, report `ErrStillRunning` so the daemon retries on its next tick; the third such sleep in a row, or a Rekey that fails too, kills the VMM and the next wake cold-boots |
 | a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk instead of restoring stale memory over it |
 
 The guest is PID 1 `sbx fc-init` on the agent drive: it mounts the image root, gives it proc, sys, dev,
@@ -249,7 +256,10 @@ The guest's address comes from the kernel command line (`ip=`, `CONFIG_IP_PNP=y`
 (`fcProvider.DialGuestPort`) all reach execd over vsock. `fc.NoGuest` - what a non-Linux build of
 the provider gets - refuses all four; with it the provider still sleeps and wakes (same identity,
 nothing to re-key) and refuses exec, copy, `health` and forking by name. A sleep or snapshot that fails
-after Seal stops the VM (its next wake is a cold boot) rather than leave execd sealed.
+after a confirmed Seal stops the VM (its next wake is a cold boot) rather than leave execd sealed; a
+sleep whose Seal was never confirmed keeps the VM only once a Rekey has proved execd unsealed
+(DECISIONS.md, "A sleep whose seal is not confirmed keeps the VM, re-keyed, and a guest cannot keep it
+for ever").
 
 Nothing in the provider assumes it is the process that started a VM or the one facing the user:
 every fact is in `vm.json` or answered by the API socket, and every operation takes the VM's
@@ -262,6 +272,9 @@ its VM's directory, as uid `900000 + slot*256 + index`, in `<cgroup2>/sbx-fc/<id
 and memory. The provider hands the VMM only paths in that root (`fc.View`) and takes what it writes back
 (`View.Adopt`: a plain file with one name, or refused). `SBX_FC_JAILER=off` is the unjailed v0.12 launch.
 The host guard beside it fails closed (`fc.IPNetwork`): no guard, no VM, unless `SBX_FC_FIREWALL=unmanaged`.
+A jailed VMM joins its VM's own network namespace (`--netns`, `/var/run/netns/sbxfc<slot>-<index>`),
+where its tap is, bridged to a veth whose host end is a port of the sandbox's bridge - rebuilt at every
+launch; the guard's rules, on the bridge, see the guest's frames as before.
 ## The OpenSandbox API
 
 `sbx serve --osb-addr` also answers OpenSandbox's lifecycle API. An API sandbox is an ordinary sbx

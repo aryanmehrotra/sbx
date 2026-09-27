@@ -5,7 +5,7 @@
 #
 # The watcher's `check` is the only thing that says CI's microvm tier ran every VMM jailed. Each
 # case below hands it a sample file a real run could produce - one line per firecracker seen per
-# sweep: `<sweep> <pid> <jail|host> <uid x4> <gid x4>` - and asserts on its exit status.
+# sweep: `<sweep> <pid> <jail|host|hostnet> <uid x4> <gid x4>` - and asserts on its exit status.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +33,7 @@ verdict "two VMMs, each jailed as its own uid"          0 "1 101 jail $(u 900001
 verdict "a uid reused by a later VMM at the same address" 0 "1 101 jail $(u 900001)" "2 201 jail $(u 900001)"
 verdict "two VMMs sharing a uid at the same moment"     1 "1 101 jail $(u 900001)" "1 102 jail $(u 900001)"
 verdict "a VMM that saw the host's /etc"                1 "1 101 host $(u 900001)"
+verdict "a jailed VMM on the host's network"         1 "1 101 hostnet $(u 900001)"
 verdict "a VMM running as root"                         1 "1 101 jail $(u 0)"
 verdict "a VMM with mixed ids"                          1 "1 101 jail 900001 900001 900003 900001 $(u 900001 | cut -d' ' -f1-4)"
 verdict "no VMM seen at all"                            1 ""
