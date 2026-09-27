@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="264" viewBox="0 0 900 264" role="img" aria-label="Memory held by 20 idle Postgres databases: sbx, asleep 17.6 MB, docker compose, always on 629 MB; Time until a sleeping Postgres answers psql: sbx 348 ms, Lazytainer (wakes on traffic) 3,407 ms" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="378" viewBox="0 0 900 378" role="img" aria-label="Memory held by 20 idle Postgres databases: sbx, asleep 17.6 MB, docker compose, always on 629 MB; Time until a sleeping Postgres answers psql: sbx 348 ms, Lazytainer (wakes on traffic) 3,407 ms; OpenSandbox API: create a sandbox and run a first command: sbx 307 ms, OpenSandbox server 1,417 ms" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
 <text x="0" y="22" font-size="15" font-weight="600" fill="#e6edf3">Memory held by 20 idle Postgres databases</text>
 <text x="210" y="60.0" font-size="13" text-anchor="end" fill="#e6edf3" font-weight="600">sbx, asleep</text>
 <rect x="220" y="46.0" width="13.1" height="18" rx="3" fill="#2ea043"/>
@@ -13,6 +13,13 @@
 <text x="210" y="208.0" font-size="13" text-anchor="end" fill="#e6edf3">Lazytainer (wakes on traffic)</text>
 <rect x="220" y="194.0" width="470.0" height="18" rx="3" fill="#656d76"/>
 <text x="698.0" y="208.0" font-size="13" fill="#e6edf3">3,407 ms<tspan fill="#9198a1" font-weight="400">  ·  first try refused: 0 of 5</tspan></text>
-<line x1="0" x2="900" y1="236" y2="236" stroke="#3d444d" stroke-width="1"/>
-<text x="0" y="256" font-size="12" fill="#9198a1">Lower is better. sbx v0.14.0 on a 4 vCPU Linux VM with Docker 29. Memory: lower of 2 runs; time: median. Method in docs/BENCHMARKS.md.</text>
+<text x="0" y="250" font-size="15" font-weight="600" fill="#e6edf3">OpenSandbox API: create a sandbox and run a first command</text>
+<text x="210" y="288.0" font-size="13" text-anchor="end" fill="#e6edf3" font-weight="600">sbx</text>
+<rect x="220" y="274.0" width="101.8" height="18" rx="3" fill="#2ea043"/>
+<text x="329.8" y="288.0" font-size="13" fill="#e6edf3" font-weight="600">307 ms<tspan fill="#9198a1" font-weight="400">  ·  same SDK, same image</tspan></text>
+<text x="210" y="322.0" font-size="13" text-anchor="end" fill="#e6edf3">OpenSandbox server</text>
+<rect x="220" y="308.0" width="470.0" height="18" rx="3" fill="#656d76"/>
+<text x="698.0" y="322.0" font-size="13" fill="#e6edf3">1,417 ms</text>
+<line x1="0" x2="900" y1="350" y2="350" stroke="#3d444d" stroke-width="1"/>
+<text x="0" y="370" font-size="12" fill="#9198a1">Lower is better. sbx v0.14.0 on a 4 vCPU Linux VM with Docker 29. Memory: lower of 2 runs; times: medians. Method in docs/BENCHMARKS.md.</text>
 </svg>
