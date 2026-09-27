@@ -1,6 +1,11 @@
 # The landing page, published to GitHub Pages from main. It is one static HTML file plus the
 # README's own pictures (scripts/site-build.sh copies them from docs/), so it rebuilds only when
-# one of those changes. Needs Settings → Pages → Source: GitHub Actions, once.
+# one of those changes.
+#
+# To turn it on, once: Settings → Pages → Source: GitHub Actions, then add a repository variable
+# SBX_PAGES=true (Settings → Secrets and variables → Actions → Variables). Until then the job is
+# skipped rather than failing: deploy-pages errors out on a repository without Pages, and a red
+# run on every push to main would teach everyone to ignore main's status.
 name: pages
 
 on:
@@ -26,6 +31,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: vars.SBX_PAGES == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
