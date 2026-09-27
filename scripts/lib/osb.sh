@@ -196,7 +196,7 @@ osb_sbx_sandboxes() {
 
 # osb_start_daemon [--no-key] - start it, and wait until its lifecycle API answers.
 osb_start_daemon() {
-  local port n key_args
+  local port n key_args probe
   key_args=1
   [ "${1:-}" = "--no-key" ] && key_args=0
 
@@ -223,8 +223,11 @@ $(printf '%s\n' "$OSB_PREEXISTING" | head -10 | sed 's/^/       /')
   if [ "$key_args" = 1 ]; then
     OSB_KEY="osb-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     set -- "$@" --osb-key "$OSB_KEY"
-  elif osb_daemon_env "$OSB_SBX" serve --osb-insecure-no-key --harness-probe-undefined 2>&1 |
-    grep -q "not defined: -harness-probe-undefined"; then
+  # Captured, then matched: piped into grep, the pipeline's status under the callers' pipefail is
+  # the probe's own exit 2 (an unknown flag always fails), so this branch never ran and --no-key
+  # started a daemon that wanted a key.
+  elif probe="$(osb_daemon_env "$OSB_SBX" serve --osb-insecure-no-key --harness-probe-undefined 2>&1)"
+    [[ "$probe" == *"not defined: -harness-probe-undefined"* ]]; then
     # Since v0.9.1 a daemon with no --osb-key generates a key and requires it: loopback is
     # reachable from every container on a VM-backed engine. Keyless is an explicit flag; an
     # older sbx has no such flag and was keyless on loopback anyway, so it is left as it was.
