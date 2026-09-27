@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="sbx: a real database for every branch and AI agent. Sleeps at 0 B, wakes the moment anything connects. No SDK, self-hosted. psql connects, sbx holds the connection, postgres wakes, the query is served.">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1117"/><stop offset="1" stop-color="#111a24"/></linearGradient>
+<radialGradient id="gl" cx="0.88" cy="0.08" r="0.6"><stop offset="0" stop-color="#3fb950" stop-opacity="0.16"/><stop offset="1" stop-color="#3fb950" stop-opacity="0"/></radialGradient>
+<marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8b949e"/></marker><marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#3fb950"/></marker>
+</defs>
+<style>.s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,'Liberation Sans',sans-serif}.m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace}</style>
+<rect width="1280" height="640" fill="url(#bg)"/><rect width="1280" height="640" fill="url(#gl)"/>
+<text x="80" y="128" class="m" font-size="64" font-weight="700" letter-spacing="-2" fill="#e6edf3">sbx</text>
+<rect x="203" y="86" width="22" height="42" rx="3" fill="#3fb950"/>
+<text x="1010" y="86" text-anchor="end" class="m" font-size="32" font-weight="700" fill="#3fb950">0 B</text>
+<text x="1026" y="84" class="s" font-size="22" fill="#9da7b3">asleep</text>
+<text x="1010" y="130" text-anchor="end" class="m" font-size="32" font-weight="700" fill="#58a6ff">216 ms</text>
+<text x="1026" y="128" class="s" font-size="22" fill="#9da7b3">redis wake</text>
+<text x="1010" y="174" text-anchor="end" class="m" font-size="32" font-weight="700" fill="#58a6ff">348 ms</text>
+<text x="1026" y="172" class="s" font-size="22" fill="#9da7b3">postgres wake</text>
+<text x="80" y="262" class="s" font-size="64" font-weight="700" letter-spacing="-1" fill="#e6edf3">A real database for every</text>
+<text x="80" y="336" class="s" font-size="64" font-weight="700" letter-spacing="-1" fill="#e6edf3">branch and AI agent</text>
+<text x="80" y="396" class="s" font-size="30" fill="#9da7b3">Sleeps at <tspan fill="#3fb950" font-weight="700">0 B</tspan>. Wakes the moment <tspan fill="#58a6ff" font-weight="700">anything connects</tspan>.</text>
+<text x="80" y="438" class="s" font-size="30" fill="#9da7b3">No SDK. Self-hosted. One static binary.</text>
+<rect x="60" y="466" width="1160" height="120" rx="16" fill="#161b22" stroke="#30363d"/>
+<rect x="84" y="484" width="170" height="84" rx="10" fill="#0d1117" stroke="#58a6ff99"/>
+<text x="102" y="518" class="m" font-size="24" font-weight="700" fill="#58a6ff">psql</text>
+<text x="102" y="551" class="s" font-size="20" fill="#9da7b3">connects</text>
+<line x1="260" y1="526" x2="294" y2="526" stroke="#8b949e" stroke-width="2.5" marker-end="url(#am)"/>
+<rect x="300" y="484" width="300" height="84" rx="10" fill="#0f2417" stroke="#3fb950"/>
+<text x="318" y="518" class="m" font-size="24" font-weight="700" fill="#3fb950">sbx</text>
+<text x="318" y="551" class="s" font-size="20" fill="#e6edf3">holds the connection</text>
+<line x1="606" y1="526" x2="640" y2="526" stroke="#8b949e" stroke-width="2.5" marker-end="url(#am)"/>
+<rect x="646" y="484" width="262" height="84" rx="10" fill="#0d1117" stroke="#30363d"/>
+<text x="664" y="518" class="m" font-size="24" font-weight="700" fill="#e6edf3">postgres</text>
+<text x="664" y="551" class="s" font-size="20" fill="#9da7b3">wakes from 0 B</text>
+<line x1="914" y1="526" x2="948" y2="526" stroke="#3fb950" stroke-width="2.5" marker-end="url(#ag)"/>
+<rect x="954" y="484" width="242" height="84" rx="10" fill="#0d1117" stroke="#3fb95099"/>
+<text x="972" y="518" class="s" font-size="24" font-weight="700" fill="#3fb950">✓ served</text>
+<text x="972" y="551" class="s" font-size="20" fill="#9da7b3">never refused</text>
+<text x="80" y="620" class="m" font-size="20" fill="#e6edf3">github.com/aryanmehrotra/sbx</text>
+<text x="1200" y="620" text-anchor="end" class="s" font-size="17" fill="#9da7b3">wake: median of 20 · v0.14.0 · Linux x86_64 · docs/BENCHMARKS.md</text>
+</svg>

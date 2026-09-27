@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-label="How sbx wakes a sandbox, in three steps. One: a client such as psql connects to a sleeping sandbox; the port belongs to sbx and the service behind it is stopped, using 0 B of memory. Two: sbx accepts and holds the connection open while the container or microVM starts, until the service is healthy. Three: sbx hands the live connection to the service and the query is served; the client never saw an error. Then, after 5 minutes with no traffic, sbx stops the service again and it is back to 0 B, with its data kept.">
+<title>How sbx wakes a sandbox</title>
+<defs><marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8b949e"/></marker><marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10z" fill="#3fb950"/></marker><marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 10 5 0 10z" fill="#58a6ff"/></marker></defs>
+<style>.s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,'Liberation Sans',sans-serif}.m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace}</style>
+<rect x="0.5" y="0.5" width="1199" height="519" rx="18" fill="#0d1117" stroke="#30363d"/>
+<text x="40" y="54" class="s" font-size="24" font-weight="700" fill="#e6edf3">How sbx wakes a sandbox</text>
+<text x="1160" y="54" text-anchor="end" class="s" font-size="16" fill="#9da7b3">any TCP protocol · unmodified clients</text>
+<rect x="40" y="78" width="360" height="340" rx="14" fill="#161b22" stroke="#30363d"/>
+<circle cx="76" cy="114" r="16" fill="#21262d" stroke="#3fb950"/>
+<text x="76" y="120" text-anchor="middle" class="s" font-size="17" font-weight="700" fill="#3fb950">1</text>
+<text x="106" y="112" class="s" font-size="20" font-weight="700" fill="#e6edf3">A client connects</text>
+<text x="106" y="136" class="s" font-size="17" fill="#9da7b3">to a sleeping sandbox</text>
+<rect x="70.0" y="162" width="300" height="36" rx="8" fill="#0d1117" stroke="#58a6ff99"/>
+<text x="84.0" y="186" class="m" font-size="16" font-weight="700" fill="#58a6ff">psql</text>
+<text x="356.0" y="186" text-anchor="end" class="s" font-size="15" fill="#9da7b3">client</text>
+<line x1="220" y1="198" x2="220" y2="224" stroke="#58a6ff" stroke-width="2" marker-end="url(#ab)"/>
+<text x="234" y="217.0" class="s" font-size="14" fill="#9da7b3">connect</text>
+<rect x="70.0" y="226" width="300" height="36" rx="8" fill="#0f2417" stroke="#3fb950"/>
+<text x="84.0" y="250" class="m" font-size="16" font-weight="700" fill="#3fb950">sbx</text>
+<text x="356.0" y="250" text-anchor="end" class="s" font-size="15" fill="#9da7b3">listening</text>
+<line x1="220" y1="262" x2="220" y2="288" stroke="#8b949e" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#am)"/>
+<rect x="70.0" y="290" width="300" height="36" rx="8" fill="#0d1117" stroke="#484f58" stroke-dasharray="6 5"/>
+<text x="84.0" y="314" class="m" font-size="16" font-weight="700" fill="#9da7b3">postgres</text>
+<text x="356.0" y="314" text-anchor="end" class="s" font-size="15" fill="#9da7b3">asleep · 0 B</text>
+<text x="70" y="358" class="s" font-size="16" fill="#9da7b3">Its port belongs to sbx. The</text>
+<text x="70" y="380" class="s" font-size="16" fill="#9da7b3">service behind it is stopped:</text>
+<text x="70" y="402" class="s" font-size="16" fill="#9da7b3">0 B of memory.</text>
+<rect x="420" y="78" width="360" height="340" rx="14" fill="#161b22" stroke="#30363d"/>
+<circle cx="456" cy="114" r="16" fill="#21262d" stroke="#3fb950"/>
+<text x="456" y="120" text-anchor="middle" class="s" font-size="17" font-weight="700" fill="#3fb950">2</text>
+<text x="486" y="112" class="s" font-size="20" font-weight="700" fill="#e6edf3">sbx holds the socket</text>
+<text x="486" y="136" class="s" font-size="17" fill="#9da7b3">while the service starts</text>
+<rect x="450.0" y="162" width="300" height="36" rx="8" fill="#0d1117" stroke="#58a6ff99"/>
+<text x="464.0" y="186" class="m" font-size="16" font-weight="700" fill="#58a6ff">psql</text>
+<text x="736.0" y="186" text-anchor="end" class="s" font-size="15" fill="#9da7b3">client</text>
+<line x1="600" y1="198" x2="600" y2="224" stroke="#58a6ff" stroke-width="2" marker-end="url(#ab)"/>
+<text x="614" y="217.0" class="s" font-size="14" fill="#e6edf3">held open</text>
+<rect x="450.0" y="226" width="300" height="36" rx="8" fill="#0f2417" stroke="#3fb950"/>
+<text x="464.0" y="250" class="m" font-size="16" font-weight="700" fill="#3fb950">sbx</text>
+<text x="736.0" y="250" text-anchor="end" class="s" font-size="15" fill="#9da7b3">holding</text>
+<line x1="600" y1="262" x2="600" y2="288" stroke="#8b949e" stroke-width="2" marker-end="url(#am)"/>
+<text x="614" y="281.0" class="s" font-size="14" fill="#9da7b3">start</text>
+<rect x="450.0" y="290" width="300" height="36" rx="8" fill="#0d1117" stroke="#d29922"/>
+<text x="464.0" y="314" class="m" font-size="16" font-weight="700" fill="#d29922">postgres</text>
+<text x="736.0" y="314" text-anchor="end" class="s" font-size="15" fill="#9da7b3">starting…</text>
+<text x="450" y="358" class="s" font-size="16" fill="#9da7b3">The connection is accepted and</text>
+<text x="450" y="380" class="s" font-size="16" fill="#9da7b3">held, not refused, until the</text>
+<text x="450" y="402" class="s" font-size="16" fill="#9da7b3">container or microVM is healthy.</text>
+<rect x="800" y="78" width="360" height="340" rx="14" fill="#161b22" stroke="#30363d"/>
+<circle cx="836" cy="114" r="16" fill="#3fb950" stroke="#3fb950"/>
+<text x="836" y="120" text-anchor="middle" class="s" font-size="17" font-weight="700" fill="#0d1117">3</text>
+<text x="866" y="112" class="s" font-size="20" font-weight="700" fill="#e6edf3">sbx hands it over</text>
+<text x="866" y="136" class="s" font-size="17" fill="#9da7b3">and the query is served</text>
+<rect x="830.0" y="162" width="300" height="36" rx="8" fill="#0d1117" stroke="#58a6ff99"/>
+<text x="844.0" y="186" class="m" font-size="16" font-weight="700" fill="#58a6ff">psql</text>
+<text x="1116.0" y="186" text-anchor="end" class="s" font-size="15" fill="#9da7b3">client</text>
+<line x1="980" y1="198" x2="980" y2="224" stroke="#3fb950" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="830.0" y="226" width="300" height="36" rx="8" fill="#0f2417" stroke="#3fb950"/>
+<text x="844.0" y="250" class="m" font-size="16" font-weight="700" fill="#3fb950">sbx</text>
+<text x="1116.0" y="250" text-anchor="end" class="s" font-size="15" fill="#9da7b3">joined</text>
+<line x1="980" y1="262" x2="980" y2="288" stroke="#3fb950" stroke-width="2" marker-end="url(#ag)"/>
+<text x="994" y="281.0" class="s" font-size="14" fill="#e6edf3">same socket</text>
+<rect x="830.0" y="290" width="300" height="36" rx="8" fill="#0d1117" stroke="#3fb950"/>
+<text x="844.0" y="314" class="m" font-size="16" font-weight="700" fill="#3fb950">postgres</text>
+<text x="1116.0" y="314" text-anchor="end" class="s" font-size="15" fill="#9da7b3">serving ✓</text>
+<text x="830" y="358" class="s" font-size="16" fill="#9da7b3">The same live socket now reaches</text>
+<text x="830" y="380" class="s" font-size="16" fill="#9da7b3">the service. The client never</text>
+<text x="830" y="402" class="s" font-size="16" fill="#9da7b3">saw an error.</text>
+<rect x="40" y="436" width="1120" height="58" rx="12" fill="#161b22" stroke="#30363d"/>
+<path d="M72 474 a11 11 0 1 1 9 3" fill="none" stroke="#3fb950" stroke-width="2.5" marker-end="url(#ag)"/>
+<text x="104" y="471" class="s" font-size="17" fill="#e6edf3"><tspan font-weight="700">Then it sleeps again.</tspan><tspan fill="#9da7b3"> After 5 minutes with no traffic (</tspan><tspan class="m" fill="#e6edf3">--idle</tspan><tspan fill="#9da7b3">), sbx stops the service: back to </tspan><tspan fill="#3fb950" font-weight="700">0 B</tspan><tspan fill="#9da7b3">, data kept.</tspan></text>
+</svg>

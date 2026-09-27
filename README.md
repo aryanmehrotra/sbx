@@ -88,7 +88,7 @@ MCP tools and the other SDKs are in [GUIDES.md](docs/GUIDES.md#ai-agents).
 
 <img src="docs/how-it-works.svg" width="900" alt="How sbx wakes a sandbox, in three steps. 1: psql connects to a port that belongs to sbx while the Postgres behind it is asleep, using 0 B of memory. 2: sbx accepts the connection and holds it open while the service starts. 3: once Postgres is healthy, sbx hands over the live connection and the query is answered. Any TCP protocol, unmodified clients.">
 
-<img src="docs/demo.svg" width="900" alt="A terminal running sbx: a branch sandbox is created from the web-stack template, its addresses are exported as shell variables and as JSON, a cache is added mid-task, a seeded database is snapshotted and forked, the sandbox sleeps to zero, and a plain redis-cli ping wakes it and is served.">
+<img src="docs/demo.svg" width="900" alt="A terminal recording of sbx: a sandbox is created from the web-stack template, sleeps to 0 B when nobody connects, and a plain psql query wakes it and is served in 435 ms without an error. Then an agent reads its addresses as JSON, a redis cache is added mid-task, and a seeded database is snapshotted and forked.">
 
 <sub>A real run, recorded by [`scripts/demo.sh`](scripts/demo.sh).</sub>
 

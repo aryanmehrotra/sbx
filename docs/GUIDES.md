@@ -429,6 +429,8 @@ Some platforms run one container behind one HTTPS port. `sbx pack` turns each se
 build context for such a platform, and `sbx connect` gives you local ports that tunnel to them.
 Use it when your laptop cannot run the stack, or to keep an agent off your machine.
 
+<img src="connect.svg" width="820" alt="How sbx connect works: psql dials 127.0.0.1:5432 on your laptop, sbx connect carries that TCP stream over one authenticated HTTPS WebSocket to the single port the platform routes, and sbx serve --front hands it to a postgres that is never published.">
+
 ```sh
 sbx pack --spec sandbox.json          # one build context per service, under sbx-pack/
 # deploy sbx-pack/db/ and sbx-pack/cache/, each with SBX_CONNECT_TOKEN set

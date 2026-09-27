@@ -9,8 +9,8 @@
 # file in the repo had lost one. This runs the actual commands against actual docker and
 # renders whatever comes back, so the picture is a measurement like everything else here.
 #
-# It shows the use cases rather than the self-test: a branch, an agent reading JSON, a service
-# added mid-task, seed-and-fork, and the sleep/wake cycle that is the whole product.
+# It opens with the hook - a sandbox sleeps to 0 B and plain psql wakes it - then shows the use
+# cases rather than the self-test: an agent reading JSON, a service added mid-task, seed-and-fork.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -120,7 +120,22 @@ echo "recording..." >&2
 DAEMON=$!
 sleep 3
 
-# ── a branch ──────────────────────────────────────────────────────────────────
+# A sandbox's log line for one event, as the INFO row the renderer draws.
+event() {  # event <slept|woke> <service>
+  grep -h "\"$1\"" "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep "\"$2\"" | tail -1 \
+    | python3 -c 'import sys,json
+for line in sys.stdin:
+    try: d=json.loads(line)
+    except Exception: continue
+    print("INFO\t%s  %s" % (d.get("sandbox","")+"/"+d.get("service",""), d.get("message","")))' \
+    | sed "s/$TAG-branch/feature-x/" >> "$SCRIPT" || true
+}
+
+# ── the hook: make one, let it sleep, wake it with an ordinary client ─────────
+#
+# The first screenful is the whole product, because that is all most readers look at: a
+# sandbox exists, it drops to 0 B on its own, and plain psql - no SDK, no wrapper - wakes it
+# and is served. Everything after that is what you do with it.
 say cmd 'sbx create feature-x --template web-stack'
 "$SBX" create "$TAG-branch" --template web-stack 2>&1 | norm | while IFS= read -r l; do
   case "$l" in
@@ -132,17 +147,56 @@ say cmd 'sbx create feature-x --template web-stack'
 done
 
 say blank
-say cmd 'eval "$(sbx env feature-x)"    # it remembers what it was made from'
-"$SBX" env "$TAG-branch" 2>/dev/null | norm | sed "s/$TAG-branch/feature-x/" | while IFS= read -r l; do
-  say out "$l"
+say cmd '# nobody connects for a few seconds'
+
+waited=0
+until [ "$(docker inspect -f '{{.State.Status}}' "sbx-$TAG-branch-postgres" 2>/dev/null)" = "exited" ]; do
+  sleep 2; waited=$((waited + 2)); [ "$waited" -ge 60 ] && break
 done
+
+event slept postgres
+say ok '  asleep - 0 B of memory, the volume untouched'
+
+say blank
+
+# shellcheck disable=SC1090
+eval "$("$SBX" env "$TAG-branch" 2>/dev/null)"
+
+# The number a reader takes away is measured here, so this is where the machine has to be
+# quiet. The sandbox is asleep while we wait, so waiting changes nothing about what is timed.
+wait_until_quiet || refuse_if_busy "and stayed busy for five minutes"
+
+# Label the line with the command that really ran: psql if this machine has it, otherwise a
+# raw socket that speaks the first byte of the postgres protocol.
+if command -v psql >/dev/null 2>&1; then
+  say cmd "psql postgres://app:app@127.0.0.1:${DATABASE_PORT:-0}/app -tAc \"select 'hello'\"   # asleep; plain psql wakes it"
+  start=$(python3 -c 'import time;print(int(time.time()*1000))')
+  reply=$(psql "postgres://app:app@127.0.0.1:${DATABASE_PORT:-0}/app" -tAc "select 'hello'" 2>&1 | tail -1)
+else
+  say cmd "python3 -c 'socket.create_connection((\"127.0.0.1\", ${DATABASE_PORT:-0}))...'   # any TCP client"
+  start=$(python3 -c 'import time;print(int(time.time()*1000))')
+  reply=$(python3 - "${DATABASE_PORT:-0}" <<'PYWAKE'
+import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=90)
+    s.sendall(b"\x00\x00\x00\x08\x04\xd2\x16\x2f")   # SSLRequest: the server answers S or N
+    print("postgres answered %r" % s.recv(1).decode(errors="replace"))
+    s.close()
+except Exception as e:
+    print("ERR", e)
+PYWAKE
+)
+fi
+took=$(( $(python3 -c 'import time;print(int(time.time()*1000))') - start ))
+say out "$reply"
+event woke postgres
+say ok "  served in ${took}ms - the client waited, it was never refused"
 
 # ── an agent ──────────────────────────────────────────────────────────────────
 say blank
 say cmd 'sbx env feature-x --shell json          # no SDK; an agent parses this'
 "$SBX" env "$TAG-branch" --shell json 2>/dev/null | norm | sed "s/$TAG-branch/feature-x/" \
-  | head -6 | while IFS= read -r l; do say out "$l"; done
-say out '  ...'
+  | while IFS= read -r l; do say out "$l"; done
 
 say blank
 say cmd "sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'"
@@ -162,71 +216,6 @@ say cmd 'sbx snapshot main golden && sbx fork golden agent-1'
 
 got=$("$SBX" exec "$TAG-agent" postgres psql -U app -d app -tAc 'select v from t' 2>/dev/null | tr -d ' \n')
 say ok "  agent-1 carries the seeded row: $got"
-
-# ── the cycle that is the product ─────────────────────────────────────────────
-say blank
-say cmd '# nobody touches it for a few seconds'
-
-waited=0
-until [ "$(docker inspect -f '{{.State.Status}}' "sbx-$TAG-branch-redis" 2>/dev/null)" = "exited" ]; do
-  sleep 2; waited=$((waited + 2)); [ "$waited" -ge 40 ] && break
-done
-
-# The service that sleeps here has to be the one that wakes below, or the two lines name
-# different services and the cycle the demo exists to show does not read as one.
-grep -h 'slept' "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep redis | tail -1 \
-  | python3 -c 'import sys,json
-for line in sys.stdin:
-    try: d=json.loads(line)
-    except Exception: continue
-    print("INFO\t%s  %s" % (d.get("sandbox","")+"/"+d.get("service",""), d.get("message","")))' \
-  | sed "s/$TAG-branch/feature-x/" >> "$SCRIPT" || true
-
-say ok '  asleep - 0 B of memory, the volume untouched'
-
-say blank
-
-# shellcheck disable=SC1090
-eval "$("$SBX" env "$TAG-branch" 2>/dev/null)"
-
-# Wake it with whatever this machine actually has, and label the line with the command that
-# really ran. The two differ in their reply - redis-cli prints PONG, a socket sees the +PONG
-# on the wire - and a demo that captions itself "recorded from a real run" cannot show one
-# command's name above the other one's output.
-wait_until_quiet || refuse_if_busy "and stayed busy for five minutes"
-
-if command -v redis-cli >/dev/null 2>&1; then
-  say cmd 'redis-cli ping        # an ordinary client; no SDK, no wrapper'
-  start=$(python3 -c 'import time;print(int(time.time()*1000))')
-  reply=$(redis-cli -h 127.0.0.1 -p "${REDIS_PORT:-0}" ping 2>&1 | tail -1)
-else
-  say cmd 'printf "PING\r\n" | nc 127.0.0.1 $REDIS_PORT   # any TCP connection at all'
-  start=$(python3 -c 'import time;print(int(time.time()*1000))')
-  reply=$(python3 - "${REDIS_PORT:-0}" <<'PYWAKE'
-import socket, sys
-try:
-    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=90)
-    s.sendall(b"PING\r\n")
-    print(s.recv(32).decode(errors="replace").strip())
-    s.close()
-except Exception as e:
-    print("ERR", e)
-PYWAKE
-)
-fi
-took=$(( $(python3 -c 'import time;print(int(time.time()*1000))') - start ))
-say out "$reply"
-
-grep -h 'woke' "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep redis | tail -1 \
-  | python3 -c 'import sys,json
-for line in sys.stdin:
-    try: d=json.loads(line)
-    except Exception: continue
-    print("INFO\t%s  %s" % (d.get("sandbox","")+"/"+d.get("service",""), d.get("message","")))' \
-  | sed "s/$TAG-branch/feature-x/" >> "$SCRIPT" || true
-
-say ok "  served in ${took}ms - the client waited, it was never refused"
-
 kill "$DAEMON" 2>/dev/null; DAEMON=""
 
 # Nothing internal may reach the picture. The tag is a pid, so a leak is both ugly and a
