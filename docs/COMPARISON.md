@@ -31,13 +31,13 @@ sbx's helper-VM path is run by hand on a Mac (v0.11) and not yet run end to end 
 | | sbx | E2B | Daytona | Modal | OpenSandbox | Vercel | Cloudflare | Fly |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Wakes on an unmodified client connection | ● any TCP | ○ SDK | ○ API | ○ SDK | ○ API | ○ SDK | ◐ HTTP² | ◐ HTTP¹ |
-| Runs on your laptop | ● | ○ | ○ | ○ | ● | ○ | ○ | ○ |
+| Runs on your laptop | ● | ◐ Linux + KVM, evaluation only⁶ | ○ | ○ | ● | ○ | ○ | ○ |
 | Self-hosted, no account | ● MIT | ◐ infra³ | ◐ frozen⁴ | ○ | ● Apache-2.0 | ○ | ○ | ○ |
 | Hosted, nothing to run | ○ | ● | ● | ● | ○ | ● | ● | ● |
 | Several services in one spec | ● | ○ | ○ | ○ | – | ○ | ○ | ◐ |
-| Idle cost | $0, 0 B RAM | storage | storage | storage | $0, your infra | snapshot storage | storage | storage |
+| Idle cost | $0, 0 B RAM | $0 while paused [src][e2b-bill] | storage | snapshot storage | $0, your infra | snapshot storage | $0, files deleted [src][cf-price] | storage |
 | Sleep keeps RAM and processes | ● microVM · ◐ docker⁵ | ● | ◐ VM only | ◐ alpha | ● | ○ files only | ○ | ● suspend |
-| Resume time, vendor's own figure | [BENCHMARKS](BENCHMARKS.md) | ~1 s [src][e2b-p] | – | – | – | – | 1–3 s [src][cf-arch] | a few hundred ms [src][fly-sr] |
+| Resume time, vendor's own figure | [BENCHMARKS](BENCHMARKS.md) | ~1 s [src][e2b-p] | – | – | – | – | none, sleep deletes files; cold start 1-3 s [src][cf-arch] | a few hundred ms [src][fly-sr] |
 | Isolation | container · jailed microVM | Firecracker | container; VM optional | gVisor | container to Firecracker | Firecracker | container in a VM | Firecracker |
 | SDKs | OpenSandbox's 5 · CLI · MCP | Python, JS | 5 languages | Python, JS, Go [src][modal-sdk] | 5 languages | TS, Python | TS | REST API |
 | Speaks the OpenSandbox API | ● | ○ | ○ | ○ | ● reference | ○ | ○ | – |
@@ -45,11 +45,12 @@ sbx's helper-VM path is run by hand on a Mac (v0.11) and not yet run end to end 
 | Credentials kept out of the sandbox | ○ [planned](ROADMAP.md#next) | – | – | – | ● vault | ● brokering | ◐ header injection | – |
 | GPU | ◐ docker only | – | – | ● | – | – | ○ | ● |
 
-1. Through [Fly Proxy][fly-proxy]. HTTP wakes freely. Raw TCP needs a dedicated IPv4 (checked 2026-08-31).
+1. Through [Fly Proxy][fly-proxy], which starts a stopped Machine on a request. A raw TCP wake is not documented (checked 2026-09-27).
 2. A request through your Worker. On sleep, files are deleted and processes end ([lifecycle][cf-sb]).
 3. Its infrastructure code is Apache-2.0 ([e2b-dev/infra][e2b-infra]).
 4. AGPL. The repo says the open-source core "will receive no further updates" ([repo][dt-gh]).
 5. Opt-in [`on_idle: "freeze"`](SPEC.md#on_idle-freeze-keeps-memory-instead), which holds RAM while idle.
+6. E2B Embed runs the stack on one Linux host with KVM; E2B calls it "an evaluation package, not a production deployment pattern" ([infra][e2b-infra], checked 2026-09-27).
 
 Other vendor details:
 
@@ -71,7 +72,7 @@ The project's own judgement, not a measurement. sbx among the eight tools above 
 
 | Dimension | sbx rank | Why |
 |---|:---:|---|
-| Idle cost | 1 (tied with OpenSandbox on $) | 0 B RAM asleep on your hardware. Hosted tools bill storage |
+| Idle cost | 1 (tied with OpenSandbox on $) | 0 B RAM asleep on your hardware. E2B and Cloudflare also charge nothing while idle; most others bill storage |
 | Multi-service stacks | 1 (OpenSandbox not checked) | One `sandbox.json` with Postgres, Redis and a browser |
 | Self-hosting | 2 | One binary, laptop to cluster. OpenSandbox has more runtimes and users |
 | Docs | 4 | Measured numbers with scripts. No docs site or search |
@@ -125,7 +126,7 @@ sbx is free because it runs on your hardware. For a team that owns none, that is
 
 ## Choose something else if
 
-- You need the fastest burst create today: isorun ([site][iso]) and Daytona lead ComputeSDK's board.
+- You need the fastest hosted create: isorun (43.6 ms median) and createos (124.9 ms) lead ComputeSDK's 100-at-once run of 2026-09-25 ([results][csdk-r]); see [BENCHMARKS](BENCHMARKS.md#hosted-sandboxes-published-figures).
 - You need secrets kept out of the sandbox now: OpenSandbox's vault or Vercel's brokering.
 - You want a browser IDE on a managed machine: Codespaces, Coder or Ona. sbx has no browser IDE.
 - Your apps are HTTP and already behind Traefik or Caddy: Sablier.
@@ -145,13 +146,14 @@ sbx is free because it runs on your hardware. For a team that owns none, that is
 [dt-gh]: https://github.com/daytonaio/daytona
 [dt-price]: https://www.daytona.io/pricing
 [dt-sb]: https://www.daytona.io/docs/en/sandboxes
+[e2b-bill]: https://docs.e2b.dev/billing
+[cf-price]: https://developers.cloudflare.com/containers/pricing/
 [e2b-fork]: https://docs.e2b.dev/sandbox/fork
 [e2b-infra]: https://github.com/e2b-dev/infra
 [e2b-p]: https://docs.e2b.dev/sandbox/persistence
 [elasti]: https://github.com/truefoundry/KubeElasti
 [fly-proxy]: https://fly.io/docs/reference/fly-proxy-autostop-autostart/
 [fly-sr]: https://fly.io/docs/reference/suspend-resume/
-[iso]: https://isorun.ai/
 [lazy]: https://github.com/vmorganp/Lazytainer
 [modal-sdk]: https://modal.com/docs/guide/sdk-javascript-go
 [modal-sec]: https://modal.com/docs/guide/security

@@ -6,30 +6,67 @@ a row says otherwise: sbx v0.14.0 on one Linux machine, 2026-09-27 (details in t
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="bench-dark.svg">
-  <img src="bench-light.svg" width="900" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5.">
+  <img src="bench-light.svg" width="900" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5. OpenSandbox API, create a sandbox and run a first command: sbx 307 ms, OpenSandbox server 1,417 ms.">
 </picture>
 
 ## Head to head
 
-Same machine, same images, same clients. Best result in each row in bold.
+Two kinds of tool compete with sbx, so there are two tables. Each was measured on the same
+machine, with the same images and clients. Best result in each row in bold.
 
-| | **sbx** | docker compose | Lazytainer | Sablier |
-|---|---|---|---|---|
-| **RAM held by 20 idle Postgres databases** ¹ | **17.6 MB** | 629 MB | not measured | not measured |
-| **Sleeping Postgres answers `psql`** (median) ² | **348 ms** | never sleeps | 3,407 ms | cannot (HTTP only) |
-| **First connection served while waking** ² | **20 of 20** | never sleeps | 0 of 5 | cannot (HTTP only) |
-| **Sleeping nginx answers `curl`** (median) ² | **240 ms** | never sleeps | 3,061 ms | could not be set up |
-| **Extra time per query once awake** ³ | +9.6 µs | **none** | not measured | not measured |
-| **What wakes it** | any TCP connection | nothing, always on | a burst of packets | an HTTP request |
+### Databases for branches and tests
 
-What this means for you:
+| | **sbx** | docker compose | Testcontainers | Lazytainer | Sablier |
+|---|---|---|---|---|---|
+| RAM held by 20 idle Postgres databases ¹ | **17.6 MB** | 629 MB | not measured | not measured | not measured |
+| Sleeping Postgres answers `psql` (median) ² | **348 ms** | never sleeps | never sleeps | 3,407 ms | cannot (HTTP only) |
+| First connection served while waking ² | **20 of 20** | never sleeps | never sleeps | 0 of 5 | cannot (HTTP only) |
+| Sleeping nginx answers `curl` (median) ² | **240 ms** | never sleeps | never sleeps | 3,061 ms | could not be set up |
+| Brand-new Postgres answers its first query (median) ⁵ | 4,975 ms | **2,498 ms** | **2,520 ms** | not measured | not measured |
+| Extra time per query once awake ³ | +9.6 µs | **none** | **none** | not measured | not measured |
+| What wakes it | any TCP connection | nothing, always on | nothing, always on | a burst of packets | an HTTP request |
 
-- Idle branches cost memory only with docker compose. Twenty idle Postgres databases hold 629 MB
-  there and 17.6 MB with sbx, which is the sbx daemon alone.
-- A sleeping sandbox answers the first query. Lazytainer refused the first attempt every time, so a
-  client that doesn't retry gets an error instead of a result.
-- Once awake, sbx adds microseconds per query. docker compose adds nothing, because nothing sits in
-  between; that is the price of sleeping.
+- Idle databases cost memory only when they never sleep: 629 MB for twenty with docker compose,
+  17.6 MB with sbx, which is the sbx daemon alone.
+- A sleeping sbx sandbox answers the first query. Lazytainer refused the first attempt every time.
+- A brand-new database per test is not faster with sbx today. `sbx with` waits for the daemon's
+  15 s refresh, so it took 5.0 s against 2.5 s. Reusing a sleeping sandbox took 289 ms.
+- Once awake, sbx adds microseconds per query. The always-on tools add nothing.
+
+### Sandboxes for AI agents
+
+| | **sbx** | OpenSandbox server |
+|---|---|---|
+| Create → first command (median) ⁶ | **307 ms** | 1,417 ms |
+| Command round trip (median) ⁶ | **3.3 ms** | 1,005.5 ms |
+| Pause → resume → first command (median) ⁶ | **29.5 ms** | 1,048 ms |
+| Server RAM with 10 idle sandboxes ⁶ | **16 MiB** | 165 MiB |
+| Create → first command from a warm pool | **12.8 ms** | no pool on Docker |
+
+Both run the same API, so the same SDK and image drive both. Every command on the upstream server
+took about a second to return (footnote ⁶), which accounts for most of its create figure.
+
+### Hosted sandboxes, published figures
+
+Not measured here. [ComputeSDK](https://github.com/computesdk/benchmarks) times create → first
+command (`node -v`) for 100 sandboxes created at once, from GitHub Actions runners over the
+internet. Its run of 2026-09-25, next to sbx's figure for the same shape on one machine with no
+network in between:
+
+| | Median, 100 at once | Idle cost |
+|---|---|---|
+| sbx, warm pool (measured here) | 309-460 ms (2 runs) | $0, 0 B RAM |
+| sbx, no pool (measured here) | 8,971 ms (1 run) | $0, 0 B RAM |
+| isorun | 43.6 ms | not checked |
+| Daytona | 341.4 ms | storage |
+| Vercel Sandbox | 452.9 ms | snapshot storage |
+| Cloudflare Sandbox | 647.8 ms | $0; files are deleted on sleep |
+| Modal | 907.6 ms | snapshot storage |
+| E2B | 1,237.7 ms | $0 while paused |
+| microsandbox | 2,541.3 ms | $0, your hardware |
+
+None of these wakes on a plain client connection: they resume through their SDK, API or an HTTP
+request. Sources, dates and idle-cost links are in [COMPARISON.md](COMPARISON.md).
 
 ## sbx by itself
 
@@ -48,6 +85,7 @@ What this means for you:
 | OpenSandbox create → first command, warm pool | **12.8 ms** median (p95 77.8) | 10 |
 | The same, no pool | **342 ms** median | 10 |
 | The same, 100 at once from the pool | **309-460 ms** median | 2 × 100 |
+| The same, 100 at once with no pool | **8,971 ms** median (p95 17,711) | 1 × 100 |
 | The same on Firecracker microVMs, frozen pool ⁴ | **144 ms** median | 3 × 4 |
 | The same on microVMs, asleep pool / no pool ⁴ | **759 / 2,637 ms** median | 3 × 4 |
 
@@ -75,6 +113,37 @@ longer than both.
   query that takes 426 µs, it was +7% on an Apple M4.
 - ⁴ GitHub's `ubuntu-24.04` runner with nested KVM and Firecracker's jailer on, in CI's `microvm`
   job. No bare-metal run exists yet.
+- ⁵ `scripts/bench-pg-per-test.sh 10`, sbx built from `5f78032` (v0.14.0 plus 18 commits),
+  Testcontainers 4.15.0 (Python), Docker Compose 5.1.1. Ten rounds, contenders interleaved and
+  rotated. Same digest-pinned image as `examples/postgres`, same credentials, and the host's `psql`
+  running `select 1` as the only client. Testcontainers is timed in-process from `start()`, with
+  its reaper off, since a test session pays both once. Compose uses the template's health check
+  at its 300 ms pace, `start_interval` included. Spreads: compose 2,442-2,526, Testcontainers
+  2,498-2,557, so the two are not resolvable. `sbx with` ran 2,311-5,232: four runs landed right
+  after the daemon's refresh tick and took under 2.8 s. The same 10 runs against
+  `sbx serve --refresh 1s`, not interleaved, took 2,352 ms median (2,117-2,538). A wake of an
+  existing sleeping sandbox in the same rounds took 289 ms median (259-442); it is lower than the
+  348 ms above because this `psql` runs on the host, not in a client container.
+- ⁶ `scripts/bench-osb-upstream.sh 10 10`: upstream's `opensandbox/server:release-1.1.0` image
+  (the release in `test/osb/UPSTREAM`) with `opensandbox/execd:v1.1.0`, run with the docker
+  socket as upstream's `server/docker-compose.example.yaml` does, against sbx built from
+  `5f78032`. Upstream's Go SDK v1.1.0 as the client, image `node:22-slim`, 10 rounds interleaved
+  and rotated. Create → first command spread: sbx 260-913, upstream 1,398-2,424. Command round
+  trip, 100 each: sbx 2.5-7.6, upstream 1,004-1,019. Upstream's execd sends
+  `execution_complete` 2 ms into a `true` and closes the stream at 1.0 s, seen with `curl`
+  directly, so each command costs a second; the cause was not traced further. Other lifecycle
+  medians, sbx against upstream: upload 1 MiB 4.1 / 11.2 ms, download 9.3 / 8.9 ms (not
+  resolvable), pause → resume → first command 29.5 / 1,048 ms. ComputeSDK's TTI shape (one
+  create → `node -v` per round, 10 rounds each, alternating, a fresh sbx daemon per round): sbx
+  620 ms median (566-5,737, the first round of the run the outlier), upstream 1,488 ms
+  (1,447-1,612). Upstream's docker runtime has no warm pool, so there is no pooled pair. Memory:
+  10 sandboxes left untouched 60 s, still running on both (sbx's `--idle` is 5 min): 34 MiB of
+  containers with sbx, 40 MiB with upstream, from `docker stats`. Server RSS: sbx daemon 16 MiB,
+  upstream's Python server 165 MiB.
+- Not run here: Daytona's open-source repository "is no longer maintained"
+  ([its README](https://github.com/daytonaio/daytona), checked 2026-09-27), and its last
+  self-hosting compose file (v0.190.0) is 14 services with a privileged runner. E2B's self-hosted stack and microsandbox both need KVM, which
+  this machine does not have.
 - Every release also attaches a `bench.md` with the proxy benchmarks from its CI runner, for
   comparing one release with the last.
 
@@ -94,6 +163,8 @@ scripts/connbench.sh 20                           # new-connection overhead
 go test -run '^$' -bench 'RoundTrip|Conn|Stream' -count 10 ./internal/daemon   # ³ proxy
 scripts/osb-bench.sh --burst 1 --rounds 10 --pool node:22-slim=8 --burst-modes default,cold
 scripts/osb-bench.sh --burst 100 --rounds 1 --pool node:22-slim=100
+scripts/bench-pg-per-test.sh 10                   # ⁵ Testcontainers, compose, sbx with, sbx wake
+scripts/bench-osb-upstream.sh 10 10               # ⁶ OpenSandbox's own server against sbx
 ```
 
 ## Earlier runs

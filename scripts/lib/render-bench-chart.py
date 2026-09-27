@@ -29,10 +29,18 @@ PANELS = [
             ("Lazytainer (wakes on traffic)", 3407, "3,407 ms", "first try refused: 0 of 5"),
         ],
     },
+    {
+        "title": "OpenSandbox API: create a sandbox and run a first command",
+        "unit": "ms",
+        "rows": [
+            ("sbx", 307, "307 ms", "same SDK, same image"),
+            ("OpenSandbox server", 1417, "1,417 ms", ""),
+        ],
+    },
 ]
 
 CAPTION = ("Lower is better. sbx v0.14.0 on a 4 vCPU Linux VM with Docker 29. Memory: lower of 2 runs; "
-           "time: median. Method in docs/BENCHMARKS.md.")
+           "times: medians. Method in docs/BENCHMARKS.md.")
 
 THEMES = {
     "light": {"text": "#1f2328", "muted": "#59636e", "sbx": "#1a7f37", "other": "#6e7781", "rule": "#d1d9e0"},

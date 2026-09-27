@@ -12,6 +12,7 @@ There are no dates.
 
 | Item | Why | Size | Status |
 |---|---|:---:|---|
+| `sbx create` and `sbx with` tell the daemon at once | A new sandbox waits for the daemon's 15 s refresh, so `sbx with` took 5.0 s where Testcontainers took 2.5 s ([BENCHMARKS](BENCHMARKS.md#databases-for-branches-and-tests)) | S | Not started |
 | Bare-metal microVM wake and burst numbers | E2B, isorun and OpenSandbox publish microVM figures; sbx has only nested runs | S | Harness exists: `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider`; needs a bare-metal host |
 | The microVM's disk cost in `sbx doctor` and BENCHMARKS | A sleeping microVM keeps a snapshot about the size of its RAM on disk | S | Not started |
 | The helper VM run end to end on a Mac and on Windows 11 | microsandbox and Docker Sandboxes run microVMs on all three OSes | M | See [platform status](ARCHITECTURE.md#platform-status) |
