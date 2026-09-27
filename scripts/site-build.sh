@@ -13,7 +13,7 @@ OUT="$ROOT/_site"
 rm -rf "$OUT"
 mkdir -p "$OUT/assets"
 cp -R "$ROOT/site/." "$OUT/"
-for f in bench-light.svg bench-dark.svg how-it-works.svg social-preview.png; do
+for f in bench-light.svg bench-dark.svg social-preview.png; do
   cp "$ROOT/docs/$f" "$OUT/assets/$f"
 done
 echo "built $OUT"
