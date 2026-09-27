@@ -413,7 +413,12 @@ func TestPatchMetadataIsAMergePatch(t *testing.T) {
 	}
 }
 
-func TestRenewOnlyEverExtends(t *testing.T) {
+// A renew sets any future expiry, earlier than the current one included: upstream's server checks
+// only that it is in the future (services/validators.py ensure_future_expiration, called by
+// docker_service.py renew_expiration at release-1.1.0), and its SDK pool shortens a member's
+// expiry to the caller's timeout on acquire. The spec's "after the current expiresAt" is
+// stricter than the server that defines it, and refusing it failed eight upstream pool tests.
+func TestRenewSetsAnyFutureExpiry(t *testing.T) {
 	h := newHarness(t)
 	sb := h.create(minimalCreate())
 	path := "/v1/sandboxes/" + sb.ID + "/renew-expiration"
@@ -423,14 +428,19 @@ func TestRenewOnlyEverExtends(t *testing.T) {
 	}
 
 	for name, body := range map[string]any{
-		"earlier":     at(-time.Minute),
-		"same":        at(0),
+		"now":         map[string]string{"expiresAt": h.clock().Format(time.RFC3339)},
 		"in the past": map[string]string{"expiresAt": h.clock().Add(-time.Hour).Format(time.RFC3339)},
 	} {
 		resp := h.do("POST", path, body, nil)
 		if resp.StatusCode != 400 || h.errOf(resp).Code != "SANDBOX::INVALID_EXPIRATION" {
 			t.Errorf("%s: %d, want 400 INVALID_EXPIRATION", name, resp.StatusCode)
 		}
+	}
+
+	var shorter renewResponse
+	if resp := h.do("POST", path, at(-time.Minute), &shorter); resp.StatusCode != 200 ||
+		!shorter.ExpiresAt.Equal(sb.ExpiresAt.Add(-time.Minute)) {
+		t.Fatalf("a shortening renew = %d %v, want 200 and the earlier expiry", resp.StatusCode, shorter.ExpiresAt)
 	}
 
 	var got renewResponse
