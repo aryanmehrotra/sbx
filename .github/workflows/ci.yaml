@@ -308,6 +308,22 @@ jobs:
           RUN_CODE_INTERPRETER_E2E: 'true'
         run: ./scripts/osb-conformance.sh --tier v0.10.0
 
+      # Two files from the later tiers that sbx passes, gated so they stay passing. The rest of
+      # those tiers (isolated_session, credential_vault) is not built: docs/ROADMAP.md §4.
+      # pool is the SDK's own pool; half of it is backed by Redis and skips without one, and a
+      # skip is not a pass.
+      - name: upstream tests/go, pool (v0.11.0 tier), with a Redis
+        env:
+          OPENSANDBOX_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          docker run -d --rm --name osb-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+          ./scripts/osb-conformance.sh --files pool
+
+      # e2e_test.go creates its client with no key, so the daemon runs with
+      # --osb-insecure-no-key on loopback for this file alone.
+      - name: upstream tests/go, e2e (v0.12.0 tier), keyless
+        run: ./scripts/osb-conformance.sh --files e2e --no-key
+
   # Snapshot and fork touch volumes, images and a stopped container's data directory, and
   # every one of those is a place where "it worked on my machine" has already been wrong
   # once here: docker commit silently excludes volumes.
