@@ -8,7 +8,7 @@
 //
 // So the host needs no AF_VSOCK, no kernel module and no privileges, only this handshake; and a
 // wake proxy that splices bytes can splice these exactly as it splices a TCP connection.
-// Measured on a restored VM (docs/superpowers/specs/2026-09-26-firecracker-spike.md): dial +
+// Measured on a restored VM (docs/design/2026-09-26-firecracker-spike.md): dial +
 // CONNECT + OK is 4.1 ms median under nested virtualisation.
 package fcvsock
 

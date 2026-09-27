@@ -76,7 +76,7 @@ connection pool, Playwright and your test runner all wake it without knowing sbx
 | **Let an agent reach only the APIs you allow** | `egress_allow: ["api.openai.com"]` — the box reaches the listed hosts and nothing else, enforced by a filtering proxy; there's no route around it, and its calls out count as activity so it stays awake while it works |
 | **Keep a box awake while it works** | `idle: "never"` — an agent computing inside sends no traffic through the port, so this stops the idle timer from sleeping it mid-task |
 | **Run code written for OpenSandbox, unchanged** | `sbx serve --osb-addr 127.0.0.1:8080` speaks OpenSandbox's lifecycle and execd APIs, so its Go, Python, JS, Kotlin and C# SDKs work against your own machine — commands, streaming, sessions, files, renew, pause, network policy, snapshots, host and named volumes. Proven by running OpenSandbox's own e2e suite, not a feature table → [test/osb](test/osb/README.md) |
-| **Give an agent sandbox tools over MCP** | `claude mcp add sbx -- sbx mcp` — create, run, read and write files in a sandbox, the same 19 tools OpenSandbox's MCP server has → [AGENTS](docs/AGENTS.md) |
+| **Give an agent sandbox tools over MCP** | `claude mcp add sbx -- sbx mcp` — create, run, read and write files in a sandbox, the same 19 tools OpenSandbox's MCP server has → [AGENTS](docs/AI-AGENTS.md) |
 | **Change what a box may reach while it runs** | `sbx egress <box> --deny '*.example.com' --allow 10.0.0.0/8` — domain, wildcard and CIDR rules, applied live without a restart |
 
 The OpenSandbox API always requires a key, loopback included: `sbx serve --osb-addr` generates
@@ -85,7 +85,7 @@ one into `~/.sbx/osb/key`, `sbx mcp` reads it from there, and the SDKs take it a
 A warm pool (`--osb-pool IMAGE[=N]`) serves only creates with the same image, entrypoint and
 resourceLimits as its members, which are the SDKs' defaults (`tail -f /dev/null`, cpu 1, memory
 2Gi); anything else goes cold, and the daemon log names the field that differed - see
-[AGENTS.md](docs/AGENTS.md).
+[AI-AGENTS.md](docs/AI-AGENTS.md).
 On an M3+ Mac or Windows, `sbx serve --provider firecracker --osb-addr 127.0.0.1:8080` runs the API
 inside the helper VM (jailer, egress filter and host guard as on Linux) and fronts it here with the
 same key; `--osb-insecure-no-key` and the warm pool are refused on that path. It is unit-tested
@@ -106,7 +106,7 @@ with fakes and **not yet run end to end on a Mac** - see
 |---|---|
 | **Watch every sandbox live** | `sbx ui` — cpu and memory against each service's own ceiling, and where it's been |
 | **Drive a deployment from your laptop's terminal** | `sbx ui --connect <url>` — wake, sleep, limit, remove, tail logs, `f` to port-forward here |
-| **Read it from a script instead of a screen** | `--json` on `list`, `doctor`, `history`, `env` → [AGENTS](docs/AGENTS.md) |
+| **Read it from a script instead of a screen** | `--json` on `list`, `doctor`, `history`, `env` → [AGENTS](docs/AI-AGENTS.md) |
 | **Know who changed what, and when** | `sbx history` records every change and every wake, secrets redacted |
 
 ---
@@ -216,7 +216,7 @@ Every sandbox command takes `--provider docker|kubernetes|firecracker`, `--names
 
 | | |
 |---|---|
-| [AGENTS.md](docs/AGENTS.md) | pointing an agent at sbx — a block to paste, and the non-obvious bits |
+| [AI-AGENTS.md](docs/AI-AGENTS.md) | pointing an agent at sbx — a block to paste, and the non-obvious bits |
 | [USE-CASES.md](docs/USE-CASES.md) | eleven shapes this fits, with the commands |
 | [SPEC.md](docs/SPEC.md) | every field of `sandbox.json`, and a docker-compose mapping |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | the pieces, both data paths, addressing |

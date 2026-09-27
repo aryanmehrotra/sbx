@@ -281,7 +281,7 @@ jobs:
 
   # OpenSandbox compatibility, measured by OpenSandbox's own Go e2e suite at the commit pinned
   # in test/osb/UPSTREAM, run unmodified against a throwaway `sbx serve --osb-addr`. The tier
-  # is the release this branch claims (docs/superpowers/specs/2026-09-25-opensandbox-compat-
+  # is the release this branch claims (docs/design/2026-09-25-opensandbox-compat-
   # design.md, "Releases"); a skip not allowed by test/osb/expectations fails it.
   osb-conformance:
     needs: changes

@@ -138,7 +138,7 @@ that can nest (M3 or later, macOS 15 or later) and on Windows, and hands that de
 helper-VM layer - B - through `provider.HelperVMProvider`. A build without that layer says so; a
 Mac that cannot nest, and every other case with no path, is refused with the one thing to change.
 
-**B is shipping in v0.11**, moved up from "later" once the spike ([2026-09-26](superpowers/specs/2026-09-26-firecracker-spike.md))
+**B is shipping in v0.11**, moved up from "later" once the spike ([2026-09-26](design/2026-09-26-firecracker-spike.md))
 measured it working on an M4: `--provider firecracker` on an M3+ Mac runs in a helper VM sbx
 manages (`sbx fc vm status|start|stop|rm`), and the same design covers Windows 11 through a WSL2
 distro (built and unit-tested; not yet run on a Windows host). How and why: DECISIONS, "A microVM

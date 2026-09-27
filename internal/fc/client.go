@@ -8,7 +8,7 @@
 //
 // The whole control plane is net/http with a unix DialContext. That is the constraint the
 // design turns on - go.mod has no requires, so no VMM SDK and no cgo - and the spike
-// (docs/superpowers/specs/2026-09-26-firecracker-spike.md) drove every call used here from
+// (docs/design/2026-09-26-firecracker-spike.md) drove every call used here from
 // about 150 lines of it against the pinned v1.17.0.
 package fc
 
