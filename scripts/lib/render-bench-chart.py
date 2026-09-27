@@ -14,6 +14,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 PANELS = [
     {
+        "title": "OpenSandbox API: create a sandbox and run a first command",
+        "unit": "ms",
+        "rows": [
+            ("sbx", 307, "307 ms", "same SDK, same image"),
+            ("OpenSandbox server", 1417, "1,417 ms", ""),
+        ],
+    },
+    {
         "title": "Memory held by 20 idle Postgres databases",
         "unit": "MB",
         "rows": [
@@ -27,14 +35,6 @@ PANELS = [
         "rows": [
             ("sbx", 348, "348 ms", "first try served: 20 of 20"),
             ("Lazytainer (wakes on traffic)", 3407, "3,407 ms", "first try refused: 0 of 5"),
-        ],
-    },
-    {
-        "title": "OpenSandbox API: create a sandbox and run a first command",
-        "unit": "ms",
-        "rows": [
-            ("sbx", 307, "307 ms", "same SDK, same image"),
-            ("OpenSandbox server", 1417, "1,417 ms", ""),
         ],
     },
 ]

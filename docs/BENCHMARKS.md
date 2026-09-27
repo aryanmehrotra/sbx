@@ -6,7 +6,7 @@ a row says otherwise: sbx v0.14.0 on one Linux machine, 2026-09-27 (details in t
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="bench-dark.svg">
-  <img src="bench-light.svg" width="900" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5. OpenSandbox API, create a sandbox and run a first command: sbx 307 ms, OpenSandbox server 1,417 ms.">
+  <img src="bench-light.svg" width="900" alt="OpenSandbox API, create a sandbox and run a first command: sbx 307 ms, OpenSandbox server 1,417 ms. Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5.">
 </picture>
 
 ## Head to head
