@@ -226,11 +226,7 @@ file still passes. With the renew fix (PR #3) and a Redis for the SDK's pool, th
 | `isolated_session` | 48 failed | not built: execd answers 501 |
 | `pool` | **20 passed** (was 4 · 8 failed · 8 skipped) | the 8 failures were one sbx bug: a renew that shortened the expiry was refused, and upstream's server allows it (PR #3). The 8 skips need `OPENSANDBOX_TEST_REDIS_URL`: the pool is the SDK's, backed by Redis |
 | `credential_vault` | 4 skipped | the tests need a target host (`OPENSANDBOX_CREDENTIAL_VAULT_E2E_TARGET_IP`); sbx serves no `/credential-vault` either way |
-| `e2e` (v0.12.0 tier) | 3 failed | never ran before: the harness's `--no-key` path was broken. It creates the code-interpreter image with `tail -f /dev/null` as the entrypoint, so Jupyter never starts, and sbx holds the sandbox `Pending` until Jupyter answers (a 3 min bound). Upstream reports `Running` at execd's `/ping` and leaves the Jupyter check to its SDK (`code_interpreter.go`, `CodeInterpreterRuntimeCheckCommand`) |
-
-The `e2e` result is a readiness decision rather than a missing feature, and it is open: report
-`Running` at execd as upstream does, or keep the Jupyter wait only when the image's own entrypoint
-runs.
+| `e2e` (v0.12.0 tier) | 3 failed, then fixed | never ran before: the harness's `--no-key` path was broken. It creates the code-interpreter image with `tail -f /dev/null` as the entrypoint, so Jupyter never starts, and sbx held the sandbox `Pending` until Jupyter answered (a 3 min bound). Upstream reports `Running` once the container runs and leaves Jupyter to its SDK (`CreateCodeInterpreter`); sbx now reports `Running` once execd answers ([DECISIONS.md](DECISIONS.md), "Running means usable", reversed) |
 
 What is not built:
 

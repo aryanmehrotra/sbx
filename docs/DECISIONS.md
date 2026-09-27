@@ -1148,6 +1148,18 @@ API sandbox is. Each difference from the container path is a decision, not an ac
   never comes up fails the create with "Jupyter did not answer within N (execd up after M ...)".
   Every create logs one line saying how long execd and then Jupyter took. Plain `/ping`
   is still liveness, which is what the wake proxy wants.
+  *Reversed after v0.13.0: Running means execd answers, as upstream's server has it.* The wait
+  above held a code-interpreter image whose entrypoint never starts Jupyter `Pending` until it
+  failed, and upstream's own `e2e_test.go` does exactly that (`tail -f /dev/null`), so all
+  three of its tests failed against sbx. Upstream reports Running once the container runs
+  (`docker_service.py`, release-1.1.0) and leaves Jupyter to its SDK, whose
+  `CreateCodeInterpreter` polls the kernel port itself (`waitRuntimeReady`). The failure that
+  motivated the wait - a first `/code` call dying `context canceled` - was the vsock keep-alive
+  bug (execd's connection returned `*fs.PathError`, and net/http cancelled every request after
+  the first), fixed in v0.12.0, not a Jupyter that was slow to start. A client that skips the
+  SDK's check still gets a bounded wait: execd's `/code` routes wait for a configured Jupyter
+  that is starting (`JupyterStartupWait`). `CodeReadyTimeout` is gone; `/ping?ready=code` stays
+  in execd for anyone who wants that answer.
 - **A guest's console is bounded** (security review of v0.12, M3). `console.log` is the guest's
   serial console, appended to by firecracker for the VM's life, so a guest printing in a loop could
   fill the host's disk. It (and `vmm.log`) is cut back in place to its newest 4 MiB of whole lines
