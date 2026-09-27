@@ -57,8 +57,9 @@ sandbox.destroy()
 ```
 
 Add `--provider firecracker` to `sbx serve` and every sandbox is a microVM with its own kernel,
-booted fresh from the image. To give Claude Code, Cursor or Codex sandboxes as tools, run
-`claude mcp add sbx -- sbx mcp` while the daemon runs. More in [GUIDES.md](docs/GUIDES.md#ai-agents).
+booted fresh from the image. To give Claude Code sandboxes as tools, run
+`claude mcp add sbx -- sbx mcp` while the daemon runs. Cursor and Codex are in
+[GUIDES.md](docs/GUIDES.md#mcp).
 
 ## Databases for branches and tests
 

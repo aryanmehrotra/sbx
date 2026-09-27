@@ -75,7 +75,7 @@ fields in SPEC.md, platform caveats and terms in ARCHITECTURE. Grep for the home
 
 | Page | Type ([Diátaxis](https://diataxis.fr/)) | Home of |
 |---|---|---|
-| `README.md` | landing | two paragraphs, four proof bullets, install, one usage block, AI agents, [docs links](README.md#documentation). No tables, glossary or comparison. |
+| `README.md` | landing | two paragraphs, three proof bullets, install, one usage block, AI agents, [docs links](README.md#documentation). No tables, glossary or comparison. |
 | `docs/QUICKSTART.md` | tutorial | a first success in ten minutes |
 | `docs/GUIDES.md`, `examples/*/README.md` | how-to | every task, one section each, [AI agents](docs/GUIDES.md#ai-agents); one template each |
 | `docs/SELF-HOSTING.md` | how-to | running sbx on your own servers |
@@ -160,3 +160,4 @@ Never edit or delete earlier lines. Past about 25, move the oldest to [CONTRIBUT
   crept into SPEC, COMPARISON and ROADMAP; state the current behaviour once.
 - 2026-09-27 · Docs written by agents in committee read as AI-generated: bold lead-ins, tables for
   prose, slogans. One voice, plain bullets, a README of about 100 lines.
+- 2026-09-27 · Read the vendor's unit, not just its price. Modal bills a "physical core (2 vCPU equivalent)"; a cost example priced 1 vCPU as a core and overstated Modal by 60% (SELF-HOSTING, COMPARISON).
