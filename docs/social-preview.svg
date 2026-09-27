@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="sbx: a real database for every branch and AI agent. Sleeps at 0 B, wakes the moment anything connects. No SDK, self-hosted. psql connects, sbx holds the connection, postgres wakes, the query is served.">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="sbx: sandboxes that sleep at 0 B until something connects, for every branch, test run and AI agent. Sleeps at 0 B, wakes the moment anything connects. No SDK, self-hosted. psql connects, sbx holds the connection, postgres wakes, the query is served.">
 <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1117"/><stop offset="1" stop-color="#111a24"/></linearGradient>
 <radialGradient id="gl" cx="0.88" cy="0.08" r="0.6"><stop offset="0" stop-color="#3fb950" stop-opacity="0.16"/><stop offset="1" stop-color="#3fb950" stop-opacity="0"/></radialGradient>
 <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8b949e"/></marker><marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#3fb950"/></marker>
@@ -14,10 +14,10 @@
 <text x="1026" y="128" class="s" font-size="22" fill="#9da7b3">redis wake</text>
 <text x="1010" y="174" text-anchor="end" class="m" font-size="32" font-weight="700" fill="#58a6ff">348 ms</text>
 <text x="1026" y="172" class="s" font-size="22" fill="#9da7b3">postgres wake</text>
-<text x="80" y="262" class="s" font-size="64" font-weight="700" letter-spacing="-1" fill="#e6edf3">A real database for every</text>
-<text x="80" y="336" class="s" font-size="64" font-weight="700" letter-spacing="-1" fill="#e6edf3">branch and AI agent</text>
-<text x="80" y="396" class="s" font-size="30" fill="#9da7b3">Sleeps at <tspan fill="#3fb950" font-weight="700">0 B</tspan>. Wakes the moment <tspan fill="#58a6ff" font-weight="700">anything connects</tspan>.</text>
-<text x="80" y="438" class="s" font-size="30" fill="#9da7b3">Written in Go. One binary, zero dependencies. No SDK.</text>
+<text x="80" y="262" class="s" font-size="64" font-weight="700" letter-spacing="-1" fill="#e6edf3">Sandboxes that sleep at 0 B</text>
+<text x="80" y="336" class="s" font-size="64" font-weight="700" letter-spacing="-1" fill="#e6edf3">until something connects</text>
+<text x="80" y="396" class="s" font-size="30" fill="#9da7b3">For every branch, test run and <tspan fill="#58a6ff" font-weight="700">AI agent</tspan>. No SDK, self-hosted.</text>
+<text x="80" y="438" class="s" font-size="30" fill="#9da7b3">Written in Go. One binary, zero dependencies.</text>
 <rect x="60" y="466" width="1160" height="120" rx="16" fill="#161b22" stroke="#30363d"/>
 <rect x="84" y="484" width="170" height="84" rx="10" fill="#0d1117" stroke="#58a6ff99"/>
 <text x="102" y="518" class="m" font-size="24" font-weight="700" fill="#58a6ff">psql</text>
