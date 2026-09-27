@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>sbx: a real database for every branch and AI agent</title>
-<meta name="description" content="Each branch, test run or AI agent gets its own Postgres, Redis or browser. Idle ones use 0 B of RAM; the first connection wakes them. One Go binary.">
+<title>sbx: sandboxes that sleep at 0 B until something connects</title>
+<meta name="description" content="Each branch, test run or AI agent gets its own sandbox: Postgres, Redis, a browser or agent code. Idle ones use 0 B of RAM; the first connection wakes them. One Go binary.">
 <link rel="canonical" href="https://aryanmehrotra.github.io/sbx/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://aryanmehrotra.github.io/sbx/">
-<meta property="og:title" content="sbx: a real database for every branch and AI agent">
+<meta property="og:title" content="sbx: sandboxes that sleep at 0 B until something connects">
 <meta property="og:description" content="Sleeps at 0 B. Wakes the moment anything connects. Written in Go: one binary, zero dependencies, no SDK.">
 <meta property="og:image" content="https://aryanmehrotra.github.io/sbx/assets/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -47,13 +47,13 @@ nav { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
 nav a { text-decoration: none; color: var(--muted); }
 section { padding: 72px 0; border-bottom: 1px solid var(--line); }
 section:last-of-type { border-bottom: 0; }
-h1 { font-size: clamp(34px, 5vw, 54px); line-height: 1.08; letter-spacing: -1.5px; margin: 0 0 20px; }
+h1 { font-size: clamp(32px, 3.8vw, 46px); line-height: 1.08; letter-spacing: -1.5px; margin: 0 0 20px; }
 h2 { font-size: clamp(24px, 3vw, 32px); line-height: 1.2; letter-spacing: -.5px; margin: 0 0 12px; }
 h3 { font-size: 18px; margin: 0 0 6px; }
 .lede { font-size: 19px; color: var(--muted); max-width: 34em; margin: 0 0 28px; }
 .sub { color: var(--muted); max-width: 40em; margin: 0 0 28px; }
 .hero > *, .split > *, .cols > *, .install { min-width: 0; }
-.hero { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+.hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 48px; align-items: center; }
 .small { font-size: 14px; color: var(--muted); }
 
 /* install tabs: radio buttons, so it works without JavaScript */
@@ -207,9 +207,9 @@ footer .note { margin-left: auto; }
 <section>
   <div class="wrap hero">
     <div>
-      <h1>A real database for every branch and AI agent.</h1>
-      <p class="lede">Point <code>psql</code>, Playwright or your test runner at a sleeping sandbox.
-        sbx holds the connection while it wakes, then hands it over. Written in Go: one static binary, no SDK, no account.</p>
+      <h1>Sandboxes that sleep at 0&nbsp;B until something connects.</h1>
+      <p class="lede">Every branch, test run and AI agent gets its own Postgres, Redis, browser or code sandbox.
+        Point <code>psql</code>, Playwright or your agent at one that is asleep: sbx holds the connection while it wakes, then hands it over. Written in Go, no SDK, no account.</p>
 
       <div class="install" id="install">
         <input type="radio" name="inst" id="t-brew" checked>
@@ -275,7 +275,8 @@ sbx fork seeded agent-2</pre>
       <div>
         <h3>A fixture per test run</h3>
         <p>Create, run the tests, remove it. Even when the tests fail, nothing is left behind.</p>
-<pre class="code">sbx with test-db --template postgres \
+<pre class="code">sbx with test-db \
+  --template postgres \
   -- go test ./...</pre>
       </div>
     </div>
