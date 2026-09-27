@@ -100,6 +100,13 @@ h3 { font-size: 18px; margin: 0 0 6px; }
 pre.code { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0; font-size: 13.5px; line-height: 1.6; overflow-x: auto; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; margin-top: 28px; }
 .how img { width: 100%; height: auto; max-width: 900px; border-radius: 12px; margin-top: 24px; }
+.qa { max-width: 780px; margin-top: 20px; border-top: 1px solid var(--line); }
+.qa details { border-bottom: 1px solid var(--line); padding: 14px 0; }
+.qa summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+.qa summary::-webkit-details-marker { display: none; }
+.qa summary::after { content: "+"; color: var(--muted); font-weight: 400; }
+.qa details[open] summary::after { content: "–"; }
+.qa p { margin: 10px 0 0; color: var(--muted); font-size: 16px; }
 .final { text-align: center; }
 .final .install { margin: 28px auto 0; text-align: left; }
 footer { padding: 28px 0 48px; font-size: 14px; color: var(--muted); }
@@ -197,7 +204,9 @@ footer .note { margin-left: auto; }
     <a class="mark" href="./" aria-label="sbx home">sbx<span></span></a><span class="gotag">Go</span>
     <nav aria-label="Main">
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md">Docs</a>
+      <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/SELF-HOSTING.md">Self-hosting</a>
       <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">Benchmarks</a>
+      <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/FAQ.md">FAQ</a>
       <a href="https://github.com/aryanmehrotra/sbx">GitHub</a>
     </nav>
   </div>
@@ -324,6 +333,21 @@ footer .note { margin-left: auto; }
         </ol>
       </figcaption>
     </figure>
+  </div>
+</section>
+
+<section class="faq rv">
+  <div class="wrap">
+    <h2>Questions people ask.</h2>
+    <div class="qa">
+      <details><summary>Is a container safe enough for untrusted agent code?</summary><p>Use a microVM for code you did not write. A container shares the host's kernel, so a kernel bug escapes to the host. With <code>--provider firecracker</code>, each sandbox gets its own kernel and an escape lands as an unprivileged, jailed user. The default is a container; the microVM is opt-in.</p></details>
+      <details><summary>Does it need an account or a login?</summary><p>No. There is no account, no sign-in and nothing hosted. The only credential is an API key that <code>sbx serve</code> generates on your machine.</p></details>
+      <details><summary>How fast is it?</summary><p>On one Linux machine at v0.14.0: a sandbox from the warm pool in 12.8 ms, a sleeping Postgres answering <code>psql</code> in 348 ms, and a microVM from a frozen pool in 144 ms on CI. Every figure and its method is in <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">Benchmarks</a>.</p></details>
+      <details><summary>Does state survive sleep?</summary><p>Yes. A container keeps its volume and restarts its processes on wake. A microVM saves memory and disk as a snapshot, so processes come back where they were.</p></details>
+      <details><summary>How do I keep an agent's API keys from leaking?</summary><p>Today you can't fully: a key the agent uses sits in its environment. Keeping credentials out of the sandbox is on the roadmap. Until then, <code>egress_allow</code> limits where a leaked key can be sent.</p></details>
+      <details><summary>Is this Docker's sbx?</summary><p>No. Docker ships its own <code>sbx</code> CLI for Docker Sandboxes. This one is self-hosted and open source, MIT licensed.</p></details>
+    </div>
+    <p class="small" style="margin-top:20px"><a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/FAQ.md">All 64 questions</a> · <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/SELF-HOSTING.md">Self-hosting guide</a></p>
   </div>
 </section>
 

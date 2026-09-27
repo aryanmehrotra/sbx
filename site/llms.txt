@@ -14,5 +14,7 @@ Install: `brew install aryanmehrotra/tap/sbx` or `go install github.com/aryanmeh
 - [AI agents](https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents): the block to paste into AGENTS.md or CLAUDE.md, MCP setup, OpenSandbox SDKs
 - [CLI reference](https://github.com/aryanmehrotra/sbx/blob/main/docs/CLI.md): every command, flag and environment variable
 - [sandbox.json reference](https://github.com/aryanmehrotra/sbx/blob/main/docs/SPEC.md)
+- [Self-hosting](https://github.com/aryanmehrotra/sbx/blob/main/docs/SELF-HOSTING.md): run it on your own servers for a team
+- [FAQ](https://github.com/aryanmehrotra/sbx/blob/main/docs/FAQ.md): short answers to adoption questions
 - [Troubleshooting](https://github.com/aryanmehrotra/sbx/blob/main/docs/TROUBLESHOOTING.md)
 - [Benchmarks](https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md): every number with its script and machine
