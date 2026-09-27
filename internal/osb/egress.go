@@ -65,7 +65,7 @@ func (s *Server) networkPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.egress == nil {
-		notYet(w, "network policies", "a daemon with egress control")
+		notYet(w, "network policies", "they need a daemon with egress control")
 		return
 	}
 

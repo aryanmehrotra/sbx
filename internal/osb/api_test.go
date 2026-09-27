@@ -256,7 +256,7 @@ func TestCreateRefusesWhatItCannotDo(t *testing.T) {
 		{"idle", with("extensions", map[string]string{"sbx.idle": "nap"}), 400, "SANDBOX::INVALID_PARAMETER", "sleep"},
 		{"ports", with("extensions", map[string]string{"sbx.ports": "80,x"}), 400, "SANDBOX::INVALID_PARAMETER", "sbx.ports"},
 		{"image auth", with("image", map[string]any{"uri": "x", "auth": map[string]string{"username": "u"}}), 501, "SANDBOX::API_NOT_SUPPORTED", "docker login"},
-		{"secure access", with("secureAccess", true), 501, "SANDBOX::API_NOT_SUPPORTED", "v0.11.0"},
+		{"secure access", with("secureAccess", true), 501, "SANDBOX::API_NOT_SUPPORTED", "not built yet"},
 		{"windows", with("platform", map[string]string{"os": "windows", "arch": "amd64"}), 400, "SANDBOX::INVALID_PARAMETER", "linux"},
 		{"empty entrypoint", with("entrypoint", []string{""}), 400, "SANDBOX::INVALID_ENTRYPOINT", "program"},
 	}
@@ -270,6 +270,10 @@ func TestCreateRefusesWhatItCannotDo(t *testing.T) {
 
 		if e := h.errOf(resp); e.Code != c.code || !strings.Contains(e.Message, c.says) {
 			t.Errorf("%s: %+v, want code %s mentioning %q", c.name, e, c.code, c.says)
+		} else if strings.Contains(e.Message, "sbx v0.") {
+			// v0.11.0 shipped without everything these once said it would add. A refusal names a
+			// release only after that release has shipped the feature.
+			t.Errorf("%s: promises a release: %s", c.name, e.Message)
 		}
 	}
 
@@ -551,8 +555,13 @@ func TestEndpointResolution(t *testing.T) {
 		base + "44772?use_server_proxy=true": 501,
 		base + "44772?expires=99":            501,
 	} {
-		if resp := h.do("GET", path, nil, nil); resp.StatusCode != status {
+		resp := h.do("GET", path, nil, nil)
+		if resp.StatusCode != status {
 			t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, status)
+		} else if status == 501 {
+			if msg := h.errOf(resp).Message; strings.Contains(msg, "sbx v0.") || !strings.Contains(msg, "not built yet") {
+				t.Errorf("GET %s: %q, want \"not built yet\" and no release", path, msg)
+			}
 		}
 	}
 }

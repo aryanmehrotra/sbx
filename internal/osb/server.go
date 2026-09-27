@@ -628,9 +628,13 @@ func writeErr(w http.ResponseWriter, status int, code, msg string) {
 
 // notYet is the capability refusal: 501, OpenSandbox's own error shape, and the release that
 // adds it, so the caller can tell "this server cannot" from "this server is broken".
-func notYet(w http.ResponseWriter, what, release string) {
+// unbuilt is why a part of the API sbx has not built is refused. It names no release: these once
+// said v0.11.0, which shipped without them (docs/ROADMAP.md lists what is left).
+const unbuilt = "not built yet (docs/ROADMAP.md)"
+
+func notYet(w http.ResponseWriter, what, why string) {
 	writeErr(w, http.StatusNotImplemented, "SANDBOX::API_NOT_SUPPORTED",
-		fmt.Sprintf("%s are not supported by this sbx yet; they arrive in sbx %s", what, release))
+		fmt.Sprintf("%s are not supported by this sbx: %s", what, why))
 }
 
 func newRequestID() string {

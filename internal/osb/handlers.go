@@ -608,12 +608,12 @@ func (s *Server) endpoint(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	if v := q.Get("use_server_proxy"); v == "true" {
-		notYet(w, "server-proxied endpoints", "v0.11.0")
+		notYet(w, "server-proxied endpoints", unbuilt)
 		return
 	}
 
 	if q.Has("expires") {
-		notYet(w, "signed endpoints", "v0.11.0")
+		notYet(w, "signed endpoints", unbuilt)
 		return
 	}
 

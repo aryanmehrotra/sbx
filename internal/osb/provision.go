@@ -194,9 +194,9 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		return plan{}, http.StatusBadRequest, "SANDBOX::INVALID_PARAMETER", fmt.Sprintf(msg, args...)
 	}
 
-	later := func(what, release string) (plan, int, string, string) {
+	later := func(what, why string) (plan, int, string, string) {
 		return plan{}, http.StatusNotImplemented, "SANDBOX::API_NOT_SUPPORTED",
-			fmt.Sprintf("%s is not supported by this sbx yet; it arrives in sbx %s", what, release)
+			fmt.Sprintf("%s is not supported by this sbx: %s", what, why)
 	}
 
 	if _, err := s.inspector(); err != nil {
@@ -287,20 +287,20 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 
 	switch {
 	case req.Extensions["poolRef"] != "":
-		return later("server-side pools (extensions.poolRef)", "v0.11.0")
+		return later("server-side pools (extensions.poolRef)", unbuilt)
 	case req.Image == nil || strings.TrimSpace(req.Image.URI) == "":
 		return bad("image.uri is required - for example {\"image\": {\"uri\": \"python:3.11-slim\"}}")
 	case len(req.Image.Auth) > 0 && string(req.Image.Auth) != "null":
 		return later("registry credentials in image.auth (log in with `docker login` on this "+
-			"machine and omit them)", "v0.11.0")
+			"machine and omit them)", unbuilt)
 	case req.SecureAccess:
-		return later("secureAccess", "v0.11.0")
+		return later("secureAccess", unbuilt)
 	case present(req.CredentialProxy):
-		return later("credentialProxy", "v0.11.0")
+		return later("credentialProxy", unbuilt)
 	case present(req.Lifecycle):
-		return later("lifecycle hooks", "v0.11.0")
+		return later("lifecycle hooks", unbuilt)
 	case req.Extensions["access.renew.extend.seconds"] != "":
-		return later("renew-on-access (extensions[\"access.renew.extend.seconds\"])", "v0.11.0")
+		return later("renew-on-access (extensions[\"access.renew.extend.seconds\"])", unbuilt)
 	}
 
 	policy, err := createPolicy(req.NetworkPolicy)
@@ -314,7 +314,7 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 	}
 
 	if policy != nil && s.egress == nil {
-		return later("networkPolicy (this sbx serve has no egress control)", "a daemon with egress control")
+		return later("networkPolicy (this sbx serve has no egress control)", "it needs a daemon with egress control")
 	}
 
 	mounts, claims, verr := s.parseVolumes(req.Volumes)
