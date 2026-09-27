@@ -96,6 +96,22 @@ func TestInstallCheckpointRestartsAndSaysSo(t *testing.T) {
 		t.Errorf("packages %v, want criu", p.Packages)
 	}
 
+	// The CRIU check comes before the restart, which can fail (no systemd) and would hide it.
+	check, restart := -1, -1
+
+	for i, c := range p.Commands {
+		switch s := c[len(c)-1]; {
+		case strings.HasPrefix(s, "criu check"):
+			check = i
+		case strings.Contains(s, "systemctl restart docker"):
+			restart = i
+		}
+	}
+
+	if check < 0 || check > restart {
+		t.Errorf("CRIU check at step %d, restart at %d: the check must run, and before the restart", check, restart)
+	}
+
 	if daemonJSONIn(t, p)["experimental"] != true {
 		t.Error("experimental is not turned on")
 	}

@@ -48,7 +48,10 @@ type runtimeRecipe struct {
 	restart  bool // dockerd must restart to see it; runtimes alone need only a reload
 	// noPackage is where to get the package from when the manager's sources lack it.
 	noPackage string
-	needsKVM  bool
+	// verify runs last and only warns: what was installed can still be unusable on this kernel,
+	// and doctor's row cannot tell - it reads the daemon's flag, not whether CRIU works.
+	verify   string
+	needsKVM bool
 }
 
 var runtimes = map[string]runtimeRecipe{
@@ -92,6 +95,10 @@ var runtimes = map[string]runtimeRecipe{
 		restart:  true,
 		// Ubuntu dropped criu from its archive in 24.04; CRIU's own PPA carries it.
 		noPackage: "on Ubuntu add CRIU's PPA (sudo add-apt-repository ppa:criu/ppa) and run this again",
+		// Measured: in a VM whose kernel lacks the sock_diag modules, criu installs, doctor turns
+		// green, and every `sbx checkpoint` then fails in the dump.
+		verify: "criu check >/dev/null 2>&1 || echo 'sbx install: criu is installed but `criu check` fails on this " +
+			"kernel, so sbx checkpoint will fail here even though doctor shows it; run `sudo criu check` for why' >&2",
 	},
 }
 
@@ -156,6 +163,13 @@ func runtimeSteps(rs []runtimeRecipe, h Host) (scripts, notes []string, err erro
 
 		r.set(cfg, h.Arch)
 		restart = restart || r.restart
+	}
+
+	// Before daemon.json and the restart, so a restart that fails cannot hide the warning.
+	for _, r := range rs {
+		if r.verify != "" {
+			scripts = append(scripts, r.verify)
+		}
 	}
 
 	body, err := json.MarshalIndent(cfg, "", "  ")
