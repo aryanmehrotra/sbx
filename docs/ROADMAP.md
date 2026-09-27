@@ -17,6 +17,8 @@ There are no dates.
 | The microVM's disk cost in `sbx doctor` and BENCHMARKS | A sleeping microVM keeps a snapshot about the size of its RAM on disk | S | Not started |
 | The helper VM run end to end on a Mac and on Windows 11 | microsandbox and Docker Sandboxes run microVMs on all three OSes | M | See [platform status](ARCHITECTURE.md#platform-status) |
 | The warm pool through the helper VM | Without it, burst creates on a Mac use the docker pool | M | Not built |
+| `sbx connect` picks up sandboxes created after it starts | Agents on other machines cannot reach a new sandbox without a restart, which [SELF-HOSTING.md](SELF-HOSTING.md) works around | S | The helper VM already mirrors new sandboxes; `sbx connect` does not |
+| A systemd unit for the microVM daemon in `deploy/` | `deploy/` ships one for docker only; SELF-HOSTING.md gives an untested one | S | Not started |
 | A docs site with search | E2B, Daytona, Modal and OpenSandbox have one | S | Not started |
 
 ## Next

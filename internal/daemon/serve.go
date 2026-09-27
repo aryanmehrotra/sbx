@@ -172,7 +172,7 @@ type daemon struct {
 // fronts every sandbox's ports, so a second copy would fight the first for the listeners.
 func Serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	kind := fs.String("provider", envOr("SBX_PROVIDER_KIND", "docker"), "docker | kubernetes")
+	kind := fs.String("provider", envOr("SBX_PROVIDER_KIND", "docker"), "docker | kubernetes | firecracker")
 	socket := fs.String("socket", "", "docker endpoint; defaults to DOCKER_HOST, then the active docker context")
 	namespace := fs.String("namespace", envOr("SBX_NAMESPACE", "sbx"), "kubernetes namespace")
 	idle := fs.Duration("idle", 5*time.Minute, "sleep a service after this long with no bytes")

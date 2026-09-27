@@ -83,6 +83,7 @@ your own stack, write a `sandbox.json` ([SPEC.md](docs/SPEC.md)).
 - [Guides](docs/GUIDES.md): branches, CI, previews, AI agents
 - [Self-hosting](docs/SELF-HOSTING.md): run it on your own servers for a team
 - [CLI reference](docs/CLI.md) and [sandbox.json reference](docs/SPEC.md)
+- [FAQ](docs/FAQ.md): what people ask before they adopt it
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [How it works](docs/ARCHITECTURE.md), including where it has been tested
 - [Benchmarks](docs/BENCHMARKS.md) and [comparison with other tools](docs/COMPARISON.md)
