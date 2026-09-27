@@ -24,7 +24,7 @@ Then CI, per pull request:
 - Closed: `sbx rm pr-<number>` removes the sandbox and its volume.
 
 A reviewer's click waits for one wake (348 ms median for postgres on v0.14.0,
-[BENCHMARKS.md](../../docs/BENCHMARKS.md#headline-numbers)). Each PR starts from the seeded state,
+[BENCHMARKS.md](../../docs/BENCHMARKS.md#sbx-by-itself)). Each PR starts from the seeded state,
 so there are no migrations on first open. `sbx gc --snapshots` reclaims anything a missed
 teardown left.
 

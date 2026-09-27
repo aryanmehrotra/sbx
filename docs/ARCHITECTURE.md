@@ -87,7 +87,7 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | provider | What runs the sandboxes: `docker` (default), `kubernetes` or `firecracker` |
 | sleep | Stop an idle service so it uses no memory or CPU; on a microVM, its memory is saved to disk as a snapshot |
 | wake | Start a sleeping service because something connected; that first connection waits, it is not refused |
-| freeze | Pause a service with its memory kept, so it resumes in ~34 ms instead of restarting ([v0.14.0, Linux x86_64](BENCHMARKS.md#freeze-and-thaw-v0140)) |
+| freeze | Pause a service with its memory kept, so it resumes in ~34 ms instead of restarting ([v0.14.0, Linux x86_64](BENCHMARKS.md#sbx-by-itself)) |
 | OpenSandbox | An open-source API standard for AI-agent sandboxes, with SDKs in 5 languages |
 | MCP | Model Context Protocol: the standard way AI assistants such as Claude or Cursor call outside tools |
 | microVM | A small virtual machine with its own kernel, so a sandbox does not share the host's |

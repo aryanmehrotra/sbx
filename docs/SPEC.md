@@ -248,7 +248,7 @@ service with `egress_allow` needs this less, because its calls out count as acti
 When idle, the service is paused, not stopped. Memory and processes are kept, it uses no CPU, and
 the next connection resumes it without a restart. It holds its memory while asleep. Docker and
 Firecracker support it. Sandboxes created through the OpenSandbox API default to it. Timings:
-[BENCHMARKS.md](BENCHMARKS.md#freeze-and-thaw-v0140).
+[BENCHMARKS.md](BENCHMARKS.md#sbx-by-itself).
 
 ### `optional`
 
