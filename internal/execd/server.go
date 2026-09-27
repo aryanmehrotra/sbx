@@ -315,11 +315,11 @@ func (s *Server) routes() {
 	handle("DELETE /pty/{sessionId}", s.deletePTY)
 	handle("GET /pty/{sessionId}/ws", s.ptyWebSocket)
 
-	// Parts of the API a later release adds. They answer 501 with the spec's error shape, not
+	// Parts of the API sbx has not built. They answer 501 with the spec's error shape, not
 	// 404: a 404 reads as "you have the path wrong", and a client should instead learn that
 	// this daemon knows the endpoint and does not do it yet.
-	for pattern, release := range notYet {
-		handle(pattern, notImplemented(pattern, release))
+	for pattern, feature := range notYet {
+		handle(pattern, notImplemented(pattern, feature))
 	}
 
 	handle("/", func(w http.ResponseWriter, r *http.Request) {
@@ -332,16 +332,16 @@ func (s *Server) routes() {
 	s.proxyH = s.guard(s.proxy)
 }
 
-// notYet maps each unimplemented prefix to the sbx release that implements it, per the release
-// table in docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md.
+// notYet maps each unimplemented prefix to the feature it belongs to. It names no release: the
+// plan once promised isolated sessions in v0.11.0, which shipped without them (docs/ROADMAP.md).
 var notYet = map[string]string{
-	"/v1/isolated/": "v0.11.0 (isolated sessions)",
+	"/v1/isolated/": "isolated sessions",
 }
 
-func notImplemented(pattern, release string) http.HandlerFunc {
+func notImplemented(pattern, feature string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, codeNotSupported,
-			fmt.Sprintf("%s %s is not supported by this sbx execd yet; sbx %s adds it", r.Method, r.URL.Path, release))
+			fmt.Sprintf("%s %s is not supported by this sbx execd: %s are not built yet (docs/ROADMAP.md)", r.Method, r.URL.Path, feature))
 	}
 }
 
