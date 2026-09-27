@@ -213,16 +213,38 @@ needs it. Everything else is spliced on the SNI as it is today, undecrypted.
 
 ## 4 · The rest of the OpenSandbox API
 
-The conformance gate stops at upstream's **v0.10.0 tier**. The tiers after it test two things sbx
-has not built. The plan once scheduled both for v0.11.0, and v0.11.0 went to the microVM provider
-instead, so they are listed here rather than promised in a release.
+The conformance gate stops at upstream's **v0.10.0 tier**. The plan once scheduled everything
+below for v0.11.0, and v0.11.0 went to the microVM provider instead, so it is listed here rather
+than promised in a release. Every item is refused today with a 501 that names it and points here.
 
-| | what upstream tests | today | est |
-|---|---|---|---|
-| **Isolated sessions** | `isolated_session`: execd's `/v1/isolated/*` — a session with its own PID namespace, `/tmp` and overlay, runs and file operations inside it | **501**, naming the feature | not estimated — nobody has read upstream's execd for it yet |
-| **Credential vault** | `credential_vault`: the egress sidecar's `/credential-vault` — credentials and bindings injected into matching requests, changed at runtime | **not served** | the mechanism is §2's credential brokering (4–8 wk); the API over it is extra |
+**Measured 2026-09-27** (upstream `tests/go` at release-1.1.0, docker, CI). Every v0.10.0-tier
+file still passes. With the renew fix (PR #3) and a Redis for the SDK's pool, the v0.11.0 tier is
+**70 passed, 48 failed, 6 skipped** (run 36309125832; 54 / 56 / 14 before).
 
-Until then both follow the pattern the OpenSandbox sections of [DECISIONS.md](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-pid-1-the-token-is-the-apis-a-snapshot-is-the-disk)
+| file | result | why |
+|---|---|---|
+| `isolated_session` | 48 failed | not built: execd answers 501 |
+| `pool` | **20 passed** (was 4 · 8 failed · 8 skipped) | the 8 failures were one sbx bug: a renew that shortened the expiry was refused, and upstream's server allows it (PR #3). The 8 skips need `OPENSANDBOX_TEST_REDIS_URL`: the pool is the SDK's, backed by Redis |
+| `credential_vault` | 4 skipped | the tests need a target host (`OPENSANDBOX_CREDENTIAL_VAULT_E2E_TARGET_IP`); sbx serves no `/credential-vault` either way |
+| `e2e` (v0.12.0 tier) | 3 failed | never ran before: the harness's `--no-key` path was broken. It creates the code-interpreter image with `tail -f /dev/null` as the entrypoint, so Jupyter never starts, and sbx holds the sandbox `Pending` until Jupyter answers (a 3 min bound). Upstream reports `Running` at execd's `/ping` and leaves the Jupyter check to its SDK (`code_interpreter.go`, `CodeInterpreterRuntimeCheckCommand`) |
+
+The `e2e` result is a readiness decision rather than a missing feature, and it is open: report
+`Running` at execd as upstream does, or keep the Jupyter wait only when the image's own entrypoint
+runs.
+
+What is not built:
+
+| | what it is | est |
+|---|---|---|
+| **Isolated sessions** | execd's `/v1/isolated/*`: a session with its own PID namespace, `/tmp` and overlay, with runs and file operations inside it | not estimated; nobody has read upstream's execd for it yet |
+| **Credential vault** · `credentialProxy` | credentials and bindings injected into matching outbound requests, changed at runtime | the mechanism is §2's credential brokering (4–8 wk); the API over it is extra |
+| **Server-side pools** (`extensions.poolRef`) | a pool the server owns, named at create. sbx's `--osb-pool` serves matching creates without being named | not estimated |
+| **`secureAccess`** · **signed endpoints** (`?expires=`) | endpoints that need a signature or token to reach | not estimated |
+| **Server-proxied endpoints** (`use_server_proxy=true`) | execd reached through the lifecycle server rather than directly | not estimated |
+| **Registry credentials** (`image.auth`) | pull credentials in the create request; today, `docker login` on the host | not estimated |
+| **Lifecycle hooks** · **renew-on-access** | hooks run around lifecycle events; an expiry extended by each access | not estimated |
+
+Until then all of these follow the pattern the OpenSandbox sections of [DECISIONS.md](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-pid-1-the-token-is-the-apis-a-snapshot-is-the-disk)
 use for everything not built, such as a host volume on a microVM: refused by name, not
 approximated.
 
