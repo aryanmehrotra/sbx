@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="sbx: sandboxes that sleep at 0 B until something connects, for every branch, test run and AI agent. Sleeps at 0 B, wakes the moment anything connects, no SDK, self-hosted. How a wake works: psql connects, sbx holds the connection open while postgres wakes from 0 B, then hands over the same connection and the query is served. Measured on v0.14.0: 0 B asleep, redis wakes in 216 ms and postgres in 348 ms (median of 20), written in Go, one static binary with zero dependencies.">
-  <title>sbx: sandboxes that sleep at 0 B until something connects</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="sbx: self-hosted sandboxes for AI agents. A fresh microVM or container for each agent, asleep at 0 B and awake on the first connection. Measured on v0.14.0: a sandbox from a warm pool in 12.8 ms, a microVM from a pool in 144 ms. An agent connects, sbx holds the connection open while the microVM resumes from 0 B, and the same socket is served. Written in Go, one binary, zero dependencies.">
+  <title>sbx: self-hosted sandboxes for AI agents</title>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0d1117"/>
@@ -33,19 +33,19 @@
   <text x="192" y="79" text-anchor="middle" class="s" font-size="18" font-weight="700" fill="#00ADD8">Go</text>
 
   <!-- headline + promise -->
-  <text x="56" y="148" class="s fg" font-size="44" font-weight="700" letter-spacing="-0.5">Sandboxes that sleep at 0 B</text>
-  <text x="56" y="200" class="s fg" font-size="44" font-weight="700" letter-spacing="-0.5">until something connects</text>
-  <text x="56" y="246" class="s mu" font-size="21">For every branch, test run and <tspan class="b" font-weight="700">AI agent</tspan>: Postgres, Redis,</text>
-  <text x="56" y="276" class="s mu" font-size="21">browsers or agent code. No SDK. Self-hosted.</text>
+  <text x="56" y="148" class="s fg" font-size="44" font-weight="700" letter-spacing="-0.5">Self-hosted sandboxes</text>
+  <text x="56" y="200" class="s fg" font-size="44" font-weight="700" letter-spacing="-0.5">for AI agents</text>
+  <text x="56" y="246" class="s mu" font-size="21">A fresh <tspan class="b" font-weight="700">microVM</tspan> or container for each agent.</text>
+  <text x="56" y="276" class="s mu" font-size="21">Asleep at 0 B, awake on the first connection.</text>
 
   <!-- measured numbers -->
   <line x1="812" y1="52" x2="812" y2="262" stroke="#30363d"/>
   <text x="978" y="86" text-anchor="end" class="m g" font-size="32" font-weight="700">0 B</text>
   <text x="994" y="84" class="s mu" font-size="17">asleep</text>
-  <text x="978" y="138" text-anchor="end" class="m b" font-size="32" font-weight="700">216 ms</text>
-  <text x="994" y="136" class="s mu" font-size="17">redis wake</text>
-  <text x="978" y="190" text-anchor="end" class="m b" font-size="32" font-weight="700">348 ms</text>
-  <text x="994" y="188" class="s mu" font-size="17">postgres wake</text>
+  <text x="978" y="138" text-anchor="end" class="m b" font-size="32" font-weight="700">12.8 ms</text>
+  <text x="994" y="136" class="s mu" font-size="17">from a warm pool</text>
+  <text x="978" y="190" text-anchor="end" class="m b" font-size="32" font-weight="700">144 ms</text>
+  <text x="994" y="188" class="s mu" font-size="17">microVM from a pool</text>
   <text x="862" y="228" class="s fg" font-size="17" font-weight="600">Written in Go.</text>
   <text x="862" y="252" class="s fg" font-size="17" font-weight="600">One binary, zero deps.</text>
 
@@ -53,7 +53,7 @@
   <rect x="40" y="304" width="1120" height="104" rx="14" fill="#161b22" stroke="#30363d"/>
 
   <rect x="64" y="324" width="150" height="64" rx="10" fill="#0d1117" stroke="#388bfd" stroke-opacity="0.6"/>
-  <text x="84" y="351" class="m b" font-size="20" font-weight="700">psql</text>
+  <text x="84" y="351" class="m b" font-size="20" font-weight="700">agent</text>
   <text x="84" y="375" class="s mu" font-size="16">connects</text>
 
   <line x1="220" y1="356" x2="262" y2="356" stroke="#8b949e" stroke-width="2" marker-end="url(#ah)"/>
@@ -65,8 +65,8 @@
   <line x1="536" y1="356" x2="578" y2="356" stroke="#8b949e" stroke-width="2" marker-end="url(#ah)"/>
 
   <rect x="584" y="324" width="240" height="64" rx="10" fill="#0d1117" stroke="#30363d"/>
-  <text x="604" y="351" class="m fg" font-size="20" font-weight="700">postgres</text>
-  <text x="604" y="375" class="s mu" font-size="16">wakes from 0 B</text>
+  <text x="604" y="351" class="m fg" font-size="20" font-weight="700">microVM</text>
+  <text x="604" y="375" class="s mu" font-size="16">resumes from 0 B</text>
 
   <line x1="830" y1="356" x2="872" y2="356" stroke="#3fb950" stroke-width="2" marker-end="url(#ahg)"/>
 
@@ -74,5 +74,5 @@
   <text x="898" y="351" class="s g" font-size="20" font-weight="700">✓ served</text>
   <text x="898" y="375" class="s mu" font-size="16">same socket, never refused</text>
 
-  <text x="1160" y="428" text-anchor="end" class="s mu" font-size="14">wake times: median of 20, v0.14.0, Linux x86_64, docker · docs/BENCHMARKS.md</text>
+  <text x="1160" y="428" text-anchor="end" class="s mu" font-size="14">create → first command, medians, v0.14.0: container on Linux x86_64, microVM on CI (nested KVM) · docs/BENCHMARKS.md</text>
 </svg>
