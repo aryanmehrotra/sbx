@@ -276,7 +276,7 @@ func record(cmd string, argv []string, err error) {
 // sandboxOf picks the sandbox name out of an argv, so history can be filtered by it. Every
 // command that changes something takes it first, except serve, which is about the machine.
 func sandboxOf(cmd string, argv []string) string {
-	if cmd == "serve" || cmd == "selftest" || cmd == "prewarm" || cmd == "gc" {
+	if cmd == "serve" || cmd == "selftest" || cmd == "prewarm" || cmd == "gc" || cmd == "install" {
 		return ""
 	}
 
@@ -577,6 +577,15 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		return cli.GC(context.Background(), p, os.Stdout, *olderThan, *force, *snaps)
+
+	case "install":
+		fs := newFlagSet("install")
+		yes := fs.Bool("yes", false, "install without asking")
+		dryRun := fs.Bool("dry-run", false, "print what would run and stop")
+		names := parseInterleaved(fs, args)
+
+		return cli.Install(context.Background(), cli.InstallOptions{Names: names, Yes: *yes, DryRun: *dryRun},
+			os.Stdin, os.Stdout, isTerminal(os.Stdin))
 
 	case "doctor":
 		fs := newFlagSet("doctor")
@@ -1150,6 +1159,19 @@ func runAdd(args []string) error {
 	return cli.Add(context.Background(), p, specPath, sandbox, service, *image, cps, *health, env, *volume, extra, iso)
 }
 
+// parseInterleaved parses flags wherever they appear and returns the positionals in order.
+// `sbx install redis-cli --yes` is how people type it, and flag stops at the first name, which
+// made --yes a package to install.
+func parseInterleaved(fs *flag.FlagSet, args []string) []string {
+	var positional []string
+
+	for _ = fs.Parse(args); fs.NArg() > 0; _ = fs.Parse(fs.Args()[1:]) {
+		positional = append(positional, fs.Arg(0))
+	}
+
+	return positional
+}
+
 // splitPositional peels up to n leading non-flag arguments off the front.
 func splitPositional(args []string, n int) (positional, rest []string) {
 	i := 0
@@ -1187,6 +1209,7 @@ and idleness sleeps it back to 0 B.
 
 Start here
   sbx doctor                                    what this machine can and cannot do
+  sbx install [NAME...] [--yes] [--dry-run]     install what doctor reports missing
   sbx init                                      pick a template, write sandbox.json, go
   sbx serve  [--idle 5m]                        the daemon. One per machine, not per sandbox
   sbx selftest                                  prove the whole cycle works here (~9s warm)

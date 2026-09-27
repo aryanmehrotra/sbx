@@ -8,7 +8,7 @@ package slotlock
 // "failed to set up container networking: driver failed programming external connectivity".
 // Measured, four concurrent creates on one machine: three of them failed.
 //
-// That is not a rare shape. docs/USE-CASES.md describes a sandbox per CI job on a persistent
+// That is not a rare shape. docs/GUIDES.md describes a sandbox per CI job on a persistent
 // runner, which is several creates arriving together by construction.
 //
 // The lock is held from AllocSlot until the FIRST container exists, not for the whole create.

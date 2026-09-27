@@ -195,6 +195,20 @@ func RuntimeHint() (name, start string) {
 	return runtimeHint(ep)
 }
 
+// DockerSocket is where this machine's docker CLI would connect, and the runtime that looks like,
+// for `sbx install`: a runtime is registered with the daemon, so it has to know which daemon and
+// where that daemon runs before it can change anything.
+func DockerSocket() (network, address, runtimeName string, err error) {
+	ep, err := resolveDockerHost("")
+	if err != nil {
+		return "", "", "", err
+	}
+
+	name, _ := runtimeHint(ep)
+
+	return ep.Network, ep.Address, name, nil
+}
+
 // Neighbours is every container on this machine with what it is holding.
 func (d *dockerProvider) Neighbours(ctx context.Context) ([]Neighbour, error) {
 	cs, err := d.api.list(ctx, "")

@@ -53,7 +53,7 @@ def main() -> int:
         print("render-demo: nothing captured", file=sys.stderr)
         return 1
 
-    height = int(TOP + LINE_H * (len(rows) + 1) + 24)
+    height = int(TOP + LINE_H * len(rows) + 18)
     width = 900
 
     # No reveal animation. Every line is simply visible.
@@ -82,9 +82,10 @@ def main() -> int:
     ]
 
     alt = (
-        "A terminal running sbx: a sandbox is created from a template, its addresses are "
-        "exported, an agent reads them as JSON, a service is added mid-task, a snapshot is "
-        "forked, the sandbox sleeps to zero and a plain connection wakes it."
+        "A terminal running sbx: a sandbox is created from a template, it sleeps to 0 B when "
+        "nobody connects, and a plain psql query wakes it and is served. Then an agent reads its "
+        "addresses as JSON, a service is added mid-task, and a seeded database is snapshotted "
+        "and forked."
     )
 
     out = [

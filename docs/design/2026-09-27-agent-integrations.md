@@ -20,8 +20,8 @@ Two directions, and sbx has one of them.
 
 | direction | today |
 |---|---|
-| **An agent on the host drives sandboxes** (creates a Postgres, runs tests in a box) | shipped: `sbx mcp`, `--shell json`, [AGENTS.md](../../AGENTS.md) |
-| **An agent runs inside a sandbox** (its shell, its writes and its network are the box's, not your laptop's) | possible by hand. The pieces all shipped (use cases 9 and 14), but nobody has assembled them. The only record is one line in the 2026-08-30 tunnels spec: "a `node:22-alpine` image with the Claude Code CLI baked in builds and runs" |
+| **An agent on the host drives sandboxes** (creates a Postgres, runs tests in a box) | shipped: `sbx mcp`, `--shell json`, [GUIDES.md › AI agents](../GUIDES.md#ai-agents) |
+| **An agent runs inside a sandbox** (its shell, its writes and its network are the box's, not your laptop's) | possible by hand. The pieces all shipped ([Work inside a sandbox](../GUIDES.md#work-inside-a-sandbox), [Keep a sandbox awake, or limit where it can connect](../GUIDES.md#keep-a-sandbox-awake-or-limit-where-it-can-connect)), but nobody has assembled them. The only record is one line in the 2026-08-30 tunnels spec: "a `node:22-alpine` image with the Claude Code CLI baked in builds and runs" |
 
 The second direction is the one people ask for, because of what coding agents are run with.
 `claude --dangerously-skip-permissions` and `codex --dangerously-bypass-approvals-and-sandbox` are
@@ -31,7 +31,7 @@ sandbox**. sbx is that sandbox, and it has two things a plain `docker run` does 
 - **An egress allow-list that is enforced, not advisory.** An agent that has been talked into
   exfiltrating the repo cannot reach anything but its model API.
 - **A box that sleeps when the agent stops, and not before.** Every model call goes through
-  sbx's filtering proxy, so it counts as activity (use case 14). A fleet of parked agents costs
+  sbx's filtering proxy, so it counts as activity. A fleet of parked agents costs
   0 B.
 
 Blocked items from the 2026-08-30 spec, now unblocked:
@@ -83,7 +83,7 @@ sbx agent list                                     # the integrations this build
    - `mounts: {"<cwd>": "/work"}`: the repo, read-write
    - `egress_allow`: integration hosts ∪ `--allow`
    - `idle`: `10m` (overridable), which is safe because the model calls are the activity signal
-   - `args: ["sleep", "infinity"]`, `ports: [7777]`, the use-case-9 shape, unchanged
+   - `args: ["sleep", "infinity"]`, `ports: [7777]`, the "Work inside a sandbox" shape, unchanged
 4. **Exec with a TTY** into `agent`. The agent's command, the credential as exec-time env, and the
    integration's "the sandbox is the boundary" flags go in with it. `sbx agent` only does this;
    the rest is the ordinary `sbx exec -t` path (`internal/cli/cli.go`, `ExecTTY`), which already
@@ -99,7 +99,7 @@ change.
 
 - **N agents, each on its own copy of a seeded DB**: `sbx snapshot` once, then per agent
   `sbx fork seed task-N && sbx agent task-N claude -- -p "..."`. The agent service joins the
-  forked sandbox, and `sbx env` gives it `DATABASE_HOST/PORT`. Use case 6, with the agent inside.
+  forked sandbox, and `sbx env` gives it `DATABASE_HOST/PORT`. "Seed once, fork many" in GUIDES.md, with the agent inside.
 - **Parking an agent**: `sbx checkpoint task-N` on podman and firecracker keeps memory, so a
   headless run can be parked mid-thought. This is untested for agents and is marked so.
 - **A git worktree per agent**: recommended in the docs, not built in v1. Two agents mounting the
@@ -222,7 +222,7 @@ Same bar as the rest of the repo: every fix has a test that fails without it.
   `idle`. No real model key in CI.
 - **Real-agent e2e, manual, per release**: each integration, headless, one small task, on docker
   and colima. The results table goes in BENCHMARKS.md the way wake latency does.
-- **Business**: USE-CASES.md gains case 16, or it does not ship.
+- **Business**: GUIDES.md gains the how-to below, or it does not ship.
 
 ## Documentation - what ships with it, and who it is for
 
@@ -231,15 +231,17 @@ true, never ahead of the code.
 
 | doc | audience | content |
 |---|---|---|
-| **`docs/AGENTS.md`** → new section *"Running an agent inside a sandbox"* | people using sbx with agents | the four locks in one paragraph · **setup, subscription first**: `claude setup-token` / `codex login` once, then run; the API key as the alternative · the three commands · credentials table (what goes in, when it leaves) · the "what this does not protect against" paragraph · the table of integrations and their hosts |
-| **`docs/USE-CASES.md`** → *16 · An agent that works in a box, not on your laptop* | evaluators | the why (skip-permissions needs a boundary) · N agents × forked DB recipe |
+| **`docs/GUIDES.md#ai-agents`** → a how-to, *Run Claude Code or Codex inside a sandbox* | people using sbx with agents | the four locks in one paragraph · **setup, subscription first**: `claude setup-token` / `codex login` once, then run; the API key as the alternative · the three commands · credentials table (what goes in, when it leaves) · the "what this does not protect against" paragraph · the table of integrations and their hosts |
+| **`docs/GUIDES.md`** (same section) | evaluators | the why (skip-permissions needs a boundary) · N agents × forked DB recipe |
+| **`docs/CLI.md`** | everyone | the `sbx agent` row, its flags, and the `agents` gate under "Gated features" (docs contract) |
+| **`docs/ARCHITECTURE.md#platform-status`** | everyone | where `sbx agent` runs and is verified |
 | **`docs/SPEC.md`** (phase 2) | spec authors | the `agent` field, what it expands to, what it refuses |
 | **`docs/TROUBLESHOOTING.md`** | users stuck | "agent hangs on first call" (proxy not honoured) · "refuses to run as root" · "401 inside the box" (wrong `--auth`) · "sleeps mid-session" (interactive, no model calls for `idle`) |
 | **`SECURITY.md`** | security reviewers | credential lifetime, what the allow-list bounds and what it does not |
 | **`docs/DECISIONS.md`** | maintainers | the entry above |
 | **`sbx help agent`**, `sbx agent list` | everyone, at the terminal | generated from the registry, so it cannot drift from the code |
 | **`CONTRIBUTING.md`** → *Adding an integration* | contributors | the registry fields, the pin, the required e2e, the bar for acceptance |
-| **README row + release notes** | everyone | one row under *For AI agents*, marked preview |
+| **README + release notes** | everyone | one line under AI agents, marked preview · one line in `docs/release-notes/UNRELEASED.md` |
 
 ## Verify before building
 

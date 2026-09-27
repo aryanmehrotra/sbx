@@ -1,8 +1,12 @@
 # OpenSandbox conformance
 
-sbx claims to be OpenSandbox-compatible. This directory is how that claim is checked: by
-**OpenSandbox's own Go e2e suite** (`tests/go` in `github.com/alibaba/OpenSandbox`), at a
-pinned commit, **run unmodified** against `sbx serve --osb-addr`.
+OpenSandbox is an open-source API standard for AI-agent sandboxes, with SDKs in 5 languages.
+sbx claims to be compatible with it. This directory is how that claim is checked: by
+**OpenSandbox's own Go end-to-end suite** (`tests/go` in `github.com/alibaba/OpenSandbox`, the Go
+module path; the project now lives at
+[opensandbox-group/OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)), at a pinned
+commit, **run unmodified** against `sbx serve --osb-addr`. For contributors; to use the API, see
+[GUIDES.md](../../docs/GUIDES.md#opensandbox-sdks).
 
 ```sh
 scripts/osb-conformance.sh                          # the v0.9.0 tier, against a throwaway sbx
@@ -45,7 +49,7 @@ while the report looked green. A skip is not a pass.
 to your live one would bind its ports and could put its sandboxes to sleep. The throwaway
 daemon is isolated two ways, both enforced:
 
-- **Its own `HOME`** (`$work/home`): the presence file, slot lock and history in `~/.sbx` are
+- **Its own `HOME`** (`$work/home`): the presence file, port lock and history in `~/.sbx` are
   private, so the one-per-machine guard is not tripped and your daemon's presence record is
   never removed. `DOCKER_HOST`, `DOCKER_CONFIG`, `GOPATH`, `GOMODCACHE` and `GOCACHE` are
   resolved under your real `HOME` first and passed explicitly; `SBX_NO_UPDATE_CHECK=1`.
@@ -67,7 +71,7 @@ Every `Getenv` in `tests/go` and the SDK at the pinned commit, and what the scri
 | `OPENSANDBOX_TEST_DOMAIN` | `base_e2e_test.go` connection config (default `localhost:8080`) | `127.0.0.1:<port>` |
 | `OPENSANDBOX_TEST_PROTOCOL` | same (default `http`) | `http` |
 | `OPENSANDBOX_TEST_API_KEY` | same (default `e2e-test`) | the random `--osb-key`; unset with `--no-key` |
-| `OPENSANDBOX_TEST_USE_SERVER_PROXY` | same; `true` routes execd through the server, header `X-API-Key` | `false` unless already set (server proxy is not built; `true` is refused with 501) |
+| `OPENSANDBOX_TEST_USE_SERVER_PROXY` | same; `true` routes calls to execd (the agent inside each sandbox) through the server, header `X-API-Key` | `false` unless already set (server proxy is not built; `true` is refused with 501) |
 | `OPENSANDBOX_SANDBOX_DEFAULT_IMAGE` | image for every test (default `python:3.11-slim`; `e2e_test.go`: `opensandbox/code-interpreter:latest`) | passed through |
 | `OPENSANDBOX_E2E_SANDBOX_CPU` / `_MEMORY` | resource limits in pool and credential-vault tests (default `1` / `2Gi`) | passed through |
 | `OPENSANDBOX_URL` | `e2e_test.go` (default `http://localhost:8080`) | the server URL |

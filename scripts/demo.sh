@@ -9,8 +9,8 @@
 # file in the repo had lost one. This runs the actual commands against actual docker and
 # renders whatever comes back, so the picture is a measurement like everything else here.
 #
-# It shows the use cases rather than the self-test: a branch, an agent reading JSON, a service
-# added mid-task, seed-and-fork, and the sleep/wake cycle that is the whole product.
+# It opens with the hook - a sandbox sleeps to 0 B and plain psql wakes it - then shows the use
+# cases rather than the self-test: an agent reading JSON, seeding that same sandbox and forking it, a service added mid-task.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,7 +37,7 @@ fi
 
 cleanup() {
   [ -n "$DAEMON" ] && kill "$DAEMON" 2>/dev/null
-  for s in "$TAG-branch" "$TAG-seed" "$TAG-agent"; do "$SBX" rm "$s" >/dev/null 2>&1; done
+  for s in "$TAG-branch" "$TAG-agent"; do "$SBX" rm "$s" >/dev/null 2>&1; done
   docker images -q "sbx-snap-$TAG-golden*" 2>/dev/null | xargs -r docker rmi -f >/dev/null 2>&1
   docker volume ls -q 2>/dev/null | grep "snapvol-$TAG-golden" | xargs -r docker volume rm >/dev/null 2>&1
   rm -rf "$WORK"
@@ -120,9 +120,24 @@ echo "recording..." >&2
 DAEMON=$!
 sleep 3
 
-# ── a branch ──────────────────────────────────────────────────────────────────
-say cmd 'sbx create feature-x --template web-stack'
-"$SBX" create "$TAG-branch" --template web-stack 2>&1 | norm | while IFS= read -r l; do
+# A sandbox's log line for one event, as the INFO row the renderer draws.
+event() {  # event <slept|woke> <service>
+  grep -h "\"$1\"" "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep "\"$2\"" | tail -1 \
+    | python3 -c 'import sys,json
+for line in sys.stdin:
+    try: d=json.loads(line)
+    except Exception: continue
+    print("INFO\t%s  %s" % (d.get("sandbox","")+"/"+d.get("service",""), d.get("message","")))' \
+    | sed "s/$TAG-branch/feature-x/" >> "$SCRIPT" || true
+}
+
+# ── the hook: make one, let it sleep, wake it with an ordinary client ─────────
+#
+# The first screenful is the whole product, because that is all most readers look at: a
+# sandbox exists, it drops to 0 B on its own, and plain psql - no SDK, no wrapper - wakes it
+# and is served. Everything after that is what you do with it.
+say cmd 'sbx create feature-x --template postgres'
+"$SBX" create "$TAG-branch" --template postgres 2>&1 | norm | while IFS= read -r l; do
   case "$l" in
     *"✓"*)  say ok  "$l" ;;
     ready*) say dim "$l" ;;
@@ -132,56 +147,14 @@ say cmd 'sbx create feature-x --template web-stack'
 done
 
 say blank
-say cmd 'eval "$(sbx env feature-x)"    # it remembers what it was made from'
-"$SBX" env "$TAG-branch" 2>/dev/null | norm | sed "s/$TAG-branch/feature-x/" | while IFS= read -r l; do
-  say out "$l"
-done
-
-# ── an agent ──────────────────────────────────────────────────────────────────
-say blank
-say cmd 'sbx env feature-x --shell json          # no SDK; an agent parses this'
-"$SBX" env "$TAG-branch" --shell json 2>/dev/null | norm | sed "s/$TAG-branch/feature-x/" \
-  | head -6 | while IFS= read -r l; do say out "$l"; done
-say out '  ...'
-
-say blank
-say cmd "sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'"
-"$SBX" add "$TAG-branch" cache --image redis:7-alpine --port 6379 --health 'redis-cli ping' 2>&1 \
-  | norm | grep '✓' | while IFS= read -r l; do say ok "$l"; done
-
-# ── seed once, fork many ──────────────────────────────────────────────────────
-say blank
-say cmd 'sbx snapshot main golden && sbx fork golden agent-1'
-"$SBX" create "$TAG-seed" --template postgres >/dev/null 2>&1
-"$SBX" exec "$TAG-seed" postgres psql -U app -d app \
-  -c "create table t(v text); insert into t values ('seeded')" >/dev/null 2>&1
-"$SBX" snapshot "$TAG-seed" "$TAG-golden" 2>&1 | grep '→' | norm \
-  | sed "s/$TAG-golden/golden/g; s/$TAG-seed/main/g" | while IFS= read -r l; do say out "$l"; done
-"$SBX" fork "$TAG-golden" "$TAG-agent" 2>&1 | grep -E 'restored|forked' | norm \
-  | sed "s/$TAG-golden/golden/g; s/$TAG-agent/agent-1/g" | while IFS= read -r l; do say out "$l"; done
-
-got=$("$SBX" exec "$TAG-agent" postgres psql -U app -d app -tAc 'select v from t' 2>/dev/null | tr -d ' \n')
-say ok "  agent-1 carries the seeded row: $got"
-
-# ── the cycle that is the product ─────────────────────────────────────────────
-say blank
-say cmd '# nobody touches it for a few seconds'
+say cmd '# nobody connects for a few seconds'
 
 waited=0
-until [ "$(docker inspect -f '{{.State.Status}}' "sbx-$TAG-branch-redis" 2>/dev/null)" = "exited" ]; do
-  sleep 2; waited=$((waited + 2)); [ "$waited" -ge 40 ] && break
+until [ "$(docker inspect -f '{{.State.Status}}' "sbx-$TAG-branch-postgres" 2>/dev/null)" = "exited" ]; do
+  sleep 2; waited=$((waited + 2)); [ "$waited" -ge 60 ] && break
 done
 
-# The service that sleeps here has to be the one that wakes below, or the two lines name
-# different services and the cycle the demo exists to show does not read as one.
-grep -h 'slept' "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep redis | tail -1 \
-  | python3 -c 'import sys,json
-for line in sys.stdin:
-    try: d=json.loads(line)
-    except Exception: continue
-    print("INFO\t%s  %s" % (d.get("sandbox","")+"/"+d.get("service",""), d.get("message","")))' \
-  | sed "s/$TAG-branch/feature-x/" >> "$SCRIPT" || true
-
+event slept postgres
 say ok '  asleep - 0 B of memory, the volume untouched'
 
 say blank
@@ -189,25 +162,25 @@ say blank
 # shellcheck disable=SC1090
 eval "$("$SBX" env "$TAG-branch" 2>/dev/null)"
 
-# Wake it with whatever this machine actually has, and label the line with the command that
-# really ran. The two differ in their reply - redis-cli prints PONG, a socket sees the +PONG
-# on the wire - and a demo that captions itself "recorded from a real run" cannot show one
-# command's name above the other one's output.
+# The number a reader takes away is measured here, so this is where the machine has to be
+# quiet. The sandbox is asleep while we wait, so waiting changes nothing about what is timed.
 wait_until_quiet || refuse_if_busy "and stayed busy for five minutes"
 
-if command -v redis-cli >/dev/null 2>&1; then
-  say cmd 'redis-cli ping        # an ordinary client; no SDK, no wrapper'
+# Label the line with the command that really ran: psql if this machine has it, otherwise a
+# raw socket that speaks the first byte of the postgres protocol.
+if command -v psql >/dev/null 2>&1; then
+  say cmd "psql postgres://app:app@127.0.0.1:${DATABASE_PORT:-0}/app -tAc \"select 'hello'\"   # asleep; plain psql wakes it"
   start=$(python3 -c 'import time;print(int(time.time()*1000))')
-  reply=$(redis-cli -h 127.0.0.1 -p "${REDIS_PORT:-0}" ping 2>&1 | tail -1)
+  reply=$(psql "postgres://app:app@127.0.0.1:${DATABASE_PORT:-0}/app" -tAc "select 'hello'" 2>&1 | tail -1)
 else
-  say cmd 'printf "PING\r\n" | nc 127.0.0.1 $REDIS_PORT   # any TCP connection at all'
+  say cmd "python3 -c 'socket.create_connection((\"127.0.0.1\", ${DATABASE_PORT:-0}))...'   # any TCP client"
   start=$(python3 -c 'import time;print(int(time.time()*1000))')
-  reply=$(python3 - "${REDIS_PORT:-0}" <<'PYWAKE'
+  reply=$(python3 - "${DATABASE_PORT:-0}" <<'PYWAKE'
 import socket, sys
 try:
     s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=90)
-    s.sendall(b"PING\r\n")
-    print(s.recv(32).decode(errors="replace").strip())
+    s.sendall(b"\x00\x00\x00\x08\x04\xd2\x16\x2f")   # SSLRequest: the server answers S or N
+    print("postgres answered %r" % s.recv(1).decode(errors="replace"))
     s.close()
 except Exception as e:
     print("ERR", e)
@@ -216,22 +189,49 @@ PYWAKE
 fi
 took=$(( $(python3 -c 'import time;print(int(time.time()*1000))') - start ))
 say out "$reply"
-
-grep -h 'woke' "$WORK/daemon.log" 2>/dev/null | grep "$TAG-branch" | grep redis | tail -1 \
-  | python3 -c 'import sys,json
-for line in sys.stdin:
-    try: d=json.loads(line)
-    except Exception: continue
-    print("INFO\t%s  %s" % (d.get("sandbox","")+"/"+d.get("service",""), d.get("message","")))' \
-  | sed "s/$TAG-branch/feature-x/" >> "$SCRIPT" || true
-
+event woke postgres
 say ok "  served in ${took}ms - the client waited, it was never refused"
 
+# ── an agent ──────────────────────────────────────────────────────────────────
+say blank
+say cmd 'sbx env feature-x --shell json          # no SDK; an agent parses this'
+"$SBX" env "$TAG-branch" --shell json 2>/dev/null | norm | sed "s/$TAG-branch/feature-x/" \
+  | while IFS= read -r l; do say out "$l"; done
+
+# ── seed once, fork many ──────────────────────────────────────────────────────
+#
+# Seeded and snapshotted from feature-x, the sandbox the viewer just watched being created. An
+# earlier cut snapshotted a `main` that was made off screen, and a reader could not tell where
+# it or its row came from. It is parked with `sbx sleep` before the snapshot: copying a live
+# postgres volume can race its own writes, and the copy check then refuses the snapshot.
+# The sandbox is the postgres template, and the snapshot runs before `sbx add`, because at
+# v0.14.0 `sbx snapshot` on docker fails for any service without a `volume` (web-stack's redis,
+# an added cache): "copying volume sbx-<sandbox>-redis-data ...: the source is empty or does
+# not exist". Switch back to web-stack once that is fixed.
+say blank
+say cmd "sbx exec feature-x postgres psql -U app -c \"create table t(v text); insert into t values ('seeded')\""
+"$SBX" exec "$TAG-branch" postgres psql -U app \
+  -c "create table t(v text); insert into t values ('seeded')" 2>&1 | norm | while IFS= read -r l; do say out "$l"; done
+say cmd 'sbx sleep feature-x && sbx snapshot feature-x golden && sbx fork golden agent-1'
+"$SBX" sleep "$TAG-branch" >/dev/null 2>&1
+"$SBX" snapshot "$TAG-branch" "$TAG-golden" 2>&1 | grep '→' | norm \
+  | sed "s/$TAG-golden/golden/g; s/$TAG-branch/feature-x/g" | while IFS= read -r l; do say out "$l"; done
+"$SBX" fork "$TAG-golden" "$TAG-agent" 2>&1 | grep -E 'restored|forked' | norm \
+  | sed "s/$TAG-golden/golden/g; s/$TAG-agent/agent-1/g" | while IFS= read -r l; do say out "$l"; done
+
+got=$("$SBX" exec "$TAG-agent" postgres psql -U app -d app -tAc 'select v from t' 2>/dev/null | tr -d ' \n')
+say ok "  agent-1 carries the seeded row: $got"
+
+# ── a service added mid-task ──────────────────────────────────────────────────
+say blank
+say cmd "sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'"
+"$SBX" add "$TAG-branch" cache --image redis:7-alpine --port 6379 --health 'redis-cli ping' 2>&1 \
+  | norm | grep '✓' | while IFS= read -r l; do say ok "$l"; done
 kill "$DAEMON" 2>/dev/null; DAEMON=""
 
 # Nothing internal may reach the picture. The tag is a pid, so a leak is both ugly and a
 # small privacy nick - and it happened on the first recording.
-sed -i.bak -E "s/${TAG}-branch/feature-x/g; s/${TAG}-seed/main/g; s/${TAG}-agent/agent-1/g; s/${TAG}-golden/golden/g; s/${TAG}[a-z-]*/sandbox/g" "$SCRIPT"
+sed -i.bak -E "s/${TAG}-branch/feature-x/g; s/${TAG}-agent/agent-1/g; s/${TAG}-golden/golden/g; s/${TAG}[a-z-]*/sandbox/g" "$SCRIPT"
 rm -f "$SCRIPT.bak"
 
 if grep -q "$TAG" "$SCRIPT"; then

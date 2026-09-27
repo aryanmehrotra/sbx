@@ -1,5 +1,8 @@
 # The OpenSandbox API and warm pool on Firecracker — plan
 
+**Status:** shipped. The API on microVMs in v0.12.0; the warm pool on microVMs and the helper-VM
+path in v0.13.0. Where the plan changed, the "Amended" sections below say so.
+
 > **Why:** anonymous or untrusted code (a public "free box", a hosted leaderboard endpoint) must not
 > share a kernel with the host. v0.11.0 ships microVMs for `sandbox.json`, but the OpenSandbox API
 > answers 501 on them. This release closes that: **every API route, and the warm pool, on
