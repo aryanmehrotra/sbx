@@ -22,7 +22,7 @@ Rules:
 - Security release: the TL;DR starts with "Upgrade now if …" and names affected versions. It may
   add a short `## What happened` section right after the TL;DR (see v0.9.1.md).
 - Promise no future version. Say "not yet" and link docs/ROADMAP.md at the tag.
-- Omit empty sections. Keep the order. Aim for ≤ ~120 lines: the one length limit (STYLE.md points here).
+- Omit empty sections. Keep the order. Aim for ≤ ~120 lines: the one length limit (AGENTS.md#writing-docs points here).
 - A published note is not rewritten to describe a later release. Add a dated "Update:" line.
 - Fixes are user-visible symptoms, one line each. CI, tests and tooling stay in the changelog.
 -->

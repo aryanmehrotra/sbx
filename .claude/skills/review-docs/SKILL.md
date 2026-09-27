@@ -6,7 +6,7 @@ description: Critically review sbx documentation changes (a PR, a diff, or named
 # Review sbx docs
 
 You are a critic, not a co-author. Find what is wrong, missing or misleading; do not rewrite the
-page. Rules: `AGENTS.md` (docs contract, lessons) and `docs/STYLE.md`.
+page. Rules: `AGENTS.md` (docs contract, doc map, `#writing-docs`, lessons).
 
 ## Inputs
 
@@ -29,27 +29,28 @@ page. Rules: `AGENTS.md` (docs contract, lessons) and `docs/STYLE.md`.
 - Shipped roadmap items were removed from `docs/ROADMAP.md`.
 
 **3. Audience and page type**
+- One home per fact (`AGENTS.md#doc-map`): a fact restated on a second page is a finding; link instead.
 - The page is one Diátaxis type, and the new text fits it. Rationale or history in a reference
   page goes to DECISIONS.md.
 - The page opens with what it is and who it is for. It leads with what the reader gets.
 - A new feature is folded into the opening, not appended.
 
-**4. Readability and zero prior knowledge** (`docs/STYLE.md#voice`)
-- Sentence and table-cell length, one idea per paragraph, as STYLE sets them.
+**4. Readability and zero prior knowledge** (`AGENTS.md#voice`)
+- Sentence and table-cell length, one idea per paragraph, as `AGENTS.md#voice` sets them.
 - Read it as someone who has never heard of OpenSandbox, MCP, Firecracker, microVMs, gVisor,
   Kata, CRIU or E2B: is every outside term explained in plain words at its first use *on this
-  page* (`docs/STYLE.md#outside-terms`)? A term explained only on another page is a finding.
+  page* (wording: `README.md#glossary`)? A term explained only on another page is a finding.
 - No internal name (`execd`, seal, slot, activator, jailer) on a user-facing page without an
   explanation next to it.
 - Glossary terms used consistently; no meta-commentary about past mistakes in user docs.
 - DECISIONS.md: check new entries only; old ones are records.
 
 **5. Honesty and proof: numbers, claims and status**
-- Numbers and vendor claims follow `docs/STYLE.md#numbers-and-sources`. Open each vendor link:
+- Numbers and vendor claims follow `AGENTS.md#numbers-and-sources`. Open each vendor link:
   does the page still say it?
 - Persuade with proof: every benefit claim carries a number, a test or a link. An adjective
   alone ("fast", "secure") is a finding. So is a caveat dropped to make a claim stronger.
-- Status cells start with a label from `docs/STYLE.md#status-vocabulary` and match what
+- Status cells start with a label from `AGENTS.md#status-vocabulary` and match what
   `ci.yaml` actually runs. Caveats are in the README platform-status table, not deleted.
 - No version promised for unbuilt work.
 

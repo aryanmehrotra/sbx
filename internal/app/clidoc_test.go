@@ -158,3 +158,52 @@ func TestEveryServeFlagIsInTheCLIReference(t *testing.T) {
 		}
 	}
 }
+
+// The built-in templates are the examples/ directories with a sandbox.json (TemplateNames reads
+// the same shape out of the embedded copy). A template that ships without a mention in the
+// reference is one `sbx templates` shows and no page explains, so each name must appear in
+// docs/SPEC.md or docs/CLI.md: in code font, or on the line that shows `sbx templates` output.
+func TestEveryTemplateIsDocumented(t *testing.T) {
+	entries, err := os.ReadDir("../../examples")
+	if err != nil {
+		t.Fatalf("read examples/: %v", err)
+	}
+
+	var docs string
+
+	for _, p := range []string{"../../docs/SPEC.md", cliDoc} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+
+		docs += string(b) + "\n"
+	}
+
+	found := 0
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+
+		if _, err := os.Stat("../../examples/" + e.Name() + "/sandbox.json"); err != nil {
+			continue
+		}
+
+		found++
+
+		name := regexp.QuoteMeta(e.Name())
+		inCode := regexp.MustCompile("`" + name + "`")
+		inListing := regexp.MustCompile(`(?m)^.*sbx templates.*\b` + name + `\b.*$`)
+
+		if !inCode.MatchString(docs) && !inListing.MatchString(docs) {
+			t.Errorf("template %q (examples/%s) is in neither docs/SPEC.md nor docs/CLI.md: "+
+				"add it to SPEC's `sbx templates` line (docs contract, AGENTS.md)", e.Name(), e.Name())
+		}
+	}
+
+	if found == 0 {
+		t.Fatal("no examples/*/sandbox.json found, so this test is not reading examples/ right")
+	}
+}

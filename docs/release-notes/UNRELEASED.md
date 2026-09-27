@@ -24,10 +24,10 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Added
 
-- New guides: a ten-minute quickstart, a full CLI reference (every command, `sbx serve` flag and `SBX_*` variable), and a docs index.
+- New guides: a ten-minute quickstart (`docs/QUICKSTART.md`), a full CLI reference (`docs/CLI.md`: every command, `sbx serve` flag and `SBX_*` variable), and one how-to page, `docs/GUIDES.md`.
 
 ## Changed
 
-- The README, comparison, roadmap and user guides are rewritten against v0.14; the agent guide moves to `docs/AI-AGENTS.md`.
+- The README, comparison, roadmap and user guides are rewritten against v0.14. The use-case and AI-agent guides merge into `docs/GUIDES.md`; the docs index and glossary move into the README.
 
 ## Fixed

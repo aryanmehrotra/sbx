@@ -17,9 +17,9 @@
 - [ ] `docs/SPEC.md`: `sandbox.json` field or validation
 - [ ] `docs/TROUBLESHOOTING.md`: new or changed error message; a workaround this fix makes obsolete removed
 - [ ] `README.md`: feature list or platform-status table
-- [ ] `docs/USE-CASES.md` / `examples/`: a new shape of use, or a spec that shows the feature
-- [ ] A built-in template: `examples/README.md`, README template row, SPEC's `sbx templates` line, `scripts/pin-templates.sh`, `scripts/usecases-e2e.sh` loop
-- [ ] `docs/AI-AGENTS.md`: MCP tool (and the tool count everywhere), or how agents drive sbx
+- [ ] `docs/GUIDES.md` / `examples/`: a new shape of use, or a spec that shows the feature
+- [ ] A built-in template: `examples/README.md`, README template row, SPEC or CLI, `scripts/pin-templates.sh`, `scripts/usecases-e2e.sh` loop
+- [ ] `docs/GUIDES.md#ai-agents`: MCP tool (and the tool count everywhere), or how agents drive sbx
 - [ ] `docs/ROADMAP.md` / `test/osb/expectations`: an item shipped, or an OpenSandbox endpoint built or refused
 - [ ] `docs/ARCHITECTURE.md` / `docs/DECISIONS.md`: wake, sleep, freeze or proxy behaviour; component, addressing, or a design decision
 - [ ] `docs/BENCHMARKS.md` / `docs/COMPARISON.md`: a number (or a published one now stale), or a vendor claim
@@ -40,7 +40,7 @@
 
 ## Measurements (only if this claims to be faster or smaller)
 
-<!-- Script, machine, version, rounds, median and spread (docs/STYLE.md#numbers-and-sources). -->
+<!-- Script, machine, version, rounds, median and spread (AGENTS.md#numbers-and-sources). -->
 
 ## Lesson learned (optional)
 

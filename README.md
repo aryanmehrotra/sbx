@@ -209,6 +209,10 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | Term | Meaning |
 |---|---|
 | sandbox | One named, isolated copy of a project's services, for one branch, task or agent |
+| service | One process inside a sandbox, such as its Postgres or its Redis, with its own port |
+| snapshot / fork | Save every service's data once, then make as many independent sandboxes from it as you like |
+| preview feature | A feature that is off until you turn it on with `sbx features`, because it may still change |
+| E2B, Daytona | Hosted services that rent AI agents a sandbox to run code in; see [COMPARISON](docs/COMPARISON.md) |
 | spec | The `sandbox.json` file that declares a sandbox's services ([SPEC](docs/SPEC.md)) |
 | template | A built-in spec you pick with `--template`, such as `postgres` |
 | daemon | `sbx serve`: the one long-running process that holds the ports and wakes and sleeps sandboxes |

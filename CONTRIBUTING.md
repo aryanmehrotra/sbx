@@ -1,9 +1,9 @@
 # Contributing
 
-Issues and patches are welcome. This page is for people changing sbx: how to build it, which
-tests to run, and how a release is cut. The project's rules, and what must change with what (the
-docs contract), live in one place: [AGENTS.md](AGENTS.md). Read it before your first PR; coding
-agents load it automatically. How to write docs: [docs/STYLE.md](docs/STYLE.md).
+Issues and patches are welcome. This page is for people changing sbx: how to set up, which
+tests to run, how to open a pull request, and how a release is cut. Every rule (code, docs,
+writing style, what must change with what) lives in [AGENTS.md](AGENTS.md); read it before your
+first PR. Coding agents load it automatically.
 
 ## Quick start
 
@@ -14,9 +14,9 @@ go test -short ./... # unit tests, no docker needed
 ./sbx selftest       # the whole cycle end to end, ~9 s once images are local
 ```
 
-Nothing to install beyond Go (see `go.mod` for the version). The root module uses only the
-standard library, and CI fails if `go.mod` gains a `require` line. That is a product claim, not a
-preference: `go install` has to stay a single step.
+Nothing to install beyond Go (see `go.mod` for the version); for most tiers below, docker too.
+There are no Go dependencies to fetch, and there must stay none
+([hard rule 1](AGENTS.md#hard-rules)).
 
 ## Test tiers
 
@@ -59,40 +59,31 @@ Notes:
 - CI also runs a gVisor `isolation` job, a `connections` benchmark and a `zeropod` probe; those
   are measurements or runtime checks, not suites you need locally.
 
-## What a pull request includes
+## Opening a pull request
 
-Fill in the PR template (`.github/pull_request_template.md`). What it asks for, and why, is in
-[AGENTS.md](AGENTS.md): the [hard rules](AGENTS.md#hard-rules) (a test that fails without the
-change, measurements, vendor claims), the [docs contract](AGENTS.md#docs-contract) (which page
-changes with which kind of change, plus one line in `docs/release-notes/UNRELEASED.md`), and the
-[Lessons](AGENTS.md#lessons-append-dont-rewrite) log. CI checks the parts a machine can: see the
-docs contract.
-
-`gofmt`, `go vet` and `shellcheck -S warning` (on every script) are enforced in CI. Otherwise match
-the file you are editing.
-
-## Where things live
-
-The package map is in [AGENTS.md](AGENTS.md#repo-map); the design is in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md). If you are about to change how a sandbox is addressed
-(ports, slots, labels), read ARCHITECTURE first. That scheme lives on every user's machine and is
-the hardest thing here to change later.
+1. Branch from `main`. Find your way around with the [repo map](AGENTS.md#repo-map) and
+   [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+2. Make the change with a test that fails without it, and update the pages the
+   [docs contract](AGENTS.md#docs-contract) names for your kind of change.
+3. Run `go vet ./... && gofmt -l .`, `shellcheck -S warning` on any script you touched, and the
+   test tier above that covers the change. CI runs the rest.
+4. Open the PR and fill in the template (`.github/pull_request_template.md`). Its first box,
+   "No: internal only", is read by CI: tick it, or add a line to
+   `docs/release-notes/UNRELEASED.md`.
+5. If something surprised you, append a dated line to AGENTS.md's
+   [Lessons](AGENTS.md#lessons-append-dont-rewrite).
 
 ## Cutting a release
 
 A release is a tag; everything after it is automated. The notes are written by hand, before the
 tag, and the release workflow refuses to build without them.
 
-1. **Write `docs/release-notes/vX.Y.Z.md`.** Copy `docs/release-notes/TEMPLATE.md` and fold in
-   the lines collected in `docs/release-notes/UNRELEASED.md`, then reset UNRELEASED.md to its
-   empty sections. The reader is someone deciding whether to upgrade: what changed, why they
-   would want it, how to adopt it, and what it costs them. Breaking changes go first. GitHub
-   appends its generated commit list, so do not restate it. The `release-notes` skill in
-   `.claude/skills/` walks through this.
-2. **Use absolute links only.** The file becomes the GitHub release body, where relative links
-   404. Pin links and images to the tag (`github.com/aryanmehrotra/sbx/blob/vX.Y.Z/...`,
-   `raw.githubusercontent.com/aryanmehrotra/sbx/vX.Y.Z/...`, both over https), and commit any image first
-   so it is in the tag. `scripts/ui-shot.sh` re-records the dashboard.
+1. **Write `docs/release-notes/vX.Y.Z.md`.** Copy `docs/release-notes/TEMPLATE.md` (its header
+   holds the format rules) and fold in the lines collected in `docs/release-notes/UNRELEASED.md`,
+   then reset UNRELEASED.md to its empty sections. The `release-notes` skill in `.claude/skills/`
+   walks through this; a person can read its `SKILL.md` as a checklist.
+2. **Commit any image the note uses first**, so it is in the tag; links in the note are absolute
+   and pinned to it. `scripts/ui-shot.sh` re-records the dashboard.
 3. **Bump the version stamps**, in the same commit as the note. Each names the current release
    and goes stale at the next tag: the row in `docs/release-notes/README.md` (the index;
    `scripts/lint-docs-contract.sh` fails without it), the supported version in `SECURITY.md`, the

@@ -10,7 +10,7 @@
 #
 # The same diff also *warns* (never fails) when a file the docs contract ties to a page changed
 # without that page: a command without docs/CLI.md, a spec field without docs/SPEC.md, an MCP
-# tool without docs/AI-AGENTS.md. Warnings, because plenty of edits to those files are
+# tool without docs/GUIDES.md. Warnings, because plenty of edits to those files are
 # internal; a reviewer decides.
 set -uo pipefail
 
@@ -39,7 +39,7 @@ warn_unless() { # $1 shipped-code pattern, $2 doc file, $3 what
 warn_unless '^internal/app/(app|help)\.go$' docs/CLI.md "a command or its help (internal/app)"
 warn_unless '^internal/daemon/serve\.go$' docs/CLI.md "sbx serve's flags (internal/daemon/serve.go)"
 warn_unless '^internal/spec/' docs/SPEC.md "the sandbox.json parser (internal/spec)"
-warn_unless '^internal/mcp/tools\.go$' docs/AI-AGENTS.md "the MCP tools (internal/mcp/tools.go)"
+warn_unless '^internal/mcp/tools\.go$' docs/GUIDES.md "the MCP tools (internal/mcp/tools.go)"
 
 [ -n "$code" ] || { echo "no shipped Go code changed; UNRELEASED.md not required"; exit 0; }
 

@@ -6,7 +6,8 @@
 # lint-docs.sh checks that links resolve; this checks that the pages which must list things
 # still list them. Each rule below exists because the contract asked for it in prose and prose
 # alone did not hold. The command and `sbx serve` flag rows are checked by a Go test instead
-# (internal/app/clidoc_test.go), because the command list lives in Go.
+# (internal/app/clidoc_test.go, with the templates), and the MCP tool count by
+# internal/mcp/doccount_test.go, because those lists live in Go.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

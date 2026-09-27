@@ -3,6 +3,11 @@
 Every performance figure sbx publishes, with the script, machine, version and date behind it.
 For readers checking a claim and for contributors changing a hot path.
 
+The page runs: [headline numbers](#headline-numbers) (one table, newest figures), then
+[the v0.14.0 run](#v0140-on-linux-x86_64-cloud-vm-4-vcpu-xeon-21-ghz-2026-09-27) figure by figure,
+then the method ([how to reproduce](#how-to-reproduce), [what CI measures](#what-the-pipeline-measures-and-what-it-does-not)),
+then an [appendix](#appendix-earlier-runs-by-topic) of earlier runs and engineering notes.
+
 ## Headline numbers
 
 **Re-measured on v0.14.0, 2026-09-27**, on a Linux x86_64 cloud VM (details in
@@ -14,12 +19,12 @@ microVM rows could not be re-run there: it has no `/dev/kvm`.
 | what | v0.14.0 · cloud VM · 2026-09-27 | previous figure · version · machine | script |
 |---|---|---|---|
 | first attempt served on wake, postgres: sbx vs Lazytainer | **20/20** vs 0/5 | 5/5 vs 0/5 · v0.1.0 · darwin/arm64, host load 5.37 | `scripts/compare.sh` |
-| memory of a sleeping sandbox | **0 B**: no container running, 3/3 rounds | 0 B · v0.1.0 · laptop | `ps`, `docker ps` |
-| daemon RSS at rest, no sandboxes | **12.8 MB** (12.6-12.9, n=3 fresh daemons) | 9.1 MB · v0.1.0 · macOS laptop | `ps -o rss` |
+| memory of a sleeping sandbox | **0 B**: no container running, 3/3 rounds | 0 B · v0.1.0 · laptop | `scripts/bench-memory.sh` |
+| daemon RSS at rest, no sandboxes | **12.8 MB** (12.6-12.9, n=3 fresh daemons) | 9.1 MB · v0.1.0 · macOS laptop | `scripts/bench-memory.sh` |
 | docker wake, redis | **216 ms** median, n=20, p90 236, stdev 14 | 191 ms · v0.1.0 · laptop | `scripts/bench.sh 20` |
 | docker wake, postgres / nginx | **348 ms** (p90 488) / **240 ms** (p90 261), n=20 each | 931 / 174 ms, n=5 · v0.1.0 · darwin/arm64, host load 5.37 | `scripts/compare.sh 20` |
-| headless Chrome wake, cold / warm | **611 ms** / **387 ms**, n=5 each, alternating | 3744 / 766 ms, n=5 · v0.1.0 · macOS arm64 | see [Chrome](#a-heavier-workload-headless-chrome) |
-| `sbx create`, redis, image present | **362 ms** median, n=10, p90 375 | 492 ms, n=1 · v0.1.0 · laptop | see [the run](#v0140-on-linux-x86_64-cloud-vm-4-vcpu-xeon-21-ghz-2026-09-27) |
+| headless Chrome wake, cold / warm | **611 ms** / **387 ms**, n=5 each, alternating | 3744 / 766 ms, n=5 · v0.1.0 · macOS arm64 | `scripts/bench-chrome.sh` |
+| `sbx create`, redis, image present | **362 ms** median, n=10, p90 375 | 492 ms, n=1 · v0.1.0 · laptop | `scripts/bench-create.sh` |
 | OpenSandbox create → first command, docker warm pool, 1 at a time | **12.8 ms** median, n=10, p95 77.8 | 13.7 ms · v0.10.0 · Apple M4, colima 3 vCPU | `scripts/osb-bench.sh` |
 | same, 100 at once from the pool | **309 ms** and **460 ms** median in two runs, n=100 each, p95 405 / 600 | 472 ms · v0.10.0 · Apple M4, colima 3 vCPU | `scripts/osb-bench.sh --burst 100` |
 | a new connection to an awake sandbox, vs docker direct | **+0.17 ms** median (+0.15, +0.18, +0.17 in 3 runs of n=20) | +0.10 ms · v0.1.0 · laptop | `scripts/connbench.sh` |
@@ -37,8 +42,9 @@ terms while the ratios to direct stay close. The wake figures include each harne
 start: about 12 ms of the timer's own start in `bench.sh` (measured), plus `redis-cli`'s, and a paired baseline of 21 ms
 (nginx) and 113 ms (postgres) in `compare.sh`.
 
-**Not yet measured anywhere:** a microVM wake on bare-metal Linux (the only place ROADMAP's
-4–28 ms can be confirmed), snapshot disk footprint per VM, a Windows/WSL2 host, kata-fc on
+**Not yet measured anywhere:** a microVM wake on bare-metal Linux (the only place the projected
+4–28 ms, from published restore figures in
+[the Firecracker spike](design/2026-09-26-firecracker-spike.md), can be confirmed), snapshot disk footprint per VM, a Windows/WSL2 host, kata-fc on
 kubernetes, and concurrent microVM restores at N≥5 off nested virtualisation.
 
 ## v0.14.0 on Linux x86_64 cloud VM (4 vCPU Xeon 2.1 GHz), 2026-09-27
@@ -58,10 +64,14 @@ afternoon, the benchmarks run one after another and never at the same time.
 Images were pulled first (`docker pull`, `sbx prewarm --spec examples/browser/sandbox.json`), so no
 timing includes a download. Host load was 0.1-1.9 at the start of each script.
 
-**Wake, redis.** `scripts/bench.sh 20`: median **216 ms**, min 191, p90 236, max 251, stdev
+### Wake, redis (v0.14.0)
+
+`scripts/bench.sh 20`: median **216 ms**, min 191, p90 236, max 251, stdev
 14 ms, 20/20 served. Timing starts a Python timer twice per sample; that alone costs 11-13 ms here.
 
-**Wake against the field.** `CONTENDERS=sbx scripts/compare.sh 20`, then
+### Wake against the field (v0.14.0)
+
+`CONTENDERS=sbx scripts/compare.sh 20`, then
 `CONTENDERS=lazytainer,sablier,zeropod scripts/compare.sh 5` (the rivals at the n the last run
 used, to keep the run under an hour). Noise floor 215 µs/req ±99.
 
@@ -84,28 +94,40 @@ pairs). That is inside this harness's noise floor of ±99 µs, so it is not a re
 Docker Desktop the client now shares the host network and dials 127.0.0.1. Docker Desktop and
 colima keep the old path. `scripts/compare_test.sh` passes 8/8.
 
-**A new connection, awake sandbox.** `scripts/connbench.sh 20`, three runs: +0.15 ms (IQR
+### A new connection, awake sandbox (v0.14.0)
+
+`scripts/connbench.sh 20`, three runs: +0.15 ms (IQR
 +0.10 to +0.22), +0.18 ms (+0.08 to +0.30), +0.17 ms (+0.06 to +0.25). Slower through the daemon
 in 17, 16 and 20 of 20 pairs. The script runs the two sides in the same order each pair; the three
 runs agree, so the figure is **about +0.17 ms**.
 
-**Headless Chrome.** No script was recorded for the v0.1.0 figure, so this run used its own:
+### Headless Chrome (v0.14.0)
+
+No script was recorded for the v0.1.0 figure, so this run added one, `scripts/bench-chrome.sh`:
 `examples/browser`, `sbx serve --idle 5s`, woken by `curl /json/version`, 10 runs alternating.
 Odd runs dropped the page cache first (`echo 3 > /proc/sys/vm/drop_caches`): cold median **611 ms**
 (607-619). Even runs did not: warm median **387 ms** (368-413). The same `curl` against the awake
 browser takes 18-20 ms. "Cold" here means page cache dropped; the v0.1.0 cold runs were first
 touches in a session on a Mac, which is not the same condition.
 
-**Create.** `sbx create` of `bench.sh`'s redis spec then `sbx rm`, 10 times: median **362 ms**,
-p90 375, min 345, max 391.
+### Create (v0.14.0)
 
-**Memory.** Three rounds, each with a fresh `sbx serve --idle 5s`: RSS at rest 12.8, 12.9 and
+`scripts/bench-create.sh 10`: `sbx create` of `bench.sh`'s redis spec, then `sbx rm`, 10 times.
+Median **362 ms**, p90 375, min 345, max 391. Each sample is timed with two `measure_ms` calls
+(`scripts/lib/measure.sh`), and that pair alone took 11-13 ms here (n=5); the script prints this
+floor at the end. The 362 ms includes it.
+
+### Memory (v0.14.0)
+
+`scripts/bench-memory.sh`, three rounds, each with a fresh `sbx serve --idle 5s`: RSS at rest 12.8, 12.9 and
 12.6 MB; fronting one sleeping redis sandbox 13.1, 13.4, 13.0 MB; after a wake, 1000 pipelined
 PINGs and 50 new connections, 13.4, 13.7, 13.2 MB. While the sandbox slept, no container of it was
 running in any round: **0 B**. At the end of the 20-run `compare.sh` arms the daemon was 16.4 MB.
 A Linux amd64 binary is not the macOS arm64 one, so 12.8 against 9.1 MB is not growth.
 
-**Proxy, in-process.** `go test -run '^$' -bench <name> ./internal/daemon`, read with `benchstat`:
+### Proxy, in-process (v0.14.0)
+
+`go test -run '^$' -bench <name> ./internal/daemon`, read with `benchstat`:
 
 ```
   RoundTrip  direct   9.43 µs ±3%   proxied  19.08 µs ±1%   +9.6 µs  (+102%)   -count 12
@@ -113,7 +135,9 @@ A Linux amd64 binary is not the macOS arm64 one, so 12.8 against 9.1 MB is not g
   Stream     direct 2543 MB/s ±7%   proxied 1391 MB/s ±13%  55% of direct      -benchtime 30x -count 10
 ```
 
-**OpenSandbox create → first command.** `scripts/osb-bench.sh` on the default docker socket,
+### OpenSandbox create → first command (v0.14.0)
+
+`scripts/osb-bench.sh` on the default docker socket,
 `node:22-slim`:
 
 | run | mode | sandboxes | ok | median ms | p95 ms | p99 ms | score |
@@ -127,7 +151,9 @@ A Linux amd64 binary is not the macOS arm64 one, so 12.8 against 9.1 MB is not g
 The two pool bursts differ by 150 ms, so a pool burst of 100 here is "300-460 ms", not either
 number. One pool claim at a time is 12.8 ms, the M4's 11-14 ms. All 100 succeed in every burst.
 
-**Not run here:** anything on microVMs (`--provider firecracker`, `fc-anywhere-e2e.sh`), since the
+### Not run on v0.14.0
+
+Anything on microVMs (`--provider firecracker`, `fc-anywhere-e2e.sh`), since the
 VM has no `/dev/kvm`; the kubernetes wake, since there is no cluster; and zeropod.
 
 ---
@@ -136,6 +162,9 @@ VM has no `/dev/kvm`; the kubernetes wake, since there is no cluster; and zeropo
 
 ```sh
 scripts/bench.sh 20                                  # wake latency, distribution
+scripts/bench-create.sh 10                           # sbx create, redis, image present
+scripts/bench-memory.sh                              # daemon RSS; 0 B while asleep
+scripts/bench-chrome.sh                              # headless Chrome wake, cold and warm
 go test -run '^$' -bench RoundTrip -count 12 ./internal/daemon   # proxy overhead, for benchstat
 go test -run '^$' -bench Stream -count 10 ./internal/daemon   # bulk throughput
 ./sbx selftest                                       # the whole cycle, ~9s
@@ -165,7 +194,13 @@ runner is doing, and a number that noisy on every tag teaches people to ignore t
 
 ---
 
-## Wake
+## Appendix: earlier runs, by topic
+
+Each section below holds the runs before v0.14.0 for one figure, with the machine and version
+each was measured on, and the engineering notes behind the numbers. They are kept, labelled,
+not replaced: a figure measured on another machine is not a regression or a speed-up.
+
+### Wake
 
 | | median | detail | measured on |
 |---|---|---|---|
@@ -185,7 +220,7 @@ its machine; the two are different machines, so the gap between them is not a re
 kubernetes figure has not been re-run since v0.1.0 and is stale: the wake path changed in v0.13. For scale against hosted platforms, see
 [against other platforms](#against-other-platforms) below.
 
-### Why wake is fast
+#### Why wake is fast
 
 Two things make these numbers hold up.
 
@@ -210,7 +245,7 @@ gets wake down to:
 
 ---
 
-## A heavier workload: headless Chrome
+### A heavier workload: headless Chrome
 
 Redis is the wake benchmark because it isolates the wake path from the workload's own
 startup. Chrome is the other end of the range - the browser template, woken by a plain CDP
@@ -233,7 +268,7 @@ the cost of a browser nobody is using, not the cost of starting one.
 
 ---
 
-## OpenSandbox create → first command (ComputeSDK's Burst TTI)
+### OpenSandbox create → first command (ComputeSDK's Burst TTI)
 
 ComputeSDK ranks hosted sandboxes on **TTI: client-timed `create()` → first successful
 `runCommand('node -v')`, 100 launched at once**, scored 0.6·s(median) + 0.25·s(p95) +
@@ -255,7 +290,7 @@ Apple M4, 16 GiB; a dedicated colima profile with **3 vCPU / 3 GiB**, docker 29.
 `node:22-slim` pre-pulled. Measured 2026-09-26. **A local number, not a leaderboard entry**:
 ComputeSDK's runner measures a hosted endpoint over the internet.
 
-### Where a create's 4 seconds went
+#### Where a create's 4 seconds went
 
 `SBX_OSB_TRACE=1` logs each phase of a create, in ms from the POST being accepted. One create at
 a time, before (09f3db2) and after:
@@ -271,13 +306,15 @@ a time, before (09f3db2) and after:
 | execd endpoint answered | 4030-4036 | 182 | ~38 |
 | **TTI** (client, `node -v` done) | **4039, 4048** (n=2; a first create seeding the execd volume: 6042) | 227 median (n=10) | **11.1 median** (n=10) |
 
-The 4 s was two fixed costs stacked: an unconditional `docker pull` that asked the registry for
-a manifest the engine already had (~3 s), and the SDK's `waitForRunning`, which polls GET every
-**2 s** - a sandbox Running at 3.2 s was seen at the 4 s poll. sbx now pulls only a missing
-image (as upstream's docker runtime does) and holds the create's answer until Running (up to
-20 s), so the SDK's first GET ends its wait.
+The 4 s was two fixed costs stacked:
 
-### Burst
+- An unconditional `docker pull` asked the registry for a manifest the engine already had (~3 s).
+  sbx now pulls only a missing image, as upstream's docker runtime does.
+- The SDK's `waitForRunning` polls GET every **2 s**, so a sandbox Running at 3.2 s was seen at
+  the 4 s poll. sbx now holds the create's answer until Running (up to 20 s), so the SDK's first
+  GET ends its wait.
+
+#### Burst
 
 | run | mode | sandboxes | ok | median ms | p95 ms | p99 ms | score |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -319,7 +356,7 @@ What bounds each path here:
 
 ---
 
-## OpenSandbox create → first command on microVMs (v0.13)
+### OpenSandbox create → first command on microVMs (v0.13)
 
 The same Burst-TTI shape as above, with every sandbox a Firecracker microVM, run by CI's
 `microvm` job on each change. That job ran on a GitHub-hosted `ubuntu-24.04` x86_64 runner with
@@ -367,7 +404,7 @@ microVM from a frozen pool is **141 ms on this runner**, with its own guest kern
 
 ---
 
-## A Firecracker microVM on a Mac, through the helper VM
+### A Firecracker microVM on a Mac, through the helper VM
 
 > **Stale.** Measured on the v0.11.0 tree, before the jailer (v0.13) and the layered root disk
 > (v0.14). The 2.3 s root-filesystem clone in the create below is the step v0.14's layered root
@@ -456,13 +493,14 @@ Where it goes:
   undeclared, so the daemon waited a flat 2 s for the workload. A VM port has no proxy in front
   of it, so an accepted connection is a listener and the check is now declared.
 
-Not measured: bare-metal Linux (the only place the ROADMAP's 4-28 ms can be confirmed or refuted),
+Not measured: bare-metal Linux (the only place the projected 4-28 ms from
+[the Firecracker spike](design/2026-09-26-firecracker-spike.md) can be confirmed or refuted),
 a Windows/WSL2 host, kata-fc on kubernetes, and concurrent restores (the spike's N≥5 collapse
 applies unchanged).
 
 ---
 
-## Proxy overhead
+### Proxy overhead
 
 The wake is a one-off; this is the tax on every query for the life of the sandbox.
 
@@ -486,7 +524,7 @@ where a query already costs hundreds of microseconds before it reaches the proxy
 
 ---
 
-## Throughput
+### Throughput
 
 The proxy overhead above is a latency figure on a six-byte PING. The workloads sbx actually
 fronts are databases and browsers: a `pg_dump`, a `COPY`, a large result set, a CDP screenshot -
@@ -514,7 +552,7 @@ order of magnitude above what a Postgres `COPY` or similar workload actually pro
 database stays the binding constraint, not the proxy. It would only start to matter for
 something that genuinely streams at memory speed.
 
-### The relay buffer: pooled, and bigger
+#### The relay buffer: pooled, and bigger
 
 The proxy copies each direction of a tunnel through a byte buffer. Two changes to that buffer
 are worth calling out on their own.
@@ -585,7 +623,7 @@ is expensive. It is in the way because it is structural.
 
 ---
 
-## A new connection to an awake sandbox
+### A new connection to an awake sandbox
 
 A client that opens a connection per operation (`psql`, `redis-cli`, any CLI, anything without
 a pool) is the common case sbx is built for: the sandbox is already awake, so there's no wake
@@ -613,7 +651,7 @@ belief is revoked, and a proper wake runs. Both paths are covered by tests in
 
 ---
 
-## Opening a connection, measured in-process
+### Opening a connection, measured in-process
 
 The figure above is a docker-backed one and includes everything. This is the same question asked
 of the proxy alone, on loopback, with no container in the path — `BenchmarkConnDirect` against
@@ -632,7 +670,7 @@ round-trip benchmarks hold one socket open for the whole run and amortise this t
 is exactly backwards for the clients sbx is built for. `psql`, `redis-cli` and any CLI without a
 pool pay it on every operation.
 
-### This benchmark could not run past 16,384 iterations, and said "connection reset by peer"
+#### This benchmark could not run past 16,384 iterations, and said "connection reset by peer"
 
 Worth recording, because the failure named nothing useful and the cause was not in sbx.
 
@@ -659,7 +697,7 @@ churn, and it is a property of the platform's port range rather than of sbx.
 
 ---
 
-## Memory
+### Memory
 
 The table was measured at v0.1.0 (2026-08-15) on a macOS laptop. The daemon and sleeping-sandbox
 rows were re-measured on v0.14.0 on a Linux x86_64 cloud VM (2026-09-27, 3 fresh daemons): 0 B
@@ -685,7 +723,7 @@ ClickHouse is idle at about 200 MB either way - its cache caps pay off under loa
 
 ---
 
-## Against other platforms
+### Against other platforms
 
 Vendor-documented figures, read August 2026, beside ours - useful context, not a controlled
 benchmark. The differences below explain why. Vendor cells are kept as read then;
@@ -707,7 +745,7 @@ benchmark. The differences below explain why. Vendor cells are kept as read then
 [neon]: https://neon.com/docs/connect/connection-latency
 [fly]: https://fly.io/docs/reference/suspend-resume/
 
-### Why these numbers don't belong in the same table
+#### Why these numbers don't belong in the same table
 
 They're here because people ask, and refusing to answer is its own kind of unhelpful. But four
 things make the column non-comparable, and all four favour us:
@@ -726,7 +764,7 @@ sandbox exists; here it's the client's own socket. That's in
 
 ---
 
-## Against the field, measured here
+### Against the field, measured here
 
 `scripts/compare.sh` runs sbx and its self-hosted rivals against the same targets on one
 machine. It answers the obvious objection to the table above: every rival figure in it was
@@ -745,7 +783,7 @@ number, and each exists because of a specific way this kind of benchmark can mis
 | a sample counts only on a **correct protocol reply** | Sablier's middleware failed to engage during development and returned **502 in 98 ms** - faster than sbx's real wake. A status code is not evidence |
 | a sample is **VOID** unless the target was verifiably asleep at `t0` | otherwise a rival whose mechanism never engaged scores a spectacular wake for answering while already awake |
 | every wake is **paired** with a baseline through the identical client | the first real run showed ~100 ms of each 336 ms "wake" was `curl`'s own startup |
-| overhead is measured against **the same container without the wake path**, interleaved | measuring all the floor then all the through path lets load drift land in the answer - this floor moved 660 µs → 4280 µs between two runs on one machine |
+| overhead is measured against **the same container without the wake path**, interleaved | run in blocks, load drift lands in the answer: this floor moved 660 µs → 4280 µs between two runs |
 | a delta inside the harness's own jitter is **not published as a number** | the jitter here is ±150-900 µs and the proxy tax is ~15 µs, so this harness cannot resolve it and says so |
 
 `N/A` and `SKIPPED` are different facts. Sablier has no postgres row because it is HTTP-only
@@ -756,7 +794,7 @@ checkpointed), since the pod stays `Running` while checkpointed and `kubectl get
 can't tell asleep from awake. `scripts/zeropod-probe.sh` does that scrape from inside the
 cluster, which is what produced the 272 ms row below.
 
-### Measured · 2026-09-27, v0.14.0
+#### Measured · 2026-09-27, v0.14.0
 
 On a Linux x86_64 cloud VM, host load 0.3, noise floor 215 µs/req ±99. Full table in
 [the v0.14.0 run](#v0140-on-linux-x86_64-cloud-vm-4-vcpu-xeon-21-ghz-2026-09-27). sbx served
@@ -764,7 +802,7 @@ the first attempt **20/20** on nginx (median 240 ms) and on postgres (348 ms). L
 it **0/5** on both (3061 and 3407 ms). Sablier could not be stood up, and zeropod needs a cluster.
 That run needed a fix to `compare.sh`'s postgres client on native Linux, described there.
 
-### Measured · 2026-08-15
+#### Measured · 2026-08-15
 
 Conditions printed by the run, copied from the artifact rather than remembered:
 darwin/arm64, **host load 5.37**, 285 MB free in the VM, docker 29.2.1, **noise floor
@@ -807,7 +845,7 @@ under any plugin configuration tried; and Lazytainer's nginx arm on this run.
 
 ---
 
-## Conditions matter
+### Conditions matter
 
 `scripts/bench.sh` prints host load and VM memory alongside its results, because a wake on
 an idle laptop and a wake on a busy one are not the same measurement.
@@ -828,12 +866,12 @@ measured 216 ms, stdev 14 ms: a different machine, not a refutation.
 
 ---
 
-## Engineering notes
+### Engineering notes
 
 How some of the numbers above were found, broken and fixed. Kept for anyone changing these
 paths; not needed to read the figures.
 
-### What the egress activity stamp and the feature gates cost (v0.8.0)
+#### What the egress activity stamp and the feature gates cost (v0.8.0)
 
 Each of these sits in a hot path, so the question is what it charges when it is doing nothing.
 
@@ -856,7 +894,7 @@ The waiting page has no steady-state cost to measure: it is off unless
 `SBX_FEATURES=waiting-page`, and even then it does nothing until a wake has already run longer
 than a second.
 
-### Listing sandboxes
+#### Listing sandboxes
 
 `List` is called by the daemon's discovery on every refresh tick, by `AllocSlot` on every
 create, and by nine CLI commands - so its cost is paid on a timer, continuously, and grows
@@ -878,7 +916,7 @@ contending for the same daemon that wakes are trying to use - so discovery cost 
 wake path exactly when the machine was busiest. The Engine API client behind the new path was
 already in the repo, written for precisely this.
 
-### Build cache
+#### Build cache
 
 `build:` tags an image by a hash of its context, so the question is what a cache hit actually
 saves. `sbx create`, wall clock, n=10 each, same machine, interleaved with the baseline:

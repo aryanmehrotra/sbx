@@ -5,7 +5,9 @@
 > probably answered here.
 
 Each entry states a decision and the reasoning behind it — including, where it matters, why the
-obvious alternative doesn't hold up.
+obvious alternative doesn't hold up. Entries are records: their headings never change (other
+pages link to them), and old entries keep their wording. New entries follow
+[AGENTS.md](../AGENTS.md#writing-docs).
 
 ## Index
 
@@ -1328,13 +1330,16 @@ provider construction; the OpenSandbox API refuses to serve on firecracker with 
 must not open it. `SBX_FC_JAILER_BINARY` replaces the pinned jailer as `SBX_FC_BINARY` does
 firecracker; set both, since a jailer is meant for its own release's firecracker.
 
-Verified by unit tests against fakes (argv, uid arithmetic, staging by link and ownership, path
-translation, Adopt refusing a symlink, hard link or directory, and every path the provider hands the
-VMM resolving inside a root the fake enforces); by `TestTheRealJailer`, which runs the real pinned
-jailer with the test binary in firecracker's place (root and cgroup v2, no KVM) and checks uid,
-capabilities, chroot, cgroup limits and release from /proc; and in CI's microvm job, where
-`TestFirecrackerE2E` asserts the same of the real VMM every round and every VMM the conformance
-tier causes is sampled from /proc.
+How it is proven:
+
+- **unit-tested** against fakes: argv, uid arithmetic, staging by link and ownership, path
+  translation, Adopt refusing a symlink, hard link or directory, and every path the provider hands
+  the VMM resolving inside a root the fake enforces.
+- `TestTheRealJailer` runs the real pinned jailer with the test binary in firecracker's place
+  (root and cgroup v2, no KVM). It checks uid, capabilities, chroot, cgroup limits and release
+  from /proc.
+- **verified in CI** (the `microvm` job): `TestFirecrackerE2E` asserts the same of the real VMM
+  every round, and every VMM the conformance tier causes is sampled from /proc.
 
 ### Warm-pool members wait asleep on a microVM, and each is its own VM
 

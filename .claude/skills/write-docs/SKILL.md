@@ -5,8 +5,9 @@ description: Write or update sbx documentation so it matches the code and the ho
 
 # Write sbx docs
 
-The rules live in `AGENTS.md` (docs contract, lessons) and `docs/STYLE.md` (page types, voice,
-numbers, status vocabulary, glossary). Read both before writing. This skill is the procedure.
+The rules live in `AGENTS.md`: the docs contract, the doc map (which page is the home of which
+fact), `#writing-docs` (voice, numbers, status vocabulary) and the lessons. Read it before
+writing. This skill is the procedure.
 
 ## 1. Find every page the change touches
 
@@ -26,24 +27,24 @@ numbers, status vocabulary, glossary). Read both before writing. This skill is t
 
 ## 3. Pick the page type, then write
 
-- Tutorial, how-to, reference or explanation (`docs/STYLE.md`). Put the text on the page of the
-  matching type; link from the others instead of copying.
-- Open with what the reader gets. Apply `docs/STYLE.md#voice` (sentence and cell length, zero
+- Find the fact's home in `AGENTS.md#doc-map` (one home per fact). Put the text there; link from
+  the other pages instead of copying.
+- Open with what the reader gets. Apply `AGENTS.md#voice` (sentence and cell length, zero
   prior knowledge, internal names, persuade with proof).
-- Explain every outside term at its first use on the page, using `docs/STYLE.md#outside-terms`.
+- Explain every outside term at its first use on the page, in the wording of `README.md#glossary` (add a row for a new term).
 - Fold a new feature into the page's opening and tables; do not append a section at the end.
 - State current behaviour once. No project history in reference pages.
-- Numbers and vendor claims: `docs/STYLE.md#numbers-and-sources`.
-- Status: a label from `docs/STYLE.md#status-vocabulary`. Caveats go in the README
+- Numbers and vendor claims: `AGENTS.md#numbers-and-sources`.
+- Status: a label from `AGENTS.md#status-vocabulary`. Caveats go in the README
   platform-status table, not in hero text.
-- Use the house words in `docs/STYLE.md#glossary` exactly.
+- Use the house words in `README.md#glossary` exactly.
 
 ## 4. Check before you finish
 
 ```sh
 SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh   # links, anchors, reference links, pinned URLs
 bash scripts/lint-docs-contract.sh            # SBX_* vars in CLI.md, ROADMAP heading, lessons
-go test ./internal/app/ -run CLIReference     # every command and serve flag in CLI.md
+go test ./internal/app/ ./internal/mcp/ -run 'CLIReference|Documented'   # commands, flags, templates, tool count
 grep -rn "FILE.md#old-anchor" .               # if you renamed a heading
 ```
 

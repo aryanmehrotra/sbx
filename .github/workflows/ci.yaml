@@ -241,9 +241,9 @@ jobs:
         if: runner.os == 'Linux'
         with:
           go-version: '1.26'
-      - name: every command and serve flag is in docs/CLI.md
+      - name: every command, serve flag, template and the MCP tool count are in the docs
         if: runner.os == 'Linux'
-        run: go test ./internal/app/ -run 'CLIReference'
+        run: go test ./internal/app/ ./internal/mcp/ -run 'CLIReference|Documented'
 
       - name: shipped code comes with a release-note line
         # A PR touching main.go or internal/ (not tests) adds a line to UNRELEASED.md or ticks

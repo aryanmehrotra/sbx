@@ -7,7 +7,7 @@ description: Draft sbx release notes for a new tag from docs/release-notes/UNREL
 
 The release workflow publishes `docs/release-notes/vX.Y.Z.md` as the GitHub release body and
 appends GitHub's generated commit list below it. The note is for someone deciding whether to
-upgrade. Format: `docs/release-notes/TEMPLATE.md`. Style: `docs/STYLE.md`.
+upgrade. Format: `docs/release-notes/TEMPLATE.md`. Style: `AGENTS.md#writing-docs`.
 
 ## 1. Collect
 
@@ -33,9 +33,9 @@ cat docs/release-notes/UNRELEASED.md
 - Highlights: benefit sentence, one command or snippet, link to the doc. One number at most,
   with its script; it must already be in BENCHMARKS.md.
 - Fixes are user-visible symptoms, one line each.
-- Known limitations: a label from `docs/STYLE.md#status-vocabulary` (**not yet run end to end** on X).
+- Known limitations: a label from `AGENTS.md#status-vocabulary` (**not yet run end to end** on X).
 - Length: TEMPLATE's limit. Rationale goes to DECISIONS.md, not here.
-- Explain every outside term at first use (`docs/STYLE.md#outside-terms`): the note is read alone.
+- Explain every outside term at first use (wording: `README.md#glossary`): the note is read alone.
 
 ## 3. Links
 

@@ -54,6 +54,21 @@ flowchart LR
   interface. The **console** is a separate Go module, so the root module keeps zero
   dependencies.
 
+The names in the diagram, in plain words:
+
+| Term | Meaning |
+|---|---|
+| OpenSandbox | An open-source API standard for AI-agent sandboxes, with SDKs in 5 languages. sbx serves it. |
+| MCP | Model Context Protocol: the standard way AI assistants such as Claude or Cursor call outside tools. |
+| Firecracker, microVM | The virtual machine monitor AWS built for Lambda; each microVM has its own kernel. |
+| jailer | Firecracker's launcher: locks each VM's process into its own directory as an unprivileged user. |
+| netns | A network namespace: a private copy of the network stack for one process. |
+| snapshot | A microVM's memory and disks saved to files; sleeping one is taking a snapshot. |
+| activator | On kubernetes, a pod running `sbx serve` that takes connections for a sandbox at zero replicas and scales it up. |
+| egress filter | A proxy that decides which outside hosts a sandbox's traffic may reach. |
+| helper VM | A Linux VM (lima or colima) that sbx runs on a Mac or Windows so microVMs can run there. |
+| execd | The small agent sbx runs inside a sandbox to execute commands for the API. |
+
 ## The rule
 
 Everything here follows from one rule:
@@ -300,10 +315,16 @@ Windows branch - installed as `provider.DecideHost` and used by the provider, th
 | verb | what happens |
 |---|---|
 | Create | build/reuse the rootfs, clone it, write the agent drive, cold boot, wait for the first port, **Seal**, Pause, Full snapshot, kill |
-| Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override` and `network_overrides`, **Rekey** before returning |
-| Stop | **Seal** (asked again, with a longer bound each time, until one attempt is confirmed), Pause, Diff snapshot if this process was restored (else Full), kill, fold the Diff into `vm.mem` by extent, mark valid |
-| a Stop whose Seal is never confirmed | **Rekey** (proves execd unsealed), keep the VM running with its memory, report `ErrStillRunning` so the daemon retries on its next tick; the third such sleep in a row, or a Rekey that fails too, kills the VMM and the next wake cold-boots |
-| a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk instead of restoring stale memory over it |
+| Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override`, `network_overrides`; **Rekey** before returning |
+| Stop | **Seal** (note 1), Pause, snapshot (note 2), kill, fold the Diff into `vm.mem` by extent, mark valid |
+| a Stop whose Seal is never confirmed | **Rekey**, keep the VM running, report `ErrStillRunning` (note 3) |
+| a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk instead of restoring stale memory |
+
+1. Seal is asked again, with a longer bound each time, until one attempt is confirmed.
+2. A Diff snapshot if this process was restored, else a Full one.
+3. The Rekey proves execd unsealed, so the VM keeps running with its memory and the daemon
+   retries on its next tick. The third such sleep in a row, or a Rekey that fails too, kills the
+   VMM, and the next wake cold-boots.
 
 The guest is PID 1 `sbx fc-init` on the agent drive: it mounts the image root, gives it proc, sys, dev,
 devpts and the agent at `/opt/sbx/sbx`, switches root and execs `sbx execd --vsock-port 44772 -- <entrypoint>`.
@@ -315,7 +336,7 @@ The guest's address comes from the kernel command line (`ip=`, `CONFIG_IP_PNP=y`
 (`fcProvider.DialGuestPort`) all reach execd over vsock. `fc.NoGuest` - what a non-Linux build of
 the provider gets - refuses all four; with it the provider still sleeps and wakes (same identity,
 nothing to re-key) and refuses exec, copy, `health` and forking by name. A sleep or snapshot that fails
-after a confirmed Seal stops the VM (its next wake is a cold boot) rather than leave execd sealed; a
+after a confirmed Seal stops the VM rather than leave execd sealed; its next wake is a cold boot. A
 sleep whose Seal was never confirmed keeps the VM only once a Rekey has proved execd unsealed
 (DECISIONS.md, "A sleep whose seal is not confirmed keeps the VM, re-keyed, and a guest cannot keep it
 for ever").
@@ -332,8 +353,8 @@ and memory. The provider hands the VMM only paths in that root (`fc.View`) and t
 (`View.Adopt`: a plain file with one name, or refused). `SBX_FC_JAILER=off` is the unjailed v0.12 launch.
 The host guard beside it fails closed (`fc.IPNetwork`): no guard, no VM, unless `SBX_FC_FIREWALL=unmanaged`.
 A jailed VMM joins its VM's own network namespace (`--netns`, `/var/run/netns/sbxfc<slot>-<index>`),
-where its tap is, bridged to a veth whose host end is a port of the sandbox's bridge - rebuilt at every
-launch; the guard's rules, on the bridge, see the guest's frames as before.
+where its tap is. The tap is bridged to a veth whose host end is a port of the sandbox's bridge, and
+all of it is rebuilt at every launch. The guard's rules, on the bridge, see the guest's frames as before.
 
 ---
 
@@ -394,7 +415,7 @@ a client of the OpenSandbox API, not part of the daemon: it dials `--url` (defau
 `$SBX_OSB_URL`, `$OPEN_SANDBOX_DOMAIN`, else `http://127.0.0.1:8080`) with the API key, so it can do exactly what the API can.
 It implements the protocol directly, with no framework, to keep the root module
 dependency-free. stdout carries protocol only, and a failing tool answers with `isError` rather
-than a JSON-RPC error, so the model can correct itself. Usage: [AI-AGENTS.md](AI-AGENTS.md).
+than a JSON-RPC error, so the model can correct itself. Usage: [GUIDES.md](GUIDES.md#mcp).
 
 ---
 
@@ -431,27 +452,29 @@ any other. What the API adds is around it, not instead of it:
   implements. A cluster would need an init container, so the API answers 501 there rather than
   pretending (`pause` would be a scale-to-zero that loses the memory, and is refused by name).
 - **On a microVM it is already there.** Firecracker's PID 1 (`sbx fc-init`) becomes execd with the
-  workload as its child, so the provider declares `RunsAgent` and the API skips the volume, the
-  mount and the wrapper; it still mints the token, and the VM boots and re-keys execd with it.
-  An API microVM is born running (not snapshotted asleep), its pause is a VM pause, its snapshot
-  is its disk (a fork cold-boots a copy), a `pvc` is an ext4 image attached as a drive, and a
-  `host` volume is a 501 (`HostVolumes`: no virtio-fs). On a Mac or Windows the API runs in
+  workload as its child. So the provider declares `RunsAgent`, and the API skips the volume, the
+  mount and the wrapper. It still mints the token, and the VM boots and re-keys execd with it.
+  An API microVM is born running (not snapshotted asleep), and its pause is a VM pause. Its
+  snapshot is its disk (a fork cold-boots a copy). A `pvc` is an ext4 image attached as a drive,
+  and a `host` volume is a 501 (`HostVolumes`: no virtio-fs). On a Mac or Windows the API runs in
   the helper VM's daemon, which is Linux with `/dev/kvm` - see below.
 - **Through a helper VM the API is served in the VM and fronted here.** `sbx serve --provider
   firecracker --osb-addr` on an M3+ Mac or Windows starts the in-VM daemon with `--osb-addr
-  127.0.0.1:22981` and the key in its root-only environment file, so the jailer, the egress filter
+  127.0.0.1:22981` and the key in its root-only environment file. So the jailer, the egress filter
   and the host guard are the VM's own and refuse exactly as on Linux. The host half
-  (`internal/fchost`) resolves the key as Linux does (`--osb-key`, `SBX_OSB_KEY`, else
-  `~/.sbx/osb/key` on the Mac), reverse-proxies `--osb-addr` (loopback only) over the ssh forward,
-  and will not serve until it has proved the API behind the forward answers **401 without the
-  key and 200 with it** - the forward is itself a Mac loopback port, which containers on a
-  VM-backed engine reach, so that check is the control and is verified at startup, not assumed.
-  Endpoints the API hands out are `127.0.0.1:<port>` in the VM; the mirror binds the same numbers
-  here, and a successful create (any `POST` under `/v1/sandboxes`) or endpoint lookup is held
+  (`internal/fchost`):
+  - resolves the key as Linux does (`--osb-key`, `SBX_OSB_KEY`, else `~/.sbx/osb/key` on the Mac);
+  - reverse-proxies `--osb-addr` (loopback only) over the ssh forward;
+  - will not serve until it has proved the API behind the forward answers **401 without the key
+    and 200 with it**. The forward is itself a Mac loopback port, which containers on a VM-backed
+    engine reach, so that check is the control, verified at startup, not assumed.
+
+  Endpoints the API hands out are `127.0.0.1:<port>` in the VM, and a mirror binds the same
+  numbers here. A successful create (any `POST` under `/v1/sandboxes`) or endpoint lookup is held
   until the mirror has bound them (bounded 5s), so an SDK that dials at once finds it listening.
-  Refused on this path: `--osb-insecure-no-key`, and `--osb-pool` / `SBX_OSB_POOL` (not carried
-  into the VM yet). Proven by unit tests with a fake VM daemon and API; **not run end to end on an
-  M3+ Mac yet.**
+  Refused on this path: `--osb-insecure-no-key`, and `--osb-pool` / `--osb-pool-freeze` /
+  `SBX_OSB_POOL` (not carried into the VM yet). **unit-tested** with a fake VM daemon and API;
+  status per host: [README platform status](../README.md#platform-status).
 - **A held pause is not an idle freeze.** Both are `docker pause`. The idle one is the daemon's and
   the next byte undoes it; the held one is the caller's, reported as `Paused`, and refuses traffic
   until `resume`. The hold is re-asserted from the record when the daemon restarts.
