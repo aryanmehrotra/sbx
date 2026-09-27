@@ -1,5 +1,10 @@
 # OpenSandbox compatibility — design
 
+**Status:** partially implemented. The v0.9.0 and v0.10.0 rows of [Releases](#releases-each-one-shippable-each-one-green-on-the-conformance-subset-it-claims)
+shipped, and `sbx mcp` shipped in v0.9.0. The v0.11.0 row (isolated sessions, credential vault,
+server proxy mode) is not built; v0.11–v0.14 went to microVMs instead. What is still missing is
+listed in ROADMAP.md.
+
 > **Short version:** `sbx serve --osb-addr 127.0.0.1:8080` speaks OpenSandbox's lifecycle API, and
 > every sandbox created through it runs `sbx execd` inside, speaking OpenSandbox's execd API. The
 > definition of done is not a feature table: it is **OpenSandbox's own Go e2e suite

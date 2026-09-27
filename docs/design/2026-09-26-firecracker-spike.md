@@ -1,5 +1,8 @@
 # Spike: a Firecracker provider, on this Mac and on Linux
 
+**Status:** complete (research). It led to the `--provider firecracker` of v0.11.0. Bare-metal Linux
+is still unmeasured.
+
 > **Question.** Can sbx drive Firecracker on macOS (ROADMAP §1 option B, nested virtualisation)
 > and on Linux, and what does a snapshot-restore wake cost - including at burst, which is what
 > the ComputeSDK Burst-TTI target (leader 44 ms median create → first command) needs?

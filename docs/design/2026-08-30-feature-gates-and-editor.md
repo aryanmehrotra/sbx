@@ -1,6 +1,7 @@
 # Feature gates, an editor story, and the rest of the v0.9.0 slate
 
-**Status:** building
+**Status:** shipped in v0.8.0: `SBX_FEATURES`, `sbx features`, and the gates `ssh`, `devcontainer`
+and `waiting-page`, all preview (`internal/app/features.go`).
 **Date:** 2026-08-30
 
 ## Why these, in this order

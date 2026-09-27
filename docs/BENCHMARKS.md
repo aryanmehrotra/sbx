@@ -1,13 +1,35 @@
 # Benchmarks
 
-> **Short version:** wake in 191 ms (redis) to ~1 s (postgres) · a new connection to an awake
-> sandbox costs about +0.1 ms · bulk transfer runs at 57% of direct · a sleeping sandbox is 0 B
-> of memory · an OpenSandbox create → first command is 13.7 ms from a docker warm pool, and
-> 141 ms from a frozen microVM pool on a CI runner.
+Every performance figure sbx publishes, with the script, machine, version and date behind it.
+For readers checking a claim and for contributors changing a hot path.
 
-Every number here was measured on the machine described beside it, by a script in this repo
-that you can run. Nothing is quoted from a single run — every figure names the script that
-produced it, so you can reproduce it or challenge it.
+## Headline numbers
+
+**Nothing on this page has been re-measured on v0.14.0.** Each row names the tree it was measured
+on. "Stale" means the code path has changed since, or the conditions were not clean; the figure
+is kept as measured, not adjusted.
+
+| figure | what | measured on | machine | script | status |
+|---|---|---|---|---|---|
+| **13.7 ms** (472 ms at 100 at once) | OpenSandbox create → first command, docker warm pool | v0.10.0 · 2026-09-26 | Apple M4 16 GiB, colima 3 vCPU / 3 GiB | `scripts/osb-bench.sh` | latest |
+| **141 ms** | OpenSandbox create → first command, frozen microVM pool | v0.13.0 tree (`e0749be`) · 2026-09-26 | GitHub `ubuntu-24.04` x86_64, nested KVM | `osb-bench.sh --provider firecracker` (CI `microvm` job) | latest here. The v0.14.0 release notes report 144 ms from the same CI job, unchanged within runner noise |
+| **5/5** vs 0/5 | first attempt served on wake: sbx vs Lazytainer (postgres) | v0.1.0 · 2026-08-15 | darwin/arm64, host load 5.37 | `scripts/compare.sh` | a result, not a latency; loaded laptop |
+| **0 B** | memory of a sleeping sandbox | v0.1.0 · 2026-08-15 | laptop | `ps -o rss` | structural: nothing is running |
+| **9.1 MB** | daemon RSS at rest, no sandboxes | v0.1.0 · 2026-08-15 | laptop | `ps -o rss` | stale: pre-v0.10 daemon |
+| **191 ms** | docker wake, redis, median of 20 | v0.1.0 · 2026-08-15 | laptop, not recorded beside it | `scripts/bench.sh 20` | stale: pre-v0.10; the wake path changed in v0.13 |
+| **1534 ms** | kubernetes wake, median of 5 | v0.1.0 · 2026-08-15 | minikube | `scripts/bench.sh` | stale: pre-v0.10 |
+| **931 ms** / 174 ms | postgres / nginx wake, head to head with rivals | v0.1.0 · 2026-08-15 | darwin/arm64, **host load 5.37** | `scripts/compare.sh` | loaded laptop: a comparison, not a wake spec |
+| **216 ms** | microVM wake from a Mac, through the helper VM | v0.11.0 tree (`b21492f`) · 2026-09-26 | Apple M4, colima nested, 2 vCPU / 2 GiB | `scripts/fc-anywhere-e2e.sh` | stale: before the jailer (v0.13) and the layered root (v0.14) |
+| **+0.10 ms** | a new connection to an awake sandbox, vs docker direct | v0.1.0 · 2026-08-16 | laptop | `scripts/connbench.sh` | pre-v0.10 |
+| **+14 µs** | round trip on an open connection | v0.8.0 · 2026-08-31 | macOS, Apple M4 | `go test -bench RoundTrip` | latest |
+| **7.0 GB/s** (56% of direct) | bulk throughput through the proxy, loopback | v0.8.0 · 2026-08-31 | macOS, Apple M4 | `go test -bench Stream` | latest; supersedes 6.8 GB/s, see [Throughput](#throughput) |
+| **3744 ms** / 766 ms | headless Chrome wake, cold / warm | v0.1.0 · 2026-08-16 | macOS arm64 | not recorded | pre-v0.10 |
+
+**Not yet measured anywhere:** a microVM wake on bare-metal Linux (the only place ROADMAP's
+4–28 ms can be confirmed), snapshot disk footprint per VM, a Windows/WSL2 host, kata-fc on
+kubernetes, and concurrent microVM restores at N≥5 off nested virtualisation.
+
+## How to reproduce
 
 ```sh
 scripts/bench.sh 20                                  # wake latency, distribution
@@ -21,6 +43,8 @@ go test -run '^$' -bench Stream -count 10 ./internal/daemon   # bulk throughput
 ./scripts/soak.sh 600                                # endurance: fd/RSS flat under connection churn
 scripts/compare.sh 20                                # sbx against the field
 ```
+
+---
 
 ## What the pipeline measures, and what it does not
 
@@ -51,7 +75,9 @@ the daemon waits a flat **2 s** before letting the caller through. That is ten t
 number above, on a configuration the spec permits, which is why every bundled template
 declares a health check and why SPEC.md calls it close to required.
 
-These are a laptop and a minikube. For scale against hosted platforms, see
+Measured at v0.1.0 (2026-08-15) on a laptop and a minikube, and **not re-measured since**: the
+wake path has changed (v0.13 health and probe changes, execd), so treat both as stale until
+`scripts/bench.sh` is run on the current release. For scale against hosted platforms, see
 [against other platforms](#against-other-platforms) below.
 
 ### Why wake is fast
@@ -72,10 +98,254 @@ declared health command directly instead gets the answer as soon as it's true. T
 gets wake down to:
 
 ```
-   wake     191 ms
+   wake     191 ms        (all three: v0.1.0, 2026-08-15)
    create   492 ms
    cluster 1534 ms
 ```
+
+---
+
+## A heavier workload: headless Chrome
+
+Redis is the wake benchmark because it isolates the wake path from the workload's own
+startup. Chrome is the other end of the range - the browser template, woken by a plain CDP
+request:
+
+```
+  cold   run 1  4356 ms    run 2  3744 ms    run 3  3030 ms
+  warm   run 4   703 ms    run 5   829 ms
+```
+
+Cold median **3744 ms**, warm median **766 ms** (n=5, macOS arm64, v0.1.0, 2026-08-16). Layer and page-cache
+warming bring later runs down within a session, so the number to plan around is two regimes:
+seconds on first touch, well under a second once the image is warm. The cost here is Chrome's
+own startup - the same image started by hand costs the same - which is the point: sbx removes
+the cost of a browser nobody is using, not the cost of starting one.
+
+---
+
+## OpenSandbox create → first command (ComputeSDK's Burst TTI)
+
+ComputeSDK ranks hosted sandboxes on **TTI: client-timed `create()` → first successful
+`runCommand('node -v')`, 100 launched at once**, scored 0.6·s(median) + 0.25·s(p95) +
+0.15·s(p99) with s(ms) = 100·(1 − ms/10000), times the success rate
+([computesdk/benchmarks](https://github.com/computesdk/benchmarks), METHODOLOGY.md). The same
+thing, through the upstream OpenSandbox Go SDK (`CreateSandbox` = POST, GET until Running, the
+execd endpoint, `/ping`; then `RunCommand`):
+
+```sh
+scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 1 --rounds 10 \
+  --pool node:22-slim=8 --burst-modes default,cold          # one at a time, pool vs cold, interleaved
+scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 100 --rounds 1 \
+  --pool node:22-slim=100                                   # from the pool
+scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 100 --rounds 1 \
+  --burst-modes cold                                        # no pool
+```
+
+Apple M4, 16 GiB; a dedicated colima profile with **3 vCPU / 3 GiB**, docker 29.2.1;
+`node:22-slim` pre-pulled. Measured 2026-09-26. **A local number, not a leaderboard entry**:
+ComputeSDK's runner measures a hosted endpoint over the internet.
+
+### Where a create's 4 seconds went
+
+`SBX_OSB_TRACE=1` logs each phase of a create, in ms from the POST being accepted. One create at
+a time, before (09f3db2) and after:
+
+| phase | before | after, cold | after, from the pool |
+|---|---:|---:|---:|
+| `docker pull` of an image already present | **2803-3185** | skipped | - |
+| image inspected | 2853-3223 | 19 | - |
+| container created (`docker run`) | 3182-3249 | 158 | - |
+| execd answers through the wake port → Running | 3202-3260 | 169 | - |
+| create answered | 1 (Pending) | 170 (**Running**) | ~10 (Running) |
+| the SDK's GET sees Running | **4019-4025** | 176 | ~26 |
+| execd endpoint answered | 4030-4036 | 182 | ~38 |
+| **TTI** (client, `node -v` done) | **4039, 4048** (n=2; a first create seeding the execd volume: 6042) | 227 median (n=10) | **11.1 median** (n=10) |
+
+The 4 s was two fixed costs stacked: an unconditional `docker pull` that asked the registry for
+a manifest the engine already had (~3 s), and the SDK's `waitForRunning`, which polls GET every
+**2 s** - a sandbox Running at 3.2 s was seen at the 4 s poll. sbx now pulls only a missing
+image (as upstream's docker runtime does) and holds the create's answer until Running (up to
+20 s), so the SDK's first GET ends its wait.
+
+### Burst
+
+| run | mode | sandboxes | ok | median ms | p95 ms | p99 ms | score |
+|---|---|---:|---:|---:|---:|---:|---:|
+| burst 1 × 10, interleaved | **pool** | 10 | 10 | **11.1** | 18.3 | 18.3 | **99.86** |
+| burst 1 × 10, interleaved | cold | 10 | 10 | 227.0 | 288.5 | 288.5 | 97.49 |
+| burst 100, run 1 (cold first) | cold | 100 | 100 | 8072.7 | 16169.2 | 16447.3 | 11.57 |
+| burst 100, run 2 | **pool** | 100 | 100 | **412.6** | 482.9 | 504.7 | **95.57** |
+| burst 100, run 3 | **pool** | 100 | 100 | **432.3** | 517.5 | 520.5 | **95.34** |
+| burst 100, run 4 | cold | 100 | 100 | 46720.4 | 79832.1 | 80213.3 | 0.00 |
+| burst 1 × 10, re-key every claim | **pool** | 10 | 10 | 13.7 | 41.2 | 41.2 | 99.76 |
+| burst 1 × 10, same run | cold | 10 | 10 | 207.5 | 356.0 | 356.0 | 97.34 |
+| burst 100, re-key every claim | **pool** | 100 | 100 | 472.1 | 566.9 | 573.2 | 94.89 |
+
+Runs 1-4 alternate cold/pool/pool/cold, each against a fresh daemon. The two cold runs differ by
+6x - the second followed two pool runs that had just made and removed 200 containers - so the
+cold burst is *not resolvable* beyond "seconds to tens of seconds"; what is resolvable is that
+all 100 succeed where 09f3db2 had 60 slots. The two pool runs agree within 20 ms.
+
+The last three rows are after every claim re-keys execd (runs 2-3 re-keyed only when the create
+carried env). At one at a time the difference is inside the spread (5.7-41.2 ms): not resolvable.
+At 100 it is ~40-60 ms of median, one round trip through the wake port per claim.
+
+What bounds each path here:
+
+- **Pool, burst 100**: a claim touches no container (members wait pinned running, not frozen:
+  twenty concurrent `docker unpause`s measured 200-430 ms, serialised in dockerd). The server has
+  answered every GET and endpoint by ~160 ms; the rest is 100 `node -v` processes starting at
+  once on 3 vCPUs, plus colima's port forward on every new connection. A single claim is 11 ms.
+- **Cold, burst 100**: `docker run` throughput - ~150 ms of engine time per container, 8 in
+  flight - after the lock convoys were removed (slot choice, discovery, image inspect, record
+  writes; see the commits on `osb/speed`).
+- **Memory**: 50 waiting members held ~620 MiB of the 3 GiB VM (free: 922 MiB used vs ~300
+  idle), so a pool of 100 plus a burst of 100 claimed fits; 200 cold containers on top would not
+  be attempted here.
+
+---
+
+## OpenSandbox create → first command on microVMs (v0.13)
+
+The same Burst-TTI shape as above, with every sandbox a Firecracker microVM, run by CI's
+`microvm` job on each change. That job ran on a GitHub-hosted `ubuntu-24.04` x86_64 runner with
+`/dev/kvm`, with the jailer on. These are **nested-virtualisation numbers on a shared runner**:
+they are for comparing one commit with another, not for a leaderboard, and no bare-metal run
+exists yet.
+
+```sh
+# what the microvm job runs (ci.yaml), once with members asleep and once frozen
+scripts/osb-bench.sh --provider firecracker --burst 4 --rounds 3 --pool node:22-slim=4 \
+  --burst-modes default,cold          # add --pool-freeze for frozen members
+```
+
+Measured at `e0749be` (the v0.13.0 tree less its release notes), run
+[36251708713](https://github.com/aryanmehrotra/sbx/actions/runs/36251708713): 3 rounds of
+4 concurrent creates, `node:22-slim`, modes interleaved and rotated per round.
+
+| mode | n | median | p95 | min | max | `create()` median | `node -v` median |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cold, no pool | 12 | 2,821 ms | 5,769 ms | 1,386 | 5,769 | ~2,650 ms | ~65 ms |
+| pool, members **asleep** | 12 | 699 ms | 957 ms | 462 | 957 | ~260 ms | **320–640 ms** |
+| pool, members **frozen** | 12 | **141 ms** | 207 ms | 121 | 207 | **~37 ms** | ~94 ms |
+
+On v0.14.0 the same job gave **144 ms** frozen, 759 ms asleep and 2,637 ms cold, unchanged within
+runner noise ([v0.14.0 release notes](release-notes/v0.14.0.md)). `node:22-slim` is small, so it
+cannot show the layered root's gain, which is in large images.
+
+All 24 pooled creates were served from a member: the script prints that count (`creates answered
+from the warm pool: 12` in each mode) but does not fail on zero, so read it before trusting a row.
+
+**What the split says:**
+
+- **Cold is the create.** A cold microVM spends ~2.6 s in `create()` (image to rootfs, boot,
+  execd up) and then runs `node -v` in ~65 ms, like any booted machine.
+- **Asleep moves the cost to the first command.** Claiming an asleep member is a snapshot load, so
+  `create()` returns in ~260 ms, but its memory is paged in lazily: the first `node -v` then takes
+  320–640 ms, about five times the booted figure. The TTI is honest about this; a `create()`-only
+  number would not be.
+- **Frozen is paused in RAM.** The member was never written out, so `create()` is a re-key over
+  vsock (~37 ms) and `node -v` runs at close to booted speed. The price is that a frozen member
+  **holds its RAM** while it waits, which an asleep one does not.
+
+The docker figures above (13.7 ms from a pool, every claim re-keyed) are a container that is already running. A
+microVM from a frozen pool is **141 ms on this runner**, with its own guest kernel and a jailed VMM.
+
+---
+
+## A Firecracker microVM on a Mac, through the helper VM
+
+> **Stale.** Measured on the v0.11.0 tree, before the jailer (v0.13) and the layered root disk
+> (v0.14). The 2.3 s root-filesystem clone in the create below is the step v0.14's layered root
+> replaces with a hard link, so the create figure in particular will not reproduce.
+
+`--provider firecracker` from macOS: the sandbox is a Firecracker microVM inside a Linux helper
+VM with nested virtualisation; asleep is a snapshot on disk, a wake is `snapshot/load` + resume +
+an execd re-key over vsock, and every sleep after the first is a Diff folded into the base.
+
+```sh
+go build -o sbx . && SBX_FC_VM_DRIVER=colima FC_E2E_ROUNDS=12 scripts/fc-anywhere-e2e.sh
+```
+
+Apple M4, 16 GiB, macOS 26.4.1; helper VM: colima 0.10.1 profile `sbx-fc-e2e`, `--vm-type vz
+--nested-virtualization`, **2 vCPU / 2 GiB**, created by the script and deleted after it (two
+other colima VMs, 4 GiB and 3 GiB, running throughout). Firecracker v1.17.0, the CI 6.18 kernel,
+`nginx` template (it declares a `health` command), 1 vCPU / 256 MiB guest. Re-measured 2026-09-26 at
+b21492f, one run of 12 rounds, each round a
+sleep, a wake, an awake request and an exec (those two alternating order) and a create + rm of a
+second sandbox (before or after the wake, alternating). All times are client-side, on the Mac:
+
+| | n | median | p95 |
+|---|---:|---:|---:|
+| **wake from snapshot → first byte** (TCP connect on the Mac, HTTP 200) | 12 | **216 ms** | 256 ms |
+| request to an awake sandbox → first byte | 12 | 8.3 ms | 9.5 ms |
+| `sbx exec` round trip (ssh into the helper VM + sbx + execd over vsock) | 12 | 725 ms | 908 ms |
+| `sbx sleep` (Seal, pause, Diff snapshot, merge) | 12 | 680 ms | 811 ms |
+| `sbx create` (image already pulled: export, ext4, cold boot, health, Full snapshot) | 12 | 11.5 s | 14.3 s |
+
+**A regression, measured and fixed.** Between the first run (212 ms, before the spec's `health` ran
+inside the VM) and b21492f, the wake median was **394 ms** (n=10, p95 577 ms): the daemon's
+readiness probe ran the health command through execd on every wake. A traced build put each phase
+in the in-VM daemon's log (n=6): snapshot load 3.5-10 ms, execd re-key 139-217 ms, **health
+177-336 ms**, woke in 340-585 ms. A snapshot is of a workload already serving, so the command now
+runs at create (before the snapshot) and after a cold boot only, and a snapshot wake dials the
+first port.
+
+The wake after the fix, by phase, from the same traced build (in the VM daemon's log, n=15; the Mac
+saw first byte at a median 244 ms, p95 301 ms, n=12, in that traced run):
+
+| wake phase (in the helper VM) | median | p95 |
+|---|---:|---:|
+| snapshot load + resume | 11.5 ms | 16.1 ms |
+| execd re-key over vsock | 170.4 ms | 203.5 ms |
+| readiness probe (first port) | 10.7 ms | 20.8 ms |
+| **daemon: woke** | **206 ms** | 252 ms |
+
+The re-key is now most of a wake: a vsock dial and handshake into a guest whose pages are still
+faulting in under nested virtualisation.
+
+And a create, by phase, inside the provider (traced, n=4, `nginx`, image already pulled; the
+client-side totals for these four were 7.2, 14.1, 14.2 and 14.1 s):
+
+| create phase | median | range |
+|---|---:|---:|
+| checks, lock, artifact lookup | 2.1 ms | 1.7-3.9 ms |
+| root filesystem (cached by image ID) + agent binary | 50 ms | 45-73 ms |
+| clone the root filesystem into the VM directory | 2.30 s | 2.16-2.35 s |
+| agent drive (ext4 with `/sbx` + `/init.json`) + record | 93 ms | 71-139 ms |
+| cold boot (launch, configure, InstanceStart) | 108 ms | 87-141 ms |
+| boot to first port accepting | 2.41 s | 2.38-2.68 s |
+| health command passing | 144 ms | 132-152 ms |
+| Seal, pause, Full snapshot, kill | 632 ms | 483-793 ms |
+| **sum inside the provider** | **~5.7 s** | |
+
+The rest of the 11.5 s median - 1.5-8.5 s per create here - is outside the provider: ssh into the
+helper VM, the in-VM CLI and its docker calls, and the redirect. It was not split further; the
+first create in a run was 7.2 s and the next three 14.1-14.2 s, which is the part to look at
+next. A 2.3 s clone is a byte copy, not a reflink (which is near-instant); which one ran is recorded
+as `clone` in each VM's `vm.json` and was not read for this run.
+
+Inside the helper VM, the provider alone (`SBX_FC_E2E=1`, `redis:7-alpine`, n=2, so read, not
+ranked): restore + re-key 282-304 ms, first byte 326-342 ms, exec over vsock 265-326 ms, stop as
+a Diff snapshot 75-84 ms, create 5.8 s.
+
+Where it goes:
+
+- **The Mac adds little to a wake.** 216 ms from the Mac against 206 ms for the daemon's own wake
+  in the VM: the mirror and the ssh tunnel are not what a wake waits on. The spike's 88 ms was a bare `/init` restored
+  and asked over vsock; here execd is re-keyed before the wake proxy lets a byte through, and the
+  workload's pages fault in under nested virtualisation (spike: ~250-300 µs per stage-2 fault).
+- **An exec is mostly process start-up and ssh.** In the VM an exec is ~300 ms - the vsock
+  handshake, execd's `/command` and a fork in a nested guest; the other ~400 ms is `sbx` starting
+  on the Mac and again in the VM over ssh.
+- **Before this was measured, every wake cost 2.27 s**: the provider reported its port probe as
+  undeclared, so the daemon waited a flat 2 s for the workload. A VM port has no proxy in front
+  of it, so an accepted connection is a listener and the check is now declared.
+
+Not measured: bare-metal Linux (the only place the ROADMAP's 4-28 ms can be confirmed or refuted),
+a Windows/WSL2 host, kata-fc on kubernetes, and concurrent restores (the spike's N≥5 collapse
+applies unchanged).
 
 ---
 
@@ -93,7 +363,7 @@ RoundTrip-10   12.52µ        26.78µ       +113.8%  (median of 5, 2026-08-31)
 already crosses a VM boundary at 426 µs - the baseline you pick changes the headline, so both
 are given here rather than just the flattering one. Against the workloads sbx actually fronts,
 where a query already costs hundreds of microseconds before it reaches the proxy, an extra
-15 µs is not something a client will notice.
+14 µs is not something a client will notice.
 
 **This measures round trips on a connection that is already open.** What a client pays to
 *open* one is a separate number, covered below.
@@ -112,6 +382,12 @@ so it's worth knowing what sitting in that path costs on real transfer volumes, 
   direct    n=5    median 12418 MB/s
   proxied   n=5    median  7011 MB/s          (2026-08-31)
 ```
+
+**7.0 GB/s is the current figure; 6.8 GB/s is older.** The v0.7.0 release notes quote 6.8 GB/s
+(57% of direct, n=10, 2026-08-21). The benchmark was re-run on 2026-08-31 for v0.8.0 (n=5) and gave
+7011 MB/s against 12418 MB/s direct, which is the figure above. The two agree within their spread;
+quote 7.0 GB/s. The 4.9 GB/s in the relay-buffer sweep below is a different benchmark
+(`StreamBuf/64KiB`, `-count 6`) and is not a replacement for either.
 
 **A bulk transfer runs at about 56% of direct on loopback.** Even at that rate, 7.0 GB/s is an
 order of magnitude above what a Postgres `COPY` or similar workload actually produces, so the
@@ -257,100 +533,9 @@ churn, and it is a property of the platform's port range rather than of sbx.
 
 ---
 
-## What this release's features cost
-
-Each of these sits in a hot path, so the question is what it charges when it is doing nothing.
-
-```
-  egress filter, per 32 KiB chunk
-    without the activity stamp     1.84 ns     0 allocs
-    with it                        4.17 ns     0 allocs        +2.33 ns
-
-  feature gate check
-    SBX_FEATURES set              97.04 ns     2 allocs
-    SBX_FEATURES unset            34.20 ns     1 alloc
-```
-
-**The egress stamp is 2.3 ns per 32 KiB and allocates nothing.** It is what lets a box that only
-calls out count as busy; the alternative was `idle: "never"`, which holds that box's memory for
-the sandbox's whole life. The gate check is off the data path entirely — it runs when a command
-starts, not per connection.
-
-The waiting page has no steady-state cost to measure: it is off unless
-`SBX_FEATURES=waiting-page`, and even then it does nothing until a wake has already run longer
-than a second.
-
----
-
-## A heavier workload: headless Chrome
-
-Redis is the wake benchmark because it isolates the wake path from the workload's own
-startup. Chrome is the other end of the range - the browser template, woken by a plain CDP
-request:
-
-```
-  cold   run 1  4356 ms    run 2  3744 ms    run 3  3030 ms
-  warm   run 4   703 ms    run 5   829 ms
-```
-
-Cold median **3744 ms**, warm median **766 ms** (n=5, macOS arm64). Layer and page-cache
-warming bring later runs down within a session, so the number to plan around is two regimes:
-seconds on first touch, well under a second once the image is warm. The cost here is Chrome's
-own startup - the same image started by hand costs the same - which is the point: sbx removes
-the cost of a browser nobody is using, not the cost of starting one.
-
----
-
-## Listing sandboxes
-
-`List` is called by the daemon's discovery on every refresh tick, by `AllocSlot` on every
-create, and by nine CLI commands - so its cost is paid on a timer, continuously, and grows
-with the number of sandboxes on the machine.
-
-The old path ran one `docker ps` plus one `docker inspect` **per container**. Interleaved A/B
-of `sbx list` against 13 containers, paired because the runs alternate:
-
-```
-  ps + inspect per container   median  330.7 ms   min 233.4   max 1021.2
-  one Engine API request       median   78.8 ms   min  56.2   max  514.5
-
-  paired delta                 median +237.6 ms
-```
-
-**Four times faster at 13 containers, and O(1) process spawns instead of O(n).** At twenty
-sandboxes the old path was spawning dozens of docker CLI processes every fifteen seconds,
-contending for the same daemon that wakes are trying to use - so discovery cost landed on the
-wake path exactly when the machine was busiest. The Engine API client behind the new path was
-already in the repo, written for precisely this.
-
----
-
-## Build cache
-
-`build:` tags an image by a hash of its context, so the question is what a cache hit actually
-saves. `sbx create`, wall clock, n=10 each, same machine, interleaved with the baseline:
-
-```
-  cold cache (builds)       n=10   median  1070 ms   min  860 ms   max 2133 ms
-  warm cache (skipped)      n=10   median   590 ms   min  360 ms   max 2241 ms
-  image: (pull, no build)   n=10   median   798 ms   min  493 ms   max 1092 ms
-```
-
-**A build costs about 480 ms here; a cache hit is statistically indistinguishable from a plain
-image create.** The runs spread 360-2241 ms, wide enough that the warm-cache median landing
-slightly below the plain-`image:` baseline isn't a meaningful difference - and that's the claim
-worth making anyway: the point of hashing the context is that the second create does no build
-work at all, not that it somehow beats pulling.
-
-The 480 ms here is one `RUN echo` on `nginx:alpine`; a real Dockerfile is seconds to minutes,
-which is the whole reason the cache key is content and not a clock - a time-based expiry can
-rebuild work that hasn't changed or reuse work that has, and either way costs the full build.
-
----
-
 ## Memory
 
-Both containers fresh, both idle, same image - which is the only comparison that means
+Measured at v0.1.0 (2026-08-15); the daemon figures predate v0.10. Both containers fresh, both idle, same image - which is the only comparison that means
 anything:
 
 | | stock | tuned |
@@ -371,232 +556,17 @@ ClickHouse is idle at about 200 MB either way - its cache caps pay off under loa
 
 ---
 
-## OpenSandbox create → first command (ComputeSDK's Burst TTI)
-
-ComputeSDK ranks hosted sandboxes on **TTI: client-timed `create()` → first successful
-`runCommand('node -v')`, 100 launched at once**, scored 0.6·s(median) + 0.25·s(p95) +
-0.15·s(p99) with s(ms) = 100·(1 − ms/10000), times the success rate
-([computesdk/benchmarks](https://github.com/computesdk/benchmarks), METHODOLOGY.md). The same
-thing, through the upstream OpenSandbox Go SDK (`CreateSandbox` = POST, GET until Running, the
-execd endpoint, `/ping`; then `RunCommand`):
-
-```sh
-scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 1 --rounds 10 \
-  --pool node:22-slim=8 --burst-modes default,cold          # one at a time, pool vs cold, interleaved
-scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 100 --rounds 1 \
-  --pool node:22-slim=100                                   # from the pool
-scripts/osb-bench.sh --docker-host unix://$HOME/.colima/osb/docker.sock --burst 100 --rounds 1 \
-  --burst-modes cold                                        # no pool
-```
-
-Apple M4, 16 GiB; a dedicated colima profile with **3 vCPU / 3 GiB**, docker 29.2.1;
-`node:22-slim` pre-pulled. Measured 2026-09-26. **A local number, not a leaderboard entry**:
-ComputeSDK's runner measures a hosted endpoint over the internet.
-
-### Where a create's 4 seconds went
-
-`SBX_OSB_TRACE=1` logs each phase of a create, in ms from the POST being accepted. One create at
-a time, before (09f3db2) and after:
-
-| phase | before | after, cold | after, from the pool |
-|---|---:|---:|---:|
-| `docker pull` of an image already present | **2803-3185** | skipped | - |
-| image inspected | 2853-3223 | 19 | - |
-| container created (`docker run`) | 3182-3249 | 158 | - |
-| execd answers through the wake port → Running | 3202-3260 | 169 | - |
-| create answered | 1 (Pending) | 170 (**Running**) | ~10 (Running) |
-| the SDK's GET sees Running | **4019-4025** | 176 | ~26 |
-| execd endpoint answered | 4030-4036 | 182 | ~38 |
-| **TTI** (client, `node -v` done) | **4039, 4048** (n=2; a first create seeding the execd volume: 6042) | 227 median (n=10) | **11.1 median** (n=10) |
-
-The 4 s was two fixed costs stacked: an unconditional `docker pull` that asked the registry for
-a manifest the engine already had (~3 s), and the SDK's `waitForRunning`, which polls GET every
-**2 s** - a sandbox Running at 3.2 s was seen at the 4 s poll. sbx now pulls only a missing
-image (as upstream's docker runtime does) and holds the create's answer until Running (up to
-20 s), so the SDK's first GET ends its wait.
-
-### Burst
-
-| run | mode | sandboxes | ok | median ms | p95 ms | p99 ms | score |
-|---|---|---:|---:|---:|---:|---:|---:|
-| burst 1 × 10, interleaved | **pool** | 10 | 10 | **11.1** | 18.3 | 18.3 | **99.86** |
-| burst 1 × 10, interleaved | cold | 10 | 10 | 227.0 | 288.5 | 288.5 | 97.49 |
-| burst 100, run 1 (cold first) | cold | 100 | 100 | 8072.7 | 16169.2 | 16447.3 | 11.57 |
-| burst 100, run 2 | **pool** | 100 | 100 | **412.6** | 482.9 | 504.7 | **95.57** |
-| burst 100, run 3 | **pool** | 100 | 100 | **432.3** | 517.5 | 520.5 | **95.34** |
-| burst 100, run 4 | cold | 100 | 100 | 46720.4 | 79832.1 | 80213.3 | 0.00 |
-| burst 1 × 10, re-key every claim | **pool** | 10 | 10 | 13.7 | 41.2 | 41.2 | 99.76 |
-| burst 1 × 10, same run | cold | 10 | 10 | 207.5 | 356.0 | 356.0 | 97.34 |
-| burst 100, re-key every claim | **pool** | 100 | 100 | 472.1 | 566.9 | 573.2 | 94.89 |
-
-Runs 1-4 alternate cold/pool/pool/cold, each against a fresh daemon. The two cold runs differ by
-6x - the second followed two pool runs that had just made and removed 200 containers - so the
-cold burst is *not resolvable* beyond "seconds to tens of seconds"; what is resolvable is that
-all 100 succeed where 09f3db2 had 60 slots. The two pool runs agree within 20 ms.
-
-The last three rows are after every claim re-keys execd (runs 2-3 re-keyed only when the create
-carried env). At one at a time the difference is inside the spread (5.7-41.2 ms): not resolvable.
-At 100 it is ~40-60 ms of median, one round trip through the wake port per claim.
-
-What bounds each path here:
-
-- **Pool, burst 100**: a claim touches no container (members wait pinned running, not frozen:
-  twenty concurrent `docker unpause`s measured 200-430 ms, serialised in dockerd). The server has
-  answered every GET and endpoint by ~160 ms; the rest is 100 `node -v` processes starting at
-  once on 3 vCPUs, plus colima's port forward on every new connection. A single claim is 11 ms.
-- **Cold, burst 100**: `docker run` throughput - ~150 ms of engine time per container, 8 in
-  flight - after the lock convoys were removed (slot choice, discovery, image inspect, record
-  writes; see the commits on `osb/speed`).
-- **Memory**: 50 waiting members held ~620 MiB of the 3 GiB VM (free: 922 MiB used vs ~300
-  idle), so a pool of 100 plus a burst of 100 claimed fits; 200 cold containers on top would not
-  be attempted here.
-
----
-
-## A Firecracker microVM on a Mac, through the helper VM
-
-`--provider firecracker` from macOS: the sandbox is a Firecracker microVM inside a Linux helper
-VM with nested virtualisation; asleep is a snapshot on disk, a wake is `snapshot/load` + resume +
-an execd re-key over vsock, and every sleep after the first is a Diff folded into the base.
-
-```sh
-go build -o sbx . && SBX_FC_VM_DRIVER=colima FC_E2E_ROUNDS=12 scripts/fc-anywhere-e2e.sh
-```
-
-Apple M4, 16 GiB, macOS 26.4.1; helper VM: colima 0.10.1 profile `sbx-fc-e2e`, `--vm-type vz
---nested-virtualization`, **2 vCPU / 2 GiB**, created by the script and deleted after it (two
-other colima VMs, 4 GiB and 3 GiB, running throughout). Firecracker v1.17.0, the CI 6.18 kernel,
-`nginx` template (it declares a `health` command), 1 vCPU / 256 MiB guest. Re-measured 2026-09-26 at
-b21492f, one run of 12 rounds, each round a
-sleep, a wake, an awake request and an exec (those two alternating order) and a create + rm of a
-second sandbox (before or after the wake, alternating). All times are client-side, on the Mac:
-
-| | n | median | p95 |
-|---|---:|---:|---:|
-| **wake from snapshot → first byte** (TCP connect on the Mac, HTTP 200) | 12 | **216 ms** | 256 ms |
-| request to an awake sandbox → first byte | 12 | 8.3 ms | 9.5 ms |
-| `sbx exec` round trip (ssh into the helper VM + sbx + execd over vsock) | 12 | 725 ms | 908 ms |
-| `sbx sleep` (Seal, pause, Diff snapshot, merge) | 12 | 680 ms | 811 ms |
-| `sbx create` (image already pulled: export, ext4, cold boot, health, Full snapshot) | 12 | 11.5 s | 14.3 s |
-
-**A regression, measured and fixed.** Between the first run (212 ms, before the spec's `health` ran
-inside the VM) and b21492f, the wake median was **394 ms** (n=10, p95 577 ms): the daemon's
-readiness probe ran the health command through execd on every wake. A traced build put each phase
-in the in-VM daemon's log (n=6): snapshot load 3.5-10 ms, execd re-key 139-217 ms, **health
-177-336 ms**, woke in 340-585 ms. A snapshot is of a workload already serving, so the command now
-runs at create (before the snapshot) and after a cold boot only, and a snapshot wake dials the
-first port.
-
-The wake after the fix, by phase, from the same traced build (in the VM daemon's log, n=15; the Mac
-saw first byte at a median 244 ms, p95 301 ms, n=12, in that traced run):
-
-| wake phase (in the helper VM) | median | p95 |
-|---|---:|---:|
-| snapshot load + resume | 11.5 ms | 16.1 ms |
-| execd re-key over vsock | 170.4 ms | 203.5 ms |
-| readiness probe (first port) | 10.7 ms | 20.8 ms |
-| **daemon: woke** | **206 ms** | 252 ms |
-
-The re-key is now most of a wake: a vsock dial and handshake into a guest whose pages are still
-faulting in under nested virtualisation.
-
-And a create, by phase, inside the provider (traced, n=4, `nginx`, image already pulled; the
-client-side totals for these four were 7.2, 14.1, 14.2 and 14.1 s):
-
-| create phase | median | range |
-|---|---:|---:|
-| checks, lock, artifact lookup | 2.1 ms | 1.7-3.9 ms |
-| root filesystem (cached by image ID) + agent binary | 50 ms | 45-73 ms |
-| clone the root filesystem into the VM directory | 2.30 s | 2.16-2.35 s |
-| agent drive (ext4 with `/sbx` + `/init.json`) + record | 93 ms | 71-139 ms |
-| cold boot (launch, configure, InstanceStart) | 108 ms | 87-141 ms |
-| boot to first port accepting | 2.41 s | 2.38-2.68 s |
-| health command passing | 144 ms | 132-152 ms |
-| Seal, pause, Full snapshot, kill | 632 ms | 483-793 ms |
-| **sum inside the provider** | **~5.7 s** | |
-
-The rest of the 11.5 s median - 1.5-8.5 s per create here - is outside the provider: ssh into the
-helper VM, the in-VM CLI and its docker calls, and the redirect. It was not split further; the
-first create in a run was 7.2 s and the next three 14.1-14.2 s, which is the part to look at
-next. A 2.3 s clone is a byte copy, not a reflink (which is near-instant); which one ran is recorded
-as `clone` in each VM's `vm.json` and was not read for this run.
-
-Inside the helper VM, the provider alone (`SBX_FC_E2E=1`, `redis:7-alpine`, n=2, so read, not
-ranked): restore + re-key 282-304 ms, first byte 326-342 ms, exec over vsock 265-326 ms, stop as
-a Diff snapshot 75-84 ms, create 5.8 s.
-
-Where it goes:
-
-- **The Mac adds little to a wake.** 216 ms from the Mac against 206 ms for the daemon's own wake
-  in the VM: the mirror and the ssh tunnel are not what a wake waits on. The spike's 88 ms was a bare `/init` restored
-  and asked over vsock; here execd is re-keyed before the wake proxy lets a byte through, and the
-  workload's pages fault in under nested virtualisation (spike: ~250-300 µs per stage-2 fault).
-- **An exec is mostly process start-up and ssh.** In the VM an exec is ~300 ms - the vsock
-  handshake, execd's `/command` and a fork in a nested guest; the other ~400 ms is `sbx` starting
-  on the Mac and again in the VM over ssh.
-- **Before this was measured, every wake cost 2.27 s**: the provider reported its port probe as
-  undeclared, so the daemon waited a flat 2 s for the workload. A VM port has no proxy in front
-  of it, so an accepted connection is a listener and the check is now declared.
-
-Not measured: bare-metal Linux (the only place the ROADMAP's 4-28 ms can be confirmed or refuted),
-a Windows/WSL2 host, kata-fc on kubernetes, and concurrent restores (the spike's N≥5 collapse
-applies unchanged).
-
----
-
-## OpenSandbox create → first command on microVMs (v0.13)
-
-The same Burst-TTI shape as above, with every sandbox a Firecracker microVM, run by CI's
-`microvm` job on each change. That job ran on a GitHub-hosted `ubuntu-24.04` x86_64 runner with
-`/dev/kvm`, with the jailer on. These are **nested-virtualisation numbers on a shared runner**:
-they are for comparing one commit with another, not for a leaderboard, and no bare-metal run
-exists yet.
-
-```sh
-# what the microvm job runs (ci.yaml), once with members asleep and once frozen
-scripts/osb-bench.sh --provider firecracker --burst 4 --rounds 3 --pool node:22-slim=4 \
-  --burst-modes default,cold          # add --pool-freeze for frozen members
-```
-
-Measured at `e0749be` (the v0.13.0 tree less its release notes), run
-[36251708713](https://github.com/aryanmehrotra/sbx/actions/runs/36251708713): 3 rounds of
-4 concurrent creates, `node:22-slim`, modes interleaved and rotated per round.
-
-| mode | n | median | p95 | min | max | `create()` median | `node -v` median |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| cold, no pool | 12 | 2,821 ms | 5,769 ms | 1,386 | 5,769 | ~2,650 ms | ~65 ms |
-| pool, members **asleep** | 12 | 699 ms | 957 ms | 462 | 957 | ~260 ms | **320–640 ms** |
-| pool, members **frozen** | 12 | **141 ms** | 207 ms | 121 | 207 | **~37 ms** | ~94 ms |
-
-All 24 pooled creates were served from a member: the script prints that count (`creates answered
-from the warm pool: 12` in each mode) but does not fail on zero, so read it before trusting a row.
-
-**What the split says:**
-
-- **Cold is the create.** A cold microVM spends ~2.6 s in `create()` (image to rootfs, boot,
-  execd up) and then runs `node -v` in ~65 ms, like any booted machine.
-- **Asleep moves the cost to the first command.** Claiming an asleep member is a snapshot load, so
-  `create()` returns in ~260 ms, but its memory is paged in lazily: the first `node -v` then takes
-  320–640 ms, about five times the booted figure. The TTI is honest about this; a `create()`-only
-  number would not be.
-- **Frozen is paused in RAM.** The member was never written out, so `create()` is a re-key over
-  vsock (~37 ms) and `node -v` runs at close to booted speed. The price is that a frozen member
-  **holds its RAM** while it waits, which an asleep one does not.
-
-The docker figures above (13.7 ms from a pool, every claim re-keyed) are a container that is already running. A
-microVM from a frozen pool is **141 ms on this runner**, with its own guest kernel and a jailed VMM.
-
----
-
 ## Against other platforms
 
 Vendor-documented figures, read August 2026, beside ours - useful context, not a controlled
-benchmark. The differences below explain why.
+benchmark. The differences below explain why. Vendor cells are kept as read then;
+[COMPARISON.md](COMPARISON.md) is the page that keeps them current.
 
 | | idle → serving | what comes back | measured by |
 |---|---|---|---|
 | **sbx** docker | **191 ms** | disk warm, process cold | `scripts/bench.sh 20`, this repo |
 | **sbx** kubernetes | **1534 ms** | disk warm, process cold | `scripts/bench.sh`, minikube |
+| **sbx** firecracker, Mac via helper VM | **216 ms** (stale, v0.11.0 tree) | **RAM + processes** | `scripts/fc-anywhere-e2e.sh`, [above](#a-firecracker-microvm-on-a-mac-through-the-helper-vm) |
 | E2B resume | ~1000 ms | **RAM + processes** | [vendor docs][e2b] |
 | Neon | a few hundred ms | Postgres data | [vendor docs][neon] |
 | Fly, suspended | a few hundred ms | RAM snapshot | [vendor docs][fly] |
@@ -690,7 +660,7 @@ rate, which is why its spread is 43 ms against our 19 ms. Different mechanisms, 
 faster or slower version of the same one.
 
 **Overhead: 33 µs/req over a same-container floor, jitter ±21 µs.** It's the same quantity
-`proxy_bench_test.go` puts at ~15 µs by a different method: benchstat times a bare loopback
+`proxy_bench_test.go` put at ~15 µs when this run was taken (14 µs since 2026-08-31) by a different method: benchstat times a bare loopback
 echo, this times HTTP through a real container, so the two are close rather than equal and
 neither replaces the other. Rows without a same-container baseline print `n/a` instead of a
 number, since a delta between two separately-run containers isn't a valid comparison.
@@ -717,3 +687,76 @@ against the 191 ms / stdev 24 ms above. The 191 ms figure stands, for two reason
   would make an absolute one unreliable - which is why the harness is built that way.
 
 So: 191 ms stands as measured under the conditions named beside it.
+
+---
+
+## Engineering notes
+
+How some of the numbers above were found, broken and fixed. Kept for anyone changing these
+paths; not needed to read the figures.
+
+### What the egress activity stamp and the feature gates cost (v0.8.0)
+
+Each of these sits in a hot path, so the question is what it charges when it is doing nothing.
+
+```
+  egress filter, per 32 KiB chunk
+    without the activity stamp     1.84 ns     0 allocs
+    with it                        4.17 ns     0 allocs        +2.33 ns
+
+  feature gate check
+    SBX_FEATURES set              97.04 ns     2 allocs
+    SBX_FEATURES unset            34.20 ns     1 alloc
+```
+
+**The egress stamp is 2.3 ns per 32 KiB and allocates nothing.** It is what lets a box that only
+calls out count as busy; the alternative was `idle: "never"`, which holds that box's memory for
+the sandbox's whole life. The gate check is off the data path entirely — it runs when a command
+starts, not per connection.
+
+The waiting page has no steady-state cost to measure: it is off unless
+`SBX_FEATURES=waiting-page`, and even then it does nothing until a wake has already run longer
+than a second.
+
+### Listing sandboxes
+
+`List` is called by the daemon's discovery on every refresh tick, by `AllocSlot` on every
+create, and by nine CLI commands - so its cost is paid on a timer, continuously, and grows
+with the number of sandboxes on the machine.
+
+The old path ran one `docker ps` plus one `docker inspect` **per container**. Interleaved A/B
+of `sbx list` against 13 containers, paired because the runs alternate:
+
+```
+  ps + inspect per container   median  330.7 ms   min 233.4   max 1021.2
+  one Engine API request       median   78.8 ms   min  56.2   max  514.5
+
+  paired delta                 median +237.6 ms
+```
+
+**Four times faster at 13 containers, and O(1) process spawns instead of O(n).** At twenty
+sandboxes the old path was spawning dozens of docker CLI processes every fifteen seconds,
+contending for the same daemon that wakes are trying to use - so discovery cost landed on the
+wake path exactly when the machine was busiest. The Engine API client behind the new path was
+already in the repo, written for precisely this.
+
+### Build cache
+
+`build:` tags an image by a hash of its context, so the question is what a cache hit actually
+saves. `sbx create`, wall clock, n=10 each, same machine, interleaved with the baseline:
+
+```
+  cold cache (builds)       n=10   median  1070 ms   min  860 ms   max 2133 ms
+  warm cache (skipped)      n=10   median   590 ms   min  360 ms   max 2241 ms
+  image: (pull, no build)   n=10   median   798 ms   min  493 ms   max 1092 ms
+```
+
+**A build costs about 480 ms here; a cache hit is statistically indistinguishable from a plain
+image create.** The runs spread 360-2241 ms, wide enough that the warm-cache median landing
+slightly below the plain-`image:` baseline isn't a meaningful difference - and that's the claim
+worth making anyway: the point of hashing the context is that the second create does no build
+work at all, not that it somehow beats pulling.
+
+The 480 ms here is one `RUN echo` on `nginx:alpine`; a real Dockerfile is seconds to minutes,
+which is the whole reason the cache key is content and not a clock - a time-based expiry can
+rebuild work that hasn't changed or reuse work that has, and either way costs the full build.

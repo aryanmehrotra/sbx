@@ -1,6 +1,8 @@
 # sbx connect — reaching a deployed sandbox through one HTTPS endpoint
 
-**Status:** design, not yet built
+**Status:** shipped in v0.3.0 (`sbx connect`, `sbx serve --connect-addr`, `--front`, `sbx pack`). Kept as
+the design record; where it and the code differ, the code is right. Control over the same token
+(`/v1/control/*`) was added later; see ARCHITECTURE.md.
 **Date:** 2026-08-16
 
 ## The problem
