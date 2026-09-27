@@ -105,7 +105,7 @@ such as compiling, sends none, so the sandbox can sleep mid-task.
 |---|---|
 | a longer idle window | `"idle": "30m"` |
 | never sleep (holds its memory) | `"idle": "never"` |
-| keep memory while asleep ([measured](BENCHMARKS.md#freeze-and-thaw-v0140)) | `"on_idle": "freeze"` |
+| keep memory while asleep ([measured](BENCHMARKS.md#sbx-by-itself)) | `"on_idle": "freeze"` |
 | reach only these hosts, and stay awake while calling them | `"egress_allow": ["api.anthropic.com", "pypi.org"]` |
 | no outbound network | `"egress": "deny"` |
 
@@ -231,7 +231,7 @@ finally:
 ```
 
 Warm pools: `sbx serve --osb-pool IMAGE[=N]` keeps N sandboxes (default 8) ready, so a matching
-create returns in milliseconds ([BENCHMARKS.md](BENCHMARKS.md#headline-numbers)). A create hits only if image, entrypoint, `resourceLimits`, ports, platform and `sbx.idle` match.
+create returns in milliseconds ([BENCHMARKS.md](BENCHMARKS.md#sbx-by-itself)). A create hits only if image, entrypoint, `resourceLimits`, ports, platform and `sbx.idle` match.
 The pool uses the SDK defaults (entrypoint `["tail", "-f", "/dev/null"]`, `cpu: "1"`,
 `memory: "2Gi"`), so a plain `create(image)` hits. Each miss is logged with the field that
 differed. The pool is refused with `--provider firecracker` on a Mac or Windows. Other flags:

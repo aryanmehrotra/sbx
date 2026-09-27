@@ -9,7 +9,7 @@ sbx create my-branch --template analytics --optional   # both
 ```
 
 An idle ClickHouse holds about 200 MB of RAM (measured at v0.1.0, see
-[BENCHMARKS.md](../../docs/BENCHMARKS.md#memory)), and most branches never query it. An optional
+[BENCHMARKS.md](../../docs/BENCHMARKS.md#head-to-head)), and most branches never query it. An optional
 service is not created unless you ask. It still reserves its ports, so adding it later never moves
 Postgres.
 
