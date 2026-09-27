@@ -2,7 +2,8 @@
 
 > **Short version:** wake in 191 ms (redis) to ~1 s (postgres) · a new connection to an awake
 > sandbox costs about +0.1 ms · bulk transfer runs at 57% of direct · a sleeping sandbox is 0 B
-> of memory.
+> of memory · an OpenSandbox create → first command is 13.7 ms from a docker warm pool, and
+> 141 ms from a frozen microVM pool on a CI runner.
 
 Every number here was measured on the machine described beside it, by a script in this repo
 that you can run. Nothing is quoted from a single run — every figure names the script that
@@ -540,6 +541,50 @@ Where it goes:
 Not measured: bare-metal Linux (the only place the ROADMAP's 4-28 ms can be confirmed or refuted),
 a Windows/WSL2 host, kata-fc on kubernetes, and concurrent restores (the spike's N≥5 collapse
 applies unchanged).
+
+---
+
+## OpenSandbox create → first command on microVMs (v0.13)
+
+The same Burst-TTI shape as above, with every sandbox a Firecracker microVM, run by CI's
+`microvm` job on each change. That job ran on a GitHub-hosted `ubuntu-24.04` x86_64 runner with
+`/dev/kvm`, with the jailer on. These are **nested-virtualisation numbers on a shared runner**:
+they are for comparing one commit with another, not for a leaderboard, and no bare-metal run
+exists yet.
+
+```sh
+# what the microvm job runs (ci.yaml), once with members asleep and once frozen
+scripts/osb-bench.sh --provider firecracker --burst 4 --rounds 3 --pool node:22-slim=4 \
+  --burst-modes default,cold          # add --pool-freeze for frozen members
+```
+
+Measured at `e0749be` (the v0.13.0 tree less its release notes), run
+[36251708713](https://github.com/aryanmehrotra/sbx/actions/runs/36251708713): 3 rounds of
+4 concurrent creates, `node:22-slim`, modes interleaved and rotated per round.
+
+| mode | n | median | p95 | min | max | `create()` median | `node -v` median |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cold, no pool | 12 | 2,821 ms | 5,769 ms | 1,386 | 5,769 | ~2,650 ms | ~65 ms |
+| pool, members **asleep** | 12 | 699 ms | 957 ms | 462 | 957 | ~260 ms | **320–640 ms** |
+| pool, members **frozen** | 12 | **141 ms** | 207 ms | 121 | 207 | **~37 ms** | ~94 ms |
+
+All 24 pooled creates were served from a member: the script prints that count (`creates answered
+from the warm pool: 12` in each mode) but does not fail on zero, so read it before trusting a row.
+
+**What the split says:**
+
+- **Cold is the create.** A cold microVM spends ~2.6 s in `create()` (image to rootfs, boot,
+  execd up) and then runs `node -v` in ~65 ms, like any booted machine.
+- **Asleep moves the cost to the first command.** Claiming an asleep member is a snapshot load, so
+  `create()` returns in ~260 ms, but its memory is paged in lazily: the first `node -v` then takes
+  320–640 ms, about five times the booted figure. The TTI is honest about this; a `create()`-only
+  number would not be.
+- **Frozen is paused in RAM.** The member was never written out, so `create()` is a re-key over
+  vsock (~37 ms) and `node -v` runs at close to booted speed. The price is that a frozen member
+  **holds its RAM** while it waits, which an asleep one does not.
+
+The docker figures above (13.7 ms from a pool, every claim re-keyed) are a container that is already running. A
+microVM from a frozen pool is **141 ms on this runner**, with its own guest kernel and a jailed VMM.
 
 ---
 

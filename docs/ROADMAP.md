@@ -1,9 +1,10 @@
 # Roadmap
 
-> **Short version:** the wake path is the product, and the next big piece of work makes it
-> **7–45× faster while bringing memory and running processes back with it** — a microVM provider
-> where `Start` is a snapshot restore rather than a cold boot. Everything else here is the egress
-> filter growing into a real network policy. Nothing here turns sbx into a hosted service.
+> **Short version:** the wake path is the product. The microVM provider — `Start` as a snapshot
+> restore, so memory and running processes come back — **shipped across v0.11–v0.13**; what is
+> left of it is the part still open for untrusted code. After that: the egress filter growing into
+> a real network policy, and the two parts of the OpenSandbox API sbx has not built. Nothing here
+> turns sbx into a hosted service.
 
 Estimates are in engineer-weeks and they are estimates, not commitments. Ordering is deliberate;
 dates are not given because they would be invented.
@@ -25,6 +26,10 @@ That is why the list below is short and why the last section is as long as the r
 ---
 
 ## 1 · A microVM provider
+
+> **Shipped** in v0.11.0 (the provider), v0.12.0 (the OpenSandbox API on it) and v0.13.0 (warm
+> pool, jailer, a host guard that fails closed). The case for it stays below because it is still
+> the reason; what is not built yet is under **Status**.
 
 **The big one.** Today a sleeping sandbox is a stopped container with its volume intact, so a wake
 is a cold process start against warm data: 191 ms for redis, 931 ms for postgres, and Postgres
@@ -72,7 +77,7 @@ upstream of it.
 **≈ 18 weeks on Linux, one engineer.** The rootfs pipeline is the bulk and the part to spike
 first; the VMM driver is the part that looks hard and is not.
 
-**Status (v0.11.0, part A).** Built: the VMM driver (`internal/fc`), pinned artifacts, the rootfs
+**Status (v0.13.0).** Built: the VMM driver (`internal/fc`), pinned artifacts, the rootfs
 pipeline, per-VM clones, tap networking, `sbx fc-init` as PID 1, and `--provider firecracker` with
 the wake path (Start = load, Stop = Diff snapshot), `Pauser`, `Snapshotter` (memory included) and
 `Limiter`. The rootfs pipeline came in far under four weeks, because `docker export` hands back the
@@ -203,6 +208,23 @@ needs it. Everything else is spliced on the SNI as it is today, undecrypted.
 | **Reusable volumes** | a named volume that outlives the sandbox that made it, single-writer, for a dependency cache several sandboxes take turns on. Docker volumes already do the storage; what is missing is the lease and the lifecycle | 2–3 wk |
 | **Snapshot retention** | an expiry and a keep-last-N on `sbx snapshot`, so a long-lived branch does not accumulate | 1 wk |
 | **Egress filtering on kubernetes** | `egress_policy`, `egress_allow` and `egress: "allow"` are docker-only, and a cluster now refuses them rather than creating a pod they do not reach. A cluster expresses them as a NetworkPolicy plus an egress gateway | 1–2 wk |
+
+---
+
+## 4 · The rest of the OpenSandbox API
+
+The conformance gate stops at upstream's **v0.10.0 tier**. The tiers after it test two things sbx
+has not built. The plan once scheduled both for v0.11.0, and v0.11.0 went to the microVM provider
+instead, so they are listed here rather than promised in a release.
+
+| | what upstream tests | today | est |
+|---|---|---|---|
+| **Isolated sessions** | `isolated_session`: execd's `/v1/isolated/*` — a session with its own PID namespace, `/tmp` and overlay, runs and file operations inside it | **501**, naming the feature | not estimated — nobody has read upstream's execd for it yet |
+| **Credential vault** | `credential_vault`: the egress sidecar's `/credential-vault` — credentials and bindings injected into matching requests, changed at runtime | **not served** | the mechanism is §2's credential brokering (4–8 wk); the API over it is extra |
+
+Until then both follow the pattern the OpenSandbox sections of [DECISIONS.md](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-pid-1-the-token-is-the-apis-a-snapshot-is-the-disk)
+use for everything not built, such as a host volume on a microVM: refused by name, not
+approximated.
 
 ---
 

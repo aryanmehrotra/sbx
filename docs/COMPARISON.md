@@ -7,7 +7,7 @@
 
 ## The whole field, one table
 
-● yes · ◐ partial or conditional · ○ no. The rows below the fold break each of these down and
+● yes · ◐ partial or conditional · ○ no · – not checked. The rows below the fold break each of these down and
 say where the ◐ and ○ are choices rather than gaps.
 
 | | sbx | E2B | Daytona | Modal | Cloudflare | Fly | Neon | Northflank |
@@ -15,12 +15,13 @@ say where the ◐ and ○ are choices rather than gaps.
 | Wakes on a raw socket | ● | ○ | ○ | ○ | ○ | ◐ ded. IPv4 | ◐ pg only | ○ |
 | Runs on your laptop | ● | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
 | Same spec local + cluster | ● | ○ | ○ | ○ | ○ | ○ | ○ | ◐ |
-| Self-hosted, no account | ● | ○ | ◐ OSS core, stale | ○ | ○ | ○ | ○ | ◐ BYOC |
+| Self-hosted, no account | ● | ◐ OSS infra | ◐ OSS core, stale | ○ | ○ | ○ | ○ | ◐ BYOC |
 | Arbitrary stateful services | ● | ◐ | ● | ◐ | ◐ | ● | ○ pg | ● |
 | Multiple services, one spec | ● | ○ | ○ | ○ | ○ | ◐ | ○ | ● |
 | Zero cost at rest | ● | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ◐ storage | ○ |
-| RAM-state snapshot | ◐ podman/Linux | ● | ● | ● | ◐ | ● | n/a | ○ |
-| VM-grade isolation | ◐ kata | ● | ◐ | ● | ● | ● | ● | ● |
+| RAM-state snapshot | ● microVM | ● | ◐ VM sandboxes | ◐ alpha | ○ | ● | n/a | ○ |
+| VM-grade isolation | ● microVM, jailed | ● | ◐ | ◐ gVisor | ● | ● | ● | ● |
+| Speaks the OpenSandbox API | ● | ○ | ○ | ○ | ○ | – | – | – |
 | Public URL per sandbox | ● | ● | ● | ● | ● | ● | n/a | ● |
 | GPU | ◐ docker | ◐ | ◐ | ● | ○ | ● | n/a | ● |
 
@@ -28,6 +29,32 @@ Re-verified 2026-08-31, and two cells moved. Fly's raw-socket wake is conditiona
 through Fly Proxy freely, but raw TCP needs a dedicated IPv4 and is unreliable on a shared one -
 so ◐, not ●. And Daytona's open-source core has been unmaintained since June 2026 with development
 moved to a private codebase, which makes "self-hosted" true of the repo and not of the product.
+
+Re-verified 2026-09-27 against each vendor's own pages, and six cells moved:
+
+- **sbx, both isolation rows.** `--provider firecracker` (v0.11–v0.13) gives each sandbox its own
+  guest kernel, a VMM under Firecracker's jailer, and a sleep that keeps memory and running
+  processes. It needs Linux with `/dev/kvm`, or an M3+ Mac through a helper VM. On docker it is
+  still a container.
+- **Cloudflare, RAM-state ○:** on sleep "all processes terminate", and a backup is a directory
+  in R2 ([sandboxes][cf-sb], [backup][cf-bk]).
+- **Modal, isolation ◐:** gVisor, a user-space kernel rather than a VM ([security][modal-sec]).
+  Its memory snapshots are marked alpha ([snapshots][modal-snap]).
+- **Daytona, RAM-state ◐:** memory is kept only for VM sandboxes; the default is a container
+  ([sandbox][daytona-sb]).
+- **E2B, self-hosted ◐:** its infrastructure is Apache-2.0 and can run in your own cloud
+  ([e2b-dev/infra][e2b-infra]); the product most people use is hosted.
+
+The **OpenSandbox API** row is new. None of E2B, Daytona, Modal or Cloudflare says it speaks that
+API (Fly, Neon and Northflank were not checked); sbx implements it
+to upstream's own test suite, with the gaps in the next section.
+
+[cf-sb]: https://developers.cloudflare.com/sandbox/concepts/sandboxes/
+[cf-bk]: https://developers.cloudflare.com/sandbox/guides/backup-restore/
+[modal-sec]: https://modal.com/docs/guide/security
+[modal-snap]: https://modal.com/docs/guide/sandbox-snapshots
+[daytona-sb]: https://www.daytona.io/docs/en/python-sdk/sync/sandbox/
+[e2b-infra]: https://github.com/e2b-dev/infra
 
 Worth knowing about the two nearest: Cloudflare sleeps a sandbox after 10 idle minutes and its
 filesystem is ephemeral - a restart comes back from the image, and persistence is an opt-in R2
@@ -37,8 +64,79 @@ sbx does, and only for Postgres.
 
 **Read the top four rows first.** Waking on a raw socket, running on your own laptop, the same
 spec from laptop to cluster, self-hosted with no account — that combination is sbx's alone here.
-The ◐ rows (a kata microVM, CRIU checkpoint on Linux, docker GPU passthrough) are opt-in: there
+The microVM and GPU rows are opt-in (`--provider firecracker`, docker GPU passthrough): there
 when you want them, out of the way when you don't.
+
+---
+
+## Agent sandboxes: the OpenSandbox API and the platforms it is weighed against
+
+Since v0.9 sbx also answers the other meaning of "sandbox" (next section): a box an agent's code
+runs in, driven over an API. Here it stands beside the reference server for that API and the
+hosted platforms agents use. Every vendor cell is quoted from the vendor's own page, read
+**2026-09-27**; "NP" means not published.
+
+| | **sbx** | OpenSandbox | E2B | Daytona | Modal | Cloudflare | Vercel | isorun |
+|---|---|---|---|---|---|---|---|---|
+| isolation | container, or Firecracker microVM (jailed) | container, gVisor, Kata or Firecracker [¹][osb] | Firecracker [²][e2b] | container; VM optional [³][dt-sb] | gVisor [⁴][modal-sec] | container in its own VM [⁵][cf-arch] | Firecracker [⁶][vc] | KVM [⁷][iso] |
+| published create figure | see below | create → Ready p50 97 ms serial, 225 ms at 10-way [⁸][osb-perf] | NP | "sub 90ms … code to execution" [⁹][dt-price] | "< half a second" median, create → can run code [¹⁰][modal-1m] | 1–3 s from stopped [⁵][cf-arch] | "milliseconds", no number [⁶][vc] | "10ms", undefined [⁷][iso] |
+| pause keeps RAM + processes | ● microVM · ○ docker | ● resume 1.0 s local [⁸][osb-perf] | ● ~1 s resume [¹¹][e2b-p] | ◐ VM sandboxes only [³][dt-sb] | ◐ alpha [¹²][modal-snap] | ○ processes end [¹³][cf-sb] | ○ filesystem only [¹⁴][vc-p] | ● same PIDs [¹⁵][iso-l] |
+| self-host · licence | ● your machine · MIT | ● Apache-2.0 [¹][osb] | ◐ Apache-2.0 infra [¹⁶][e2b-infra] | ◐ AGPL-3.0, unmaintained since 2026-06 [¹⁷][dt-gh] | ○ | ○ SDK only | ○ SDK only | ○ SDK only (MIT) |
+| OpenSandbox API | ● to v0.10.0 tier ([ROADMAP §4](ROADMAP.md)) | ● the reference | ○ | ○ | ○ | ○ | ○ | ○ |
+| MCP server | ● `sbx mcp` | ● | ● | ● | NP | NP | NP | ● |
+| code interpreter | ● | ● | ● | ● | NP | ● | NP | NP |
+| egress policy | ● hosts, wildcards, CIDRs, live | ● | ● domain/CIDR, live [¹⁸][e2b-net] | ◐ tier-limited [¹⁹][dt-net] | ● CIDR; domains beta [²⁰][modal-net] | ● HTTP [²¹][cf] | ● domain/CIDR, live [²²][vc-fw] | ● [⁷][iso] |
+| credentials kept out of the box | ○ roadmap | ● vault [¹][osb] | NP | NP | NP | ◐ header injection [²¹][cf] | ● brokering [²²][vc-fw] | ● proxy [⁷][iso] |
+| pricing | $0, your hardware | $0, your hardware | per vCPU-s + GiB-s | per vCPU-h + GiB-h | per core-s + GiB-s | per active vCPU-s | per active CPU-h + per create | per vCPU-h + GiB-h |
+
+### Create → first command, measured the same way
+
+A vendor's "create" figure is whatever that vendor chose to time, so the row above does not
+compare. The one number that does is **ComputeSDK's Burst TTI**: 100 concurrent creates, each
+timed from the request to a successful `node -v`, run daily from the same runner
+([methodology][csdk-m]). Latest run, 2026-09-25 ([results][csdk-r]):
+
+| | median TTI | | median TTI |
+|---|---:|---|---:|
+| isorun (#1) | 43.6 ms | Vercel | 452.9 ms |
+| Daytona | 341.4 ms | Cloudflare | 647.8 ms (5,270 ms on 2026-09-18) |
+| Modal | 907.6 ms | E2B | 1,237.7 ms |
+
+**sbx is not on it, and OpenSandbox is not either.** The leaderboard benchmarks hosted services
+with credentials handed to it; sbx is a tool you run, so there is nothing to hand over yet. What
+sbx has is the same shape run by its own scripts ([BENCHMARKS.md](BENCHMARKS.md)), which is not a
+leaderboard entry:
+
+| sbx, same shape | median | where |
+|---|---:|---|
+| docker, warm pool, 1 at a time | 13.7 ms | Apple M4, colima |
+| docker, warm pool, 100 at once | 472.1 ms | Apple M4, colima |
+| microVM, frozen pool, 4 at once | 141 ms | GitHub runner, nested KVM |
+| microVM, cold, 4 at once | 2,821 ms | GitHub runner, nested KVM |
+
+Different machines, different concurrency, no network in between. Read them as "what sbx does on
+this hardware", not as a rank.
+
+[osb]: https://github.com/alibaba/OpenSandbox
+[osb-perf]: https://github.com/alibaba/OpenSandbox/blob/main/docs/architecture/fast-sandbox/performance.md
+[e2b]: https://e2b.dev/
+[e2b-p]: https://docs.e2b.dev/sandbox/persistence
+[e2b-net]: https://docs.e2b.dev/sandbox/internet-access
+[dt-sb]: https://www.daytona.io/docs/en/sandboxes
+[dt-price]: https://www.daytona.io/pricing
+[dt-gh]: https://github.com/daytonaio/daytona
+[dt-net]: https://www.daytona.io/docs/en/network-limits/
+[modal-1m]: https://modal.com/blog/scaling-to-1-million-concurrent-sandboxes-in-seconds
+[modal-net]: https://modal.com/docs/guide/sandbox-networking
+[cf]: https://developers.cloudflare.com/sandbox/
+[cf-arch]: https://developers.cloudflare.com/containers/platform-details/architecture/
+[vc]: https://vercel.com/docs/sandbox/concepts
+[vc-p]: https://vercel.com/docs/sandbox/concepts/persistent-sandboxes
+[vc-fw]: https://vercel.com/docs/sandbox/concepts/firewall
+[iso]: https://isorun.ai/
+[iso-l]: https://docs.isorun.ai/sandboxes/lifecycle
+[csdk-m]: https://github.com/computesdk/benchmarks/blob/master/METHODOLOGY.md
+[csdk-r]: https://github.com/computesdk/benchmarks/blob/master/results/burst_tti/latest.json
 
 ---
 
