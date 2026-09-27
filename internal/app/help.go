@@ -136,6 +136,14 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"running, which isolation runtimes exist. Run it first when something is wrong.",
 		"sbx doctor",
 	},
+	"install": {
+		"sbx install [NAME...] [--yes] [--dry-run]",
+		"Install what `sbx doctor` reports missing, through this machine's own package manager\n" +
+			"(apt-get, dnf, pacman, apk or brew). With no names, everything missing that it knows:\n" +
+			"docker, kubectl, cloudflared, redis-cli, mkfs.ext4, iptables. It prints every command\n" +
+			"first and asks before running any; --dry-run stops there, --yes skips the question.",
+		"sbx install redis-cli --dry-run",
+	},
 	"prewarm": {
 		"sbx prewarm [--provider firecracker] [--spec sandbox.json | IMAGE...]",
 		"Pull the images now, so the first create is not a download. On firecracker it also\n" +

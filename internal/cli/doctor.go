@@ -29,7 +29,7 @@ import (
 //
 // It states what is missing and what that costs. It never installs anything: a tool that
 // silently changes a host to make its own claims true is worse than one that reports the
-// truth.
+// truth. `sbx install` is the separate, explicit step that does - see install.go.
 
 // Capability is one thing the host either can or cannot do.
 type Capability struct {
@@ -256,6 +256,11 @@ func PrintReport(w io.Writer, rep Report, asJSON bool) error {
 		if !c.Have && c.Meaning != "" {
 			fmt.Fprintf(w, "    %-18s %s\n", "", c.Meaning)
 		}
+	}
+
+	pm, ok := DetectManager(exec.LookPath)
+	if hint := installHint(rep, pm, ok); hint != "" {
+		fmt.Fprintf(w, "\n%s\n", hint)
 	}
 
 	return nil
