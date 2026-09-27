@@ -20,10 +20,11 @@ import (
 type oneService struct {
 	provider.Provider
 
-	mu      sync.Mutex
-	unit    provider.Unit
-	backing net.Listener
-	starts  int
+	mu       sync.Mutex
+	unit     provider.Unit
+	backing  net.Listener
+	starts   int
+	accepted int // connections the backing service received
 }
 
 func (e *oneService) Name() string { return "fake" }
@@ -58,6 +59,10 @@ func (e *oneService) Start(context.Context, string) error {
 			if err != nil {
 				return
 			}
+
+			e.mu.Lock()
+			e.accepted++
+			e.mu.Unlock()
 
 			_ = c.Close()
 		}
@@ -143,6 +148,24 @@ func TestSleepAndWakeReachAScopedDaemon(t *testing.T) {
 		}
 
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Reachable's probe is a real connection, and the daemon proxies it on its own goroutine. If
+	// that dial reaches the backing service only after the sleep below, it finds it stopped and
+	// wakes it - correctly, a connection is the wake-up call - and the sleep reads as not taken
+	// (seen 6 times in 900 -race runs, always with two starts). So the probe lands first.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		e.mu.Lock()
+		got := e.accepted
+		e.mu.Unlock()
+
+		if got > 0 {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the probe connection never reached the backing service")
+		}
 	}
 
 	if err := cli.Sleep(ctx, e, "osb-a"); err != nil {
