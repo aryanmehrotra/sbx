@@ -12,7 +12,11 @@ disagree, the code is right, and the current *why* is in [DECISIONS.md](../DECIS
 | 2026-08-31 | [v0.8.0, in detail](2026-08-31-v0.8.0-engineering-log.md) | engineering log | record of v0.8.0 |
 | 2026-09-25 | [OpenSandbox compatibility](2026-09-25-opensandbox-compat-design.md) | design | partially shipped: v0.9.0 and v0.10.0 scope; isolated sessions, credential vault and server proxy not built |
 | 2026-09-26 | [Spike: a Firecracker provider, on a Mac and on Linux](2026-09-26-firecracker-spike.md) | spike | complete; led to `--provider firecracker` in v0.11.0 |
-| 2026-09-26 | [The OpenSandbox API and warm pool on Firecracker](2026-09-26-api-on-microvms.md) | plan | shipped: API in v0.12.0, warm pool and helper-VM path in v0.13.0 |
+| 2026-09-26 | [The OpenSandbox API and warm pool on Firecracker](2026-09-26-api-on-microvms.md) | plan | shipped: API in v0.12.0; warm pool, and the API through the helper VM, in v0.13.0 |
+
+"ROADMAP §N" in these records means the numbered roadmap as it stood before v0.14's rewrite,
+readable at [v0.14.0](https://github.com/aryanmehrotra/sbx/blob/v0.14.0/docs/ROADMAP.md); §1 was the
+microVM provider.
 
 Each record carries a **Status:** line at its top that matches this table. When a record's status
 changes, update both.

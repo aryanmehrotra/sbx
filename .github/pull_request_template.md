@@ -10,21 +10,25 @@
 
 ## Docs (see the docs contract in AGENTS.md)
 
-<!-- Tick what you updated. If nothing applies, say why in one line. -->
+<!-- Tick every row of the AGENTS.md docs contract that applies. If nothing applies, say why in one line. -->
 
-- [ ] `internal/app/help.go` + `docs/CLI.md`: command, flag, `sbx serve` flag or `SBX_*` env var
+- [ ] `internal/app/help.go` + `docs/CLI.md`: command, flag, `sbx serve` flag, `SBX_*` env var or feature gate
+- [ ] A flag shared by several commands: every `docs/CLI.md` row that takes it
 - [ ] `docs/SPEC.md`: `sandbox.json` field or validation
-- [ ] `docs/TROUBLESHOOTING.md`: new or changed error message / failure mode
+- [ ] `docs/TROUBLESHOOTING.md`: new or changed error message; a workaround this fix makes obsolete removed
 - [ ] `README.md`: feature list or platform-status table
-- [ ] `docs/AI-AGENTS.md`: MCP tool, or how agents drive sbx
-- [ ] `docs/ROADMAP.md`: an item shipped, or an OpenSandbox endpoint built
-- [ ] `docs/ARCHITECTURE.md` / `docs/DECISIONS.md`: component, addressing, or a design decision
-- [ ] `docs/BENCHMARKS.md` / `docs/COMPARISON.md`: a number or a vendor claim
+- [ ] `docs/USE-CASES.md` / `examples/`: a new shape of use, or a spec that shows the feature
+- [ ] A built-in template: `examples/README.md`, README template row, SPEC's `sbx templates` line, `scripts/pin-templates.sh`, `scripts/usecases-e2e.sh` loop
+- [ ] `docs/AI-AGENTS.md`: MCP tool (and the tool count everywhere), or how agents drive sbx
+- [ ] `docs/ROADMAP.md` / `test/osb/expectations`: an item shipped, or an OpenSandbox endpoint built or refused
+- [ ] `docs/ARCHITECTURE.md` / `docs/DECISIONS.md`: wake, sleep, freeze or proxy behaviour; component, addressing, or a design decision
+- [ ] `docs/BENCHMARKS.md` / `docs/COMPARISON.md`: a number (or a published one now stale), or a vendor claim
 - [ ] No docs needed, because:
 
 ## Release note
 
-- [ ] One line added to `docs/release-notes/UNRELEASED.md` (or: not user-facing)
+- [ ] One line added to `docs/release-notes/UNRELEASED.md` (or "No: internal only" ticked above;
+      CI fails a change to `main.go` or `internal/` with neither)
 
 <!-- Paste the line here. Write it for a user: what they can now do, or the symptom that is fixed. -->
 
@@ -36,8 +40,7 @@
 
 ## Measurements (only if this claims to be faster or smaller)
 
-<!-- Script, machine, version, rounds, median and spread. Interleaved and alternated?
-     A delta inside the spread is "not resolvable", not a result. -->
+<!-- Script, machine, version, rounds, median and spread (docs/STYLE.md#numbers-and-sources). -->
 
 ## Lesson learned (optional)
 

@@ -229,6 +229,32 @@ jobs:
         # every figure is measured here or quoted with a link.
         run: bash scripts/lint-docs.sh
 
+      - name: docs contract (env vars, ROADMAP heading, lessons, release index)
+        # The rows AGENTS.md's docs contract asks for, where a grep can tell whether they are
+        # there: every SBX_* the code reads is in docs/CLI.md, and so on - see the script.
+        run: bash scripts/lint-docs-contract.sh
+
+      # Every command and `sbx serve` flag has a row in docs/CLI.md. It is a Go test because
+      # the lists live in Go, and it runs here as well as in `test` because `test` is skipped
+      # for a documentation-only push - which is exactly the change that can delete a row.
+      - uses: actions/setup-go@v5
+        if: runner.os == 'Linux'
+        with:
+          go-version: '1.26'
+      - name: every command and serve flag is in docs/CLI.md
+        if: runner.os == 'Linux'
+        run: go test ./internal/app/ -run 'CLIReference'
+
+      - name: shipped code comes with a release-note line
+        # A PR touching main.go or internal/ (not tests) adds a line to UNRELEASED.md or ticks
+        # "No: internal only" in its description. Otherwise the notes get written from memory
+        # at tag time. Read from the event through env, never interpolated into the script.
+        if: github.event_name == 'pull_request' && runner.os == 'Linux'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bash scripts/check-unreleased.sh
+
       - name: templates are pinned by digest
         # A floating tag means the first thing anybody runs can break without a commit
         # touching this repo. Refresh with scripts/pin-templates.sh.

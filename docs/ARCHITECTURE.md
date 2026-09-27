@@ -264,7 +264,7 @@ doesn't know which it drives.
 
 `--provider firecracker` makes each service a Firecracker VM whose sleeping state is a snapshot
 on disk, so a wake brings memory and running processes back rather than a cold process against a
-warm disk (ROADMAP §1). Directly on Linux with `/dev/kvm`; on an M3+ Mac (macOS 15+) or Windows 11
+warm disk ([DECISIONS: MicroVM](DECISIONS.md#microvm-firecracker)). Directly on Linux with `/dev/kvm`; on an M3+ Mac (macOS 15+) or Windows 11
 through a Linux helper VM that `internal/fchost` runs. Where it runs is ONE decision,
 `fchost.HostBackend` - hostcap's Linux/macOS verdict plus the VM tool, `SBX_FC_ASSUME_NESTED` and the
 Windows branch - installed as `provider.DecideHost` and used by the provider, the CLI redirect,

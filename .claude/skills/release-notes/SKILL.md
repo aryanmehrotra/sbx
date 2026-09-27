@@ -24,15 +24,18 @@ cat docs/release-notes/UNRELEASED.md
 
 ## 2. Write `docs/release-notes/vX.Y.Z.md`
 
-- Copy TEMPLATE.md. Keep its section names and order.
+- Copy TEMPLATE.md. Keep its section names and order. Map UNRELEASED's sections onto it:
+  Breaking + Changed → "Before you upgrade" (Breaking / Behaviour change); Added → Highlights
+  (or a short "Also new" list); Fixed → Fixes.
 - Title names the feature the way the user types it (`sbx connect`, `--provider firecracker`).
   No puns, no essay titles.
 - Breaking and behaviour changes first, labelled, each with what the user must do.
 - Highlights: benefit sentence, one command or snippet, link to the doc. One number at most,
   with its script; it must already be in BENCHMARKS.md.
 - Fixes are user-visible symptoms, one line each.
-- Known limitations: use the status labels (**not yet run end to end** on X).
-- About 600 words for a minor, 250 for a patch. Rationale goes to DECISIONS.md, not here.
+- Known limitations: a label from `docs/STYLE.md#status-vocabulary` (**not yet run end to end** on X).
+- Length: TEMPLATE's limit. Rationale goes to DECISIONS.md, not here.
+- Explain every outside term at first use (`docs/STYLE.md#outside-terms`): the note is read alone.
 
 ## 3. Links
 
@@ -43,8 +46,10 @@ cat docs/release-notes/UNRELEASED.md
 ## 4. Finish
 
 - Reset UNRELEASED.md to its header and empty Breaking / Added / Changed / Fixed sections.
-- Add the release to the index in `docs/release-notes/README.md` if one exists.
-- `SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh` passes (it checks pinned URLs against git).
+- Bump the version stamps: the `docs/release-notes/README.md` index row, the supported version
+  in `SECURITY.md`, README's "Platform status" line, ROADMAP's "As of" line and "Shipped recently".
+- `SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh` passes (it checks pinned URLs against git), and
+  `bash scripts/lint-docs-contract.sh` (it fails on a note missing from the index).
 - Never rewrite a published note. To correct one, add a dated "Update:" line at the top.
 - Never promise a version for unbuilt work; say "not built yet, see ROADMAP".
 - Then follow the tag steps in `CONTRIBUTING.md` ("Cutting a release").

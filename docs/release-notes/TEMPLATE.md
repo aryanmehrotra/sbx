@@ -19,9 +19,10 @@ Rules:
 - Every number names the machine and the script that measured it. Never round up.
 - Every breaking or behaviour change goes in "Before you upgrade", with a "Do this:" line,
   even if a highlight also describes it. Omit the section only when there is nothing.
-- Security release: the TL;DR starts with "Upgrade now if …" and names affected versions.
+- Security release: the TL;DR starts with "Upgrade now if …" and names affected versions. It may
+  add a short `## What happened` section right after the TL;DR (see v0.9.1.md).
 - Promise no future version. Say "not yet" and link docs/ROADMAP.md at the tag.
-- Omit empty sections. Keep the order. Aim for ≤ ~120 lines.
+- Omit empty sections. Keep the order. Aim for ≤ ~120 lines: the one length limit (STYLE.md points here).
 - A published note is not rewritten to describe a later release. Add a dated "Update:" line.
 - Fixes are user-visible symptoms, one line each. CI, tests and tooling stay in the changelog.
 -->

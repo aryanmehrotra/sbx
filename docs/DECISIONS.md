@@ -919,7 +919,7 @@ restore to first byte.
 
 **Not Virtualization.framework, because it cannot do the one thing a microVM is for.** It
 reports snapshot support and then fails to save one: the entitlement is Apple's own. A second
-VMM there would cost cgo and the static binary, and still resume nothing (ROADMAP §1, option C).
+VMM there would cost cgo and the static binary, and still resume nothing (option C of the microVM plan in [ROADMAP at v0.14.0](https://github.com/aryanmehrotra/sbx/blob/v0.14.0/docs/ROADMAP.md#macos-pick-a-then-b-and-do-not-build-c)).
 
 **The VM tool is shelled out**, for the reason tunnels are: lima and colima already solve the
 VM, and `go.mod` stays empty. Every command names the instance, and the name must start with

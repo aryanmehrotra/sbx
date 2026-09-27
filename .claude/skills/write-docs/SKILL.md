@@ -13,14 +13,14 @@ numbers, status vocabulary, glossary). Read both before writing. This skill is t
 - Look up the change in the docs contract table in `AGENTS.md`. Every matching row is a page to edit.
 - `grep -rn "<command|flag|field|ENV_VAR>" README.md docs/ examples/ internal/app/help.go` to find
   existing mentions that are now wrong.
-- If the change ships a roadmap item, it also comes out of `docs/ROADMAP.md` (keep `§N` numbers).
+- If the change ships a roadmap item, it also comes out of `docs/ROADMAP.md`.
 - Anything a user would notice also gets one line in `docs/release-notes/UNRELEASED.md`.
 
 ## 2. Get the facts from the code, not from other docs
 
 - Commands and flags: `internal/app/app.go` (dispatch), `internal/app/help.go` (help text).
 - `sbx serve` flags: `internal/daemon/serve.go`. Env vars: `grep -rn 'Getenv("SBX_' internal`.
-- Spec fields: `internal/spec/`. MCP tools: `internal/app/mcp.go`.
+- Spec fields: `internal/spec/`. MCP tools: `internal/mcp/tools.go` (one `Name:` per tool).
 - Status: which CI job covers it (`.github/workflows/ci.yaml`). That decides the status label.
 - If you can, run it: `go build -o sbx . && ./sbx <cmd> --help`, and paste real output.
 
@@ -28,18 +28,22 @@ numbers, status vocabulary, glossary). Read both before writing. This skill is t
 
 - Tutorial, how-to, reference or explanation (`docs/STYLE.md`). Put the text on the page of the
   matching type; link from the others instead of copying.
-- Open with what the reader gets. Sentences ≤ ~25 words, table cells ≤ ~20 words.
+- Open with what the reader gets. Apply `docs/STYLE.md#voice` (sentence and cell length, zero
+  prior knowledge, internal names, persuade with proof).
+- Explain every outside term at its first use on the page, using `docs/STYLE.md#outside-terms`.
 - Fold a new feature into the page's opening and tables; do not append a section at the end.
-- State current behaviour once. No "used to", "since vX", or project history in reference pages.
-- Numbers: name the script and link BENCHMARKS.md. Vendor numbers: quote, link, date.
-- Status: **verified in CI** / **unit-tested** / **not yet run end to end**. Caveats go in the
-  README platform-status table, not in hero text.
-- Use glossary terms exactly (sandbox, service, wake, sleep, freeze, daemon, provider, helper VM).
+- State current behaviour once. No project history in reference pages.
+- Numbers and vendor claims: `docs/STYLE.md#numbers-and-sources`.
+- Status: a label from `docs/STYLE.md#status-vocabulary`. Caveats go in the README
+  platform-status table, not in hero text.
+- Use the house words in `docs/STYLE.md#glossary` exactly.
 
 ## 4. Check before you finish
 
 ```sh
 SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh   # links, anchors, reference links, pinned URLs
+bash scripts/lint-docs-contract.sh            # SBX_* vars in CLI.md, ROADMAP heading, lessons
+go test ./internal/app/ -run CLIReference     # every command and serve flag in CLI.md
 grep -rn "FILE.md#old-anchor" .               # if you renamed a heading
 ```
 

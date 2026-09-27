@@ -22,7 +22,9 @@ page. Rules: `AGENTS.md` (docs contract, lessons) and `docs/STYLE.md`.
 - If a doc and the code disagree, the code wins: report the doc line and the code line.
 
 **2. Docs contract coverage**
-- For each user-visible code change, the pages in the `AGENTS.md` table were updated.
+- For each user-visible code change, every matching row of the `AGENTS.md` docs contract was
+  updated (shared flags, templates, wake behaviour, fixed-bug workarounds and the MCP tool count
+  are the rows most often missed).
 - `docs/release-notes/UNRELEASED.md` has a user-facing line; breaking changes are under Breaking.
 - Shipped roadmap items were removed from `docs/ROADMAP.md`.
 
@@ -32,21 +34,27 @@ page. Rules: `AGENTS.md` (docs contract, lessons) and `docs/STYLE.md`.
 - The page opens with what it is and who it is for. It leads with what the reader gets.
 - A new feature is folded into the opening, not appended.
 
-**4. Readability**
-- Sentences ≤ ~25 words, table cells ≤ ~20 words, one idea per paragraph.
-- Jargon defined on first use; glossary terms used consistently.
-- No meta-commentary about the project's past mistakes in user docs.
+**4. Readability and zero prior knowledge** (`docs/STYLE.md#voice`)
+- Sentence and table-cell length, one idea per paragraph, as STYLE sets them.
+- Read it as someone who has never heard of OpenSandbox, MCP, Firecracker, microVMs, gVisor,
+  Kata, CRIU or E2B: is every outside term explained in plain words at its first use *on this
+  page* (`docs/STYLE.md#outside-terms`)? A term explained only on another page is a finding.
+- No internal name (`execd`, seal, slot, activator, jailer) on a user-facing page without an
+  explanation next to it.
+- Glossary terms used consistently; no meta-commentary about past mistakes in user docs.
+- DECISIONS.md: check new entries only; old ones are records.
 
-**5. Honesty: numbers and status**
-- Every measured number names its script and links BENCHMARKS.md; machine and version are there.
-- Every vendor claim is quoted, linked and dated. Open the link: does the page still say it?
-- Status labels are exactly **verified in CI** / **unit-tested** / **not yet run end to end**,
-  and match what `ci.yaml` actually runs. Caveats are in the README platform-status table, not
-  deleted.
+**5. Honesty and proof: numbers, claims and status**
+- Numbers and vendor claims follow `docs/STYLE.md#numbers-and-sources`. Open each vendor link:
+  does the page still say it?
+- Persuade with proof: every benefit claim carries a number, a test or a link. An adjective
+  alone ("fast", "secure") is a finding. So is a caveat dropped to make a claim stronger.
+- Status cells start with a label from `docs/STYLE.md#status-vocabulary` and match what
+  `ci.yaml` actually runs. Caveats are in the README platform-status table, not deleted.
 - No version promised for unbuilt work.
 
 **6. Links and anchors**
-- `SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh` passes.
+- `SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh` and `bash scripts/lint-docs-contract.sh` pass.
 - A renamed heading: every `FILE.md#anchor` linker updated (`grep -rn`), including Go comments.
 - Release notes: absolute links pinned to the tag, no relative links, no links into `docs/design/`.
 
