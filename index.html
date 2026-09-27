@@ -334,7 +334,7 @@
     <a class="logo appear appear--scale" href="#top" aria-label="sbx" style="--d:.08s">
       <svg viewBox="0 0 24 24" fill="currentColor"><g transform="rotate(-30 12 12)"><circle cx="7.3" cy="3.2" r="1.45"/><rect x="5.5" y="4.7" width="3.6" height="14.6" rx="1.8"/><rect x="14.9" y="4.7" width="3.6" height="14.6" rx="1.8"/><circle cx="16.7" cy="20.8" r="1.45"/></g></svg>
       <!-- the release version: this is the ONLY place it appears on the page; bump it here -->
-      <span>sbx</span><span class="ver">v0.13.0</span>
+      <span>sbx</span><span class="ver">v0.14.0</span>
     </a>
     <nav id="site-nav" aria-label="Primary">
       <a class="navlink appear appear--soft" href="#how" style="--d:.16s">How it works</a>
@@ -497,11 +497,11 @@
         <span><b>Kubernetes kata-fc</b> · <i class="u">unit-tested, unverified</i></span>
       </div>
       <div class="steps">
-        <div class="step"><div class="n">jailed</div><h3>Jailer on by default</h3><p>Every VMM runs under Firecracker's pinned jailer — chrooted, as its own non-root uid, with no capabilities, in its own cgroup.</p></div>
+        <div class="step"><div class="n">jailed</div><h3>Jailer on by default</h3><p>Every VMM runs under Firecracker's pinned jailer — chrooted, as its own non-root uid, with no capabilities, in its own cgroup and its own network namespace.</p></div>
         <div class="step"><div class="n">fail-closed</div><h3>The host stays shut</h3><p>A guest's only way out is its egress filter. If the host guard can't be installed or verified, the create or wake is <span class="k">refused</span> — no bridge left unguarded.</p></div>
         <div class="step"><div class="n">warm pool</div><h3>Pools on microVMs</h3><p>On Linux with <span class="k">/dev/kvm</span>, <span class="k">--osb-pool</span> keeps members asleep (no RAM held, a snapshot on disk) or frozen in RAM — 141&nbsp;ms create → first command from a frozen pool on a CI runner.</p></div>
       </div>
-      <p class="note"><b>⚠ Read before running code you didn't write.</b> Still open: isolated sessions and the credential vault from upstream's later tiers, no network namespace per VM, the daemon itself runs as root, and there is no disk quota per VM. <span class="k">SBX_FC_JAILER=off</span> runs the VMM unjailed, as root, again. The OpenSandbox API through the Mac / Windows helper VM is unit-tested but not yet run on a Mac, and has no warm pool; on a Mac a microVM is dev parity, not speed — there is no bare-metal benchmark yet. <a href="https://github.com/aryanmehrotra/sbx/blob/main/SECURITY.md">SECURITY.md</a> has the threat model.</p>
+      <p class="note"><b>⚠ Read before running code you didn't write.</b> Still open: isolated sessions and the credential vault from upstream's later tiers, the daemon itself runs as root, and there is no quota on the whole state filesystem (each VM's disk and each file its VMM writes are bounded). <span class="k">SBX_FC_JAILER=off</span> runs the VMM unjailed, as root, again. The OpenSandbox API through the Mac / Windows helper VM is unit-tested but not yet run on a Mac, and has no warm pool; on a Mac a microVM is dev parity, not speed — there is no bare-metal benchmark yet. <a href="https://github.com/aryanmehrotra/sbx/blob/main/SECURITY.md">SECURITY.md</a> has the threat model.</p>
     </div>
   </section>
 
