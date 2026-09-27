@@ -493,13 +493,8 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !next.After(*rec.ExpiresAt) {
-		writeErr(w, http.StatusBadRequest, "SANDBOX::INVALID_EXPIRATION",
-			fmt.Sprintf("expiresAt %s must be later than the current expiry %s - renewing only "+
-				"ever extends", next.Format(time.RFC3339), rec.ExpiresAt.Format(time.RFC3339)))
-
-		return
-	}
+	// Any future time, earlier than the current expiry included: upstream's server checks nothing
+	// more, and its SDK pool shortens a member's expiry on acquire (TestRenewSetsAnyFutureExpiry).
 
 	if _, ok := s.update(rec.ID, func(r *record) { r.ExpiresAt = &next }); !ok {
 		writeErr(w, http.StatusNotFound, "SANDBOX::NOT_FOUND", "the sandbox was removed during the renew")
