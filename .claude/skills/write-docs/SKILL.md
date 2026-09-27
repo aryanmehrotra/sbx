@@ -38,7 +38,7 @@ writing. This skill is the procedure.
 - Status: a label from `AGENTS.md#status-vocabulary`. Caveats go in
   `docs/ARCHITECTURE.md#platform-status`, not in the README.
 - Sound human (`AGENTS.md#voice`): plain bullets with no bold lead-ins, tables only for reference
-  data, plain headings, no slogans or em-dash chains. The README stays px0-length: no tables,
+  data, plain headings, no slogans or em-dash chains. The README stays about 100 lines: no tables,
   glossary or feature list.
 - Use the house words in `docs/ARCHITECTURE.md#terms` exactly.
 
