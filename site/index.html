@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>sbx: a real database for every branch and AI agent</title>
+<meta name="description" content="Each branch, test run or AI agent gets its own Postgres, Redis or browser. Idle ones use 0 B of RAM; the first connection wakes them. One Go binary.">
+<link rel="canonical" href="https://aryanmehrotra.github.io/sbx/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://aryanmehrotra.github.io/sbx/">
+<meta property="og:title" content="sbx: a real database for every branch and AI agent">
+<meta property="og:description" content="Sleeps at 0 B. Wakes the moment anything connects. No SDK, self-hosted, one binary.">
+<meta property="og:image" content="https://aryanmehrotra.github.io/sbx/assets/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="alternate" type="text/plain" href="llms.txt" title="sbx for LLMs">
+<style>
+:root {
+  --bg: #ffffff; --bg2: #f6f8fa; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0;
+  --accent: #1a7f37; --accent-fg: #ffffff;
+  --term-bg: #0d1117; --term-fg: #e6edf3; --term-dim: #8b949e; --term-ok: #3fb950; --term-info: #58a6ff;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1117; --bg2: #151b23; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+          --accent: #3fb950; --accent-fg: #0d1117; --term-bg: #010409; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 var(--sans); }
+a { color: inherit; text-underline-offset: 3px; }
+a:hover { color: var(--accent); }
+code, pre { font-family: var(--mono); }
+:not(pre) > code { font-size: .88em; background: var(--bg2); border: 1px solid var(--line); border-radius: 5px; padding: .08em .35em; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+header { border-bottom: 1px solid var(--line); }
+header .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+.mark { font: 700 22px/1 var(--mono); text-decoration: none; letter-spacing: -.5px; }
+.mark span { display: inline-block; width: 9px; height: 18px; background: var(--accent); margin-left: 3px; vertical-align: -2px; }
+nav { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
+nav a { text-decoration: none; color: var(--muted); }
+section { padding: 72px 0; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: 0; }
+h1 { font-size: clamp(34px, 5vw, 54px); line-height: 1.08; letter-spacing: -1.5px; margin: 0 0 20px; }
+h2 { font-size: clamp(24px, 3vw, 32px); line-height: 1.2; letter-spacing: -.5px; margin: 0 0 12px; }
+h3 { font-size: 18px; margin: 0 0 6px; }
+.lede { font-size: 19px; color: var(--muted); max-width: 34em; margin: 0 0 28px; }
+.sub { color: var(--muted); max-width: 40em; margin: 0 0 28px; }
+.hero > *, .split > *, .cols > *, .install { min-width: 0; }
+.hero { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+.small { font-size: 14px; color: var(--muted); }
+
+/* install tabs: radio buttons, so it works without JavaScript */
+.install { max-width: 520px; }
+.install input { position: absolute; opacity: 0; pointer-events: none; }
+.tabs { display: flex; gap: 4px; font-size: 14px; }
+.tabs label { padding: 6px 12px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--muted); cursor: pointer; }
+.cmd { display: none; align-items: center; gap: 10px; background: var(--bg2); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; padding: 12px 12px 12px 16px; }
+.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; font-size: 14.5px; background: none; border: 0; padding: 0; }
+.cmd code::before { content: "$ "; color: var(--muted); user-select: none; }
+#t-brew:checked ~ .tabs label[for=t-brew], #t-curl:checked ~ .tabs label[for=t-curl], #t-go:checked ~ .tabs label[for=t-go] { background: var(--bg2); border-color: var(--line); color: var(--fg); }
+#t-brew:checked ~ .c-brew, #t-curl:checked ~ .c-curl, #t-go:checked ~ .c-go { display: flex; }
+.install input:focus-visible ~ .tabs label { outline: none; }
+#t-brew:focus-visible ~ .tabs label[for=t-brew], #t-curl:focus-visible ~ .tabs label[for=t-curl], #t-go:focus-visible ~ .tabs label[for=t-go] { outline: 2px solid var(--accent); }
+.copy { font: 13px var(--sans); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.copy:hover { border-color: var(--accent); }
+.btns { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--line); }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn.primary:hover { color: var(--accent-fg); filter: brightness(1.08); }
+
+/* terminal */
+.term { background: var(--term-bg); color: var(--term-fg); border-radius: 10px; border: 1px solid #30363d; overflow: hidden; }
+.term .bar { display: flex; gap: 7px; padding: 12px 14px; border-bottom: 1px solid #21262d; }
+.term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #30363d; }
+.term pre { margin: 0; padding: 16px 18px 18px; font-size: 13.5px; line-height: 1.65; overflow-x: auto; }
+.p { color: var(--term-ok); user-select: none; }
+.d { color: var(--term-dim); }
+.o { color: var(--term-ok); }
+.i { color: var(--term-info); }
+
+/* numbers */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.stats a { padding: 22px 20px; text-decoration: none; border-right: 1px solid var(--line); }
+.stats a:last-child { border-right: 0; }
+.stats b { display: block; font: 700 30px/1.1 var(--mono); letter-spacing: -1px; color: var(--accent); }
+.stats span { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); }
+.chart { margin-top: 28px; }
+.chart img { width: 100%; height: auto; max-width: 900px; }
+
+/* uses */
+.cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin-top: 32px; }
+.cols p { color: var(--muted); margin: 0 0 12px; font-size: 16px; }
+pre.code { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0; font-size: 13.5px; line-height: 1.6; overflow-x: auto; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; margin-top: 28px; }
+.how img { width: 100%; height: auto; max-width: 900px; border-radius: 12px; margin-top: 24px; }
+.final { text-align: center; }
+.final .install { margin: 28px auto 0; text-align: left; }
+footer { padding: 28px 0 48px; font-size: 14px; color: var(--muted); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; }
+footer .note { margin-left: auto; }
+
+@media (max-width: 860px) {
+  .hero, .split { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .stats a:nth-child(2) { border-right: 0; }
+  .stats a:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  section { padding: 52px 0; }
+  nav a.hide-s { display: none; }
+  footer .note { margin-left: 0; }
+  .chart, .how .fig { overflow-x: auto; }
+  .chart img, .how img { min-width: 640px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="mark" href="./" aria-label="sbx home">sbx<span></span></a>
+    <nav aria-label="Main">
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md">Docs</a>
+      <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">Benchmarks</a>
+      <a href="https://github.com/aryanmehrotra/sbx">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section>
+  <div class="wrap hero">
+    <div>
+      <h1>A real database for every branch and AI agent.</h1>
+      <p class="lede">Point <code>psql</code>, Playwright or your test runner at a sleeping sandbox.
+        sbx holds the connection while it wakes, then hands it over. One Go binary, no SDK, no account.</p>
+
+      <div class="install" id="install">
+        <input type="radio" name="inst" id="t-brew" checked>
+        <input type="radio" name="inst" id="t-curl">
+        <input type="radio" name="inst" id="t-go">
+        <div class="tabs" role="presentation">
+          <label for="t-brew">Homebrew</label><label for="t-curl">Shell</label><label for="t-go">Go</label>
+        </div>
+        <div class="cmd c-brew"><code>brew install aryanmehrotra/tap/sbx</code><button class="copy" type="button" hidden>Copy</button></div>
+        <div class="cmd c-curl"><code>curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code><button class="copy" type="button" hidden>Copy</button></div>
+        <div class="cmd c-go"><code>go install github.com/aryanmehrotra/sbx@latest</code><button class="copy" type="button" hidden>Copy</button></div>
+      </div>
+      <p class="small">macOS and Linux. Needs Docker or a Kubernetes cluster; <code>sbx doctor</code> tells you what your machine supports.</p>
+    </div>
+
+    <div class="term" role="img" aria-label="A terminal: a Postgres sandbox is created, sleeps at 0 B, and a plain psql query wakes it and is served in 463 ms.">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$</span> sbx create feature-x --template postgres
+  postgres     <span class="o">✓ 127.0.0.1:20000</span>
+
+<span class="d"># nobody connects for a few seconds</span>
+<span class="i">INFO</span> feature-x/postgres  slept - idle for 8s
+  <span class="o">asleep - 0 B of memory, the volume untouched</span>
+
+<span class="p">$</span> psql postgres://app:app@127.0.0.1:20000/app \
+    -tAc "select 'hello'"
+hello
+<span class="i">INFO</span> feature-x/postgres  woke in 399ms
+  <span class="o">served in 463ms - the client waited,
+  it was never refused</span></pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Pay for the one you're using.</h2>
+    <p class="sub">Twenty branch databases on one machine cost what one daemon costs. Measured on sbx v0.14.0, a 4 vCPU Linux VM with Docker 29.</p>
+    <div class="stats">
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#memory"><b>0 B</b><span>RAM per sleeping sandbox</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#headline-numbers"><b>348 ms</b><span>to wake Postgres (Redis: 216 ms)</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#wake-against-other-tools"><b>20/20</b><span>first connections served while waking</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/go.mod"><b>0</b><span>dependencies, one static binary</span></a>
+    </div>
+    <div class="chart">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/bench-dark.svg">
+        <img src="assets/bench-light.svg" width="900" height="264" loading="lazy" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5.">
+      </picture>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Three ways people use it.</h2>
+    <div class="cols">
+      <div>
+        <h3>A database per branch</h3>
+        <p>Every branch or pull request gets its own Postgres. Switch branches and the rest go back to sleep.</p>
+<pre class="code">sbx create my-branch \
+  --template postgres
+eval "$(sbx env my-branch)"
+PGPASSWORD=app psql -U app -d app</pre>
+      </div>
+      <div>
+        <h3>A copy per AI agent</h3>
+        <p>Seed one database, snapshot it, and give each agent its own fork. A write in one never reaches another.</p>
+<pre class="code">sbx snapshot my-branch seeded
+sbx fork seeded agent-1
+sbx fork seeded agent-2</pre>
+      </div>
+      <div>
+        <h3>A fixture per test run</h3>
+        <p>Create, run the tests, remove it. Even when the tests fail, nothing is left behind.</p>
+<pre class="code">sbx with test-db --template postgres \
+  -- go test ./...</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Built for AI agents, on your machine.</h2>
+    <p class="sub">sbx speaks <a href="https://github.com/opensandbox-group/OpenSandbox">OpenSandbox</a>, an open API for agent sandboxes with SDKs in five languages, and ships an MCP server so Claude Code, Cursor or Codex can create and use sandboxes as tools. For code you don't trust, <code>--provider firecracker</code> gives each sandbox its own kernel in a microVM.</p>
+    <div class="split">
+<pre class="code">sbx serve --osb-addr 127.0.0.1:8080 \
+  --osb-pool python:3.11-slim=4 &amp;
+
+# hand sandboxes to your coding agent
+claude mcp add sbx -- sbx mcp</pre>
+<pre class="code">from opensandbox import SandboxSync
+
+sandbox = SandboxSync.create("python:3.11-slim")
+run = sandbox.commands.run("python -c 'print(6 * 7)'")
+print(run.logs.stdout[0].text)   # 42
+sandbox.destroy()</pre>
+    </div>
+    <p class="small" style="margin-top:16px">OpenSandbox's own end-to-end suite runs against sbx in CI. <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents">Agent guide</a></p>
+  </div>
+</section>
+
+<section class="how">
+  <div class="wrap">
+    <h2>How it works.</h2>
+    <p class="sub">A sleeping sandbox's port belongs to sbx. When a client connects, sbx accepts and holds the connection, starts the container or microVM, and passes the same socket through once it's healthy. After a few idle minutes it stops the service again. The data stays on disk.</p>
+    <div class="fig"><img src="assets/how-it-works.svg" width="900" height="390" loading="lazy" alt="How sbx wakes a sandbox in three steps: a client connects to a sleeping sandbox; sbx holds the socket while the service starts; sbx hands the same socket over and the query is served. After idle time it sleeps again at 0 B."></div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <h2>Try it in a minute.</h2>
+    <p class="sub" style="margin:0 auto">Install, then follow the ten-minute quickstart.</p>
+    <div class="install">
+      <div class="cmd" style="display:flex; border-radius:8px"><code>brew install aryanmehrotra/tap/sbx</code><button class="copy" type="button" hidden>Copy</button></div>
+    </div>
+    <div class="btns" style="justify-content:center">
+      <a class="btn primary" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md">Read the quickstart</a>
+      <a class="btn" href="https://github.com/aryanmehrotra/sbx">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>MIT licensed</span>
+    <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/release-notes/README.md">Release notes</a>
+    <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/COMPARISON.md">Compared with other tools</a>
+    <a href="https://github.com/aryanmehrotra/sbx/blob/main/SECURITY.md">Security</a>
+    <span class="note">Not Docker's <code>sbx</code> CLI.</span>
+  </div>
+</footer>
+
+<script>
+// Copy buttons only. Without JavaScript the commands stay selectable text.
+document.querySelectorAll(".copy").forEach(function (b) {
+  b.hidden = false;
+  b.addEventListener("click", function () {
+    var t = b.previousElementSibling.textContent;
+    navigator.clipboard.writeText(t).then(function () {
+      b.textContent = "Copied";
+      setTimeout(function () { b.textContent = "Copy"; }, 1500);
+    });
+  });
+});
+</script>
+</body>
+</html>

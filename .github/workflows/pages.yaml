@@ -1,0 +1,43 @@
+# The landing page, published to GitHub Pages from main. It is one static HTML file plus the
+# README's own pictures (scripts/site-build.sh copies them from docs/), so it rebuilds only when
+# one of those changes. Needs Settings → Pages → Source: GitHub Actions, once.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/bench-*.svg'
+      - 'docs/how-it-works.svg'
+      - 'docs/social-preview.png'
+      - scripts/site-build.sh
+      - .github/workflows/pages.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: bash scripts/site-build.sh
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,18 @@
+# sbx
+
+> Self-hosted sandboxes for every branch, test run and AI agent: a real Postgres, Redis or
+> browser that sleeps at 0 B of RAM and wakes when any TCP client connects. One Go binary with
+> zero dependencies. Runs on Docker, Kubernetes or Firecracker microVMs. Serves the OpenSandbox
+> API and an MCP server.
+
+Install: `brew install aryanmehrotra/tap/sbx` or `go install github.com/aryanmehrotra/sbx@latest`.
+
+## Docs
+
+- [Quickstart](https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md): first sandbox in ten minutes
+- [Guides](https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md): every task, one section each
+- [AI agents](https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents): the block to paste into AGENTS.md or CLAUDE.md, MCP setup, OpenSandbox SDKs
+- [CLI reference](https://github.com/aryanmehrotra/sbx/blob/main/docs/CLI.md): every command, flag and environment variable
+- [sandbox.json reference](https://github.com/aryanmehrotra/sbx/blob/main/docs/SPEC.md)
+- [Troubleshooting](https://github.com/aryanmehrotra/sbx/blob/main/docs/TROUBLESHOOTING.md)
+- [Benchmarks](https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md): every number with its script and machine
