@@ -27,17 +27,17 @@ If `doctor` says Docker is not reachable, start your engine and run it again.
 ## 2. Start the daemon
 
 ```sh
-sbx serve --idle 1m --osb-addr 127.0.0.1:8080 & SBX_PID=$!
+sbx serve --idle 1m --osb-addr 127.0.0.1:8080 & DAEMON_PID=$!
 ```
 
 `sbx serve` is the daemon, the one long-running process: it owns every sandbox's ports, wakes
 services when something connects, and sleeps them after `--idle` with no traffic. Run one per
 machine, not one per sandbox. A one-minute idle timer makes this tutorial quicker; the default is
-five minutes. `--osb-addr` turns on the API that step 5 uses. `SBX_PID` remembers the daemon so
+five minutes. `--osb-addr` turns on the API that step 5 uses. `DAEMON_PID` remembers the daemon so
 step 6 can stop it.
 
 Its log lines appear in this terminal. If you prefer a quiet one, run the command in a second
-terminal instead (without `& SBX_PID=$!`) and press Ctrl-C there in step 6.
+terminal instead (without `& DAEMON_PID=$!`) and press Ctrl-C there in step 6.
 
 ## 3. Create a Postgres and wake it with `psql`
 
@@ -69,7 +69,8 @@ the sandbox, with no SDK and no `sbx start`. The `todo` table exists because the
 `init` step created it.
 
 No `psql` here? `sbx wake demo` wakes it and waits until it serves, and
-`sbx exec -t demo postgres psql -U app -d app` opens `psql` inside the container.
+`sbx exec -t demo postgres psql -U app -d app` opens `psql` inside the container (`demo` is the
+sandbox, `postgres` the service inside it).
 
 ## 4. Seed once, fork many
 
@@ -135,7 +136,7 @@ sbx rm demo
 sbx rm demo-fork
 sbx gc --snapshots            # lists what is left, including the "seeded" snapshot
 sbx gc --snapshots --force    # deletes it
-kill $SBX_PID                 # stop the daemon (or Ctrl-C in its own terminal)
+kill $DAEMON_PID                 # stop the daemon (or Ctrl-C in its own terminal)
 ```
 
 `sbx rm` deletes the sandbox and its data. To keep the daemon running across reboots, use the

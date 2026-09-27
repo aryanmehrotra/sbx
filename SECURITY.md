@@ -80,6 +80,12 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   host-fronting deployment like a VPN credential, not a service password. sbx cannot know which
   addresses you meant, so it will not stop you fronting a whole private network. That is why the
   choice is written in the deployment's own environment, where a reviewer can see it.
+- **The OpenSandbox API always requires a key, loopback included.** On colima and Docker Desktop
+  every container can reach the host's `127.0.0.1`, so loopback alone would let any sandbox drive
+  the API. Set the key with `--osb-key` or `SBX_OSB_KEY`; otherwise one is generated once into
+  `~/.sbx/osb/key` (mode 0600). Running keyless takes an explicit `--osb-insecure-no-key`, which
+  is refused on a non-loopback address. Why: the
+  [v0.9.0 advisory](#v090-a-keyless-opensandbox-api-is-reachable-from-every-container-fixed-in-v091).
 - **`sbx mcp` holds the OpenSandbox API key.** It is a client of the API, so an agent driving
   it can do whatever the key allows: create, exec in and delete API sandboxes. Point it at a
   remote API with `--url` only over a transport you trust.

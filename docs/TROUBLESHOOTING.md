@@ -137,8 +137,7 @@ Desktop) shares only some host paths: `$HOME` usually, `/var/folders` on macOS u
 ### Two `sbx create` at the same moment fail on a port conflict
 
 **Cause:** two racing creates can pick the same free block of ports. A lock under `~/.sbx` and a
-port probe narrow this: measured on a laptop, 17 of 20 racing creates succeeded (5 of 20 before
-the lock). Two machines driving one remote `DOCKER_HOST` share no lock.
+port probe make this rare, not impossible. Two machines driving one remote `DOCKER_HOST` share no lock.
 
 **Fix:** retry. The retry sees the first create's containers and takes the next block. On colima or
 Docker Desktop a port forward can outlive its container for a few seconds after `sbx rm`; wait a
@@ -338,8 +337,8 @@ An endpoint that refuses connections means the mirror could not bind that port h
 
 **Cause:** `sbx serve --osb-addr` serves the OpenSandbox API (an open-source sandbox API whose
 SDKs and MCP server sbx supports; see [GUIDES.md](GUIDES.md#opensandbox-sdks)). It always requires
-the `OPEN-SANDBOX-API-KEY` header, loopback included. With no `--osb-key` or `SBX_OSB_KEY`, the
-key is generated into `~/.sbx/osb/key`.
+the `OPEN-SANDBOX-API-KEY` header, loopback included ([why](../SECURITY.md#access-and-exposure)).
+With no `--osb-key` or `SBX_OSB_KEY`, the key is generated into `~/.sbx/osb/key`.
 
 **Fix:**
 
@@ -352,12 +351,11 @@ sbx mcp --url https://osb.example.dev --key "$KEY"     # a remote server
 ### Warm pool creates are slow (the pool always misses)
 
 **Cause:** a warm pool (`--osb-pool`) keeps sandboxes created ahead of time. A create hits it only
-if image, entrypoint and `resourceLimits` (plus ports, platform and `sbx.idle`) match the pool's. The pool uses the SDK defaults: entrypoint
-`["tail", "-f", "/dev/null"]`, `cpu: "1"`, `memory: "2Gi"`.
+if it asks for exactly what the pool was built with; the rules are in
+[GUIDES.md](GUIDES.md#opensandbox-sdks) under **Warm pools**.
 
-**Fix:** read the daemon log, which names the difference, e.g.
-`osb: pool miss for image "python:3.11-slim": resourceLimits.cpu is unset, the pool's is "1" - it takes the cold path…`.
-Send the SDK defaults, or drop the custom entrypoint.
+**Fix:** read the daemon log: each miss is logged as `osb: pool miss for image ...` with the field
+that differed. Send the SDK defaults, or drop the custom entrypoint.
 
 ### An API sandbox is `Failed` with `runtime_error`
 

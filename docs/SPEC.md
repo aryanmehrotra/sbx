@@ -91,7 +91,7 @@ public port of mysql's 3306.
 | `depends_on` | string list | | Services that must serve first, at create and on every wake |
 | `optional` | bool | `false` | Created only with `--optional`. Still reserves its ports |
 | `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep |
-| `on_idle` | string | `"stop"` | `"freeze"` pauses instead: memory and processes kept, resumed in about 10 ms |
+| `on_idle` | string | `"stop"` | `"freeze"` pauses instead: memory and processes kept, resumed without a restart ([measured](BENCHMARKS.md#freeze-and-thaw-v0140)) |
 | `egress` | string | open | `"deny"`: no routed egress. `"allow"`: open, but through the filter |
 | `egress_allow` | string list | | Reach only these hosts and their subdomains |
 | `egress_policy` | object | | A network policy in OpenSandbox's format. Changeable live with `sbx egress` |
@@ -311,7 +311,8 @@ A service with `egress_allow` needs this less: its calls out count as activity. 
 ```
 
 When idle, the service is paused rather than stopped: memory and running processes are kept, no
-CPU is used, and the next connection resumes it in about 10 ms. It holds its memory while asleep.
+CPU is used, and the next connection resumes it without a restart
+([measured](BENCHMARKS.md#freeze-and-thaw-v0140)). It holds its memory while asleep.
 Docker and firecracker support it; Kubernetes refuses it. Sandboxes created through the
 OpenSandbox API default to `freeze`.
 

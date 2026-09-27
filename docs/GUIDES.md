@@ -41,7 +41,7 @@ and a sleeping sandbox holds 0 B of RAM: no container runs until something conne
 ```sh
 sbx create feature-x --template postgres
 eval "$(sbx env feature-x)"        # sets PGHOST, PGPORT, DATABASE_HOST, DATABASE_PORT
-psql -U app -d app -c 'select 1'   # this connection wakes it
+PGPASSWORD=app psql -U app -d app -c 'select 1'   # this connection wakes it
 ```
 
 Never hardcode a port: ports are assigned per sandbox, and `sbx env` is where they live.
@@ -105,6 +105,11 @@ sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
 A snapshot copies files, not memory, so forks start cold against warm data. It does not pause the
 service; stop writes first if the copy must be exact
 ([why](TROUBLESHOOTING.md#a-fork-is-missing-the-write-i-just-made)).
+
+**Known issue in v0.14.0 (docker):** `sbx snapshot` fails with "the source is empty or does not
+exist" when any service in the sandbox has no `volume`, such as the `web-stack` template's Redis
+or a service added with `sbx add`. Until it is fixed, snapshot sandboxes whose services all
+declare a `volume`, like the one above.
 
 ## Save and resume a running process
 
@@ -186,20 +191,41 @@ sbx exec my-branch dev go test ./...
   the docker VM shares (under your home directory). `mounts` works on docker only.
 
 **From an editor (preview feature).** An ssh connection wakes the sandbox like any other, so VS
-Code Remote-SSH, JetBrains Gateway, `scp` and `rsync` work. The image must run an ssh server.
+Code Remote-SSH, JetBrains Gateway, `scp` and `rsync` work. The image must run an ssh server,
+for example:
+
+```json
+{ "version": 1,
+  "services": {
+    "dev": {
+      "image": "lscr.io/linuxserver/openssh-server:latest", "ports": [2222],
+      "mounts": { ".": "/work" },
+      "env": { "USER_NAME": "dev", "PASSWORD_ACCESS": "true", "USER_PASSWORD": "..." } },
+    "postgres": { "image": "postgres:16-alpine", "ports": [5432], "health": "pg_isready -U postgres" } } }
+```
 
 ```sh
 SBX_FEATURES=ssh sbx ssh feature-x --user dev   # prints the ssh and `code --remote` lines
 ```
 
 An attached editor keeps the sandbox awake (VS Code pings every five seconds); close it and it sleeps.
+VS Code's *Attach to Container* and *Remote-Tunnels* do not wake a sleeping sandbox: they never
+connect to its port. Use Remote-SSH.
 
 **From a devcontainer (preview feature).** Import `.devcontainer/devcontainer.json` as a starting
-spec. What cannot be translated is listed on stderr.
+spec. What cannot be translated is listed on stderr, so the redirect still writes a clean file.
 
 ```sh
 SBX_FEATURES=devcontainer sbx init --from-devcontainer . > sandbox.json
 ```
+
+- **Kept:** the image or build, `forwardPorts` and the older `appPort`, `containerEnv` and
+  `remoteEnv`, the workspace folder as a mount, and `onCreateCommand`, `updateContentCommand`,
+  `postCreateCommand`, run once in that order.
+- **Dropped:** Features are not installed; `postStartCommand` and `postAttachCommand` have no
+  equivalent. `remoteUser` is not in the spec: pass it as `sbx ssh --user`.
+- **Refused:** a `dockerComposeFile`. Several services belong in `sandbox.json`; add the database
+  and cache beside the imported service yourself.
 
 ## Keep a sandbox awake, or limit where it can connect
 
@@ -210,7 +236,7 @@ sbx decides a service is idle by counting bytes through its ports. Work that onl
 |---|---|
 | a longer idle window | `"idle": "30m"` |
 | never sleep (holds its memory the whole time) | `"idle": "never"` |
-| keep memory while asleep, resume in about 10 ms | `"on_idle": "freeze"` |
+| keep memory while asleep, resume without a restart ([measured](BENCHMARKS.md#freeze-and-thaw-v0140)) | `"on_idle": "freeze"` |
 | reach only these hosts, and stay awake while calling them | `"egress_allow": ["api.anthropic.com", "pypi.org"]` |
 | no outbound network at all | `"egress": "deny"` |
 
@@ -223,6 +249,10 @@ filtering proxy that sbx runs, reach only the listed hosts, and count as activit
     "image": "python:3.12", "ports": [7777],
     "egress_allow": ["api.anthropic.com", "pypi.org", "github.com"], "idle": "10m" } } }
 ```
+
+The allow-list keeps a sandbox awake only while it makes HTTP(S) calls through that proxy. For
+other protocols, or with no allow-list, sbx sees no traffic: use `"idle": "never"` or a longer
+`idle`.
 
 Tighten a running sandbox without a restart: `sbx egress agent-1 --deny '*.pastebin.com'`.
 Rules, limits and the `egress_policy` form are in [SPEC.md](SPEC.md#egress-the-network-a-service-may-reach).
@@ -334,7 +364,7 @@ Cursor (`.cursor/mcp.json`), or any client that reads an `mcpServers` block:
 Because the names match, swapping upstream's `opensandbox-mcp` for `sbx mcp` needs no other
 change. Differences: any `sandbox_id` works in any tool (no `connect_if_missing` needed);
 cancelling `command_run` interrupts the command; `file_read` and `file_write` take `utf-8` or
-`latin-1` only. It speaks MCP `2025-11-25` back to `2024-11-05` and logs to stderr only.
+`latin-1` only (for another encoding, run `iconv` through `command_run`). It speaks MCP `2025-11-25` back to `2024-11-05` and logs to stderr only.
 
 ### OpenSandbox SDKs
 
@@ -346,27 +376,23 @@ checked by upstream's own test suite ([test/osb](../test/osb/)).
 ```sh
 sbx serve --osb-addr 127.0.0.1:8080 &
 export OPEN_SANDBOX_DOMAIN=127.0.0.1:8080
-export OPEN_SANDBOX_PROTOCOL=http
 export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"
 ```
 
-**The key is always required**, loopback included, because on colima and Docker Desktop every
-container can reach the host's `127.0.0.1`. Set your own with `--osb-key` or `SBX_OSB_KEY`;
-otherwise one is generated once into `~/.sbx/osb/key`.
+The key is always required, loopback included ([why](../SECURITY.md#access-and-exposure)). Set your
+own with `--osb-key` or `SBX_OSB_KEY`; otherwise one is generated once into `~/.sbx/osb/key`.
 
 Python (`pip install opensandbox`, written against SDK 1.1.0):
 
 ```python
 from opensandbox import SandboxSync
-from opensandbox.config import ConnectionConfigSync
 
-config = ConnectionConfigSync()  # reads OPEN_SANDBOX_DOMAIN and OPEN_SANDBOX_API_KEY
-sandbox = SandboxSync.create("python:3.11-slim", connection_config=config)
+sandbox = SandboxSync.create("python:3.11-slim")   # reads OPEN_SANDBOX_DOMAIN and _API_KEY
 try:
-    result = sandbox.commands.run("python -c 'print(6 * 7)'")
-    print(result.logs.stdout[0].text)
+    run = sandbox.commands.run("python -c 'print(6 * 7)'")
+    print(run.logs.stdout[0].text)                   # 42
 finally:
-    sandbox.destroy()
+    sandbox.destroy()                                # removes the sandbox, closes the client
 ```
 
 **Warm pools.** A warm pool is a set of sandboxes created ahead of time, so a create is answered
@@ -441,11 +467,15 @@ SBX_CONNECT_TOKEN_DB=... SBX_CONNECT_TOKEN_CACHE=... \
 #   cache  ->  127.0.0.1:6379
 ```
 
-Watch and control the deployments from one dashboard (wake, sleep, limit, remove, logs):
+Watch and control the deployments from one dashboard:
 
 ```sh
 sbx ui --connect db=https://db.example.dev --connect cache=https://cache.example.dev
 ```
+
+On the selected row: `Enter` wakes, `s` sleeps, `L` sets a limit, `d` removes (after a
+confirmation), `l` shows logs, and `f` forwards the service's ports to this machine so `psql` or
+`redis-cli` can reach it locally.
 
 `--front` reaches something the container can route to and you cannot, such as a managed
 database on a private network:

@@ -38,7 +38,7 @@ go build -o sbx . && ./sbx doctor     # what this machine can do
 go test -short ./...                  # unit, no docker (fast; run always)
 go test ./...                         # + docker-backed tests (~1 min)
 go vet ./... && gofmt -l .            # CI fails on either
-./sbx selftest                        # whole cycle end to end, ~9 s with images local
+./sbx selftest                        # whole cycle end to end (needs docker)
 SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh && bash scripts/lint-docs-contract.sh   # docs
 bash scripts/platforms.sh             # all 8 GOOS/GOARCH build + vet (vet type-checks _test.go)
 ```
@@ -112,9 +112,9 @@ README glossary; rules in this file. Before adding a fact, grep for its home.
 | `docs/CLI.md`, `docs/SPEC.md`, `docs/TROUBLESHOOTING.md` | reference | commands, flags, env vars; `sandbox.json`; symptom, cause, fix |
 | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` | explanation | how it works; why (dated entries, headings frozen) |
 | `docs/BENCHMARKS.md`, `docs/COMPARISON.md` | explanation | every measured number; other tools, with dated vendor links |
-| `docs/ROADMAP.md`, `docs/release-notes/`, `CONTRIBUTING.md` | project | what's next; what changed per tag; setup, tests, release |
+| `docs/ROADMAP.md`, `docs/release-notes/`, `CONTRIBUTING.md` | project | what's next; what changed per tag; setup, test tiers, pull requests, release (the build-and-test commands live in [this file](#build-and-test)) |
 | `SECURITY.md` | explanation + project | threat model; reporting and supported versions |
-| `docs/design/*` | record | dated plans and spikes; never updated, never linked from release notes |
+| [`docs/design/*`](docs/design/README.md) | record | dated plans and spikes; never updated, never linked from release notes |
 
 Removed pages and where their content went (use these targets, never the old names):
 `docs/README.md` → [README.md#docs](README.md#docs) · `docs/STYLE.md` → [#writing-docs](#writing-docs)

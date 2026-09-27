@@ -31,7 +31,7 @@ three, and holds itself to a bar it can measure.
 
 | Dimension | Today | The bar |
 |---|---|---|
-| **Wake on connect** | 216 ms Redis on docker (v0.14.0); 20/20 first connections served vs Lazytainer's 0/5 | every provider serves the first connection in CI, and a bare-metal microVM wake is published |
+| **Wake on connect** | 216 ms Redis on docker (v0.14.0); 20/20 first connections served vs Lazytainer's 0/5 ([BENCHMARKS](BENCHMARKS.md#headline-numbers)) | every provider serves the first connection in CI, and a bare-metal microVM wake is published |
 | **Idle cost on your hardware** | 0 B RAM asleep; the microVM's disk cost is unpublished | 0 B RAM on every provider, and `sbx doctor` reports each sleeper's disk cost |
 | **Multi-service stacks, laptop to cluster** | one `sandbox.json` on docker, kubernetes and microVM; the microVM refuses `files`, `init`, host mounts | no everyday spec field refused on any provider without a documented reason |
 
@@ -58,7 +58,7 @@ In progress or next up.
 
 | Item | Why (competitive) | Size | Status |
 |---|---|:---:|---|
-| **Bare-metal microVM wake and burst numbers** | E2B, isorun and OpenSandbox ("~80ms" pools) publish microVM figures; sbx has only nested runs | S | harness exists: `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider`; needs a bare-metal host |
+| **Bare-metal microVM wake and burst numbers** | E2B, isorun (a hosted sandbox service) and OpenSandbox ("~80ms" pools) publish microVM figures; sbx has only nested runs | S | harness exists: `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider`; needs a bare-metal host |
 | **The microVM's disk cost in `sbx doctor` and BENCHMARKS** | "0 B at rest" needs its asterisk: a snapshot is about the VM's RAM on disk. Vercel bills snapshot storage openly | S | not started |
 | **The helper VM run end to end on a Mac and on Windows 11** | microsandbox and Docker Sandboxes run microVMs on all three OSes today | M | see [platform status](../README.md#platform-status) |
 | **The warm pool through the helper VM** | burst on a Mac is otherwise the docker pool | M | not built |
@@ -127,8 +127,8 @@ require.
 
 Network policies answer 501 for a different reason: the daemon was started without egress control.
 
-Conformance against upstream's `tests/go` (release-1.1.0, docker, CI, 2026-09-27): every v0.10.0-tier
-file passes, and upstream's `pool` and `e2e` files are gated in CI. The v0.11.0 tier was 70 passed,
+Conformance against upstream's `tests/go` (release-1.1.0, docker, CI, 2026-09-27): every file in the
+tier sbx targeted at v0.10.0 passes, and upstream's `pool` and `e2e` files are gated in CI. The v0.11.0 tier was 70 passed,
 48 failed (all `isolated_session`), 6 skipped; `credential_vault` skips for want of a target host.
 
 ## Not doing (and why)
@@ -154,7 +154,7 @@ read the code it touches.
 **Off:** it shipped, or it was measured and did not pay. A shipped item moves to the release notes.
 A rejected one moves to [DECISIONS.md](DECISIONS.md) with the measurement that killed it. Nothing is
 quietly deleted, because the reason an item failed is worth more than the item was. The previous
-roadmap, including the microVM plan and its estimates, is in git history at v0.14.0.
+roadmap, including the microVM plan and its estimates, is in the release tag: `git show v0.14.0:docs/ROADMAP.md`.
 
 **Want something here sooner?** Open an issue, or upvote one, and say what you would use it for.
 Items with a measured need move up.

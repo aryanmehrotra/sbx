@@ -22,6 +22,7 @@ microVM rows could not be re-run there: it has no `/dev/kvm`.
 | memory of a sleeping sandbox | **0 B**: no container running, 3/3 rounds | 0 B · v0.1.0 · laptop | `scripts/bench-memory.sh` |
 | daemon RSS at rest, no sandboxes | **12.8 MB** (12.6-12.9, n=3 fresh daemons) | 9.1 MB · v0.1.0 · macOS laptop | `scripts/bench-memory.sh` |
 | docker wake, redis | **216 ms** median, n=20, p90 236, stdev 14 | 191 ms · v0.1.0 · laptop | `scripts/bench.sh 20` |
+| docker thaw from `"on_idle": "freeze"`, redis | **34 ms** median, n=20, p90 37; **12 ms** over the same ping awake (paired) | none: first measurement | `scripts/bench-freeze.sh 20` |
 | docker wake, postgres / nginx | **348 ms** (p90 488) / **240 ms** (p90 261), n=20 each | 931 / 174 ms, n=5 · v0.1.0 · darwin/arm64, host load 5.37 | `scripts/compare.sh 20` |
 | headless Chrome wake, cold / warm | **611 ms** / **387 ms**, n=5 each, alternating | 3744 / 766 ms, n=5 · v0.1.0 · macOS arm64 | `scripts/bench-chrome.sh` |
 | `sbx create`, redis, image present | **362 ms** median, n=10, p90 375 | 492 ms, n=1 · v0.1.0 · laptop | `scripts/bench-create.sh` |
@@ -32,7 +33,7 @@ microVM rows could not be re-run there: it has no `/dev/kvm`.
 | opening a connection, in-process | **+87 µs** (127 → 214 µs), n=10 | +53 µs · v0.8.0 · Apple M4 | `go test -bench Conn` |
 | bulk throughput through the proxy, loopback | **1.39 GB/s**, 55% of direct (2.54 GB/s), n=10 | 7.0 GB/s, 56% of direct · v0.8.0 · Apple M4 | `go test -bench Stream` |
 | kubernetes wake | not re-run: no cluster here | 1534 ms, n=5 · v0.1.0 · minikube | `scripts/bench.sh` |
-| OpenSandbox create → first command, frozen microVM pool | not re-run: no KVM here | 141 ms · v0.13.0 tree (`e0749be`) · GitHub `ubuntu-24.04`, nested KVM. The v0.14.0 release notes report 144 ms from the same CI job | `osb-bench.sh --provider firecracker` (CI `microvm` job) |
+| OpenSandbox create → first command, frozen microVM pool | not re-run: no KVM here | 144 ms · v0.14.0 · GitHub `ubuntu-24.04`, nested KVM, CI `microvm` job ([v0.14.0 notes](release-notes/v0.14.0.md)); 141 ms on the v0.13.0 tree (`e0749be`) | `osb-bench.sh --provider firecracker` (CI `microvm` job) |
 | microVM wake from a Mac, through the helper VM | not re-run: no KVM here | 216 ms · v0.11.0 tree (`b21492f`) · Apple M4, colima nested. Stale: before the jailer (v0.13) and the layered root (v0.14) | `scripts/fc-anywhere-e2e.sh` |
 
 **The cloud VM is noisier than a laptop, and it is still a VM.** Docker runs inside it, as it does
@@ -68,6 +69,15 @@ timing includes a download. Host load was 0.1-1.9 at the start of each script.
 
 `scripts/bench.sh 20`: median **216 ms**, min 191, p90 236, max 251, stdev
 14 ms, 20/20 served. Timing starts a Python timer twice per sample; that alone costs 11-13 ms here.
+
+### Freeze and thaw (v0.14.0)
+
+`scripts/bench-freeze.sh 20`: the redis spec with `"on_idle": "freeze"`, so going idle runs
+`docker pause` instead of a stop. Each run waits until docker reports the container paused, then
+times one `redis-cli ping` from the host. Thaw: median **34 ms**, p90 37, min 28, max 40, 20/20
+served. The same ping against the box awake, straight after: median 20 ms (17-27). That floor is
+`redis-cli` start plus the timer, and it sits inside every thaw sample. Paired per run, the thaw
+costs **12 ms** over it (median; p90 17, min 6, max 19). A first run gave 34 / 20 ms too.
 
 ### Wake against the field (v0.14.0)
 
@@ -163,6 +173,7 @@ VM has no `/dev/kvm`; the kubernetes wake, since there is no cluster; and zeropo
 ```sh
 scripts/bench.sh 20                                  # wake latency, distribution
 scripts/bench-create.sh 10                           # sbx create, redis, image present
+scripts/bench-freeze.sh 20                           # thaw from on_idle "freeze", redis
 scripts/bench-memory.sh                              # daemon RSS; 0 B while asleep
 scripts/bench-chrome.sh                              # headless Chrome wake, cold and warm
 go test -run '^$' -bench RoundTrip -count 12 ./internal/daemon   # proxy overhead, for benchstat
@@ -400,7 +411,7 @@ from the warm pool: 12` in each mode) but does not fail on zero, so read it befo
   **holds its RAM** while it waits, which an asleep one does not.
 
 The docker figures above (13.7 ms from a pool, every claim re-keyed) are a container that is already running. A
-microVM from a frozen pool is **141 ms on this runner**, with its own guest kernel and a jailed VMM.
+microVM from a frozen pool is **141 ms on this runner** at v0.13.0 and 144 ms at v0.14.0, with its own guest kernel and a jailed VMM.
 
 ---
 

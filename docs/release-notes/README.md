@@ -2,12 +2,6 @@
 
 What changed in each sbx release, what it means for you, and how to upgrade. Newest first.
 
-Each `vX.Y.Z.md` here is published verbatim as the body of that tag's GitHub release:
-`.github/workflows/release.yaml` refuses to build a tag without `docs/release-notes/<tag>.md` and
-uses it as the release body, with GitHub's generated commit list appended underneath. That is why
-every link inside those files is absolute and pinned to a tag; `scripts/lint-docs.sh` enforces it.
-New notes follow [TEMPLATE.md](TEMPLATE.md).
-
 | Version | Date | Headline |
 |---|---|---|
 | [v0.14.0](v0.14.0.md) | 2026-09-27 | Hardened microVMs: per-VM network namespace, file-size limits, no per-VM image copy |
@@ -33,3 +27,11 @@ workflow publish a tag that was abandoned on purpose.
 
 The engineering log behind v0.8.0 (measurements and failures found on the way) is kept with the
 design documents: [2026-08-31-v0.8.0-engineering-log.md](../design/2026-08-31-v0.8.0-engineering-log.md).
+
+## For maintainers
+
+Each `vX.Y.Z.md` here is published verbatim as the body of that tag's GitHub release:
+`.github/workflows/release.yaml` refuses to build a tag without `docs/release-notes/<tag>.md` and
+uses it as the release body, with GitHub's generated commit list appended underneath. That is why
+every link inside those files is absolute and pinned to a tag; `scripts/lint-docs.sh` enforces it.
+New notes follow [TEMPLATE.md](TEMPLATE.md).

@@ -4,6 +4,8 @@ How sbx's pieces fit together, for contributors and for anyone deciding whether 
 The *why* behind each choice is in [DECISIONS.md](DECISIONS.md); the threat model is in
 [SECURITY.md](../SECURITY.md).
 
+<img src="how-it-works.svg" width="900" alt="How sbx wakes a sandbox, in three steps. 1: psql connects to a port that belongs to sbx while the Postgres behind it is asleep, using 0 B of memory. 2: sbx accepts the connection and holds it open while the service starts. 3: once Postgres is healthy, sbx hands over the live connection and the query is answered. Any TCP protocol, unmodified clients.">
+
 ## Overview
 
 ```mermaid
@@ -440,7 +442,7 @@ any other. What the API adds is around it, not instead of it:
            │                                                      │
            └────────────────────────▶ daemon ─────────────────────┘
                                         idle: FREEZE (docker pause, memory kept,
-                                              ~10 ms thaw on the next byte) — the
+                                              thawed by the next byte) — the
                                               API default; extensions["sbx.idle"]=
                                               "sleep" stops it to 0 B instead
                                         pool: members wait running and PINNED,

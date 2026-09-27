@@ -7,12 +7,9 @@ first PR. Coding agents load it automatically.
 
 ## Quick start
 
-```sh
-go build -o sbx .
-./sbx doctor         # what your machine can and cannot do
-go test -short ./... # unit tests, no docker needed
-./sbx selftest       # the whole cycle end to end, ~9 s once images are local
-```
+The build, test, vet and docs-lint commands are in one place:
+[AGENTS.md#build-and-test](AGENTS.md#build-and-test). Start with `go build -o sbx . && ./sbx doctor`
+(what your machine can and cannot do), then `go test -short ./...` (no docker needed).
 
 Nothing to install beyond Go (see `go.mod` for the version); for most tiers below, docker too.
 There are no Go dependencies to fetch, and there must stay none

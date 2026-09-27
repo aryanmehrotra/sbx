@@ -56,11 +56,13 @@ Neon matters only if all you need is Postgres.
 | Test containers started and stopped from inside test code | Testcontainers | in-process lifecycle and a large module ecosystem; `sbx with` if you want any language |
 | A few always-on services for one project | docker compose | already installed, nothing new to learn |
 | Nothing to run yourself | E2B, Daytona, Modal, Vercel or Cloudflare | hosted; sbx has no hosted option |
-| A VM boundary on a Mac or Windows, verified today | microsandbox | sbx's helper-VM path is not yet fully run on either ([status](../README.md#platform-status)) |
+| A VM boundary on a Mac or Windows, run end to end today | microsandbox | sbx's helper-VM path is **run by hand** on a Mac (v0.11) and **not yet run end to end** on Windows ([status](../README.md#platform-status)) |
 | To run a coding agent itself in a microVM | Docker Sandboxes | that is its job; sbx runs the services an agent uses |
 | Only Postgres branches | Neon | wakes on the Postgres protocol and branches the data |
 
 ### Also choose something else if…
+
+Each tool named here is described in [the details](#each-alternative-briefly).
 
 - **You need the fastest burst create today.** isorun and Daytona lead ComputeSDK's board.
 - **You need secrets kept out of the sandbox now.** OpenSandbox's vault, Vercel's brokering or
@@ -188,10 +190,12 @@ the same shape, which is not a leaderboard entry:
 |---|---:|---|
 | docker, warm pool, 1 at a time | 12.8 ms | Linux cloud VM, 4 vCPU (v0.14.0); 13.7 ms on Apple M4, colima |
 | docker, warm pool, 100 at once | 309-460 ms | Linux cloud VM, 4 vCPU (v0.14.0); 472.1 ms on Apple M4, colima |
-| microVM, frozen pool, 4 at once | 141 ms | GitHub runner, nested KVM (v0.13) |
-| microVM, cold, 4 at once | 2,821 ms | GitHub runner, nested KVM (v0.13) |
+| microVM, frozen pool, 4 at once | 144 ms | GitHub runner, nested KVM (v0.14.0); 141 ms at v0.13 |
+| microVM, cold, 4 at once | 2,637 ms | GitHub runner, nested KVM (v0.14.0); 2,821 ms at v0.13 |
 
 Different machines, concurrency and no network hop: read these as what sbx does on that hardware.
+Each figure's script, run and older values are in [BENCHMARKS.md](BENCHMARKS.md); that page is
+the source if a number here ever disagrees with it.
 There is no bare-metal microVM number yet ([ROADMAP](ROADMAP.md#now)).
 
 ## Each alternative, briefly

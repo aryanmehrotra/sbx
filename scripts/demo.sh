@@ -10,7 +10,7 @@
 # renders whatever comes back, so the picture is a measurement like everything else here.
 #
 # It opens with the hook - a sandbox sleeps to 0 B and plain psql wakes it - then shows the use
-# cases rather than the self-test: an agent reading JSON, a service added mid-task, seed-and-fork.
+# cases rather than the self-test: an agent reading JSON, seeding that same sandbox and forking it, a service added mid-task.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,7 +37,7 @@ fi
 
 cleanup() {
   [ -n "$DAEMON" ] && kill "$DAEMON" 2>/dev/null
-  for s in "$TAG-branch" "$TAG-seed" "$TAG-agent"; do "$SBX" rm "$s" >/dev/null 2>&1; done
+  for s in "$TAG-branch" "$TAG-agent"; do "$SBX" rm "$s" >/dev/null 2>&1; done
   docker images -q "sbx-snap-$TAG-golden*" 2>/dev/null | xargs -r docker rmi -f >/dev/null 2>&1
   docker volume ls -q 2>/dev/null | grep "snapvol-$TAG-golden" | xargs -r docker volume rm >/dev/null 2>&1
   rm -rf "$WORK"
@@ -136,8 +136,8 @@ for line in sys.stdin:
 # The first screenful is the whole product, because that is all most readers look at: a
 # sandbox exists, it drops to 0 B on its own, and plain psql - no SDK, no wrapper - wakes it
 # and is served. Everything after that is what you do with it.
-say cmd 'sbx create feature-x --template web-stack'
-"$SBX" create "$TAG-branch" --template web-stack 2>&1 | norm | while IFS= read -r l; do
+say cmd 'sbx create feature-x --template postgres'
+"$SBX" create "$TAG-branch" --template postgres 2>&1 | norm | while IFS= read -r l; do
   case "$l" in
     *"✓"*)  say ok  "$l" ;;
     ready*) say dim "$l" ;;
@@ -198,29 +198,40 @@ say cmd 'sbx env feature-x --shell json          # no SDK; an agent parses this'
 "$SBX" env "$TAG-branch" --shell json 2>/dev/null | norm | sed "s/$TAG-branch/feature-x/" \
   | while IFS= read -r l; do say out "$l"; done
 
-say blank
-say cmd "sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'"
-"$SBX" add "$TAG-branch" cache --image redis:7-alpine --port 6379 --health 'redis-cli ping' 2>&1 \
-  | norm | grep '✓' | while IFS= read -r l; do say ok "$l"; done
-
 # ── seed once, fork many ──────────────────────────────────────────────────────
+#
+# Seeded and snapshotted from feature-x, the sandbox the viewer just watched being created. An
+# earlier cut snapshotted a `main` that was made off screen, and a reader could not tell where
+# it or its row came from. It is parked with `sbx sleep` before the snapshot: copying a live
+# postgres volume can race its own writes, and the copy check then refuses the snapshot.
+# The sandbox is the postgres template, and the snapshot runs before `sbx add`, because at
+# v0.14.0 `sbx snapshot` on docker fails for any service without a `volume` (web-stack's redis,
+# an added cache): "copying volume sbx-<sandbox>-redis-data ...: the source is empty or does
+# not exist". Switch back to web-stack once that is fixed.
 say blank
-say cmd 'sbx snapshot main golden && sbx fork golden agent-1'
-"$SBX" create "$TAG-seed" --template postgres >/dev/null 2>&1
-"$SBX" exec "$TAG-seed" postgres psql -U app -d app \
-  -c "create table t(v text); insert into t values ('seeded')" >/dev/null 2>&1
-"$SBX" snapshot "$TAG-seed" "$TAG-golden" 2>&1 | grep '→' | norm \
-  | sed "s/$TAG-golden/golden/g; s/$TAG-seed/main/g" | while IFS= read -r l; do say out "$l"; done
+say cmd "sbx exec feature-x postgres psql -U app -c \"create table t(v text); insert into t values ('seeded')\""
+"$SBX" exec "$TAG-branch" postgres psql -U app \
+  -c "create table t(v text); insert into t values ('seeded')" 2>&1 | norm | while IFS= read -r l; do say out "$l"; done
+say cmd 'sbx sleep feature-x && sbx snapshot feature-x golden && sbx fork golden agent-1'
+"$SBX" sleep "$TAG-branch" >/dev/null 2>&1
+"$SBX" snapshot "$TAG-branch" "$TAG-golden" 2>&1 | grep '→' | norm \
+  | sed "s/$TAG-golden/golden/g; s/$TAG-branch/feature-x/g" | while IFS= read -r l; do say out "$l"; done
 "$SBX" fork "$TAG-golden" "$TAG-agent" 2>&1 | grep -E 'restored|forked' | norm \
   | sed "s/$TAG-golden/golden/g; s/$TAG-agent/agent-1/g" | while IFS= read -r l; do say out "$l"; done
 
 got=$("$SBX" exec "$TAG-agent" postgres psql -U app -d app -tAc 'select v from t' 2>/dev/null | tr -d ' \n')
 say ok "  agent-1 carries the seeded row: $got"
+
+# ── a service added mid-task ──────────────────────────────────────────────────
+say blank
+say cmd "sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'"
+"$SBX" add "$TAG-branch" cache --image redis:7-alpine --port 6379 --health 'redis-cli ping' 2>&1 \
+  | norm | grep '✓' | while IFS= read -r l; do say ok "$l"; done
 kill "$DAEMON" 2>/dev/null; DAEMON=""
 
 # Nothing internal may reach the picture. The tag is a pid, so a leak is both ugly and a
 # small privacy nick - and it happened on the first recording.
-sed -i.bak -E "s/${TAG}-branch/feature-x/g; s/${TAG}-seed/main/g; s/${TAG}-agent/agent-1/g; s/${TAG}-golden/golden/g; s/${TAG}[a-z-]*/sandbox/g" "$SCRIPT"
+sed -i.bak -E "s/${TAG}-branch/feature-x/g; s/${TAG}-agent/agent-1/g; s/${TAG}-golden/golden/g; s/${TAG}[a-z-]*/sandbox/g" "$SCRIPT"
 rm -f "$SCRIPT.bak"
 
 if grep -q "$TAG" "$SCRIPT"; then

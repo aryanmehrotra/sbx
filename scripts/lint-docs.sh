@@ -66,7 +66,7 @@ done
 #
 # `](../README.md#use-it)` is not a broken link - the file is there - so the target check
 # above passes it, and the reader lands at the top of the page wondering what they missed.
-# One of those shipped in the first line of the old docs/USE-CASES.md.
+# One of those shipped in the first line of a since-removed guide page.
 python3 - "$ROOT" <<'PYANCHOR' || fail=1
 import os, re, sys, glob
 
