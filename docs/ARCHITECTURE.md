@@ -226,7 +226,7 @@ Windows branch - installed as `provider.DecideHost` and used by the provider, th
     vms/<hash of ref>/                         0700, one per service; the socket path fits 108 bytes
       vm.json  api.sock  vsock.sock  console.log  vmm.log  firecracker.pid  lock
       agent.ext4 (vda, ro: /sbx + /init.json)
-      base.ext4  (vdb, ro)                     layered (v0.13): a hard link to the image's rootfs.ext4
+      base.ext4  (vdb, ro)                     layered (v0.14): a hard link to the image's rootfs.ext4
       upper.ext4 (vdc, rw)                     layered: the VM's writable layer, sparse, SBX_FC_DISK_SIZE
                                                (10G) at most; fc-init lays overlayfs over the two
       rootfs.ext4 (vdb, rw)                    instead of both, before v0.13 or SBX_FC_ROOTFS=copy: a whole

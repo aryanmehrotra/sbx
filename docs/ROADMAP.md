@@ -97,8 +97,8 @@ without `/dev/kvm`).
 default - chrooted inside its VM's directory, as its own non-root uid, in a cgroup v2 sized from the
 spec - and the host guard fails closed: a VM whose bridge cannot be guarded is refused, unless the
 operator declares `--fc-firewall=unmanaged` (DECISIONS.md, "Every VMM runs under Firecracker's
-jailer"; SECURITY.md). Still open: a network namespace per VM, and moving the daemon itself off
-root.
+jailer"; SECURITY.md). Since v0.14 each jailed VMM also has its own network namespace. Still open:
+moving the daemon itself off root.
 
 ### Two landmines, written down before anyone hits them
 

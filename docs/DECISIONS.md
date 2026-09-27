@@ -1101,7 +1101,7 @@ defensible without it.
   host's, and a VMM of the other kind cannot open them. A wake with the jailer switched the other
   way cold-boots (disk kept, memory lost, said); a saved memory snapshot of the other kind is
   refused by name. Every v0.12 VM's first wake under v0.13 is therefore a cold boot.
-- **A network namespace per VM** (`--netns`; *first rejected, then adopted in v0.13*). The first
+- **A network namespace per VM** (`--netns`; *rejected for v0.13, adopted in v0.14*). The first
   cut kept the tap in the host namespace, reasoning a namespace would need a veth pair per VM "and
   a second guard". It needs the pair and not the guard: the guard's rules match on the sandbox's
   bridge (`-i sbxfcN`), and a frame from the guest now reaches that bridge through a veth port
