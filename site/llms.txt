@@ -1,0 +1,20 @@
+# sbx
+
+> Self-hosted sandboxes for AI agents. Each sandbox is a fresh Firecracker microVM (Linux with KVM)
+> or a container; idle ones sleep at 0 B of RAM and wake on the first connection from any client.
+> Serves the OpenSandbox API (SDKs in five languages) and an MCP server. Also gives branches and
+> test runs their own Postgres or Redis. Written in Go: one static binary, zero dependencies.
+
+Install: `brew install aryanmehrotra/tap/sbx` or `go install github.com/aryanmehrotra/sbx@latest`.
+
+## Docs
+
+- [Quickstart](https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md): first sandbox in ten minutes
+- [Guides](https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md): every task, one section each
+- [AI agents](https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents): the block to paste into AGENTS.md or CLAUDE.md, MCP setup, OpenSandbox SDKs
+- [CLI reference](https://github.com/aryanmehrotra/sbx/blob/main/docs/CLI.md): every command, flag and environment variable
+- [sandbox.json reference](https://github.com/aryanmehrotra/sbx/blob/main/docs/SPEC.md)
+- [Self-hosting](https://github.com/aryanmehrotra/sbx/blob/main/docs/SELF-HOSTING.md): run it on your own servers for a team
+- [FAQ](https://github.com/aryanmehrotra/sbx/blob/main/docs/FAQ.md): short answers to adoption questions
+- [Troubleshooting](https://github.com/aryanmehrotra/sbx/blob/main/docs/TROUBLESHOOTING.md)
+- [Benchmarks](https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md): every number with its script and machine

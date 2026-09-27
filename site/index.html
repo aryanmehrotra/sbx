@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>sbx: self-hosted microVM sandboxes for AI agents</title>
+<meta name="description" content="sbx gives each AI agent, test run or branch its own sandbox on your machine or cluster. Idle sandboxes sleep at 0 B RAM and wake on the first connection.">
+<link rel="canonical" href="https://aryanmehrotra.github.io/sbx/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://aryanmehrotra.github.io/sbx/">
+<meta property="og:title" content="sbx: self-hosted sandboxes for AI agents">
+<meta property="og:description" content="A fresh microVM or container for each agent. Asleep at 0 B, awake on the first connection. Written in Go, one binary.">
+<meta property="og:image" content="https://aryanmehrotra.github.io/sbx/assets/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="alternate" type="text/plain" href="llms.txt" title="sbx for LLMs">
+<style>
+:root {
+  --bg: #ffffff; --bg2: #f6f8fa; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0;
+  --accent: #1a7f37; --accent-fg: #ffffff;
+  --term-bg: #0d1117; --term-fg: #e6edf3; --term-dim: #8b949e; --term-ok: #3fb950; --term-info: #58a6ff;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1117; --bg2: #151b23; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+          --accent: #3fb950; --accent-fg: #0d1117; --term-bg: #010409; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 var(--sans); }
+a { color: inherit; text-underline-offset: 3px; }
+a:hover { color: var(--accent); }
+code, pre { font-family: var(--mono); }
+:not(pre) > code { font-size: .88em; background: var(--bg2); border: 1px solid var(--line); border-radius: 5px; padding: .08em .35em; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+header { border-bottom: 1px solid var(--line); }
+header .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+.mark { font: 700 22px/1 var(--mono); text-decoration: none; letter-spacing: -.5px; }
+.gotag { font: 700 13px/1 var(--sans); color: #007d9c; border: 1.5px solid currentColor; border-radius: 6px; padding: 4px 7px; margin-left: -12px; }
+@media (prefers-color-scheme: dark) { .gotag { color: #00add8; } }
+.mark span { display: inline-block; width: 9px; height: 18px; background: var(--accent); margin-left: 3px; vertical-align: -2px; }
+nav { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
+nav a { text-decoration: none; color: var(--muted); }
+section { padding: 72px 0; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: 0; }
+h1 { text-wrap: balance; font-size: clamp(32px, 3.8vw, 46px); line-height: 1.08; letter-spacing: -1.5px; margin: 0 0 20px; }
+h2 { font-size: clamp(24px, 3vw, 32px); line-height: 1.2; letter-spacing: -.5px; margin: 0 0 12px; }
+h3 { font-size: 18px; margin: 0 0 6px; }
+.lede { text-wrap: pretty; font-size: 19px; color: var(--muted); max-width: 34em; margin: 0 0 28px; }
+.sub { color: var(--muted); max-width: 40em; margin: 0 0 28px; }
+.hero > *, .split > *, .cols > *, .install { min-width: 0; }
+.hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 48px; align-items: center; }
+.small { font-size: 14px; color: var(--muted); }
+
+/* install tabs: radio buttons, so it works without JavaScript */
+.install { max-width: 520px; }
+.install input { position: absolute; opacity: 0; pointer-events: none; }
+.tabs { display: flex; gap: 4px; font-size: 14px; }
+.tabs label { padding: 6px 12px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--muted); cursor: pointer; }
+.cmd { display: none; align-items: center; gap: 10px; background: var(--bg2); border: 1px solid var(--line); border-radius: 0 8px 8px 8px; padding: 12px 12px 12px 16px; }
+.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; font-size: 14.5px; background: none; border: 0; padding: 0; }
+.cmd code::before { content: "$ "; color: var(--muted); user-select: none; }
+#t-brew:checked ~ .tabs label[for=t-brew], #t-curl:checked ~ .tabs label[for=t-curl], #t-go:checked ~ .tabs label[for=t-go] { background: var(--bg2); border-color: var(--line); color: var(--fg); }
+#t-brew:checked ~ .c-brew, #t-curl:checked ~ .c-curl, #t-go:checked ~ .c-go { display: flex; }
+.install input:focus-visible ~ .tabs label { outline: none; }
+#t-brew:focus-visible ~ .tabs label[for=t-brew], #t-curl:focus-visible ~ .tabs label[for=t-curl], #t-go:focus-visible ~ .tabs label[for=t-go] { outline: 2px solid var(--accent); }
+.copy { font: 13px var(--sans); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.copy:hover { border-color: var(--accent); }
+.btns { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--line); }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn.primary:hover { color: var(--accent-fg); filter: brightness(1.08); }
+
+/* terminal */
+.term { background: var(--term-bg); color: var(--term-fg); border-radius: 10px; border: 1px solid #30363d; overflow: hidden; }
+.term .bar { display: flex; gap: 7px; padding: 12px 14px; border-bottom: 1px solid #21262d; }
+.term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #30363d; }
+.term pre { margin: 0; padding: 16px 18px 18px; font-size: 13.5px; line-height: 1.65; overflow-x: auto; }
+.p { color: var(--term-ok); user-select: none; }
+.d { color: var(--term-dim); }
+.o { color: var(--term-ok); }
+.i { color: var(--term-info); }
+
+/* numbers */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.stats a { padding: 22px 20px; text-decoration: none; border-right: 1px solid var(--line); }
+.stats a:last-child { border-right: 0; }
+.stats b { display: block; font: 700 30px/1.1 var(--mono); letter-spacing: -1px; color: var(--accent); }
+.stats span { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); }
+.chart { margin-top: 28px; }
+.chart img { width: 100%; height: auto; max-width: 900px; }
+
+/* uses */
+.cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin-top: 32px; }
+.cols p { color: var(--muted); margin: 0 0 12px; font-size: 16px; }
+pre.code { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0; font-size: 13.5px; line-height: 1.6; overflow-x: auto; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; margin-top: 28px; }
+.how img { width: 100%; height: auto; max-width: 900px; border-radius: 12px; margin-top: 24px; }
+.qa { max-width: 780px; margin-top: 20px; border-top: 1px solid var(--line); }
+.qa details { border-bottom: 1px solid var(--line); padding: 14px 0; }
+.qa summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+.qa summary::-webkit-details-marker { display: none; }
+.qa summary::after { content: "+"; color: var(--muted); font-weight: 400; }
+.qa details[open] summary::after { content: "–"; }
+.qa p { margin: 10px 0 0; color: var(--muted); font-size: 16px; }
+.final { text-align: center; }
+.final .install { margin: 28px auto 0; text-align: left; }
+footer { padding: 28px 0 48px; font-size: 14px; color: var(--muted); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; }
+footer .note { margin-left: auto; }
+
+
+/* ---- motion: every animation is decoration; the page reads fully without it ---- */
+.term pre .ln { display: block; opacity: 0; animation: ln .25s ease-out forwards; animation-delay: calc(var(--i) * 420ms + 400ms); }
+@keyframes ln { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.cursor { display: inline-block; width: 8px; height: 15px; background: var(--term-ok); vertical-align: -2px; animation: blink 1.1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.fleet { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 28px 0 10px; }
+.tile { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 13px/1.3 var(--mono); background: var(--bg); overflow: hidden; }
+.tile .nm { display: block; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .st { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.tile .st::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--muted); margin-right: 6px; vertical-align: 0; }
+.tile .on { position: absolute; inset: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--accent); opacity: 0; }
+.tile .on .st { color: var(--accent); }
+.tile .on .st::before { background: var(--accent); border-color: var(--accent); }
+.tile.awake .on { opacity: 1; }
+.tile.blip .on { animation: blip 25s infinite; animation-delay: var(--d); }
+@keyframes blip { 0%, 1% { opacity: 0; } 3%, 14% { opacity: 1; } 17%, 100% { opacity: 0; } }
+.legend { font-size: 14px; color: var(--muted); margin: 0 0 32px; }
+
+.flow { margin: 28px 0 0; }
+.flow svg { width: 100%; height: auto; max-width: 960px; display: block; color: var(--fg); }
+.flow .box { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+.flow .t { font: 600 16px var(--mono); fill: currentColor; }
+.flow .s { font: 13px var(--sans); fill: var(--muted); }
+.flow .lbl { font: 12.5px var(--sans); fill: var(--muted); }
+.flow .wire { stroke: var(--line); stroke-width: 2; }
+.flow .dot { fill: var(--accent); }
+.flow .ok { fill: var(--accent); }
+.flow .warm { fill: #bf8700; }
+.flow .cap { font: 600 15px var(--sans); fill: currentColor; }
+.flow .num { font: 600 13px var(--mono); fill: var(--accent); }
+.flow .pg { animation: pg 10s infinite; }
+@keyframes pg { 0%, 18% { stroke: var(--line); } 22%, 48% { stroke: #bf8700; } 52%, 80% { stroke: var(--accent); } 86%, 100% { stroke: var(--line); } }
+.flow .sb { animation: sb 10s infinite; }
+@keyframes sb { 0%, 18% { stroke: var(--line); } 20%, 50% { stroke: var(--accent); } 54%, 100% { stroke: var(--line); } }
+.flow .ring { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; transform-box: fill-box; transform-origin: center; animation: ring 10s infinite; }
+@keyframes ring { 0%, 19% { opacity: 0; transform: scale(1); } 22% { opacity: .9; transform: scale(1); } 30% { opacity: 0; transform: scale(1.08); } 31% { opacity: .9; transform: scale(1); } 39% { opacity: 0; transform: scale(1.08); } 40% { opacity: .9; transform: scale(1); } 48% { opacity: 0; transform: scale(1.08); } 100% { opacity: 0; } }
+.flow .d1 { animation: d1 10s infinite; }
+@keyframes d1 { 0%, 9% { opacity: 0; transform: translateX(0); } 10% { opacity: 1; transform: translateX(0); } 19% { opacity: 1; transform: translateX(96px); } 50% { opacity: 1; transform: translateX(96px); } 58% { opacity: 1; transform: translateX(436px); } 60%, 100% { opacity: 0; transform: translateX(436px); } }
+.flow .pipe { stroke: var(--accent); stroke-width: 3; opacity: 0; animation: pipe 10s infinite; }
+@keyframes pipe { 0%, 57% { opacity: 0; } 60%, 80% { opacity: 1; } 84%, 100% { opacity: 0; } }
+.flow .f { opacity: 0; animation: 10s infinite; }
+.flow .a1 { animation-name: a1; } @keyframes a1 { 0%, 18% { opacity: 1; } 21%, 84% { opacity: 0; } 88%, 100% { opacity: 1; } }
+.flow .a2 { animation-name: a2; } @keyframes a2 { 0%, 19% { opacity: 0; } 22%, 48% { opacity: 1; } 51%, 100% { opacity: 0; } }
+.flow .a3 { animation-name: a3; } @keyframes a3 { 0%, 49% { opacity: 0; } 52%, 82% { opacity: 1; } 85%, 100% { opacity: 0; } }
+.flow .c1 { animation-name: c1; } @keyframes c1 { 0%, 1% { opacity: 0; } 3%, 18% { opacity: 1; } 21%, 100% { opacity: 0; } }
+.flow .c2 { animation-name: c2; } @keyframes c2 { 0%, 19% { opacity: 0; } 22%, 48% { opacity: 1; } 51%, 100% { opacity: 0; } }
+.flow .c3 { animation-name: c3; } @keyframes c3 { 0%, 51% { opacity: 0; } 54%, 80% { opacity: 1; } 83%, 100% { opacity: 0; } }
+.flow .c4 { animation-name: c4; } @keyframes c4 { 0%, 83% { opacity: 0; } 86%, 98% { opacity: 1; } 100% { opacity: 0; } }
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin: 24px 0 0; padding: 0; list-style: none; counter-reset: st; font-size: 15px; color: var(--muted); }
+.steps li { counter-increment: st; border-top: 2px solid var(--line); padding-top: 10px; }
+.steps li::before { content: counter(st); font: 600 13px var(--mono); color: var(--accent); margin-right: 8px; }
+
+.js .rv { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+.js .rv.in { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .term pre .ln, .js .rv { opacity: 1; transform: none; }
+  .flow .f, .flow .d1, .flow .ring, .flow .pipe { opacity: 0; }
+  .flow .a3, .flow .c3, .flow .pipe { opacity: 1; }
+  .flow .pg { stroke: var(--accent); }
+}
+@media (max-width: 860px) {
+  .fleet { grid-template-columns: repeat(2, 1fr); }
+  .fleet .tile:nth-child(n+11) { display: none; }
+  .steps { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 860px) {
+  .hero, .split { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .stats a:nth-child(2) { border-right: 0; }
+  .stats a:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  section { padding: 52px 0; }
+  nav a.hide-s { display: none; }
+  footer .note { margin-left: 0; }
+  .chart, .how .fig { overflow-x: auto; }
+  .chart img, .how img { min-width: 640px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="mark" href="./" aria-label="sbx home">sbx<span></span></a><span class="gotag">Go</span>
+    <nav aria-label="Main">
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md">Docs</a>
+      <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/SELF-HOSTING.md">Self-hosting</a>
+      <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">Benchmarks</a>
+      <a class="hide-s" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/FAQ.md">FAQ</a>
+      <a href="https://github.com/aryanmehrotra/sbx">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section>
+  <div class="wrap hero">
+    <div>
+      <h1>Self-hosted sandboxes for AI agents.</h1>
+      <p class="lede">A fresh microVM or container for each agent. Asleep at 0&nbsp;B, awake on the first connection.</p>
+
+      <div class="install" id="install">
+        <input type="radio" name="inst" id="t-brew" checked>
+        <input type="radio" name="inst" id="t-curl">
+        <input type="radio" name="inst" id="t-go">
+        <div class="tabs" role="presentation">
+          <label for="t-brew">Homebrew</label><label for="t-curl">Shell</label><label for="t-go">Go</label>
+        </div>
+        <div class="cmd c-brew"><code>brew install aryanmehrotra/tap/sbx</code><button class="copy" type="button" hidden>Copy</button></div>
+        <div class="cmd c-curl"><code>curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code><button class="copy" type="button" hidden>Copy</button></div>
+        <div class="cmd c-go"><code>go install github.com/aryanmehrotra/sbx@latest</code><button class="copy" type="button" hidden>Copy</button></div>
+      </div>
+      <p class="small">One Go binary for macOS and Linux. Needs Docker; microVMs need Linux with KVM.</p>
+    </div>
+
+    <div class="term" role="img" aria-label="A terminal: sbx serves the OpenSandbox API with a warm pool; an agent script gets a sandbox in 48 ms, runs Python in it in 109 ms and 26 ms, then destroys it.">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="ln" style="--i:0"><span class="p">$</span> sbx serve --osb-addr 127.0.0.1:8080 \</span><span class="ln" style="--i:1">    --osb-pool python:3.11-slim=4 &amp;</span><span class="ln" style="--i:2"> </span><span class="ln" style="--i:3"><span class="p">$</span> python agent.py</span><span class="ln" style="--i:4"><span class="d"># SandboxSync.create, then two commands.run</span></span><span class="ln" style="--i:5">sandbox osb-38c3ece7 ready in <span class="o">48 ms</span> (warm pool)</span><span class="ln" style="--i:6">python 3.11.16, ran in <span class="o">109 ms</span></span><span class="ln" style="--i:7">499999500000, ran in <span class="o">26 ms</span></span><span class="ln" style="--i:8">destroyed; the pool refills in the background</span><span class="ln" style="--i:9"> </span><span class="ln" style="--i:10"><span class="p">$</span> <span class="cursor"></span></span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="rv">
+  <div class="wrap">
+    <h2>Pay for the one you're using.</h2>
+    <p class="sub">Idle sandboxes hold no memory, so twenty on one machine cost what the one in use costs. Measured on sbx v0.14.0, a 4 vCPU Linux VM with Docker 29.</p>
+    <div class="fleet" role="img" aria-label="Twenty branch sandboxes on one machine. Most are asleep at 0 B; only the one a client is using is awake."><div class="tile awake"><span class="nm">main</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">main</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">feat-auth</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">feat-auth</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:10s"><span class="nm">feat-billing</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">feat-billing</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:20s"><span class="nm">fix-login</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">fix-login</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:0s"><span class="nm">pr-412</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">pr-412</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">pr-418</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">pr-418</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">pr-421</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">pr-421</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:15s"><span class="nm">agent-01</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-01</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-02</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-02</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:5s"><span class="nm">agent-03</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-03</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-04</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-04</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-05</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-05</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-06</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-06</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">review-99</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">review-99</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">exp-cache</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">exp-cache</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">spike-kv</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">spike-kv</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">docs-site</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">docs-site</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">release-0.15</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">release-0.15</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">hotfix-7</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">hotfix-7</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">perf-idx</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">perf-idx</span><span class="st">awake · serving</span></span></div></div>
+    <p class="legend">Each one wakes when something connects to it, and sleeps again when nobody has for a few minutes.</p>
+    <div class="stats">
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#head-to-head"><b>0 B</b><span>RAM per sleeping sandbox</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#sandboxes-for-ai-agents"><b>307 ms</b><span>create to first command (OpenSandbox's server: 1,417 ms)</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#sbx-by-itself"><b>12.8 ms</b><span>a sandbox from the warm pool</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/go.mod"><b>Go</b><span>standard library only, zero dependencies</span></a>
+    </div>
+    <div class="chart">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/bench-dark.svg">
+        <img src="assets/bench-light.svg" width="900" height="378" loading="lazy" alt="Memory held by 20 idle Postgres databases: sbx asleep 17.6 MB, docker compose always on 629 MB. Time until a sleeping Postgres answers psql: sbx 348 ms, first try served 20 of 20; Lazytainer 3,407 ms, first try refused 0 of 5. OpenSandbox API, create a sandbox and run a first command: sbx 307 ms, OpenSandbox server 1,417 ms.">
+      </picture>
+    </div>
+  </div>
+</section>
+
+<section class="rv">
+  <div class="wrap">
+    <h2>What people use it for.</h2>
+    <div class="cols">
+      <div>
+        <h3>A fresh VM per agent</h3>
+        <p>Each sandbox boots its own Firecracker microVM from the image, with its own kernel. Agents use the OpenSandbox SDKs, in five languages.</p>
+<pre class="code">sbx serve --provider firecracker \
+  --osb-addr 127.0.0.1:8080 &amp;</pre>
+      </div>
+      <div>
+        <h3>Tools for your coding agent</h3>
+        <p>Claude Code, Cursor or Codex create sandboxes, run commands and move files through sbx's MCP server.</p>
+<pre class="code">claude mcp add sbx -- sbx mcp</pre>
+      </div>
+      <div>
+        <h3>Databases for branches and tests</h3>
+        <p>A Postgres per branch that <code>psql</code> wakes, or one per test run that is always removed.</p>
+<pre class="code">sbx with test-db \
+  --template postgres \
+  -- go test ./...</pre>
+      </div>
+    </div>
+    <p class="small" style="margin-top:20px">OpenSandbox's own end-to-end suite runs against sbx in CI. <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents">Agent guide</a> · <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md">All guides</a></p>
+  </div>
+</section>
+
+<section class="how rv">
+  <div class="wrap">
+    <h2>How it works.</h2>
+    <p class="sub">A sleeping sandbox's port belongs to sbx. The first connection is held open while the service starts, then handed over. Nothing in your code changes.</p>
+    <figure class="flow">
+      <svg viewBox="0 0 960 300" role="img" aria-label="An agent connects to a sleeping sandbox through sbx. sbx holds the connection while the sandbox wakes, then hands over the same socket and the request is served. After a few idle minutes it sleeps again at 0 B.">
+        <line class="wire" x1="250" y1="130" x2="370" y2="130"/>
+        <line class="wire" x1="590" y1="130" x2="710" y2="130"/>
+        <text class="lbl" x="310" y="116" text-anchor="middle">connects</text>
+        <text class="lbl" x="650" y="116" text-anchor="middle">wakes it</text>
+        <line class="pipe" x1="250" y1="130" x2="710" y2="130"/>
+
+        <rect class="box" x="30" y="80" width="220" height="100" rx="12"/>
+        <text class="t" x="140" y="124" text-anchor="middle">agent</text>
+        <text class="s" x="140" y="150" text-anchor="middle">SDK, psql or any client</text>
+
+        <rect class="ring" x="370" y="80" width="220" height="100" rx="12"/>
+        <rect class="box sb" x="370" y="80" width="220" height="100" rx="12"/>
+        <text class="t" x="480" y="124" text-anchor="middle">sbx</text>
+        <text class="s f a1" x="480" y="150" text-anchor="middle">listening</text>
+        <text class="s f a2" x="480" y="150" text-anchor="middle">holding the connection</text>
+        <text class="s f a3" x="480" y="150" text-anchor="middle">joined, passing bytes</text>
+
+        <rect class="box pg" x="710" y="80" width="220" height="100" rx="12"/>
+        <text class="t" x="820" y="124" text-anchor="middle">sandbox</text>
+        <text class="s f a1" x="820" y="150" text-anchor="middle">asleep · <tspan class="num">0 B</tspan></text>
+        <text class="s f a2" x="820" y="150" text-anchor="middle"><tspan class="warm">●</tspan> starting…</text>
+        <text class="s f a3" x="820" y="150" text-anchor="middle"><tspan class="ok">●</tspan> serving</text>
+
+        <circle class="dot d1" cx="262" cy="130" r="7"/>
+
+        <text class="cap f c1" x="480" y="250" text-anchor="middle">An agent connects to a sandbox that is asleep</text>
+        <text class="cap f c2" x="480" y="250" text-anchor="middle">sbx holds the connection open while it wakes</text>
+        <text class="cap f c3" x="480" y="250" text-anchor="middle">Same socket, handed over: the request is served, never refused</text>
+        <text class="cap f c4" x="480" y="250" text-anchor="middle">Nobody connects for a while: back to sleep at 0 B</text>
+      </svg>
+      <figcaption>
+        <ol class="steps">
+          <li>A client connects to a sleeping sandbox.</li>
+          <li>sbx accepts and holds the connection while the container or microVM starts.</li>
+          <li>Once it's healthy, sbx passes the same socket through. A Postgres takes about 348 ms.</li>
+          <li>After a few idle minutes it stops again. The data stays on disk.</li>
+        </ol>
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="faq rv">
+  <div class="wrap">
+    <h2>Questions people ask.</h2>
+    <div class="qa">
+      <details><summary>Is a container safe enough for untrusted agent code?</summary><p>Use a microVM for code you did not write. A container shares the host's kernel, so a kernel bug escapes to the host. With <code>--provider firecracker</code>, each sandbox gets its own kernel and an escape lands as an unprivileged, jailed user. The default is a container; the microVM is opt-in.</p></details>
+      <details><summary>Does it need an account or a login?</summary><p>No. There is no account, no sign-in and nothing hosted. The only credential is an API key that <code>sbx serve</code> generates on your machine.</p></details>
+      <details><summary>How fast is it?</summary><p>On one Linux machine at v0.14.0: a sandbox from the warm pool in 12.8 ms, a sleeping Postgres answering <code>psql</code> in 348 ms, and a microVM from a frozen pool in 144 ms on CI. Every figure and its method is in <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md">Benchmarks</a>.</p></details>
+      <details><summary>Does state survive sleep?</summary><p>Yes. A container keeps its volume and restarts its processes on wake. A microVM saves memory and disk as a snapshot, so processes come back where they were.</p></details>
+      <details><summary>How do I keep an agent's API keys from leaking?</summary><p>Today you can't fully: a key the agent uses sits in its environment. Keeping credentials out of the sandbox is on the roadmap. Until then, <code>egress_allow</code> limits where a leaked key can be sent.</p></details>
+      <details><summary>Is this Docker's sbx?</summary><p>No. Docker ships its own <code>sbx</code> CLI for Docker Sandboxes. This one is self-hosted and open source, MIT licensed.</p></details>
+    </div>
+    <p class="small" style="margin-top:20px"><a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/FAQ.md">All 64 questions</a> · <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/SELF-HOSTING.md">Self-hosting guide</a></p>
+  </div>
+</section>
+
+<section class="final rv">
+  <div class="wrap">
+    <h2>Try it in a minute.</h2>
+    <p class="sub" style="margin:0 auto">Install, then follow the ten-minute quickstart.</p>
+    <div class="install">
+      <div class="cmd" style="display:flex; border-radius:8px"><code>brew install aryanmehrotra/tap/sbx</code><button class="copy" type="button" hidden>Copy</button></div>
+    </div>
+    <div class="btns" style="justify-content:center">
+      <a class="btn primary" href="https://github.com/aryanmehrotra/sbx/blob/main/docs/QUICKSTART.md">Read the quickstart</a>
+      <a class="btn" href="https://github.com/aryanmehrotra/sbx">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Written in Go · MIT licensed</span>
+    <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/release-notes/README.md">Release notes</a>
+    <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/COMPARISON.md">Compared with other tools</a>
+    <a href="https://github.com/aryanmehrotra/sbx/blob/main/SECURITY.md">Security</a>
+    <span class="note">Not Docker's <code>sbx</code> CLI.</span>
+  </div>
+</footer>
+
+<script>
+// Copy buttons only. Without JavaScript the commands stay selectable text.
+document.querySelectorAll(".copy").forEach(function (b) {
+  b.hidden = false;
+  b.addEventListener("click", function () {
+    var t = b.previousElementSibling.textContent;
+    navigator.clipboard.writeText(t).then(function () {
+      b.textContent = "Copied";
+      setTimeout(function () { b.textContent = "Copy"; }, 1500);
+    });
+  });
+});
+
+// Sections fade in as they scroll into view. The class that hides them is only added here,
+// so without JavaScript (or with reduced motion) everything is simply visible.
+if ("IntersectionObserver" in window && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  document.documentElement.classList.add("js");
+  var io = new IntersectionObserver(function (es) {
+    es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+  }, { rootMargin: "0px 0px -10% 0px" });
+  document.querySelectorAll(".rv").forEach(function (el) { io.observe(el); });
+}
+</script>
+</body>
+</html>
