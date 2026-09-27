@@ -37,7 +37,8 @@ brew install aryanmehrotra/tap/sbx
 
 Or `curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh`,
 or `go install github.com/aryanmehrotra/sbx@latest`. It needs Docker or a Kubernetes cluster, and
-Linux with `/dev/kvm` for microVMs. Run `sbx doctor` to see what your machine supports.
+Linux with `/dev/kvm` for microVMs. Run `sbx doctor` to see what your machine supports, and `sbx install` to add what it reports
+missing (it shows every command and asks first).
 
 ## Sandboxes for AI agents
 

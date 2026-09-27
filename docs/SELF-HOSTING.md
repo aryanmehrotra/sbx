@@ -71,10 +71,10 @@ curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/inst
 
 The script installs to `/usr/local/bin` and checks the binary against the release's `SHA256SUMS`.
 If that file is missing, it warns and installs unchecked.
-`VERSION=v0.14.0` pins a release and `DIR=~/bin` picks another directory. To do it by hand:
+`VERSION=v0.15.0` pins a release and `DIR=~/bin` picks another directory. To do it by hand:
 
 ```sh
-V=v0.14.0
+V=v0.15.0
 curl -fsSLO "https://github.com/aryanmehrotra/sbx/releases/download/$V/sbx_${V}_linux_amd64"
 curl -fsSL "https://github.com/aryanmehrotra/sbx/releases/download/$V/SHA256SUMS" | grep " sbx_${V}_linux_amd64\$" | sha256sum -c
 sudo install -m 0755 "sbx_${V}_linux_amd64" /usr/local/bin/sbx
@@ -84,6 +84,7 @@ sudo install -m 0755 "sbx_${V}_linux_amd64" /usr/local/bin/sbx
 
 ```sh
 sbx doctor          # what this machine can do
+sbx install         # add what doctor reports missing (shows each command, asks first)
 sbx fc backend      # can it run microVMs, and how
 ```
 

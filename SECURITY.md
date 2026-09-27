@@ -13,7 +13,7 @@ and its advisory go out together.
 
 | Version | Supported |
 |---|---|
-| latest release (v0.14.x) | yes |
+| latest release (v0.15.x) | yes |
 | anything older | no: upgrade |
 
 Before 1.0, fixes land on `main` with no backport branch. A security fix may also ship as a patch

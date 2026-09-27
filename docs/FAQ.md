@@ -462,7 +462,7 @@ An MIT release stays MIT.
 
 ### How mature is it, and who uses it?
 
-Young. It is pre-1.0 at v0.14.0, and only the latest release gets fixes
+Young. It is pre-1.0 at v0.15.0, and only the latest release gets fixes
 ([SECURITY.md](../SECURITY.md#supported-versions)). It had 2 GitHub stars on 2026-09-27, and no
 production users are listed ([COMPARISON](COMPARISON.md#honest-ranking)).
 

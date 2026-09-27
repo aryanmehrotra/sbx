@@ -1,6 +1,10 @@
 # When something is wrong
 
-Find what you see, then apply the fix. Point a stuck agent here too. Run `sbx doctor` first.
+Find what you see, then apply the fix. Point a stuck agent here too. Run `sbx doctor` first. If
+it reports a missing tool or runtime, `sbx install` installs it: `sbx install gvisor`,
+`sbx install checkpoint`, or no name for all it can. It shows each command and asks first;
+`--dry-run` only prints. On Docker Desktop or colima, the VM that runs docker owns its config, and
+`sbx install` says so instead.
 
 ## Install and doctor
 
