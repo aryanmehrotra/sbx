@@ -109,8 +109,8 @@ PYANCHOR
 # about the vendor, it discredits every measured number sitting beside it.
 #
 # This catches the dead-link half. The other half - a live URL whose page no longer says what
-# is attributed to it - a linter cannot check, and the corrections table in COMPARISON.md is
-# where that is tracked by hand.
+# is attributed to it - a linter cannot check; every vendor claim carries the date it was
+# checked, and a reviewer opens the link.
 #
 # Skipped without a network rather than failing: a lint that fails on a plane is a lint people
 # learn to bypass.

@@ -1,7 +1,7 @@
 # Architecture
 
 How sbx's pieces fit together, for contributors and for anyone deciding whether to trust it.
-The *why* behind each choice is in [DECISIONS.md](DECISIONS.md); the threat model is in
+Why each choice was made is in [DECISIONS.md](DECISIONS.md); the threat model is in
 [SECURITY.md](../SECURITY.md).
 
 <img src="how-it-works.svg" width="900" alt="How sbx wakes a sandbox, in three steps. 1: psql connects to a port that belongs to sbx while the Postgres behind it is asleep, using 0 B of memory. 2: sbx accepts the connection and holds it open while the service starts. 3: once Postgres is healthy, sbx hands over the live connection and the query is answered. Any TCP protocol, unmodified clients.">
@@ -43,187 +43,124 @@ flowchart LR
   FC --- HELPER
 ```
 
-- **`sbx` (CLI)** reads `sandbox.json`, drives a provider directly for `create`, `exec`, `rm`
-  and the like, and appends what it did to the history file (`sbx history` reads it).
-- **`sbx serve`** is the one long-running process. It owns the public ports, wakes a sandbox
-  on the first byte, puts it back to sleep after `--idle`, runs the egress filters, and
-  optionally serves the OpenSandbox API and the `sbx connect` endpoint.
-- **Providers** do the work: docker containers, kubernetes Deployments scaled 0↔1, or
-  Firecracker microVMs whose sleep is a snapshot. On a Mac or Windows the microVM provider runs
-  inside a Linux helper VM.
-- **`sbx mcp`** is a separate stdio process and a client of the OpenSandbox API, not part of
-  the daemon. **`sbx ui`** is a terminal dashboard written against the same Provider
-  interface. The **console** is a separate Go module, so the root module keeps zero
-  dependencies.
+- The `sbx` CLI reads `sandbox.json`, drives a provider directly and logs to the history file.
+- `sbx serve` is the one long-running process. It owns the public ports, wakes a sandbox on the
+  first byte and sleeps it after `--idle`. It also runs the egress filters and, when asked, the
+  OpenSandbox API and the `sbx connect` endpoint.
+- Providers do the work: docker containers, kubernetes Deployments scaled 0↔1, or Firecracker
+  microVMs whose sleep is a snapshot.
+- `sbx mcp` is a stdio client of the OpenSandbox API. `sbx ui` is a terminal dashboard. The
+  console is a separate Go module, so the root module keeps zero dependencies.
 
-The names in the diagram, in plain words:
+## Platform status
+
+Every provider takes the same `sandbox.json`. What has actually been run where, at v0.14.0:
+
+| Provider · host | Status |
+|---|---|
+| docker · Linux | **verified in CI** on every change (`selftest`, `usecases`, `osb-conformance`) |
+| docker · macOS (colima, Docker Desktop) | **unit-tested** in CI on every PR and daily; **run by hand** on an M4 with colima (benchmarks) |
+| docker · Windows | inside WSL2 only; **not yet run end to end** on a Windows host |
+| docker `--isolation gvisor` | **verified in CI** (`isolation` job) |
+| kubernetes | **unit-tested**; **run by hand** on minikube (benchmarks); not in CI |
+| kubernetes `--isolation firecracker` (kata-fc) | **unit-tested**; **not yet run end to end** on a cluster |
+| firecracker · Linux with `/dev/kvm` | **verified in CI** (`microvm` job, nested KVM, jailer on) |
+| firecracker · M3+ Mac, macOS 15+, via helper VM | **run by hand** with colima on an M4 (v0.11); lima **unit-tested** |
+| firecracker · Mac, OpenSandbox API through the helper VM | **unit-tested**; **not yet run end to end** on a Mac |
+| firecracker · Windows 11, via a WSL2 helper VM | **unit-tested**; **not yet run end to end** on a Windows host |
+| `sbx checkpoint` / `resume` | **run by hand** on Linux with podman (v0.7.0); not in CI |
+
+`sbx doctor` reports which of these applies to the machine you're on.
+
+## Terms
 
 | Term | Meaning |
 |---|---|
-| OpenSandbox | An open-source API standard for AI-agent sandboxes, with SDKs in 5 languages. sbx serves it. |
-| MCP | Model Context Protocol: the standard way AI assistants such as Claude or Cursor call outside tools. |
-| Firecracker, microVM | The virtual machine monitor AWS built for Lambda; each microVM has its own kernel. |
-| jailer | Firecracker's launcher: locks each VM's process into its own directory as an unprivileged user. |
-| netns | A network namespace: a private copy of the network stack for one process. |
-| snapshot | A microVM's memory and disks saved to files; sleeping one is taking a snapshot. |
-| activator | On kubernetes, a pod running `sbx serve` that takes connections for a sandbox at zero replicas and scales it up. |
-| egress filter | A proxy that decides which outside hosts a sandbox's traffic may reach. |
-| helper VM | A Linux VM (lima or colima) that sbx runs on a Mac or Windows so microVMs can run there. |
-| execd | The small agent sbx runs inside a sandbox to execute commands for the API. |
+| sandbox | One named, isolated copy of a project's services, for one branch, task or agent |
+| service | One process inside a sandbox, such as its Postgres or its Redis, with its own port |
+| snapshot / fork | Save every service's data once, then make as many independent sandboxes from it as you like |
+| preview feature | A feature that is off until you turn it on with `sbx features`, because it may still change |
+| E2B, Daytona | Hosted services that rent AI agents a sandbox to run code in; see [COMPARISON](COMPARISON.md) |
+| spec | The `sandbox.json` file that declares a sandbox's services ([SPEC](SPEC.md)) |
+| template | A built-in spec you pick with `--template`, such as `postgres` |
+| daemon | `sbx serve`: the one long-running process that holds the ports and wakes and sleeps sandboxes |
+| provider | What runs the sandboxes: `docker` (default), `kubernetes` or `firecracker` |
+| sleep | Stop an idle service so it uses no memory or CPU; on a microVM, its memory is saved to disk as a snapshot |
+| wake | Start a sleeping service because something connected; that first connection waits, it is not refused |
+| freeze | Pause a service with its memory kept, so it resumes in ~34 ms instead of restarting ([v0.14.0, Linux x86_64](BENCHMARKS.md#freeze-and-thaw-v0140)) |
+| OpenSandbox | An open-source API standard for AI-agent sandboxes, with SDKs in 5 languages |
+| MCP | Model Context Protocol: the standard way AI assistants such as Claude or Cursor call outside tools |
+| microVM | A small virtual machine with its own kernel, so a sandbox does not share the host's |
+| Firecracker | The open-source microVM monitor AWS built for Lambda; sbx's `firecracker` provider uses it |
+| helper VM | A Linux VM (lima or colima) sbx starts on a Mac or Windows machine so microVMs can run there |
+| gVisor | A runtime that runs containers on its own user-space kernel instead of the host's |
+| Kata | Kata Containers: a runtime that runs each container inside its own lightweight VM |
+| CRIU | A Linux tool that saves a running process's memory to disk and restores it later |
+| warm pool | Sandboxes started ahead of time, so a create is answered at once |
+| pause (API) | An OpenSandbox API `pause`: a freeze that incoming traffic does not undo; only a resume does |
+| execd | The small agent sbx runs inside an API sandbox to execute commands and file operations |
+| jailer | Firecracker's launcher that locks each microVM's process into its own directory as an unprivileged user |
+| netns | A network namespace: a private copy of the network stack for one process |
+| activator | On kubernetes, a pod running `sbx serve` that takes connections for a sandbox at zero replicas and scales it up |
+| egress | Traffic leaving a sandbox for the network; sbx can limit it to the hosts you name |
+| egress filter | The proxy that decides which outside hosts a sandbox's traffic may reach |
 
 ## The rule
 
-Everything here follows from one rule:
+> Nothing may start or stop a sandbox except the thing that can see demand.
 
-> **Nothing may start or stop a sandbox except the thing that can see demand.**
+Anything else that can start one eventually leaves one running, and two components disagree about
+who owns it.
 
-Anything else that can start one eventually leaves one running — then two components each
-believe they own the lifecycle, and disagree while you debug something else.
+The OpenSandbox API is a lifecycle API, so it bends the rule. Each exception is an explicit request
+from the caller or bounded by the daemon:
 
-### The exceptions, named
-
-The OpenSandbox API is a lifecycle API, so it cannot keep the rule whole. Each place it bends is
-listed here, and each is either an explicit request from the caller or bounded by the daemon:
-
-| what starts or stops a sandbox | why it is allowed | who then owns it |
+| What starts or stops a sandbox | Why it is allowed | Who owns it next |
 |---|---|---|
-| API `pause` | the caller asked for a freeze that traffic must not undo; the daemon **holds** it | the hold, until `resume` |
-| API `resume` | the caller asked; it releases the hold and thaws | the daemon again |
-| API `DELETE`, and the expiry reaper | the sandbox's `timeout` is the caller's; removal is the end of it, not a start | nobody — it is gone |
-| API `POST .../snapshots` | `docker commit` pauses a running container for the copy (crash-consistent) and thaws it | the daemon; a stopped one is committed without being started |
-| warm-pool members | created running ahead of any caller and **pinned**: the reaper leaves them alone until a claim | the daemon, from the claim on — pinning ends and the idle clock starts then |
-| `create` (CLI or API) | a new container is started once, to be made; asking is starting | the daemon, from its first idle check |
-| `sbx wake` / `sbx sleep`, the dashboard's `s`, connect-endpoint control | an explicit one-transition override; the idle policy is untouched | the daemon, from its next connection or tick |
+| API `pause` | the caller asked for a freeze that traffic must not undo; the daemon holds it | the hold, until `resume` |
+| API `resume` | the caller asked; it releases the hold and thaws | the daemon |
+| API `DELETE`, the expiry reaper | the sandbox's `timeout` is the caller's; removal is not a start | nobody: it is gone |
+| API `POST .../snapshots` | `docker commit` pauses a running container for the copy, then thaws it | the daemon; a stopped one is committed without starting |
+| warm-pool members | created running before any caller, and pinned: the reaper skips them until claimed | the daemon, from the claim; the idle clock starts then |
+| `create` (CLI or API) | a new container is started once, to be made | the daemon, from its first idle check |
+| `sbx wake` / `sbx sleep`, the dashboard's `s`, connect-endpoint control | a one-transition override; the idle policy is untouched | the daemon, from its next connection or tick |
 
-Anything not in this table that starts or stops a container is a bug against the rule.
+Anything else that starts or stops a container is a bug.
 
----
+## Wake and sleep
 
-## The pieces, in detail
-
-```
-                    ┌──────────────────────────┐   ┌──────────────────────────┐
-                    │      sandbox.json        │   │  OpenSandbox SDK / HTTP  │
-                    │  services · health · env │   │  POST /v1/sandboxes ...  │
-                    └────────────┬─────────────┘   └────────────┬─────────────┘
-                                 │ read by                      │ served by
-                    ┌────────────▼─────────────┐   ┌────────────▼─────────────┐
-            ┌───────┤        sbx (CLI)         │   │  osb: lifecycle API      │
-            │       │ create env ready exec    │   │  (in sbx serve)          │
-            │       │ logs cp url list rm      │   │  records · expiry ·      │
-            │       └────────────┬─────────────┘   │  warm pool · volumes     │
-            │                    │                 └──┬──────────────────┬────┘
-            │                    │ ┌──────────────────┘                  │
-            │       ┌────────────▼─▼───────────┐                         │ Hold · Pin
-            │       │    Provider interface    │                         │ Freeze · Thaw
-            │       │  Create Start Stop Probe │                         │ Refresh
-            │       │  List Exec Logs Copy     │                         │
-            │       │  + optional: Injector    │                         │
-            │       │  RunsAgent HostVolumes   │                         │
-            │       │  Pauser Snapshotter      │                         │
-            │       │  NamedVolumes Puller ... │                         │
-            │       └──┬──────────┬───────────┬──┘                       │
-            │          │          │           │                          │
-            │     ┌────▼───┐ ┌────▼──────┐ ┌──▼──────────┐                │
-            │     │ docker │ │kubernetes │ │ firecracker │ ← k8s: no      │
-            │     └────────┘ └───────────┘ └─────────────┘  Injector, 501 │
-            │                                ↑ RunsAgent: execd is PID 1 │
-            │                                                            │
-   ┌────────▼────────┐                                                   │
-   │   sbx serve     │◀──────────────────────────────────────────────────┘
-   │  owns the ports │
-   │  wakes & sleeps │        `sbx url`: shells out to cloudflared / ngrok / ssh
-   │  freezes idle   │        `sbx connect`: sbx's own WebSocket tunnel
-   │  API sandboxes  │
-   └─────────────────┘
-```
-
-One spec. One binary. Three backends — and one API in front of docker and firecracker.
-
----
-
-## Local: the two-port trick
-
-The problem: something has to answer while nothing is running.
+Something has to answer while nothing is running. On docker, each service gets two ports: a
+public one that `sbx serve` owns, and a backing one that docker publishes only while the service
+runs.
 
 ```
-   your client                              sbx serve
-   (psql, redis-cli, a pool,             ┌──────────────┐
-    Playwright, curl)                    │  always up   │
-        │                                │   ~13 MB     │
-        │  :20002  ── PUBLIC ────────────▶              │
-        │            (owned by sbx)      └──────┬───────┘
-        │                                       │
-        │                        ┌──────────────▼──────────────┐
-        │                        │ serving?  (Probe, not the   │
-        │                        │           platform's guess) │
-        │                        └───┬──────────────────┬──────┘
-        │                        no  │                  │ yes
-        │                     ┌──────▼──────┐           │
-        │                     │ docker start│           │
-        │                     │   ~110 ms   │           │
-        │                     └──────┬──────┘           │
-        │                            └────────┬─────────┘
-        │                                     │
-        │                          :30002 ── BACKING ──▶ ┌─────────┐
-        │                          (docker publishes;    │ postgres│
-        │                           gone while asleep)   │  :5432  │
-        └◀────────────── bytes spliced ──────────────────┴─────────┘
+  client ──▶ :20002 (public, sbx serve)
+                 │  serving? (Probe) ── no ──▶ docker start, wait for health
+                 ▼
+             :30002 (backing, docker; gone while asleep) ──▶ postgres :5432
+  bytes are spliced both ways once it answers
 ```
 
----
-
-## Cluster: the activator
-
-A Service that selects the workload **cannot answer at zero replicas**. So there are two.
-
 ```
-   ASLEEP                                         Deployment
-   ────────────────────────────────────           replicas: 0
-                                                       ▲
-   client ──▶ sbx-x-pg:5432 ─────▶ ┌──────────────┐    │ scale 1
-              (client Service,     │  activator   │────┘
-               selects ACTIVATOR)  │  (sbx serve) │
-                                   └──────┬───────┘
-                                          │ then dials
-                                          ▼
-                                 sbx-x-pg-app:5432
-                              (workload Service, selects PODS)
-                                          │
-                                     ┌────▼────┐
-                                     │  pod    │  ← PVC survives sleep
-                                     └─────────┘
+            a connection / exec / URL hit
+   ASLEEP (0 B) ─────────────────────────────▶ AWAKE
+        ◀──────── no bytes for --idle ─────────
+                 (reaped every idle/3)
+   the volume or PVC persists across both
+   guard: a sandbox cannot sleep until seen serving once
 ```
 
-It splices bytes rather than parsing a protocol, so it works for Postgres, Redis, gRPC —
-anything over TCP. Its RBAC can **scale** a Deployment, not **create or destroy** one.
+- Idle is measured in bytes, not connections, because a pool holds sockets open forever.
+- The guard exists because the activator once scaled a sandbox to zero 39 seconds into its own
+  creation.
+- The proxy splices bytes and parses no protocol, so it works for anything over TCP.
 
----
+### Kubernetes: the activator
 
-## Lifecycle
-
-```
-                  a connection / exec / URL hit
-        ┌──────────────────────────────────────────┐
-        │                                          ▼
-   ┌────┴─────┐                              ┌──────────┐
-   │  ASLEEP  │                              │  AWAKE   │
-   │   0 B    │◀─────────────────────────────│          │
-   └──────────┘   no bytes for --idle        └──────────┘
-        │              (reaped every idle/3)       │
-        │                                          │
-        └──────── volume / PVC persists ───────────┘
-
-   guard: cannot sleep until seen serving once
-```
-
-**Bytes, not connections.** A pool holds sockets open forever, so a sandbox fronted by a
-running service would never sleep.
-
-**The guard is not theoretical.** Without it, the activator scaled a sandbox to zero 39
-seconds into its own creation, while the creating command was still waiting.
-
----
+A Service that selects the workload cannot answer at zero replicas, so there are two. The client
+Service (`sbx-x-pg:5432`) selects the activator, which scales the Deployment 0 → 1 and dials the
+workload Service (`sbx-x-pg-app:5432`). The PVC survives sleep. The activator's RBAC can scale a
+Deployment, not create or destroy one.
 
 ## Addressing
 
@@ -232,163 +169,113 @@ seconds into its own creation, while the creating command was still waiting.
    ├── clickhouse :9000 :8123 ──▶ ordinal 0, 1
    ├── postgres   :5432       ──▶ ordinal 2
    └── redis      :6379       ──▶ ordinal 3
-                                      │
-              slot allocated from labels (not hashed)
-                                      │
-        slot 0 ──▶ public  20000 + 0×20 + ordinal
-                   backing 30000 + 0×20 + ordinal
-        slot 1 ──▶ public  20020...
+
+   slot (allocated from labels, not hashed)
+   public  = 20000 + slot×20 + ordinal
+   backing = 30000 + slot×20 + ordinal
 ```
 
-**Allocated, not hashed.** Up to 128 slots (`docker_provider.go`). An earlier design hashed
-names into 60 slots and collided on the first six branch names tried; two sandboxes on one
-slot fight over ports. Docker labels are the registry —
-no state file to drift from reality.
-
-**Optional services still reserve ordinals**, so adding one later never shifts an existing
-service out from under a config that recorded its port.
-
-None of this applies in a cluster: a pod has its own address, so Postgres is `:5432` on a
-name. The port arithmetic is a workaround for one shared loopback.
-
----
+- Slots are allocated, up to 128 (`docker_provider.go`). Hashing names into 60 slots collided on
+  the first six branch names tried.
+- Docker labels are the registry, so there is no state file to drift from reality.
+- Optional services still reserve ordinals, so adding one later never moves another's port.
+- None of this applies in a cluster: a pod has its own address, so Postgres is `:5432` on a name.
 
 ## The same spec, any backend
 
-```sh
-sbx create my-branch                         # docker, this machine
-sbx create my-branch --provider kubernetes   # the same spec, a cluster
-sbx create my-branch --provider firecracker  # the same spec, one microVM per service
-```
-
-Everything the spec declares maps onto all three; nothing in `sandbox.json` names a backend:
+`sbx create my-branch` takes the same spec with `--provider kubernetes` or `--provider firecracker`
+(one microVM per service). Nothing in `sandbox.json` names a backend.
 
 | | docker | kubernetes | firecracker |
 |---|---|---|---|
 | address | `127.0.0.1:20002` | `sbx-x-pg.sbx.svc:5432` | `127.0.0.1:20002`, upstream the guest's tap IP |
 | wake | `docker start` | scale → 1 | snapshot load + resume |
 | sleep | `docker stop` | scale → 0 | snapshot (Diff) + kill the VMM |
-| health | HEALTHCHECK | readinessProbe | the spec's `health`, run by execd over vsock (`/bin/sh -c`) at create (before the snapshot) and after a cold boot; a snapshot wake dials the first port only |
+| health | HEALTHCHECK | readinessProbe | the spec's `health` over vsock, at create and after a cold boot; a snapshot wake dials the first port only |
 | storage | named volume | PVC | the image's ext4, shared read-only, under a writable layer per VM |
 | isolation | `--runtime` | `runtimeClassName` | a guest kernel, always |
 
-The right-hand column is why the provider is an interface, not a flag: the wake policy above
-doesn't know which it drives.
-
----
+The wake policy does not know which provider it drives. That is why the provider is an interface
+and not a flag.
 
 ## MicroVM: firecracker
 
-`--provider firecracker` makes each service a Firecracker VM whose sleeping state is a snapshot
-on disk, so a wake brings memory and running processes back rather than a cold process against a
-warm disk ([DECISIONS: MicroVM](DECISIONS.md#microvm-firecracker)). Directly on Linux with `/dev/kvm`; on an M3+ Mac (macOS 15+) or Windows 11
-through a Linux helper VM that `internal/fchost` runs. Where it runs is ONE decision,
-`fchost.HostBackend` - hostcap's Linux/macOS verdict plus the VM tool, `SBX_FC_ASSUME_NESTED` and the
-Windows branch - installed as `provider.DecideHost` and used by the provider, the CLI redirect,
-`sbx serve`, `sbx fc` and `sbx doctor` alike.
+`--provider firecracker` makes each service a Firecracker VM whose sleeping state is a snapshot on
+disk. A wake brings memory and running processes back
+([DECISIONS: MicroVM](DECISIONS.md#microvm-firecracker)). It runs directly on Linux with
+`/dev/kvm`, and on an M3+ Mac (macOS 15+) or Windows 11 through a Linux helper VM
+(`internal/fchost`).
+
+Where it runs is one decision, `fchost.HostBackend` (`provider.DecideHost`), used by every command:
 
 ```
-  fchost.HostBackend ─────┬─ direct ─────────── fcProvider (this machine)
-                          ├─ helper-vm ──────── HelperVMProvider hook (macOS, Windows)
-                          ├─ kata-runtimeclass ─ --provider kubernetes --isolation kata
-                          └─ refused ────────── reason + the one thing to change
+  fchost.HostBackend ─┬─ direct ──────────── fcProvider (this machine)
+                      ├─ helper-vm ───────── HelperVMProvider hook (macOS, Windows)
+                      ├─ kata-runtimeclass ─ --provider kubernetes --isolation kata
+                      └─ refused ─────────── reason + the one thing to change
 
-  <state>/fc/                                  SBX_FC_STATE, default ~/.sbx/fc
-    artifacts/firecracker-v1.17.0-<arch>-<sha>/  pinned by sha256, .built + atomic rename
-    artifacts/jailer-v1.17.0-<arch>-<sha>/       the same release tarball, the same sha256
+  <state>/fc/                              SBX_FC_STATE, default ~/.sbx/fc
+    artifacts/firecracker-v1.17.0-<arch>-<sha>/   pinned by sha256
+    artifacts/jailer-v1.17.0-<arch>-<sha>/        same release tarball, same sha256
     artifacts/vmlinux-6.18.48-<arch>-<sha>/
-    rootfs/<image id>/rootfs.ext4              docker export → mkfs.ext4 -d, keyed by image ID; root's, 0444:
-                                               every layered VM of the image boots this one file
-    vms/<hash of ref>/                         0700, one per service; the socket path fits 108 bytes
-      vm.json  api.sock  vsock.sock  console.log  vmm.log  firecracker.pid  lock
-      agent.ext4 (vda, ro: /sbx + /init.json)
-      base.ext4  (vdb, ro)                     layered (v0.14): a hard link to the image's rootfs.ext4
-      upper.ext4 (vdc, rw)                     layered: the VM's writable layer, sparse, SBX_FC_DISK_SIZE
-                                               (10G) at most; fc-init lays overlayfs over the two
-      rootfs.ext4 (vdb, rw)                    instead of both, before v0.14 or SBX_FC_ROOTFS=copy: a whole
-                                               copy of the image (reflink, extents or sparse copy)
-      vm.state  vm.mem                         the asleep state
-      jail/firecracker/sbx-<hash>/root/        the jailed VMM's / (v0.13): hard links to the files
-                                               above, owned by its uid; api.sock and vsock.sock
-                                               above are symlinks into it; emptied on every launch
-    snapshots/<name>/                          sbx snapshot: memory + the drives (a layered base linked, not copied)
+    rootfs/<image id>/rootfs.ext4          docker export → mkfs.ext4 -d; root's, 0444, shared
+    vms/<hash of ref>/                     0700, one per service
+      vm.json api.sock vsock.sock console.log vmm.log firecracker.pid lock
+      agent.ext4 (vda, ro)                 /sbx + /init.json
+      base.ext4  (vdb, ro)                 hard link to the image's rootfs.ext4
+      upper.ext4 (vdc, rw)                 writable layer, sparse, SBX_FC_DISK_SIZE (10G)
+      rootfs.ext4 (vdb, rw)                a whole copy instead, with SBX_FC_ROOTFS=copy
+      vm.state vm.mem                      the asleep state
+      jail/firecracker/sbx-<hash>/root/    the jailed VMM's /, emptied on every launch
+    snapshots/<name>/                      sbx snapshot: memory + drives (base linked)
 ```
 
-| verb | what happens |
+| Verb | What happens |
 |---|---|
-| Create | build/reuse the rootfs, clone it, write the agent drive, cold boot, wait for the first port, **Seal**, Pause, Full snapshot, kill |
-| Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override`, `network_overrides`; **Rekey** before returning |
-| Stop | **Seal** (note 1), Pause, snapshot (note 2), kill, fold the Diff into `vm.mem` by extent, mark valid |
-| a Stop whose Seal is never confirmed | **Rekey**, keep the VM running, report `ErrStillRunning` (note 3) |
-| a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk instead of restoring stale memory |
+| Create | build or reuse the rootfs, clone it, write the agent drive, cold boot, wait for the first port, Seal, Pause, Full snapshot, kill |
+| Start | mark the snapshot invalid (fsync'd), load with `resume_vm`, `vsock_override`, `network_overrides`; Rekey before returning |
+| Stop | Seal (retried with a longer bound until confirmed), Pause, snapshot (Diff if restored, else Full), kill, fold the Diff into `vm.mem`, mark valid |
+| a Stop whose Seal is never confirmed | Rekey, keep the VM running, report `ErrStillRunning`; the third in a row, or a failed Rekey, kills the VMM |
+| a VM that died awake | its snapshot is invalid, so Start cold-boots against the disk |
 
-1. Seal is asked again, with a longer bound each time, until one attempt is confirmed.
-2. A Diff snapshot if this process was restored, else a Full one.
-3. The Rekey proves execd unsealed, so the VM keeps running with its memory and the daemon
-   retries on its next tick. The third such sleep in a row, or a Rekey that fails too, kills the
-   VMM, and the next wake cold-boots.
-
-The guest is PID 1 `sbx fc-init` on the agent drive: it mounts the image root, gives it proc, sys, dev,
-devpts and the agent at `/opt/sbx/sbx`, switches root and execs `sbx execd --vsock-port 44772 -- <entrypoint>`.
-The guest's address comes from the kernel command line (`ip=`, `CONFIG_IP_PNP=y` in the pinned kernel).
-
-**The guest seam.** Everything the lifecycle needs from inside the VM is `fc.Guest` - `Dial`, `Seal`,
-`Rekey`, `Available` - assigned through `fc.NewGuest`. On Linux it is `fc.VsockGuest` (`internal/fcvsock`,
-`internal/execdctl`): exec, copy, logs, the `health` command and the daemon's `GuestDialer`
-(`fcProvider.DialGuestPort`) all reach execd over vsock. `fc.NoGuest` - what a non-Linux build of
-the provider gets - refuses all four; with it the provider still sleeps and wakes (same identity,
-nothing to re-key) and refuses exec, copy, `health` and forking by name. A sleep or snapshot that fails
-after a confirmed Seal stops the VM rather than leave execd sealed; its next wake is a cold boot. A
-sleep whose Seal was never confirmed keeps the VM only once a Rekey has proved execd unsealed
-(DECISIONS.md, "A sleep whose seal is not confirmed keeps the VM, re-keyed, and a guest cannot keep it
-for ever").
-
-Nothing in the provider assumes it is the process that started a VM or the one facing the user:
-every fact is in `vm.json` or answered by the API socket, and every operation takes the VM's
-flock. That is what lets `sbx create` boot a VM that `sbx serve` later sleeps, and what lets the same
-code run inside the helper VM.
-
-**Every VMM is jailed** (v0.13; DECISIONS.md, "Every VMM runs under Firecracker's jailer"). `fc.ExecLauncher`
-starts it through the jailer pinned from firecracker's own release tarball: chrooted into `jail/` inside
-its VM's directory, as uid `900000 + slot*256 + index`, in `<cgroup2>/sbx-fc/<id>` with the spec's CPUs
-and memory. The provider hands the VMM only paths in that root (`fc.View`) and takes what it writes back
-(`View.Adopt`: a plain file with one name, or refused). `SBX_FC_JAILER=off` is the unjailed v0.12 launch.
-The host guard beside it fails closed (`fc.IPNetwork`): no guard, no VM, unless `SBX_FC_FIREWALL=unmanaged`.
-A jailed VMM joins its VM's own network namespace (`--netns`, `/var/run/netns/sbxfc<slot>-<index>`),
-where its tap is. The tap is bridged to a veth whose host end is a port of the sandbox's bridge, and
-all of it is rebuilt at every launch. The guard's rules, on the bridge, see the guest's frames as before.
-
----
+- The guest's PID 1 is `sbx fc-init`. It mounts the image root, switches root and execs
+  `sbx execd --vsock-port 44772 -- <entrypoint>`. Its address comes from the kernel's `ip=`.
+- Everything the lifecycle needs from inside the VM is `fc.Guest`: `Dial`, `Seal`, `Rekey`,
+  `Available`. On Linux it is `fc.VsockGuest`, so exec, copy, logs and `health` reach execd over
+  vsock. A non-Linux build gets `fc.NoGuest`, which still sleeps and wakes but refuses exec, copy,
+  `health` and forking by name.
+- A sleep or snapshot that fails after a confirmed Seal stops the VM. Its next wake is a cold boot.
+- Every fact lives in `vm.json` or the API socket, and every operation takes the VM's flock. So
+  `sbx create` can boot a VM that `sbx serve` later sleeps, and the same code runs in the helper VM.
+- Every VMM is jailed (`fc.ExecLauncher`): chrooted into `jail/`, as uid
+  `900000 + slot*256 + index`, in `<cgroup2>/sbx-fc/<id>`. The provider hands it only paths in
+  that root (`fc.View`) and takes back only plain files (`View.Adopt`).
+- A jailed VMM joins its VM's network namespace (`/var/run/netns/sbxfc<slot>-<index>`), whose
+  tap is bridged to the sandbox's bridge. The host guard fails closed (`fc.IPNetwork`) unless
+  `SBX_FC_FIREWALL=unmanaged`. The boundary itself is in [SECURITY.md](../SECURITY.md).
 
 ## Egress filter
 
-A sandbox's `egress` field is enforced by a component, not a flag (`internal/egress`).
+A sandbox's `egress` field is enforced by a component, `internal/egress`.
 
-- **No route of its own.** A filtered service sits on a bridge with no NAT. The only host
-  address it can reach is the bridge gateway, where the filter listens.
-- **One door.** The filter is an HTTP `CONNECT` and plain-HTTP proxy (`egress.Filter`).
-  `HTTP(S)_PROXY` points clients at it; a client that ignores it has no route out. A refused
-  destination gets 403, and no socket is ever opened to it.
-- **Where it runs.** On native Linux docker and on firecracker it is a listener inside
-  `sbx serve`. Where the gateway is inside an engine's VM (Docker Desktop, colima), the same
-  filter runs as a container on the bridge (`internal/provider/egress_container.go`).
-- **`allow` is the same door** with an open default, so it carries HTTP and HTTPS only
-  (DECISIONS.md, "Default-allow is enforced by the same door, and it costs raw TCP").
-- **Live changes** (`sbx egress`) swap the policy in place; tunnels already open are not cut
-  (DECISIONS.md, "A live egress policy is held by the filter, and pushed to it").
-- **It is also an idle signal.** A permitted request counts as activity, so an agent that only
-  calls an API stays awake. A filter container is asked once a tick for the same signal.
-- **Per backend.** A microVM's filter refuses private ranges and host subnets unless
-  `--vm-egress-allow` names them. On kubernetes, `egress: "deny"` is refused up front.
-
----
+- A filtered service sits on a bridge with no NAT. The only host address it reaches is the bridge
+  gateway, where the filter listens.
+- The filter is an HTTP `CONNECT` and plain-HTTP proxy (`egress.Filter`). `HTTP(S)_PROXY` points
+  clients at it. A refused destination gets 403, and no socket is opened to it.
+- On native Linux docker and on firecracker it runs inside `sbx serve`. Where the gateway is inside
+  an engine's VM (Docker Desktop, colima), it runs as a container on the bridge
+  (`internal/provider/egress_container.go`).
+- `egress: "allow"` uses the same proxy with an open default, so it carries HTTP and HTTPS only.
+- `sbx egress` swaps the policy in place without cutting open tunnels.
+- A permitted request counts as activity, so an agent that only calls an API stays awake.
+- A microVM's filter refuses private ranges and host subnets unless `--vm-egress-allow` names
+  them. On kubernetes, `egress: "deny"` is refused up front.
 
 ## Remote access: `sbx connect` and `sbx pack`
 
-The daemon's ports stay on loopback. `sbx serve --connect-addr` (off unless set; needs
-`SBX_CONNECT_TOKEN`) adds one HTTP endpoint that carries TCP streams over a WebSocket. sbx
-implements this tunnel itself (`internal/wsserver`, `internal/wsclient`,
-`internal/daemon/connect.go`); it is not shelled out.
+The daemon's ports stay on loopback. `sbx serve --connect-addr` (needs `SBX_CONNECT_TOKEN`) adds
+one HTTP endpoint that carries TCP streams over a WebSocket. sbx implements the tunnel itself
+(`internal/wsserver`, `internal/wsclient`, `internal/daemon/connect.go`).
 
 ```
    laptop                                    deployment (VM, cluster or PaaS container)
@@ -397,104 +284,67 @@ implements this tunnel itself (`internal/wsserver`, `internal/wsclient`,
                   (same port numbers)      └── needs only one HTTP port
 ```
 
-- **A port is not an identity.** Slots are reused, so every dial names the instance it
-  expects; a mismatch is refused rather than spliced into the wrong service.
-- **Several deployments, one port map:** `sbx connect db=https://… cache=https://…`, with
-  `--port-offset` to avoid clashing with a local `sbx serve`.
-- **The token also controls.** Wake, sleep, re-limit, remove and logs pass the same token
-  check as the tunnel (`internal/daemon/control.go`); `sbx ui --connect` uses them.
-- **`sbx pack`** writes an image for a platform that gives one container and one HTTP port:
-  the workload's own entrypoint, fronted by sbx over that port.
+- Slots are reused, so every dial names the instance it expects. A mismatch is refused.
+- `sbx connect db=https://… cache=https://…` maps several deployments; `--port-offset` avoids a
+  local `sbx serve`.
+- Wake, sleep, re-limit, remove and logs pass the same token check (`internal/daemon/control.go`).
+  `sbx ui --connect` uses them.
+- `sbx pack` writes an image for a platform that gives one container and one HTTP port.
 
 Design record: [2026-08-16-sbx-connect-design.md](design/2026-08-16-sbx-connect-design.md).
 
----
-
 ## MCP server
 
-`sbx mcp` is a Model Context Protocol server over stdio (`internal/mcp`) with 19 tools. It is
-a client of the OpenSandbox API, not part of the daemon: it dials `--url` (default
-`$SBX_OSB_URL`, `$OPEN_SANDBOX_DOMAIN`, else `http://127.0.0.1:8080`) with the API key, so it can do exactly what the API can.
-It implements the protocol directly, with no framework, to keep the root module
-dependency-free. stdout carries protocol only, and a failing tool answers with `isError` rather
-than a JSON-RPC error, so the model can correct itself. Usage: [GUIDES.md](GUIDES.md#mcp).
-
----
+`sbx mcp` is an MCP server over stdio (`internal/mcp`) with 19 tools. It is a client of the
+OpenSandbox API: it dials `--url` (default `$SBX_OSB_URL`, `$OPEN_SANDBOX_DOMAIN`, else
+`http://127.0.0.1:8080`) with the API key, so it can do exactly what the API can. It implements the
+protocol with no framework. A failing tool answers with `isError`, not a JSON-RPC error, so the
+model can correct itself. Usage: [GUIDES.md](GUIDES.md#mcp).
 
 ## The OpenSandbox API
 
-`sbx serve --osb-addr` also answers OpenSandbox's lifecycle API. An API sandbox is an ordinary sbx
-sandbox named by its id (`osb-` + 12 hex) with one service, and the daemon wakes and idles it like
-any other. What the API adds is around it, not instead of it:
+`sbx serve --osb-addr` also serves OpenSandbox's lifecycle API. An API sandbox is an ordinary sbx
+sandbox named by its id (`osb-` + 12 hex) with one service, woken and idled like any other.
 
 ```
-   SDK ──▶ osb (sbx serve)                         one API sandbox
-           │                                      ┌──────────────────────────────────┐
-           │ create: pull · place execd ─────────▶│ /opt/sbx  ← execd volume, ro     │
-           │         (Injector) · docker run      │ sbx execd --addr :44772 -- <cmd> │
-           │                                      │   /command /files /code /pty     │
-           │ records: ~/.sbx/osb/<id>.json        │   /proxy  (execd is PID 1)       │
-           │   token · expiry · metadata ·        │ <cmd>  ← the caller's entrypoint │
-           │   owned pvc volumes                  └───────────────▲──────────────────┘
-           │                                                      │
-           │ pause ──▶ Freeze + HOLD  (traffic cannot thaw it)    │ wake port, fronted
-           │ resume ─▶ Thaw  (hold released)                      │ by the daemon
-           │                                                      │
-           └────────────────────────▶ daemon ─────────────────────┘
-                                        idle: FREEZE (docker pause, memory kept,
-                                              thawed by the next byte) — the
-                                              API default; extensions["sbx.idle"]=
-                                              "sleep" stops it to 0 B instead
-                                        pool: members wait running and PINNED,
-                                              re-keyed on claim, then idle as usual
+   SDK ──▶ osb (sbx serve)                    one API sandbox
+           │ create: pull · place execd ────▶ /opt/sbx (execd volume, ro)
+           │         · docker run             sbx execd --addr :44772 -- <cmd>
+           │ records: ~/.sbx/osb/<id>.json      /command /files /code /pty /proxy
+           │ pause ──▶ Freeze + hold          <cmd> is the caller's entrypoint
+           │ resume ─▶ Thaw, hold released
+           └──▶ daemon: idle = freeze (docker pause, thawed by the next byte);
+                        extensions["sbx.idle"]="sleep" stops it to 0 B instead
+                 pool:  members wait running and pinned, re-keyed on claim
 ```
 
-- **execd is injected, not baked.** The binary is copied once into a named volume and mounted
-  read-only at `/opt/sbx` in any image the caller names — `Injector`, which only docker
-  implements. A cluster would need an init container, so the API answers 501 there rather than
-  pretending (`pause` would be a scale-to-zero that loses the memory, and is refused by name).
-- **On a microVM it is already there.** Firecracker's PID 1 (`sbx fc-init`) becomes execd with the
-  workload as its child. So the provider declares `RunsAgent`, and the API skips the volume, the
-  mount and the wrapper. It still mints the token, and the VM boots and re-keys execd with it.
-  An API microVM is born running (not snapshotted asleep), and its pause is a VM pause. Its
-  snapshot is its disk (a fork cold-boots a copy). A `pvc` is an ext4 image attached as a drive,
-  and a `host` volume is a 501 (`HostVolumes`: no virtio-fs). On a Mac or Windows the API runs in
-  the helper VM's daemon, which is Linux with `/dev/kvm` - see below.
-- **Through a helper VM the API is served in the VM and fronted here.** `sbx serve --provider
-  firecracker --osb-addr` on an M3+ Mac or Windows starts the in-VM daemon with `--osb-addr
-  127.0.0.1:22981` and the key in its root-only environment file. So the jailer, the egress filter
-  and the host guard are the VM's own and refuse exactly as on Linux. The host half
-  (`internal/fchost`):
-  - resolves the key as Linux does (`--osb-key`, `SBX_OSB_KEY`, else `~/.sbx/osb/key` on the Mac);
-  - reverse-proxies `--osb-addr` (loopback only) over the ssh forward;
-  - will not serve until it has proved the API behind the forward answers **401 without the key
-    and 200 with it**. The forward is itself a Mac loopback port, which containers on a VM-backed
-    engine reach, so that check is the control, verified at startup, not assumed.
+- execd is copied once into a named volume and mounted read-only at `/opt/sbx` in any image
+  (`Injector`, docker only). Kubernetes would need an init container, so the API answers 501
+  there.
+- On a microVM, PID 1 already becomes execd, so the provider declares `RunsAgent` and the API
+  skips the volume. An API microVM is born running, its pause is a VM pause, and its snapshot is
+  its disk (a fork cold-boots a copy). A `pvc` is an ext4 drive; a `host` volume is a 501.
+- Through a helper VM (M3+ Mac, Windows), the API is served by the in-VM daemon on
+  `127.0.0.1:22981`, so the jailer, egress filter and host guard are the VM's own. The host half
+  (`internal/fchost`) resolves the key as Linux does and reverse-proxies `--osb-addr` (loopback
+  only) over the ssh forward.
+- The host half serves nothing until the forwarded API answers 401 without the key and 200 with
+  it, since containers can reach a Mac loopback port. A mirror binds the in-VM endpoint ports on
+  the host; a create or endpoint lookup waits for it (up to 5s).
+- Refused on the helper-VM path: `--osb-insecure-no-key`, `--osb-pool`, `--osb-pool-freeze`,
+  `SBX_OSB_POOL`. Status: [platform status](#platform-status).
+- A held pause and an idle freeze are both `docker pause`. The next byte undoes an idle freeze. A
+  held pause reports `Paused`, refuses traffic until `resume`, and survives a daemon restart.
+- Freeze-on-idle is the API default because upstream expects a background process to survive
+  between requests. `sandbox.json` keeps stop-on-idle.
+- The API's state lives in its record file, since docker labels are fixed at create.
 
-  Endpoints the API hands out are `127.0.0.1:<port>` in the VM, and a mirror binds the same
-  numbers here. A successful create (any `POST` under `/v1/sandboxes`) or endpoint lookup is held
-  until the mirror has bound them (bounded 5s), so an SDK that dials at once finds it listening.
-  Refused on this path: `--osb-insecure-no-key`, and `--osb-pool` / `--osb-pool-freeze` /
-  `SBX_OSB_POOL` (not carried into the VM yet). **unit-tested** with a fake VM daemon and API;
-  status per host: [README platform status](../README.md#platform-status).
-- **A held pause is not an idle freeze.** Both are `docker pause`. The idle one is the daemon's and
-  the next byte undoes it; the held one is the caller's, reported as `Paused`, and refuses traffic
-  until `resume`. The hold is re-asserted from the record when the daemon restarts.
-- **Freeze-on-idle is the API default** because upstream's contract is that a background process
-  started in one request is still running at the next; `sandbox.json` keeps stop-on-idle, since
-  holding memory is the opposite of why sbx exists.
-- **What the API remembers lives in its record file**, never in labels: docker labels are fixed at
-  create, and metadata, expiry and holds change.
+## Not built, on purpose
 
----
-
-## What is deliberately not here
-
-
-| | why |
+| | Why |
 |---|---|
-| `sbx start` / `sbx stop` as lifecycle owners | the rule at the top; `sbx wake` / `sbx sleep` override one transition only |
-| A public-URL tunnel | `sbx url` shells out to cloudflared, ngrok or ssh. `sbx connect` is sbx's own tunnel, sbx to sbx only |
-| Preview URLs in cluster mode | that is an Ingress, and it already exists |
-| A code-interpreter runtime | execd's `/code` drives the Jupyter an image already runs (`opensandbox/code-interpreter`); sbx ships no kernels |
-| Multi-tenant hosting | no accounts, quotas or tenancy (DECISIONS.md, "sbx is a tool people run, not a service anyone offers"). For a kernel boundary per sandbox use `--provider firecracker`; `--isolation gvisor\|kata` is declarable, but operating those runtimes is yours |
+| `sbx start` / `sbx stop` as lifecycle owners | [the rule](#the-rule); `sbx wake` / `sbx sleep` override one transition only |
+| A public-URL tunnel | `sbx url` shells out to cloudflared, ngrok or ssh; `sbx connect` is sbx to sbx only |
+| Preview URLs in cluster mode | that is an Ingress, which already exists |
+| A code-interpreter runtime | execd's `/code` drives the Jupyter an image already runs; sbx ships no kernels |
+| Multi-tenant hosting | no accounts, quotas or tenancy ([DECISIONS.md](DECISIONS.md#sbx-is-a-tool-people-run-not-a-service-anyone-offers)); for a kernel per sandbox use `--provider firecracker` |

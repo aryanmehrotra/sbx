@@ -16,9 +16,9 @@
 - [ ] A flag shared by several commands: every `docs/CLI.md` row that takes it
 - [ ] `docs/SPEC.md`: `sandbox.json` field or validation
 - [ ] `docs/TROUBLESHOOTING.md`: new or changed error message; a workaround this fix makes obsolete removed
-- [ ] `README.md`: feature list or platform-status table
+- [ ] `README.md` (one line, if it is a headline feature) or `docs/ARCHITECTURE.md#platform-status`
 - [ ] `docs/GUIDES.md` / `examples/`: a new shape of use, or a spec that shows the feature
-- [ ] A built-in template: `examples/README.md`, README template row, SPEC or CLI, `scripts/pin-templates.sh`, `scripts/usecases-e2e.sh` loop
+- [ ] A built-in template: `examples/README.md`, the README template list, SPEC or CLI, `scripts/pin-templates.sh`, `scripts/usecases-e2e.sh` loop
 - [ ] `docs/GUIDES.md#ai-agents`: MCP tool (and the tool count everywhere), or how agents drive sbx
 - [ ] `docs/ROADMAP.md` / `test/osb/expectations`: an item shipped, or an OpenSandbox endpoint built or refused
 - [ ] `docs/ARCHITECTURE.md` / `docs/DECISIONS.md`: wake, sleep, freeze or proxy behaviour; component, addressing, or a design decision

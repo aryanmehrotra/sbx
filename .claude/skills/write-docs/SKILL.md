@@ -29,15 +29,18 @@ writing. This skill is the procedure.
 
 - Find the fact's home in `AGENTS.md#doc-map` (one home per fact). Put the text there; link from
   the other pages instead of copying.
-- Open with what the reader gets. Apply `AGENTS.md#voice` (sentence and cell length, zero
-  prior knowledge, internal names, persuade with proof).
-- Explain every outside term at its first use on the page, in the wording of `README.md#glossary` (add a row for a new term).
+- Open with what the reader gets. Apply `AGENTS.md#voice` (sentence and cell length, terms,
+  internal names, proof for every claim).
+- Explain every outside term at its first use on the page, in the wording of `docs/ARCHITECTURE.md#terms` (add a row for a new term).
 - Fold a new feature into the page's opening and tables; do not append a section at the end.
 - State current behaviour once. No project history in reference pages.
 - Numbers and vendor claims: `AGENTS.md#numbers-and-sources`.
-- Status: a label from `AGENTS.md#status-vocabulary`. Caveats go in the README
-  platform-status table, not in hero text.
-- Use the house words in `README.md#glossary` exactly.
+- Status: a label from `AGENTS.md#status-vocabulary`. Caveats go in
+  `docs/ARCHITECTURE.md#platform-status`, not in the README.
+- Sound human (`AGENTS.md#voice`): plain bullets with no bold lead-ins, tables only for reference
+  data, plain headings, no slogans or em-dash chains. The README stays px0-length: no tables,
+  glossary or feature list.
+- Use the house words in `docs/ARCHITECTURE.md#terms` exactly.
 
 ## 4. Check before you finish
 

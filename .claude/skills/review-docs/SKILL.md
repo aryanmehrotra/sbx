@@ -39,11 +39,22 @@ page. Rules: `AGENTS.md` (docs contract, doc map, `#writing-docs`, lessons).
 - Sentence and table-cell length, one idea per paragraph, as `AGENTS.md#voice` sets them.
 - Read it as someone who has never heard of OpenSandbox, MCP, Firecracker, microVMs, gVisor,
   Kata, CRIU or E2B: is every outside term explained in plain words at its first use *on this
-  page* (wording: `README.md#glossary`)? A term explained only on another page is a finding.
+  page* (wording: `docs/ARCHITECTURE.md#terms`)? A term explained only on another page is a finding.
 - No internal name (`execd`, seal, slot, activator, jailer) on a user-facing page without an
   explanation next to it.
-- Glossary terms used consistently; no meta-commentary about past mistakes in user docs.
+- Terms (`docs/ARCHITECTURE.md#terms`) used consistently; no meta-commentary about past mistakes in user docs.
 - DECISIONS.md: check new entries only; old ones are records.
+
+**4b. Sounds human, not generated** (`AGENTS.md#voice`)
+- Each of these is a finding: bold lead-ins on bullets or paragraphs; bold for emphasis (a rare
+  **Warning:** is fine); a table holding prose; a marketing heading ("Why teams choose sbx");
+  slogans ("X, not Y", "just works", "never refused") or rhetorical triplets; "Proof:" labels.
+- Em-dash or semicolon chains; "Note that", "It's worth noting", "In other words", "Simply",
+  "Seamlessly"; a first sentence that restates the heading; a citation closing every paragraph.
+- Length: paragraphs over three sentences, multi-line bullets that could be one line, a term
+  explained twice on one page. The README stays px0-length (two paragraphs, four proof bullets,
+  install, one usage block, docs links) with no tables, glossary or comparison.
+- Release notes over TEMPLATE's 60-line limit.
 
 **5. Honesty and proof: numbers, claims and status**
 - Numbers and vendor claims follow `AGENTS.md#numbers-and-sources`. Open each vendor link:
@@ -51,7 +62,7 @@ page. Rules: `AGENTS.md` (docs contract, doc map, `#writing-docs`, lessons).
 - Persuade with proof: every benefit claim carries a number, a test or a link. An adjective
   alone ("fast", "secure") is a finding. So is a caveat dropped to make a claim stronger.
 - Status cells start with a label from `AGENTS.md#status-vocabulary` and match what
-  `ci.yaml` actually runs. Caveats are in the README platform-status table, not deleted.
+  `ci.yaml` actually runs. Caveats are in `docs/ARCHITECTURE.md#platform-status`, not deleted.
 - No version promised for unbuilt work.
 
 **6. Links and anchors**

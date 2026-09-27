@@ -28,6 +28,6 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Changed
 
-- The README, comparison, roadmap and user guides are rewritten against v0.14. The use-case and AI-agent guides merge into `docs/GUIDES.md`; the docs index and glossary move into the README.
+- The README, comparison, roadmap and user guides are rewritten against v0.14. The use-case and AI-agent guides merge into `docs/GUIDES.md`; the README is a short landing page, and platform status and terms move to `docs/ARCHITECTURE.md`.
 
 ## Fixed

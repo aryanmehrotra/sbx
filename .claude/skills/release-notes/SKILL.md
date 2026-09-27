@@ -25,17 +25,17 @@ cat docs/release-notes/UNRELEASED.md
 ## 2. Write `docs/release-notes/vX.Y.Z.md`
 
 - Copy TEMPLATE.md. Keep its section names and order. Map UNRELEASED's sections onto it:
-  Breaking + Changed → "Before you upgrade" (Breaking / Behaviour change); Added → Highlights
-  (or a short "Also new" list); Fixed → Fixes.
+  Breaking + Changed → "Before you upgrade" (Breaking / Behaviour change); Added → Highlights;
+  Fixed → Fixes.
 - Title names the feature the way the user types it (`sbx connect`, `--provider firecracker`).
   No puns, no essay titles.
 - Breaking and behaviour changes first, labelled, each with what the user must do.
-- Highlights: benefit sentence, one command or snippet, link to the doc. One number at most,
-  with its script; it must already be in BENCHMARKS.md.
+- Highlights: one-line bullets, with a command where it helps and a tag-pinned doc link. One
+  number at most; it must already be in BENCHMARKS.md. No measurement tables or design narrative.
 - Fixes are user-visible symptoms, one line each.
-- Known limitations: a label from `AGENTS.md#status-vocabulary` (**not yet run end to end** on X).
+- Known limitations: short, with a label from `AGENTS.md#status-vocabulary` (not yet run end to end on X).
 - Length: TEMPLATE's limit. Rationale goes to DECISIONS.md, not here.
-- Explain every outside term at first use (wording: `README.md#glossary`): the note is read alone.
+- Explain every outside term at first use (wording: `docs/ARCHITECTURE.md#terms`): the note is read alone.
 
 ## 3. Links
 
@@ -47,7 +47,7 @@ cat docs/release-notes/UNRELEASED.md
 
 - Reset UNRELEASED.md to its header and empty Breaking / Added / Changed / Fixed sections.
 - Bump the version stamps: the `docs/release-notes/README.md` index row, the supported version
-  in `SECURITY.md`, README's "Platform status" line, ROADMAP's "As of" line and "Shipped recently".
+  in `SECURITY.md`, the "at vX.Y.Z" line in `docs/ARCHITECTURE.md#platform-status`, ROADMAP's "As of" line and "Shipped recently".
 - `SKIP_LINK_CHECK=1 bash scripts/lint-docs.sh` passes (it checks pinned URLs against git), and
   `bash scripts/lint-docs-contract.sh` (it fails on a note missing from the index).
 - Never rewrite a published note. To correct one, add a dated "Update:" line at the top.

@@ -7,11 +7,11 @@ What changed in each sbx release, what it means for you, and how to upgrade. New
 | [v0.14.0](v0.14.0.md) | 2026-09-27 | Hardened microVMs: per-VM network namespace, file-size limits, no per-VM image copy |
 | [v0.13.2](v0.13.2.md) | 2026-09-27 | OpenSandbox SDK pools and e2e tests now pass against sbx |
 | v0.13.1 | 2026-09-27 | Tagged, never published; superseded by v0.13.2 (test-only difference) |
-| [v0.13.0](v0.13.0.md) | 2026-09-27 | microVMs run confined by default, and start in ~140 ms from a warm pool |
+| [v0.13.0](v0.13.0.md) | 2026-09-27 | microVMs run confined by default, and start in 141 ms from a warm pool |
 | [v0.12.0](v0.12.0.md) | 2026-09-26 | OpenSandbox API on Firecracker microVMs (not yet for untrusted code) |
 | [v0.11.0](v0.11.0.md) | 2026-09-26 | Firecracker microVM sandboxes (Linux with KVM, Apple Silicon M3+) |
 | [v0.10.0](v0.10.0.md) | 2026-09-26 | OpenSandbox API: 14 ms creates from a warm pool, plus code interpreter, terminals and snapshots |
-| [v0.9.1](v0.9.1.md) | 2026-09-26 | **Security fix:** the OpenSandbox API now always requires a key |
+| [v0.9.1](v0.9.1.md) | 2026-09-26 | Security fix: the OpenSandbox API now always requires a key |
 | [v0.9.0](v0.9.0.md) | 2026-09-26 | Run OpenSandbox SDK code locally: `sbx serve` speaks the OpenSandbox API |
 | [v0.8.0](v0.8.0.md) | 2026-08-31 | Multi-service sandboxes sleep correctly; `egress_allow` works on macOS |
 | [v0.7.0](v0.7.0.md) | 2026-08-21 | Sandboxes for AI agents: egress allow-list, checkpoint/resume, `sbx with` |

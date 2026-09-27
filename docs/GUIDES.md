@@ -1,42 +1,9 @@
 # Guides
 
-How to do each common task with sbx, one section per task, with commands you can paste. Flags are in
-[CLI.md](CLI.md), `sandbox.json` fields in [SPEC.md](SPEC.md), and error messages in
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md). New to sbx? Start with [QUICKSTART.md](QUICKSTART.md).
-
-**Contents**
-
-- [Before you start](#before-you-start)
-- [A database per branch](#a-database-per-branch)
-- [Test fixtures in CI](#test-fixtures-in-ci)
-- [Seed once, fork many](#seed-once-fork-many)
-- [Save and resume a running process](#save-and-resume-a-running-process)
-- [Add a service mid-task](#add-a-service-mid-task)
-- [Share a preview link](#share-a-preview-link)
-- [A browser that sleeps](#a-browser-that-sleeps)
-- [Work inside a sandbox](#work-inside-a-sandbox)
-- [Keep a sandbox awake, or limit where it can connect](#keep-a-sandbox-awake-or-limit-where-it-can-connect)
-- [AI agents](#ai-agents): [paste block](#paste-this-into-your-agents-instructions) ·
-  [MCP](#mcp) · [OpenSandbox SDKs](#opensandbox-sdks)
-- [Stronger isolation with microVMs](#stronger-isolation-with-microvms)
-- [Kubernetes](#kubernetes)
-- [Deploy on a one-port platform](#deploy-on-a-one-port-platform)
-- [Coming from docker compose, Testcontainers or E2B](#coming-from-docker-compose-testcontainers-or-e2b)
-
-## Before you start
-
-Every guide assumes one sbx daemon on the machine. It owns the ports `sbx env` prints, wakes a
-service when something connects, and puts it back to sleep after `--idle` with no traffic.
-[`deploy/`](../deploy/) has a launchd plist and a systemd unit to keep it running.
-
-```sh
-sbx serve --idle 5m &
-```
+One section per task. New to sbx? Start with [QUICKSTART.md](QUICKSTART.md). Every guide assumes
+one `sbx serve --idle 5m &` per machine; [`deploy/`](../deploy/) has units to keep it running.
 
 ## A database per branch
-
-Branches that share one database share every migration. A sandbox gives each branch its own,
-and a sleeping sandbox holds 0 B of RAM: no container runs until something connects.
 
 ```sh
 sbx create feature-x --template postgres
@@ -44,134 +11,63 @@ eval "$(sbx env feature-x)"        # sets PGHOST, PGPORT, DATABASE_HOST, DATABAS
 PGPASSWORD=app psql -U app -d app -c 'select 1'   # this connection wakes it
 ```
 
-Never hardcode a port: ports are assigned per sandbox, and `sbx env` is where they live.
-`sbx templates` lists the other built-in specs; [examples/](../examples/) explains each one.
+Ports are assigned per sandbox, so read them from `sbx env`. `sbx templates` lists the built-in
+specs; [examples/](../examples/) explains each. To add a service mid-task:
+`sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'`.
+
+`--template browser` gives a headless Chrome that Playwright and Puppeteer drive over CDP at
+`$CDP_HOST:$CDP_PORT` ([examples/browser](../examples/browser/)).
 
 ## Test fixtures in CI
 
-**A fixture that lives exactly as long as one command.** `sbx with` creates the sandbox, waits
-until every service answers, runs the command with the addresses set, then removes the sandbox,
-even when the command fails or is interrupted. It exits with the command's status.
+`sbx with` creates a sandbox, waits until it answers, runs the command, then removes it, even on
+failure. It exits with the command's status. `--keep` leaves the sandbox for inspection.
 
 ```sh
 sbx with test-db --template postgres -- go test ./...
 ```
 
-`--keep` leaves the sandbox in place so you can look at it afterwards.
-
-**A stack a job waits on,** kept for the next job on a persistent runner:
-
-```sh
-sbx create "$BRANCH" && sbx ready "$BRANCH"    # ready blocks until every service answers
-eval "$(sbx env "$BRANCH")"
-./run-tests.sh
-```
-
-On a shared runner, name sandboxes after branch *and* job; see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#on-a-shared-or-persistent-ci-runner).
+To keep a stack between jobs on a persistent runner, `sbx create` it once and run `sbx ready`
+(blocks until every service answers) before each job. On a shared runner, name sandboxes after branch and job
+([why](TROUBLESHOOTING.md#on-a-shared-or-persistent-ci-runner)).
 
 ## Seed once, fork many
 
-Loading data is the slow part, not starting a container. Seed one sandbox, take a snapshot (a copy
-of every service's files), and fork as many independent copies as you need.
-
-Seed in the spec, so the starting state is reproducible. `init` runs once, after the first
-healthy check:
-
-```json
-{ "version": 1,
-  "services": { "postgres": {
-    "image": "postgres:16-alpine", "ports": [5432], "volume": "/var/lib/postgresql/data",
-    "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
-    "health": "psql -U app -d app -c 'select 1'",
-    "files": { "./schema.sql": "/tmp/schema.sql" },
-    "init": [ "psql -U app -d app -f /tmp/schema.sql" ] } } }
-```
+Seed one sandbox, snapshot it (a copy of every service's `volume`), and fork copies. Seed with
+`init` commands, which run once after the first healthy check, as in
+[`examples/postgres`](../examples/postgres/sandbox.json).
 
 ```sh
-sbx create main                # seeded by init, once
+sbx create main --template postgres   # seeded by init, once
 sbx snapshot main golden
 sbx fork golden agent-1        # its own copy and its own ports
 sbx fork golden agent-2        # a write in one is invisible to the others
 ```
 
-Or seed a running sandbox by hand:
-
-```sh
-sbx cp   main postgres ./schema.sql :/tmp/schema.sql
-sbx exec main postgres psql -U app -d app -f /tmp/schema.sql
-```
-
-A snapshot copies files, not memory, so forks start cold against warm data. It does not pause the
-service; stop writes first if the copy must be exact
-([why](TROUBLESHOOTING.md#a-fork-is-missing-the-write-i-just-made)).
-
-**Known issue in v0.14.0 (docker):** `sbx snapshot` fails with "the source is empty or does not
-exist" when any service in the sandbox has no `volume`, such as the `web-stack` template's Redis
-or a service added with `sbx add`. Until it is fixed, snapshot sandboxes whose services all
-declare a `volume`, like the one above.
-
-## Save and resume a running process
-
-A normal wake starts the service fresh against its disk. To get the *process* back (a REPL's
-variables, a warm cache), take a checkpoint. It uses CRIU (Checkpoint/Restore In Userspace, a
-Linux tool that saves a running process's memory to disk).
-
-```sh
-sbx checkpoint agent-42 mid-thought    # save memory and processes, and freeze them
-sbx resume     agent-42 mid-thought    # bring them back as they were
-```
-
-Linux with a podman runtime only; refused on macOS. Status: [README](../README.md#platform-status).
-To keep memory across ordinary sleeps instead, set `"on_idle": "freeze"`
-([SPEC.md](SPEC.md#on_idle-freeze-keeps-memory-instead)).
-
-## Add a service mid-task
-
-A task that discovers it needs a cache or a second database adds one to its sandbox. The new
-service gets a port from the sandbox's range, sleeps when idle, and is removed with the sandbox.
-
-```sh
-sbx add my-task cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'
-eval "$(sbx env my-task)"
-```
+- To seed a running sandbox by hand, use `sbx cp` and `sbx exec`.
+- A snapshot copies files, not memory, so forks start cold against warm data.
+- It does not pause the service. Stop writes first if the copy must be exact
+  ([why](TROUBLESHOOTING.md#a-fork-is-missing-the-write-i-just-made)).
+- On docker in v0.14.0 it fails when any service has no `volume`
+  ([workaround](TROUBLESHOOTING.md#sbx-snapshot-fails-the-source-is-empty-or-does-not-exist)).
+- To save a running process's memory, use `sbx checkpoint <sandbox> <name>` and `sbx resume`.
+  They use CRIU (a Linux checkpoint tool) and need Linux with podman.
 
 ## Share a preview link
 
-`sbx url` opens a public tunnel (through cloudflared, ngrok or ssh) to one service. The service
-sleeps until somebody opens the link.
+`sbx url` opens a public tunnel (cloudflared, ngrok or ssh) to one service. It sleeps until
+somebody opens the link.
 
 ```sh
-sbx url my-branch web                   # https://....trycloudflare.com; --via ngrok to choose
+sbx url my-branch web                             # https://....trycloudflare.com; --via ngrok to choose
+SBX_FEATURES=waiting-page sbx serve --idle 5m &   # show a "starting" page during an HTTP wake
 ```
 
-A browser waiting on a slow wake sees a blank page. The `waiting-page` preview feature shows a
-"starting" page instead, for HTTP only:
-
-```sh
-SBX_FEATURES=waiting-page sbx serve --idle 5m &
-```
-
-A per-pull-request workflow on a host you own is in [examples/pr-preview](../examples/pr-preview/).
-
-## A browser that sleeps
-
-Headless Chrome is a container that speaks TCP, so it sleeps and wakes like a database. Playwright
-and Puppeteer drive it over CDP (the Chrome DevTools Protocol).
-
-```sh
-sbx create my-branch --template browser
-eval "$(sbx env my-branch)"
-curl "http://$CDP_HOST:$CDP_PORT/json/version"     # wakes it
-```
-
-Wake times, mostly Chrome's own startup, are in
-[BENCHMARKS.md](BENCHMARKS.md#a-heavier-workload-headless-chrome). More: [examples/browser](../examples/browser/).
+A per-pull-request workflow is in [examples/pr-preview](../examples/pr-preview/).
 
 ## Work inside a sandbox
 
-A service image such as postgres has no git or compiler. To build, test or edit *inside* a
-sandbox, declare a service that holds your tools and mounts your source:
+To build or test inside a sandbox, declare a service with your tools that mounts your source:
 
 ```json
 { "version": 1,
@@ -181,91 +77,47 @@ sandbox, declare a service that holds your tools and mounts your source:
 ```
 
 ```sh
-sbx create my-branch
 sbx exec -t my-branch dev sh           # a shell in /work with your code; wakes it first
 sbx exec my-branch dev go test ./...
 ```
 
-- `args` keeps the container running. `ports` is required but can be any port you do not use.
-- `"."` is the spec's directory, and writes go both ways. On macOS and Windows it must be a path
-  the docker VM shares (under your home directory). `mounts` works on docker only.
+- `args` keeps the container running. `ports` is required but can be any unused port.
+- `"."` is the spec's directory, writable both ways. Docker only; on macOS and Windows it must be
+  a path the docker VM shares, such as your home directory.
 
-**From an editor (preview feature).** An ssh connection wakes the sandbox like any other, so VS
-Code Remote-SSH, JetBrains Gateway, `scp` and `rsync` work. The image must run an ssh server,
-for example:
+From an editor (preview feature): use an image that runs an ssh server, such as
+`lscr.io/linuxserver/openssh-server`. `SBX_FEATURES=ssh sbx ssh feature-x --user dev` prints the
+ssh and `code --remote` lines. Remote-SSH, JetBrains Gateway, `scp` and `rsync` wake the sandbox.
+VS Code's Attach to Container and Remote-Tunnels do not.
 
-```json
-{ "version": 1,
-  "services": {
-    "dev": {
-      "image": "lscr.io/linuxserver/openssh-server:latest", "ports": [2222],
-      "mounts": { ".": "/work" },
-      "env": { "USER_NAME": "dev", "PASSWORD_ACCESS": "true", "USER_PASSWORD": "..." } },
-    "postgres": { "image": "postgres:16-alpine", "ports": [5432], "health": "pg_isready -U postgres" } } }
-```
-
-```sh
-SBX_FEATURES=ssh sbx ssh feature-x --user dev   # prints the ssh and `code --remote` lines
-```
-
-An attached editor keeps the sandbox awake (VS Code pings every five seconds); close it and it sleeps.
-VS Code's *Attach to Container* and *Remote-Tunnels* do not wake a sleeping sandbox: they never
-connect to its port. Use Remote-SSH.
-
-**From a devcontainer (preview feature).** Import `.devcontainer/devcontainer.json` as a starting
-spec. What cannot be translated is listed on stderr, so the redirect still writes a clean file.
-
-```sh
-SBX_FEATURES=devcontainer sbx init --from-devcontainer . > sandbox.json
-```
-
-- **Kept:** the image or build, `forwardPorts` and the older `appPort`, `containerEnv` and
-  `remoteEnv`, the workspace folder as a mount, and `onCreateCommand`, `updateContentCommand`,
-  `postCreateCommand`, run once in that order.
-- **Dropped:** Features are not installed; `postStartCommand` and `postAttachCommand` have no
-  equivalent. `remoteUser` is not in the spec: pass it as `sbx ssh --user`.
-- **Refused:** a `dockerComposeFile`. Several services belong in `sandbox.json`; add the database
-  and cache beside the imported service yourself.
+From a devcontainer (preview feature):
+`SBX_FEATURES=devcontainer sbx init --from-devcontainer . > sandbox.json`. It keeps the image or
+build, ports, env, the workspace mount and the create commands, and lists what it skipped on
+stderr. Features, `postStartCommand` and `postAttachCommand` are dropped; pass `remoteUser` as
+`sbx ssh --user`. A `dockerComposeFile` is refused; add those services to `sandbox.json` yourself.
 
 ## Keep a sandbox awake, or limit where it can connect
 
-sbx decides a service is idle by counting bytes through its ports. Work that only happens inside
-(compiling, an agent editing files) sends none, so the sandbox sleeps mid-task. Pick one:
+sbx counts bytes through a service's ports to decide it is idle. Work that happens only inside,
+such as compiling, sends none, so the sandbox can sleep mid-task.
 
 | you want | write in the service |
 |---|---|
 | a longer idle window | `"idle": "30m"` |
-| never sleep (holds its memory the whole time) | `"idle": "never"` |
-| keep memory while asleep, resume without a restart ([measured](BENCHMARKS.md#freeze-and-thaw-v0140)) | `"on_idle": "freeze"` |
+| never sleep (holds its memory) | `"idle": "never"` |
+| keep memory while asleep ([measured](BENCHMARKS.md#freeze-and-thaw-v0140)) | `"on_idle": "freeze"` |
 | reach only these hosts, and stay awake while calling them | `"egress_allow": ["api.anthropic.com", "pypi.org"]` |
-| no outbound network at all | `"egress": "deny"` |
+| no outbound network | `"egress": "deny"` |
 
-"Egress" is traffic going *out* of the sandbox. With `egress_allow`, calls out go through a
-filtering proxy that sbx runs, reach only the listed hosts, and count as activity:
-
-```json
-{ "version": 1,
-  "services": { "agent": {
-    "image": "python:3.12", "ports": [7777],
-    "egress_allow": ["api.anthropic.com", "pypi.org", "github.com"], "idle": "10m" } } }
-```
-
-The allow-list keeps a sandbox awake only while it makes HTTP(S) calls through that proxy. For
-other protocols, or with no allow-list, sbx sees no traffic: use `"idle": "never"` or a longer
-`idle`.
-
-Tighten a running sandbox without a restart: `sbx egress agent-1 --deny '*.pastebin.com'`.
-Rules, limits and the `egress_policy` form are in [SPEC.md](SPEC.md#egress-the-network-a-service-may-reach).
+Egress is traffic going out of the sandbox. With `egress_allow`, HTTP(S) calls go through a
+filtering proxy and count as activity. Other protocols do not, so give those a longer `idle`.
+Tighten a running sandbox with `sbx egress agent-1 --deny '*.pastebin.com'`. Rules are in
+[SPEC.md](SPEC.md#egress-the-network-a-service-may-reach).
 
 ## AI agents
 
-A coding agent (Claude Code, Cursor, Codex and others) can give itself databases and services
-with the same commands a person uses. Three ways in:
-
-- **Plain shell commands**: paste the block below into your agent's instructions. Nothing to install
-  beyond sbx.
-- **MCP** (Model Context Protocol, the standard way to hand an AI app a set of tools): `sbx mcp`.
-- **OpenSandbox SDKs**: code that already creates sandboxes through an SDK.
+A coding agent (Claude Code, Cursor, Codex) can create its own sandboxes. Paste the block below
+into its instructions, register `sbx mcp` for MCP tools, or point OpenSandbox SDK code at sbx.
 
 ### Paste this into your agent's instructions
 
@@ -308,8 +160,7 @@ Rules:
 - If a command fails, run `sbx doctor` before guessing: it says whether docker is even up.
 ```
 
-The block assumes one `sbx serve` per machine. `sbx ready` exists because an open port is not yet
-a database that answers. Output an agent can parse:
+JSON output an agent can parse. Every refusal also names the field or flag behind it.
 
 | command | gives |
 |---|---|
@@ -319,23 +170,14 @@ a database that answers. Output an agent can parse:
 | `sbx history [sandbox] --json` | newline-delimited wakes, sleeps and changes |
 | `sbx egress <sandbox> --json` | the network policy in force |
 
-Every refusal names the field or flag it came from. The ones agents hit most: `build`,
-`egress` or `sbx url` on Kubernetes; lifting a CPU or memory limit on a running docker container;
-`sbx connect` over plain `http://` to a remote host; a non-root image on firecracker.
-
 ### MCP
 
-`sbx mcp` is an MCP server that your client starts as a subprocess. It has
-**the same 19 tools as OpenSandbox's own MCP server**: same names, arguments and results. It
-talks to the OpenSandbox API, so **the daemon must serve that API first**:
+MCP (Model Context Protocol) is how AI apps are given tools. `sbx mcp` has the same 19 tools as
+OpenSandbox's own MCP server, with the same names, arguments and results. It needs the daemon to
+serve the OpenSandbox API:
 
 ```sh
 sbx serve --osb-addr 127.0.0.1:8080 &     # writes an API key to ~/.sbx/osb/key
-```
-
-Then register it with your client:
-
-```sh
 claude mcp add sbx -- sbx mcp             # Claude Code; sbx mcp reads the key file itself
 codex mcp add sbx -- sbx mcp              # Codex CLI
 claude mcp add sbx -e SBX_OSB_KEY="$KEY" -- sbx mcp --url https://osb.example.dev   # a remote server
@@ -344,13 +186,10 @@ claude mcp add sbx -e SBX_OSB_KEY="$KEY" -- sbx mcp --url https://osb.example.de
 Cursor (`.cursor/mcp.json`), or any client that reads an `mcpServers` block:
 
 ```json
-{ "mcpServers": { "sbx": { "command": "sbx", "args": ["mcp"],
-                           "env": { "SBX_OSB_URL": "http://127.0.0.1:8080" } } } }
+{ "mcpServers": { "sbx": { "command": "sbx", "args": ["mcp"], "env": { "SBX_OSB_URL": "http://127.0.0.1:8080" } } } }
 ```
 
-`sbx mcp` finds its server and key in this order:
-
-| setting | order |
+| setting | where `sbx mcp` looks, in order |
 |---|---|
 | `--url` | `SBX_OSB_URL`, `OPEN_SANDBOX_DOMAIN`, `http://127.0.0.1:8080` |
 | `--key` | `SBX_OSB_KEY`, `OPEN_SANDBOX_API_KEY`, then `~/.sbx/osb/key` for a loopback URL only |
@@ -361,28 +200,24 @@ Cursor (`.cursor/mcp.json`), or any client that reads an `mcpServers` block:
 | commands | `command_run` `command_interrupt` |
 | files | `file_read` `file_write` `file_delete` `file_search` `file_create_directories` `file_delete_directories` `file_move` `file_replace_contents` |
 
-Because the names match, swapping upstream's `opensandbox-mcp` for `sbx mcp` needs no other
-change. Differences: any `sandbox_id` works in any tool (no `connect_if_missing` needed);
-cancelling `command_run` interrupts the command; `file_read` and `file_write` take `utf-8` or
-`latin-1` only (for another encoding, run `iconv` through `command_run`). It speaks MCP `2025-11-25` back to `2024-11-05` and logs to stderr only.
+It replaces upstream's `opensandbox-mcp` with no other change. Any `sandbox_id` works in any tool,
+and cancelling `command_run` interrupts the command. `file_read` and `file_write` take `utf-8` or
+`latin-1` only. It speaks MCP `2025-11-25` back to `2024-11-05` and logs to stderr only.
 
 ### OpenSandbox SDKs
 
-[OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) is an open-source API standard for
+[OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) is an open API standard for
 AI-agent sandboxes, with SDKs in 5 languages. `sbx serve --osb-addr` serves its lifecycle API, so
-code written for those SDKs runs against sbx on your own machine, with no account. The claim is
-checked by upstream's own test suite ([test/osb](../test/osb/)).
+SDK code runs on your machine with no account. Upstream's own test suite checks this
+([test/osb](../test/osb/)).
 
 ```sh
 sbx serve --osb-addr 127.0.0.1:8080 &
-export OPEN_SANDBOX_DOMAIN=127.0.0.1:8080
-export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"
+export OPEN_SANDBOX_DOMAIN=127.0.0.1:8080 OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"
 ```
 
-The key is always required, loopback included ([why](../SECURITY.md#access-and-exposure)). Set your
-own with `--osb-key` or `SBX_OSB_KEY`; otherwise one is generated once into `~/.sbx/osb/key`.
-
-Python (`pip install opensandbox`, written against SDK 1.1.0):
+The key is required even on loopback ([why](../SECURITY.md#access-and-exposure)); `--osb-key`
+sets your own. Python (`pip install opensandbox`, written against SDK 1.1.0):
 
 ```python
 from opensandbox import SandboxSync
@@ -395,28 +230,18 @@ finally:
     sandbox.destroy()                                # removes the sandbox, closes the client
 ```
 
-**Warm pools.** A warm pool is a set of sandboxes created ahead of time, so a create is answered
-from the pool in milliseconds ([BENCHMARKS.md](BENCHMARKS.md#headline-numbers)).
-`sbx serve --osb-pool IMAGE[=N]` keeps N ready (default 8). Only an identical create hits the pool:
-
-- Members are keyed on image, entrypoint and `resourceLimits`, plus ports, platform and `sbx.idle`.
-- The pool is built with the SDK defaults: entrypoint `["tail", "-f", "/dev/null"]`, `cpu: "1"`,
-  `memory: "2Gi"`. A plain SDK `create(image)` sends exactly those, so it hits.
-- A request that omits `resourceLimits` or sets another entrypoint takes the slow path, and the
-  daemon log says why:
-  `osb: pool miss for image "python:3.11-slim": resourceLimits.cpu is unset, the pool's is "1" - it takes the cold path…`
-- On a Mac or Windows with `--provider firecracker`, the pool is refused.
-
-Other operator flags (`--osb-host-paths`, `--osb-pool-freeze`) are in [CLI.md](CLI.md#sbx-serve);
-the security model is in [SECURITY.md](../SECURITY.md).
+Warm pools: `sbx serve --osb-pool IMAGE[=N]` keeps N sandboxes (default 8) ready, so a matching
+create returns in milliseconds ([BENCHMARKS.md](BENCHMARKS.md#headline-numbers)). A create hits only if image, entrypoint, `resourceLimits`, ports, platform and `sbx.idle` match.
+The pool uses the SDK defaults (entrypoint `["tail", "-f", "/dev/null"]`, `cpu: "1"`,
+`memory: "2Gi"`), so a plain `create(image)` hits. Each miss is logged with the field that
+differed. The pool is refused with `--provider firecracker` on a Mac or Windows. Other flags:
+[CLI.md](CLI.md#sbx-serve).
 
 ## Stronger isolation with microVMs
 
-A container shares the host's kernel, so a kernel bug inside it can reach the host. A microVM is a
-small virtual machine with its own kernel; [Firecracker](https://firecracker-microvm.github.io/)
-is the open-source microVM monitor AWS built for Lambda. Use it for code you did not write:
-agent output, user submissions. sbx starts each Firecracker process through its jailer, which
-confines it to its own directory, user id and network namespace.
+A container shares the host's kernel. A microVM has its own, and
+[Firecracker](https://firecracker-microvm.github.io/) is the microVM monitor AWS built for Lambda.
+Use it for code you did not write.
 
 ```sh
 sbx fc backend                                  # can this machine run microVMs, and how?
@@ -424,36 +249,24 @@ sbx serve --provider firecracker --idle 5m &
 sbx create untrusted --spec sandbox.json --provider firecracker
 ```
 
-On Linux with `/dev/kvm` it runs directly. On an M3 or later Mac, or Windows 11, it runs inside a
-helper VM (a small Linux VM that sbx starts on demand with lima, colima or WSL2). What is tested
-where: [README platform status](../README.md#platform-status). Some spec fields are refused and
-the image must run as root: [SPEC.md](SPEC.md#on---provider-firecracker).
-
-Lighter options: `--isolation gvisor` (gVisor, a user-space kernel that intercepts the container's
-system calls) or `--isolation kata` (Kata Containers, each container in a lightweight VM). Each is
-refused with a reason when its runtime is not installed.
+- Linux with `/dev/kvm` runs it directly. An M3+ Mac or Windows 11 runs it in a helper VM.
+- The image must run as root, and some fields are refused ([SPEC.md](SPEC.md#on---provider-firecracker)).
+- What is tested where: [platform status](ARCHITECTURE.md#platform-status).
+- Lighter options: `--isolation gvisor` (a user-space kernel) or `--isolation kata` (a lightweight
+  VM per container). Each is refused with a reason when its runtime is missing.
 
 ## Kubernetes
 
-The same `sandbox.json` runs in a cluster. sbx drives `kubectl`, so it uses your current context.
-
-```sh
-sbx create my-branch --provider kubernetes --namespace sbx
-sbx env    my-branch --provider kubernetes
-```
-
-Each service becomes a Deployment and a Service; `exports` point at cluster-internal addresses.
-The daemon's job in the cluster is done by the activator, `sbx serve` running as a Deployment: it
-holds an incoming connection, scales the workload up from zero, and passes the bytes through.
-Install it once per cluster from [`deploy/activator.yaml`](../deploy/activator.yaml); build its
-image first as [`deploy/Dockerfile`](../deploy/Dockerfile) describes. Some fields are refused rather than half-applied,
-and `sbx url` points you at an Ingress: see [SPEC.md](SPEC.md#provider-support).
+The same `sandbox.json` runs in a cluster, through `kubectl` and your current context:
+`sbx create my-branch --provider kubernetes --namespace sbx`, then `sbx env` with the same
+`--provider`. Each service becomes a Deployment and a Service. Install the in-cluster daemon once from
+[`deploy/activator.yaml`](../deploy/activator.yaml), after building its image
+([`deploy/Dockerfile`](../deploy/Dockerfile)). Refused fields are in [SPEC.md](SPEC.md#provider-support).
 
 ## Deploy on a one-port platform
 
-Some platforms run one container behind one HTTPS port. `sbx pack` turns each service into a
-build context for such a platform, and `sbx connect` gives you local ports that tunnel to them.
-Use it when your laptop cannot run the stack, or to keep an agent off your machine.
+Some platforms run one container behind one HTTPS port. `sbx pack` makes a build context per
+service, and `sbx connect` gives you local ports that tunnel to them.
 
 <img src="connect.svg" width="820" alt="How sbx connect works: psql dials 127.0.0.1:5432 on your laptop, sbx connect carries that TCP stream over one authenticated HTTPS WebSocket to the single port the platform routes, and sbx serve --front hands it to a postgres that is never published.">
 
@@ -465,50 +278,20 @@ SBX_CONNECT_TOKEN_DB=... SBX_CONNECT_TOKEN_CACHE=... \
   sbx connect db=https://db.example.dev cache=https://cache.example.dev
 #   db     ->  127.0.0.1:5432
 #   cache  ->  127.0.0.1:6379
+sbx ui --connect db=https://db.example.dev   # wake, sleep, limit, remove, logs, forward ports
 ```
 
-Watch and control the deployments from one dashboard:
+To reach something only the container can route to, such as a private managed database, deploy
+`sbx serve --connect-addr=":$PORT" --behind-proxy --front db=10.0.4.7:3306`.
 
-```sh
-sbx ui --connect db=https://db.example.dev --connect cache=https://cache.example.dev
-```
-
-On the selected row: `Enter` wakes, `s` sleeps, `L` sets a limit, `d` removes (after a
-confirmation), `l` shows logs, and `f` forwards the service's ports to this machine so `psql` or
-`redis-cli` can reach it locally.
-
-`--front` reaches something the container can route to and you cannot, such as a managed
-database on a private network:
-
-```sh
-sbx serve --connect-addr=":$PORT" --behind-proxy --front db=10.0.4.7:3306
-```
-
-- **The token is the whole of the security.** With `--front HOST:PORT` it guards everything that
-  container can reach on those ports. Read [SECURITY.md](../SECURITY.md) first.
-- **No volume means no data** on most such platforms, which replace containers freely.
-- **Every round trip crosses the internet.** A chatty test suite will notice.
+- The token is the only protection, for everything the container can reach. Read [SECURITY.md](../SECURITY.md).
+- Without a volume, most such platforms lose data when they replace the container.
+- Every round trip crosses the internet.
 
 ## Coming from docker compose, Testcontainers or E2B
 
-**docker compose.** Most service fields map one to one; the full table and a worked example are
-in [SPEC.md](SPEC.md#coming-from-docker-compose). The differences that matter: you declare only
-the container port (the host port is assigned), there is no `up` or `down`, and `exports` keeps
-the variable names your scripts already read.
-
-**Testcontainers** (a library that starts containers from inside test code). Instead of starting
-the container in the test, wrap the test command, and read the address from the environment:
-
-```sh
-sbx with test-db --template postgres -- npm test   # tests read DATABASE_HOST / DATABASE_PORT
-```
-
-The sandbox is removed when the command exits, as a Testcontainers container is. Unlike one, it
-can also stay between runs (`sbx create` once, then `sbx ready` per run), asleep in between.
-
-**E2B, Daytona and other hosted sandbox SDKs.** Their SDKs speak their own APIs, which sbx does not
-serve. sbx serves the OpenSandbox API, whose SDK has the same shape: create a sandbox from an
-image, run commands, read and write files, kill it. Port the calls to the OpenSandbox SDK
-([above](#opensandbox-sdks)) and point it at `sbx serve --osb-addr`. Code already written for
-OpenSandbox needs only the three environment variables. How the platforms compare:
-[COMPARISON.md](COMPARISON.md).
+- docker compose: most fields map one to one ([SPEC.md](SPEC.md#coming-from-docker-compose)).
+  Declare only the container port. There is no `up` or `down`.
+- Testcontainers: wrap the test command, as in `sbx with test-db --template postgres -- npm test`.
+- E2B, Daytona: sbx does not serve their APIs. Port the calls to the
+  [OpenSandbox SDK](#opensandbox-sdks), which has the same shape ([COMPARISON.md](COMPARISON.md)).
