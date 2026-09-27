@@ -35,6 +35,11 @@ func Main(args []string) int {
 	return run(args, os.Stderr)
 }
 
+// beforeServe runs just before execd starts answering requests. It does nothing in production;
+// a test sets it to signal execd at that exact moment, which a timing-based test would only
+// hit by luck.
+var beforeServe = func() {}
+
 func run(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("execd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -114,16 +119,21 @@ func run(args []string, stderr io.Writer) int {
 
 	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 30 * time.Second, ErrorLog: logger, ConnContext: connContext}
 
+	// The handlers go in before the first request can be answered. Registered after, a SIGTERM
+	// sent as soon as execd answered - a stop right after a start - landed in the gap and took
+	// Go's default action: the process died with no graceful shutdown and exit -1.
+	sigs := make(chan os.Signal, 16)
+	signal.Notify(sigs, forwarded...)
+	defer signal.Stop(sigs)
+
 	// One slot per listener, so a listener that stops never blocks on a send nobody reads.
 	served := make(chan error, len(lns))
+
+	beforeServe()
 
 	for _, ln := range lns {
 		go func() { served <- hs.Serve(ln) }()
 	}
-
-	sigs := make(chan os.Signal, 16)
-	signal.Notify(sigs, forwarded...)
-	defer signal.Stop(sigs)
 
 	if len(child) == 0 {
 		return serveOnly(hs, served, sigs, logger)

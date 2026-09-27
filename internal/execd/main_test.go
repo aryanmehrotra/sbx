@@ -27,6 +27,14 @@ import (
 func TestMain(m *testing.M) {
 	switch os.Getenv("SBX_EXECD_TEST_MAIN") {
 	case "run":
+		if os.Getenv("SBX_EXECD_TEST_SIGTERM_AT_SERVE") == "1" {
+			beforeServe = func() {
+				_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				// Delivery to a process is asynchronous; give it time to land before serving.
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+
 		os.Exit(run(strings.Split(os.Getenv("SBX_EXECD_TEST_ARGS"), "\x1f"), os.Stderr))
 	case "reaper":
 		os.Exit(reaperScenario())
@@ -191,6 +199,17 @@ func TestExecdWithoutAChildServesUntilSIGTERM(t *testing.T) {
 
 	if code := waitExit(t, cmd, 20*time.Second); code != 0 {
 		t.Fatalf("exit %d; stderr:\n%s", code, stderr)
+	}
+}
+
+// A SIGTERM that arrives the moment execd starts serving is a graceful stop, not a kill. It
+// used to land before the handlers were registered: macOS CI caught it as exit -1 in
+// TestExecdWithoutAChildServesUntilSIGTERM, once, on a slow runner.
+func TestExecdHandlesASIGTERMThatArrivesAsItStartsServing(t *testing.T) {
+	cmd, stderr := startExecd(t, []string{"SBX_EXECD_TEST_SIGTERM_AT_SERVE=1"}, "--addr", freeAddr(t))
+
+	if code := waitExit(t, cmd, 20*time.Second); code != 0 {
+		t.Fatalf("exit %d, want 0 (a handled SIGTERM); stderr:\n%s", code, stderr)
 	}
 }
 
