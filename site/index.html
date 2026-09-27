@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>sbx: sandboxes that sleep at 0 B until something connects</title>
-<meta name="description" content="Each branch, test run or AI agent gets its own sandbox: Postgres, Redis, a browser or agent code. Idle ones use 0 B of RAM; the first connection wakes them. One Go binary.">
+<title>sbx: self-hosted microVM sandboxes for AI agents</title>
+<meta name="description" content="sbx gives each AI agent, test run or branch its own sandbox on your machine or cluster. Idle sandboxes sleep at 0 B RAM and wake on the first connection.">
 <link rel="canonical" href="https://aryanmehrotra.github.io/sbx/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://aryanmehrotra.github.io/sbx/">
-<meta property="og:title" content="sbx: sandboxes that sleep at 0 B until something connects">
-<meta property="og:description" content="Sleeps at 0 B. Wakes the moment anything connects. Written in Go: one binary, zero dependencies, no SDK.">
+<meta property="og:title" content="sbx: self-hosted sandboxes for AI agents">
+<meta property="og:description" content="A fresh microVM or container for each agent. Asleep at 0 B, awake on the first connection. Written in Go, one binary.">
 <meta property="og:image" content="https://aryanmehrotra.github.io/sbx/assets/social-preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
@@ -47,10 +47,10 @@ nav { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
 nav a { text-decoration: none; color: var(--muted); }
 section { padding: 72px 0; border-bottom: 1px solid var(--line); }
 section:last-of-type { border-bottom: 0; }
-h1 { font-size: clamp(32px, 3.8vw, 46px); line-height: 1.08; letter-spacing: -1.5px; margin: 0 0 20px; }
+h1 { text-wrap: balance; font-size: clamp(32px, 3.8vw, 46px); line-height: 1.08; letter-spacing: -1.5px; margin: 0 0 20px; }
 h2 { font-size: clamp(24px, 3vw, 32px); line-height: 1.2; letter-spacing: -.5px; margin: 0 0 12px; }
 h3 { font-size: 18px; margin: 0 0 6px; }
-.lede { font-size: 19px; color: var(--muted); max-width: 34em; margin: 0 0 28px; }
+.lede { text-wrap: pretty; font-size: 19px; color: var(--muted); max-width: 34em; margin: 0 0 28px; }
 .sub { color: var(--muted); max-width: 40em; margin: 0 0 28px; }
 .hero > *, .split > *, .cols > *, .install { min-width: 0; }
 .hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 48px; align-items: center; }
@@ -207,9 +207,8 @@ footer .note { margin-left: auto; }
 <section>
   <div class="wrap hero">
     <div>
-      <h1>Sandboxes that sleep at 0&nbsp;B until something connects.</h1>
-      <p class="lede">Every branch, test run and AI agent gets its own Postgres, Redis, browser or code sandbox.
-        Point <code>psql</code>, Playwright or your agent at one that is asleep: sbx holds the connection while it wakes, then hands it over. Written in Go, no SDK, no account.</p>
+      <h1>Self-hosted sandboxes for AI agents.</h1>
+      <p class="lede">A fresh microVM or container for each agent. Asleep at 0&nbsp;B, awake on the first connection.</p>
 
       <div class="install" id="install">
         <input type="radio" name="inst" id="t-brew" checked>
@@ -222,12 +221,12 @@ footer .note { margin-left: auto; }
         <div class="cmd c-curl"><code>curl -fsSL https://raw.githubusercontent.com/aryanmehrotra/sbx/main/scripts/install.sh | sh</code><button class="copy" type="button" hidden>Copy</button></div>
         <div class="cmd c-go"><code>go install github.com/aryanmehrotra/sbx@latest</code><button class="copy" type="button" hidden>Copy</button></div>
       </div>
-      <p class="small">A single static Go binary for macOS and Linux. Needs Docker or a Kubernetes cluster; <code>sbx doctor</code> tells you what your machine supports.</p>
+      <p class="small">One Go binary for macOS and Linux. Needs Docker; microVMs need Linux with KVM.</p>
     </div>
 
-    <div class="term" role="img" aria-label="A terminal: a Postgres sandbox is created, sleeps at 0 B, and a plain psql query wakes it and is served in 463 ms.">
+    <div class="term" role="img" aria-label="A terminal: sbx serves the OpenSandbox API with a warm pool; an agent script gets a sandbox in 48 ms, runs Python in it in 109 ms and 26 ms, then destroys it.">
       <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="ln" style="--i:0"><span class="p">$</span> sbx create feature-x --template postgres</span><span class="ln" style="--i:1">  postgres     <span class="o">✓ 127.0.0.1:20000</span></span><span class="ln" style="--i:2"> </span><span class="ln" style="--i:3"><span class="d"># nobody connects for a few seconds</span></span><span class="ln" style="--i:4"><span class="i">INFO</span> feature-x/postgres  slept - idle for 8s</span><span class="ln" style="--i:5">  <span class="o">asleep - 0 B of memory, the volume untouched</span></span><span class="ln" style="--i:6"> </span><span class="ln" style="--i:7"><span class="p">$</span> psql postgres://app:app@127.0.0.1:20000/app \</span><span class="ln" style="--i:8">    -tAc "select 'hello'"</span><span class="ln" style="--i:9">hello</span><span class="ln" style="--i:10"><span class="i">INFO</span> feature-x/postgres  woke in 399ms</span><span class="ln" style="--i:11">  <span class="o">served in 463ms - the client waited,</span></span><span class="ln" style="--i:12">  <span class="o">it was never refused</span></span><span class="ln" style="--i:13"><span class="p">$</span> <span class="cursor"></span></span></pre>
+<pre><span class="ln" style="--i:0"><span class="p">$</span> sbx serve --osb-addr 127.0.0.1:8080 \</span><span class="ln" style="--i:1">    --osb-pool python:3.11-slim=4 &amp;</span><span class="ln" style="--i:2"> </span><span class="ln" style="--i:3"><span class="p">$</span> python agent.py</span><span class="ln" style="--i:4"><span class="d"># SandboxSync.create, then two commands.run</span></span><span class="ln" style="--i:5">sandbox osb-38c3ece7 ready in <span class="o">48 ms</span> (warm pool)</span><span class="ln" style="--i:6">python 3.11.16, ran in <span class="o">109 ms</span></span><span class="ln" style="--i:7">499999500000, ran in <span class="o">26 ms</span></span><span class="ln" style="--i:8">destroyed; the pool refills in the background</span><span class="ln" style="--i:9"> </span><span class="ln" style="--i:10"><span class="p">$</span> <span class="cursor"></span></span></pre>
     </div>
   </div>
 </section>
@@ -235,13 +234,13 @@ footer .note { margin-left: auto; }
 <section class="rv">
   <div class="wrap">
     <h2>Pay for the one you're using.</h2>
-    <p class="sub">Twenty branch databases on one machine cost what one daemon costs. Measured on sbx v0.14.0, a 4 vCPU Linux VM with Docker 29.</p>
+    <p class="sub">Idle sandboxes hold no memory, so twenty on one machine cost what the one in use costs. Measured on sbx v0.14.0, a 4 vCPU Linux VM with Docker 29.</p>
     <div class="fleet" role="img" aria-label="Twenty branch sandboxes on one machine. Most are asleep at 0 B; only the one a client is using is awake."><div class="tile awake"><span class="nm">main</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">main</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">feat-auth</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">feat-auth</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:10s"><span class="nm">feat-billing</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">feat-billing</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:20s"><span class="nm">fix-login</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">fix-login</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:0s"><span class="nm">pr-412</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">pr-412</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">pr-418</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">pr-418</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">pr-421</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">pr-421</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:15s"><span class="nm">agent-01</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-01</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-02</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-02</span><span class="st">awake · serving</span></span></div><div class="tile blip" style="--d:5s"><span class="nm">agent-03</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-03</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-04</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-04</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-05</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-05</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">agent-06</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">agent-06</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">review-99</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">review-99</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">exp-cache</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">exp-cache</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">spike-kv</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">spike-kv</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">docs-site</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">docs-site</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">release-0.15</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">release-0.15</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">hotfix-7</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">hotfix-7</span><span class="st">awake · serving</span></span></div><div class="tile"><span class="nm">perf-idx</span><span class="st">asleep · 0 B</span><span class="on" aria-hidden="true"><span class="nm">perf-idx</span><span class="st">awake · serving</span></span></div></div>
     <p class="legend">Each one wakes when something connects to it, and sleeps again when nobody has for a few minutes.</p>
     <div class="stats">
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#head-to-head"><b>0 B</b><span>RAM per sleeping sandbox</span></a>
-      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#sbx-by-itself"><b>348 ms</b><span>to wake Postgres (Redis: 216 ms)</span></a>
-      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#head-to-head"><b>20/20</b><span>first connections served while waking</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#sandboxes-for-ai-agents"><b>307 ms</b><span>create to first command (OpenSandbox's server: 1,417 ms)</span></a>
+      <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/BENCHMARKS.md#sbx-by-itself"><b>12.8 ms</b><span>a sandbox from the warm pool</span></a>
       <a href="https://github.com/aryanmehrotra/sbx/blob/main/go.mod"><b>Go</b><span>standard library only, zero dependencies</span></a>
     </div>
     <div class="chart">
@@ -255,52 +254,28 @@ footer .note { margin-left: auto; }
 
 <section class="rv">
   <div class="wrap">
-    <h2>Three ways people use it.</h2>
+    <h2>What people use it for.</h2>
     <div class="cols">
       <div>
-        <h3>A database per branch</h3>
-        <p>Every branch or pull request gets its own Postgres. Switch branches and the rest go back to sleep.</p>
-<pre class="code">sbx create my-branch \
-  --template postgres
-eval "$(sbx env my-branch)"
-PGPASSWORD=app psql -U app -d app</pre>
+        <h3>A fresh VM per agent</h3>
+        <p>Each sandbox boots its own Firecracker microVM from the image, with its own kernel. Agents use the OpenSandbox SDKs, in five languages.</p>
+<pre class="code">sbx serve --provider firecracker \
+  --osb-addr 127.0.0.1:8080 &amp;</pre>
       </div>
       <div>
-        <h3>A copy per AI agent</h3>
-        <p>Seed one database, snapshot it, and give each agent its own fork. A write in one never reaches another.</p>
-<pre class="code">sbx snapshot my-branch seeded
-sbx fork seeded agent-1
-sbx fork seeded agent-2</pre>
+        <h3>Tools for your coding agent</h3>
+        <p>Claude Code, Cursor or Codex create sandboxes, run commands and move files through sbx's MCP server.</p>
+<pre class="code">claude mcp add sbx -- sbx mcp</pre>
       </div>
       <div>
-        <h3>A fixture per test run</h3>
-        <p>Create, run the tests, remove it. Even when the tests fail, nothing is left behind.</p>
+        <h3>Databases for branches and tests</h3>
+        <p>A Postgres per branch that <code>psql</code> wakes, or one per test run that is always removed.</p>
 <pre class="code">sbx with test-db \
   --template postgres \
   -- go test ./...</pre>
       </div>
     </div>
-  </div>
-</section>
-
-<section class="rv">
-  <div class="wrap">
-    <h2>Built for AI agents, on your machine.</h2>
-    <p class="sub">sbx speaks <a href="https://github.com/opensandbox-group/OpenSandbox">OpenSandbox</a>, an open API for agent sandboxes with SDKs in five languages, and ships an MCP server so Claude Code, Cursor or Codex can create and use sandboxes as tools. For code you don't trust, <code>--provider firecracker</code> gives each sandbox its own kernel in a microVM.</p>
-    <div class="split">
-<pre class="code">sbx serve --osb-addr 127.0.0.1:8080 \
-  --osb-pool python:3.11-slim=4 &amp;
-
-# hand sandboxes to your coding agent
-claude mcp add sbx -- sbx mcp</pre>
-<pre class="code">from opensandbox import SandboxSync
-
-sandbox = SandboxSync.create("python:3.11-slim")
-run = sandbox.commands.run("python -c 'print(6 * 7)'")
-print(run.logs.stdout[0].text)   # 42
-sandbox.destroy()</pre>
-    </div>
-    <p class="small" style="margin-top:16px">Same SDK, same image: create to first command in 307 ms on sbx, 1,417 ms on OpenSandbox's own server. Its end-to-end suite runs against sbx in CI. <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents">Agent guide</a></p>
+    <p class="small" style="margin-top:20px">OpenSandbox's own end-to-end suite runs against sbx in CI. <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md#ai-agents">Agent guide</a> · <a href="https://github.com/aryanmehrotra/sbx/blob/main/docs/GUIDES.md">All guides</a></p>
   </div>
 </section>
 
@@ -309,7 +284,7 @@ sandbox.destroy()</pre>
     <h2>How it works.</h2>
     <p class="sub">A sleeping sandbox's port belongs to sbx. The first connection is held open while the service starts, then handed over. Nothing in your code changes.</p>
     <figure class="flow">
-      <svg viewBox="0 0 960 300" role="img" aria-label="psql connects to a sleeping Postgres through sbx. sbx holds the connection while Postgres starts, then hands over the same socket and the query is served. After a few idle minutes Postgres sleeps again at 0 B.">
+      <svg viewBox="0 0 960 300" role="img" aria-label="An agent connects to a sleeping sandbox through sbx. sbx holds the connection while the sandbox wakes, then hands over the same socket and the request is served. After a few idle minutes it sleeps again at 0 B.">
         <line class="wire" x1="250" y1="130" x2="370" y2="130"/>
         <line class="wire" x1="590" y1="130" x2="710" y2="130"/>
         <text class="lbl" x="310" y="116" text-anchor="middle">connects</text>
@@ -317,8 +292,8 @@ sandbox.destroy()</pre>
         <line class="pipe" x1="250" y1="130" x2="710" y2="130"/>
 
         <rect class="box" x="30" y="80" width="220" height="100" rx="12"/>
-        <text class="t" x="140" y="124" text-anchor="middle">psql</text>
-        <text class="s" x="140" y="150" text-anchor="middle">your client, unchanged</text>
+        <text class="t" x="140" y="124" text-anchor="middle">agent</text>
+        <text class="s" x="140" y="150" text-anchor="middle">SDK, psql or any client</text>
 
         <rect class="ring" x="370" y="80" width="220" height="100" rx="12"/>
         <rect class="box sb" x="370" y="80" width="220" height="100" rx="12"/>
@@ -328,23 +303,23 @@ sandbox.destroy()</pre>
         <text class="s f a3" x="480" y="150" text-anchor="middle">joined, passing bytes</text>
 
         <rect class="box pg" x="710" y="80" width="220" height="100" rx="12"/>
-        <text class="t" x="820" y="124" text-anchor="middle">postgres</text>
+        <text class="t" x="820" y="124" text-anchor="middle">sandbox</text>
         <text class="s f a1" x="820" y="150" text-anchor="middle">asleep · <tspan class="num">0 B</tspan></text>
         <text class="s f a2" x="820" y="150" text-anchor="middle"><tspan class="warm">●</tspan> starting…</text>
         <text class="s f a3" x="820" y="150" text-anchor="middle"><tspan class="ok">●</tspan> serving</text>
 
         <circle class="dot d1" cx="262" cy="130" r="7"/>
 
-        <text class="cap f c1" x="480" y="250" text-anchor="middle">psql connects to a sandbox that is asleep</text>
-        <text class="cap f c2" x="480" y="250" text-anchor="middle">sbx holds the connection open while Postgres starts</text>
-        <text class="cap f c3" x="480" y="250" text-anchor="middle">Same socket, handed over: the query is served, never refused</text>
+        <text class="cap f c1" x="480" y="250" text-anchor="middle">An agent connects to a sandbox that is asleep</text>
+        <text class="cap f c2" x="480" y="250" text-anchor="middle">sbx holds the connection open while it wakes</text>
+        <text class="cap f c3" x="480" y="250" text-anchor="middle">Same socket, handed over: the request is served, never refused</text>
         <text class="cap f c4" x="480" y="250" text-anchor="middle">Nobody connects for a while: back to sleep at 0 B</text>
       </svg>
       <figcaption>
         <ol class="steps">
           <li>A client connects to a sleeping sandbox.</li>
           <li>sbx accepts and holds the connection while the container or microVM starts.</li>
-          <li>Once it's healthy, sbx passes the same socket through. Postgres takes about 348 ms.</li>
+          <li>Once it's healthy, sbx passes the same socket through. A Postgres takes about 348 ms.</li>
           <li>After a few idle minutes it stops again. The data stays on disk.</li>
         </ol>
       </figcaption>
