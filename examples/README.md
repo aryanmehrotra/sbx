@@ -3,8 +3,14 @@
 Each of these is a `sandbox.json` you can copy into a repo and use as-is.
 
 ```sh
-cp examples/<one>/sandbox.json .        # if you cloned the repo
-sbx init --template <one> > sandbox.json   # if you only have the binary
+sbx create my-branch --template <one>      # straight from the binary, nothing on disk
+eval "$(sbx env my-branch)"
+```
+
+To commit one to your repo and edit it:
+
+```sh
+sbx init --template <one> > sandbox.json   # or: cp examples/<one>/sandbox.json .
 sbx create my-branch
 eval "$(sbx env my-branch)"
 ```

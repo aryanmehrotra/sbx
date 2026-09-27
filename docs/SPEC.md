@@ -1,13 +1,10 @@
 # The spec
 
-> **Short version:** one committed `sandbox.json` says what services a branch needs. It never
-> says when to start or stop them. `sbx init > sandbox.json` gives you a working one;
-> `sbx validate` checks it without creating anything.
+Reference for `sandbox.json`: the one committed file that says what services a branch needs.
+It says what exists, how to tell it is serving, and how to reach it. It never says when to start
+or stop; `sbx serve` does that by watching the ports.
 
-`sandbox.json` - one file, committed to your repo, describing what a branch needs to run.
-
-It says what exists, how to tell when it is serving, and how to reach it - never when to start or
-stop. Lifecycle belongs to `sbx serve`, which watches the ports.
+`sbx init > sandbox.json` writes a working one. `sbx validate` checks one without creating anything.
 
 ---
 
@@ -42,93 +39,120 @@ stop. Lifecycle belongs to `sbx serve`, which watches the ports.
 }
 ```
 
-**Note the postgres health command:** `psql ... select 1`, not `pg_isready`, which answers yes
-while postgres is still bootstrapping - before `POSTGRES_DB` exists - so `init` would run against
-a database not there yet. Every bundled template and `sbx init` use the `psql` form.
+**Use `psql ... select 1` as a postgres health check when the service has `init`.** `pg_isready`
+answers yes while postgres is still bootstrapping, before `POSTGRES_DB` exists, so `init` can run
+too early. The `postgres` template and `sbx init` use the `psql` form. The `web-stack` and
+`analytics` templates use `pg_isready -U app -d app` and have no `init`.
 
-Images show a readable tag; the shipped templates additionally pin a digest, maintained by
-`scripts/pin-templates.sh`.
+The shipped templates also pin each image by digest (`scripts/pin-templates.sh`).
 
 ---
 
 ## Top level
 
-| field | required | does |
+| field | required | meaning |
 |---|---|---|
-| `version` | ● | `1`. Lets a future format change be detected rather than silently misread |
-| `services` | ● | The declared set, keyed by name - a map, so a name is unambiguous when merging |
-| `exports` | | Maps port assignments onto the variables your scripts already read - each also yields a matching `_HOST` |
+| `version` | yes | Always `1` |
+| `services` | yes | The services, keyed by name |
+| `exports` | | Map a variable name to `service:port`, e.g. `"DATABASE_PORT": "postgres:5432"` |
+| `health_interval` | | Default probe interval for every service. Default `300ms` |
 
 ### Every port export gets a host to go with it
 
-A declared export produces two variables. `DATABASE_PORT` also yields `DATABASE_HOST`; `PGPORT`
-yields `PGHOST` - no underscore, which is what libpq reads, and why `psql -U app -d app` with no
-host or port argument reaches the sandbox. `MYSQL_PORT` yields `MYSQL_HOST` likewise.
+A declared export produces two variables. `DATABASE_PORT` also yields `DATABASE_HOST`. `PGPORT`
+yields `PGHOST` (no underscore, as libpq reads it), so `psql -U app -d app` reaches the sandbox
+with no host or port argument. `MYSQL_PORT` yields `MYSQL_HOST`.
 
-The rule: strip a trailing `_PORT` if there is one, otherwise a trailing `PORT`, and append
-`_HOST` or `HOST` to match. A bare `PORT` export is left alone rather than becoming `_HOST`.
+The rule: strip a trailing `_PORT`, else a trailing `PORT`, and append `_HOST` or `HOST` to
+match. A bare `PORT` export gets no host variable.
 
-**`exports` is how adoption stays cheap.** `{"DB_PORT": "mysql:3306"}` becomes
-`DB_PORT=<public port of mysql 3306>`. Without it, adopting sbx would mean editing every
-script that already knows a port.
+Use `exports` to keep existing scripts working: `{"DB_PORT": "mysql:3306"}` sets `DB_PORT` to the
+public port of mysql's 3306.
 
 ---
 
 ## Per service
 
-| field | required | does |
-|---|---|---|
-| `image` | ●* | Any container image |
-| `build` | ●* | Build one instead: `{ "context": "./app", "dockerfile": "Dockerfile" }` |
-| `ports` | ● | Container-side ports. The public and backing ports are **assigned from the sandbox's slot**, never chosen here |
-| `health` | | A command run **inside** the container - how sbx knows it is serving |
-| `health_interval` | `300ms` | How often that command runs. Also settable once for the whole sandbox |
-| `env` | | Environment variables |
-| `args` | | Command arguments, appended to the image's entrypoint |
-| `volume` | | One container path to persist. What makes sleeping safe |
-| `mounts` | | Host directories bound read-write, `host: /container`. Your disk, visible to both - a source tree, a dump, fixtures a test run leaves behind. Docker only; a cluster refuses, because a hostPath is a node's disk rather than yours |
-| `files` | | Read-only host files, mounted; paths are relative to the spec |
-| `init` | | Commands run **once**, after the service first reports healthy |
-| `depends_on` | | Services that must be serving before this one starts - at creation, and on every wake |
-| `optional` | | Not created unless `--optional` - but still reserves its ports |
-| `egress` | | `"deny"` - no routed egress. It can still be reached, and can still talk to its own sandbox. `"allow"` - open, but through the egress filter, so the policy can be narrowed while it runs |
-| `egress_allow` | | Reach only these hosts (host or `host:port`, matching subdomains): `["api.openai.com"]`. Everything else is denied, enforced by a filtering proxy |
-| `egress_policy` | | OpenSandbox's network policy: `{"defaultAction":"allow\|deny","egress":[{"action":"deny","target":"10.0.0.0/8"}]}`. Hosts, `*.wildcards`, IPs and CIDRs; changeable while the service runs (`sbx egress`) |
-| `idle` | | Override the idle timer for this service: `"never"` (keep awake while an agent works inside), `"0"`, or a duration like `"30m"` |
-| `cpu` | | Cores this service may use: `"0.5"`, `"2"`. Unset means unlimited |
-| `memory` | | Memory cap: `"512m"`, `"2g"`. Unset means unlimited |
-| `cap_add` | | Linux capabilities to grant, named without the `CAP_` prefix: `["SYS_PTRACE"]`. A list rather than a `privileged` flag, which is a different thing entirely. Docker only; a cluster refuses |
-| `gpus` | | Passed to the runtime verbatim: `"all"`, `"1"`, `"device=0"`. Declared rather than inferred, because a sandbox that quietly takes every GPU on a shared machine is a bad neighbour |
+| field | type | default | meaning |
+|---|---|---|---|
+| `image` | string | | Container image to run. Exactly one of `image` or `build` |
+| `build` | object | | Build instead: `{"context": "./app", "dockerfile": "Dockerfile"}` |
+| `ports` | int list | required | Container-side ports. Public ports are assigned, never chosen |
+| `health` | string | none | Command run **inside** the container; passes when it exits 0 |
+| `health_interval` | duration | `300ms` | How often `health` runs. 50ms to 5m |
+| `entrypoint` | string list | image's | Replaces the image's ENTRYPOINT. `args` follow it |
+| `args` | string list | image's | Replaces the image's CMD (appended to the entrypoint) |
+| `env` | map | | Environment variables. Values may use `${VAR}` |
+| `volume` | path | none | One container path to persist across sleeps |
+| `mounts` | map | | Host directory → container path, read-write. Docker only |
+| `files` | map | | Host file → container path, read-only. Paths relative to the spec |
+| `init` | string list | | Commands run **once**, after the first healthy check |
+| `depends_on` | string list | | Services that must serve first, at create and on every wake |
+| `optional` | bool | `false` | Created only with `--optional`. Still reserves its ports |
+| `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep |
+| `on_idle` | string | `"stop"` | `"freeze"` pauses instead: memory and processes kept, thawed in about 10 ms |
+| `egress` | string | open | `"deny"`: no routed egress. `"allow"`: open, but through the filter |
+| `egress_allow` | string list | | Reach only these hosts and their subdomains |
+| `egress_policy` | object | | OpenSandbox `NetworkPolicy`. Changeable live with `sbx egress` |
+| `cpu` | string | unlimited | Cores: `"0.5"`, `"2"` |
+| `memory` | string | unlimited | Cap: `"512m"`, `"2g"` |
+| `cap_add` | string list | | Linux capabilities without `CAP_`: `["SYS_PTRACE"]`. Docker only |
+| `gpus` | string | none | Passed to the runtime: `"all"`, `"1"`, `"device=0"` |
+
+`egress`, `egress_allow` and `egress_policy` are alternatives; a spec naming two is refused. See
+[Egress](#egress-the-network-a-service-may-reach).
+
+### Provider support
+
+Every refusal names the field and the reason.
+
+| field | docker | kubernetes | firecracker |
+|---|---|---|---|
+| `build` | yes | refused (needs a registry) | refused |
+| `mounts`, `cap_add` | yes | refused | refused |
+| `init` | yes | yes | refused |
+| `files`, `gpus` | yes | not applied | refused |
+| `egress`, `egress_allow`, `egress_policy` | yes | refused | yes (unset means `deny`) |
+| `on_idle: "freeze"` | yes | refused | yes |
+| everything else | yes | yes | yes |
+
+On Kubernetes, `files` and `gpus` are currently not applied to the pod and raise no error.
 
 ### On `--provider firecracker`
 
-The same file, with a VM underneath. What changes:
+The same file, with a microVM underneath. What changes:
 
 | field | on firecracker |
 |---|---|
-| `image` | Booted as the VM's root filesystem (`docker export` → ext4, cached by image ID). A name from `sbx snapshot` restores that VM - memory included - as the same sandbox and service in the same slot only |
-| `cpu` | Whole vCPUs, rounded up, 1 or even (Firecracker's rule): `"0.5"` is 1, `"3"` is 4. Default 1 |
-| `memory` | The guest's RAM, default `256m` - and the size of its snapshot on disk while it sleeps. Both fixed at creation; changing them live is refused |
-| `health` | Run inside the VM by the guest agent (execd, over vsock), through `/bin/sh -c` as docker's `CMD-SHELL` is, with a 5 s timeout. Create waits for it to pass before the snapshot every wake restores, and a cold boot runs it again; a snapshot wake does not, because the workload comes back already serving. With no health command, readiness is the guest's first port accepting |
-| `egress` | Only `"deny"` (or unset, which means the same here): a VM bridge has no NAT |
-| the image's `USER` | **Refused unless root**: everything in the VM runs as root (fc-init and execd do not switch users yet), and running a non-root image as root would quietly drop the boundary it asked for |
-| `volume` | Nothing extra to do: the VM's root filesystem is already its own and persists across sleep |
-| `build`, `files`, `mounts`, `init`, `gpus`, `cap_add`, `egress_allow`, `egress_policy` | **Refused by name**, each with the reason - never silently ignored |
-There is no field for mounting an arbitrary named volume. The OpenSandbox API attaches its `volumes` (and sbx's own execd volume) in memory, after checking them against its own namespace and the operator's host allow-list; a `sandbox.json` naming `readonly_volumes` or `volume_mounts` is refused as an unknown field, because a spec that could name any volume could mount another sandbox's data.
+| `image` | Booted as the VM's root: shared read-only, with a writable layer per VM (`SBX_FC_DISK_SIZE`, default 10g) |
+| `cpu` | Whole vCPUs, rounded up to 1 or an even number: `"0.5"` is 1, `"3"` is 4. Default 1 |
+| `memory` | Guest RAM, default `256m`, and the size of its sleep snapshot. Fixed at create |
+| `health` | Run in the guest via `/bin/sh -c`, 5 s timeout. None: the first accepting port means ready |
+| `volume` | Nothing extra: the VM's disk is its own and persists across sleep |
+| `egress` | Unset means `deny` (no NAT). `allow`, `egress_allow`, `egress_policy` go through the filter. Private ranges stay closed unless `sbx serve --vm-egress-allow` opens them |
+| the image's `USER` | Must be root. A non-root image is refused |
+
+A snapshot name from `sbx snapshot` restores that VM, memory included, as the same sandbox and
+service only. Where a microVM runs (Linux, Mac, Windows, cluster) is in
+[The same spec as microVMs](#the-same-spec-as-microvms). Environment knobs are in [CLI.md](CLI.md#firecracker-microvms).
+
+There is no field for mounting an arbitrary named volume. `readonly_volumes` and `volume_mounts`
+are refused as unknown fields; only the OpenSandbox API attaches volumes, after its own checks.
+
+---
+
+## Field notes
 
 ### `image` or `build` - exactly one
-
-\* Every service needs something to run. Give it an `image` to pull, or a `build` to make:
 
 ```json
 { "build": { "context": "./app" }, "ports": [3000] }
 ```
 
-`context` is relative to the spec file; `dockerfile` defaults to `Dockerfile` and is relative
-to the context. Both is an error rather than a precedence rule - which wins is exactly what a
-reader guesses wrong.
+`context` is relative to the spec file. `dockerfile` defaults to `Dockerfile`, relative to the
+context. Giving both `image` and `build` is an error.
 
-**The tag is a hash of the context**, so an unchanged context is a cache hit and no build runs:
+**The tag is a hash of the context**, so an unchanged context is a cache hit:
 
 ```
 $ sbx create feat-x            # first time
@@ -137,38 +161,26 @@ $ sbx create feat-y            # same context
   web          build cached (sbx-build-bc02342a9ba51b10)
 ```
 
-**Content, not a clock.** Change one byte, get a different tag. Change nothing, get the same
-tag next month.
-
-Three things are deliberately in or out of the hash:
-
 | | |
 |---|---|
-| **timestamps - out** | a fresh `git clone` rewrites every mtime, so a time-based key misses on every CI runner, which is exactly where the cache is worth most |
-| **file modes - in** | a script that stops being executable is a different image, and a silent cache hit there fails at runtime |
-| **`.git`, `node_modules` - out** | otherwise every commit and every install busts the cache |
+| **timestamps - out** | a fresh `git clone` rewrites every mtime |
+| **file modes - in** | a script that loses its executable bit is a different image |
+| **`.git`, `node_modules` - out** | otherwise every commit and install busts the cache |
 
-Why not expire it on a timer? A clock is wrong in both directions - it rebuilds what has not
-changed and reuses what has.
 → [DECISIONS.md](DECISIONS.md#a-built-image-is-keyed-by-its-content-never-by-its-age)
 
-Docker only. In a cluster, building means pushing to a registry the nodes can pull from -
-credentials sbx has no business assuming - so `sbx create` says so and stops.
+### Ports are assigned
 
-### Why ports aren't yours to choose
-
-Two repos that both picked 5432 collide the moment somebody opens both. Each sandbox gets a
-slot; ports are assigned from it, and `exports` keeps this invisible to your tooling.
+Each sandbox gets a slot, and its public ports come from it, so two sandboxes can both run "a
+postgres". Read them with `sbx env`; `exports` gives them the names your tools expect.
 
 ### `health` is close to required
 
-Without it the daemon can only dial the published port - and Docker answers that before the
-server inside does, so the first query after a wake lands on a socket about to close.
-→ [DECISIONS.md](DECISIONS.md#a-published-port-is-not-readiness)
+Without it the daemon can only dial the published port, and Docker answers that before the server
+inside does. It then waits a flat 2 s per wake. → [DECISIONS.md](DECISIONS.md#a-published-port-is-not-readiness)
 
-**The health command must exist in the image.** A Chrome image with no `wget` cannot be
-health-checked with `wget`, and the failure looks like a service that never starts. Check
-first:
+**The health command must exist in the image.** A Chrome image with no `wget` cannot be checked
+with `wget`, and the failure looks like a service that never starts. Check first:
 
 ```sh
 docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
@@ -176,61 +188,44 @@ docker run --rm --entrypoint sh <image> -c 'command -v wget curl'
 
 ### `health_interval` is what those probes cost
 
-The probe is a command started inside the container, and runs whether or not anybody is
-waiting. One service at the default 300 ms is nothing; fourteen is about forty-seven container
-commands a second, for ever.
+The probe runs inside the container whether or not anybody is waiting. Fourteen services at
+300 ms is about 47 container commands a second. Set it sandbox-wide and override per service:
 
 ```json
 { "version": 1,
   "health_interval": "1s",
   "services": { "db": { "image": "postgres:16-alpine", "ports": [5432],
-                        "health": "pg_isready -U app",
+                        "health": "psql -U app -d app -c 'select 1'",
                         "health_interval": "300ms" } } }
 ```
 
-Reach for the sandbox-wide setting - the cost is a property of the fleet - and override it on a
-service where readiness is worth catching quickly or the probe is expensive.
-
-**It is also the floor on how long a wake appears to take.** A wake is not over until the answer
-changes, re-evaluated only on this interval, so a service ready in 40 ms reports as 300 ms at the
-default and a second at `1s`. Turn it up on a large sandbox; turn it down when measuring wakes.
-
-Below 50 ms and above 5 m are refused: the first spends cpu to learn nothing, the second reports a
-service as still waking long after it served.
-
-In a cluster this becomes the readiness probe's `periodSeconds`, which counts whole seconds -
-anything under a second becomes one. Zero is not passed through: to the API server zero means
-"use my default", which is ten, so a spec asking for a faster probe would have quietly got a
-slower one.
+It is also the floor on how long a wake appears to take: a service ready in 40 ms reports as
+300 ms at the default. On Kubernetes it becomes `periodSeconds`, rounded up to whole seconds.
 
 ### `depends_on` orders creation, and waking
 
 ```json
 { "api":      { "build": { "context": "." }, "ports": [3000], "depends_on": ["postgres"] },
-  "postgres": { "image": "postgres:16-alpine", "ports": [5432], "health": "pg_isready -U app" } }
+  "postgres": { "image": "postgres:16-alpine", "ports": [5432],
+                "health": "psql -U app -d app -c 'select 1'" } }
 ```
 
-Without it, services are created alphabetically - so `api` comes up before `postgres`, and an
-app that dials its database at boot fails for a reason nowhere in the file.
+Without it, services are created alphabetically, so `api` would start before `postgres`.
 
-**It also orders wakes.** A connection to `api` wakes `postgres` first and waits for it, then
-starts `api`. Independent siblings wake in parallel, so a layer costs its slowest member
-rather than the sum, and a cycle is broken rather than followed.
+- **It orders wakes.** A connection to `api` wakes `postgres` first. Independent services wake in
+  parallel.
+- **It does not change ports.** Ordinals stay alphabetical.
+- A dependency on an undeclared service, or a cycle, is refused.
 
-This used to be excluded, on the reasoning that a service needing another at runtime should
-just retry. That does not survive a sleeping peer: a stopped container is not slow to answer,
-it is **absent from the network's DNS**, so the dial fails with `no such host` and there is
-nothing to retry towards. On a fourteen-service sandbox, six services died that way within a
-minute of their datastores being slept.
+### `entrypoint` replaces the program
 
-**Declaring nothing costs nothing.** A service with no `depends_on` takes exactly the path it
-always took - which is every single-service sandbox, and the whole of the wake numbers above.
+```json
+{ "image": "python:3.12", "ports": [8000],
+  "entrypoint": ["python", "-m"], "args": ["http.server", "8000"] }
+```
 
-**It does not change ports.** Ordinals stay alphabetical, so adding `depends_on` never moves an
-existing sandbox's addresses - a worse bug than the race it fixes.
-
-A dependency on a service the spec does not declare is refused, rather than silently never
-applying. So is a cycle.
+`args` alone replaces only CMD, which the image's ENTRYPOINT then receives. Use `entrypoint` to
+run a different program.
 
 ### `${VAR}` keeps a secret out of a committed file
 
@@ -238,34 +233,14 @@ applying. So is a cycle.
 { "env": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" } }
 ```
 
-`sandbox.json` is meant to be committed. `POSTGRES_PASSWORD: "app"` on a throwaway local database
-is fine; a private registry credential or a real key some fixture seeding needs would be a secret
-in git. A value in `env` may instead reference the environment sbx was invoked with.
-
-Deliberately the smallest version of this:
-
-- **`env` values only.** Not images, not health commands, not init steps - expansion inside a
-  command is where this stops being substitution and starts being a shell.
-- **No defaults or nesting.** No `${VAR:-fallback}` - your shell already has all of them.
-- **An unset variable is an error**, reported before anything is created, listing every missing
-  name at once. A database up with an empty password because a variable was not exported is a
-  failure that looks like success.
-- **`${...}` only** - a bare `$NAME` is left alone, so a password containing a dollar sign
-  survives.
-
-Anything further - Vault, 1Password, a cloud secret manager - stays out: a dependency, a
-network call, and a credential to fetch the credential, in a binary whose whole claim is that it
-has none.
+- **`env` values only.** Not images, health commands or init steps.
+- **No defaults or nesting.** No `${VAR:-fallback}`.
+- **An unset variable is an error**, reported before anything is created, listing every missing name.
+- **`${...}` only.** A bare `$NAME` is left alone.
 
 ### sbx remembers which spec a sandbox came from
 
-`--template postgres` had to be repeated on `create`, then `env`, then `fork`. Forgetting it
-gave one of two things, the second worse: `open sandbox.json: no such file` if the directory had
-none, or - if an unrelated `sandbox.json` happened to be there - a clean success against the wrong
-spec, since ordinals assigned alphabetically over the declared service names shift and `sbx env`
-prints a plausible, wrong port.
-
-So sbx writes it down, under `~/.sbx/origins/`, and uses it when nothing was asked for:
+`create` records the spec under `~/.sbx/origins/`, and later commands use it when you pass none:
 
 ```sh
 sbx create main --template postgres
@@ -275,11 +250,8 @@ sbx fork   golden agent-1        # and so does the fork
 sbx env    agent-1               # still no flag
 ```
 
-Always a **default**, never a source of truth: an explicit `--spec` or `--template` wins, a
-missing or unreadable record changes nothing, and no command fails because of it. The containers
-and their labels remain where a sandbox's truth lives. A recorded path since deleted is ignored
-rather than used - chasing a path that no longer exists is worse than falling back to the
-working directory.
+An explicit `--spec` or `--template` always wins. A missing record, or one naming a deleted file,
+falls back to `./sandbox.json`.
 
 ### Check it without creating it
 
@@ -288,16 +260,12 @@ sbx validate                    # ./sandbox.json
 sbx validate path/to/spec.json
 ```
 
-Reads the file, resolves ports and ordering, and creates nothing - so a pre-commit hook or a
-lint job can check a committed spec without a docker daemon. It runs the same loader `create`
-does, so lint never drifts from create.
-
-It also names anything it merely dislikes, like a service with no `health`.
+Runs the same loader as `create`, needs no docker daemon, and warns about things like a service
+with no `health`. Good for a pre-commit hook or a lint job.
 
 ### `init` runs once, not on every wake
 
-Schemas, users, seed data. A woken container already has whatever this created, so re-running
-it would be at best wasted and at worst destructive.
+Schemas, users, seed data. A woken container already has whatever `init` created.
 
 ### `cpu` and `memory` are the ceiling a laptop needs
 
@@ -305,10 +273,64 @@ it would be at best wasted and at worst destructive.
 { "image": "postgres:16-alpine", "ports": [5432], "cpu": "0.5", "memory": "512m" }
 ```
 
-Unset means unlimited, fine for one sandbox and not for twenty: a machine running a sandbox per
-branch otherwise has no ceiling, and it is the machine that fails, not the sandbox. Docker gets
-`--cpus`/`--memory`; a cluster gets `resources.limits`. Requests are left alone in the cluster
-case - those change scheduling, the operator's business.
+Docker gets `--cpus`/`--memory`; a cluster gets `resources.limits` (requests are left alone).
+Set them when you run many sandboxes.
+
+### `cap_add` grants a capability, and is not `privileged`
+
+```json
+{ "image": "golang:1.26", "ports": [7777], "cap_add": ["SYS_PTRACE"] }
+```
+
+Name only what the workload needs. sbx does not offer `privileged`, which turns off seccomp and
+AppArmor and hands over the host's devices. Docker's default seccomp profile still applies, so
+CRIU inside a sandbox fails on `mount`; run `sbx checkpoint` on the host instead.
+
+Kubernetes refuses `cap_add`: Pod Security admission, not the manifest, decides capabilities.
+
+### `idle` keeps a box awake while it works
+
+```json
+{ "image": "ubuntu:24.04", "ports": [7777], "idle": "never" }
+```
+
+sbx sleeps a service after the idle window with no traffic through its port. Work *inside* the
+box (a long command, a compute loop) sends none. `"never"` (or `"0"`) keeps it awake until you
+sleep or remove it; `"30m"` sets a longer window. It still wakes on a connection as usual.
+
+A box with `egress_allow` needs this less: its calls out count as activity. See
+[below](#egress_allow-is-a-domain-allow-list).
+
+### `on_idle: "freeze"` keeps memory instead
+
+```json
+{ "image": "python:3.12", "ports": [8888], "on_idle": "freeze" }
+```
+
+When idle, the service is paused rather than stopped: memory and running processes are kept, no
+CPU is used, and the next connection thaws it in about 10 ms. It holds its memory while asleep.
+Sandboxes created through the OpenSandbox API default to `freeze`.
+
+### `optional` still reserves its ports
+
+A branch that never queries the analytics store does not pay for one. Its ports stay reserved, so
+adding it later does not renumber anything. → [DECISIONS.md](DECISIONS.md#optional-services-still-reserve-their-ports)
+
+---
+
+## Egress: the network a service may reach
+
+Four settings, from strictest to most flexible:
+
+| you want | write |
+|---|---|
+| no way out | `"egress": "deny"` |
+| only these hosts | `"egress_allow": ["api.openai.com", "pypi.org"]` |
+| rules: hosts, wildcards, CIDRs, a default | `"egress_policy": {...}` |
+| open now, narrowed later | `"egress": "allow"` |
+
+Kubernetes refuses all four rather than start a service whose policy nothing enforces.
+Firecracker supports all four; see [On `--provider firecracker`](#on---provider-firecracker).
 
 ### `egress: "deny"` blocks the way out, not the way in
 
@@ -316,23 +338,8 @@ case - those change scheduling, the operator's business.
 { "image": "node:22", "ports": [3000], "egress": "deny" }
 ```
 
-Docker gets a per-sandbox bridge with IP masquerade disabled: no NAT off the host, so nothing
-routed leaves - and docker still publishes ports into it, so waking is untouched. Verified both
-directions: the service could not fetch `example.com`, and it still woke on a connection and
-answered 200.
-
-The obvious alternatives were tried and do not work: `--internal` and `--network none` both
-block egress **and** stop docker publishing the port, producing a sandbox that can never be
-woken. → [DECISIONS.md](DECISIONS.md)
-
-For a **domain allow-list** rather than all-or-nothing, use `egress_allow` (below) - the
-filtering proxy this once said would be needed, now built - or `egress_policy` for deny rules,
-CIDRs, and a policy you can change while the service runs. DNS still resolves under plain `deny` -
-docker's resolver sits on the bridge and needs no route out.
-
-The kubernetes provider **refuses** a service that declares it rather than starting one with
-egress open: the cluster answer is a NetworkPolicy, only some CNIs enforce them, and a
-security control that silently did nothing is worse than one that says no.
+Docker gets a per-sandbox bridge with IP masquerade off: nothing routed leaves, but ports are still
+published, so waking works. DNS still resolves.
 
 ### `egress_allow` is a domain allow-list
 
@@ -340,43 +347,17 @@ security control that silently did nothing is worse than one that says no.
 { "image": "python:3.12", "ports": [8000], "egress_allow": ["api.openai.com", "pypi.org"] }
 ```
 
-The service reaches only the listed hosts and nothing else - an agent box that may call an LLM API
-and its package registry, and no other address. Each entry matches the host and its subdomains, so
-`openai.com` permits `api.openai.com`. It is the no-NAT bridge of `egress: "deny"` plus a filtering
-proxy sbx runs on the bridge gateway: `HTTP_PROXY`/`HTTPS_PROXY` point every client at it, and a
-client that ignores the proxy and dials out directly has no route at all, so the list is enforced,
-not advisory. It is not combined with `egress: "deny"`, which would deny the allowed hosts too.
+The service reaches only the listed hosts. Each entry matches the host and its subdomains, so
+`openai.com` permits `api.openai.com`. `HTTP_PROXY`/`HTTPS_PROXY` point clients at a filtering
+proxy; a client that ignores them has no route out at all.
 
-**Where the filter runs.** Two arrangements, chosen for you. Where `sbx serve` can bind the
-sandbox's bridge gateway - a native Linux docker - the filter is a listener inside the daemon.
-Where it cannot, which is every VM-backed docker (colima, Docker Desktop, rootless, and so every
-Mac), the same filter runs as a small container on that bridge instead. It is built once per
-machine from sbx's own source, so the two are the same code and cannot drift apart.
-
-That container is dual-homed: on the sandbox's no-NAT bridge, where the workload can reach it, and
-on an ordinary bridge, where it can reach the internet. The workload still has no route out of its
-own, so a client that ignores `HTTP_PROXY` and dials a host directly gets nowhere - measured, on a
-Mac: an allowed host returns its page, a host off the list gets `403 Forbidden` from the filter,
-and the same fetch with the proxy variables unset times out with no route at all.
-
-`egress_allow` was refused outright on those platforms before. It is not any more.
-
-The traffic through that proxy also counts as activity. A box running an agent takes no inbound
-connection - it reads files, compiles, and calls an API - so on the bytes sbx measures it looks
-idle from the moment it starts working, and the only setting that kept it alive was `idle: "never"`,
-which holds its memory for as long as the sandbox exists. An allow-listed box's API calls leave
-through code sbx already owns, so they are counted: it stays awake while it is calling out, and
-sleeps on the ordinary timer once it stops. Stamped on bytes rather than on connections, so a
-streaming response keeps it awake for as long as tokens are arriving, and throttled to one stamp a
-second, which is far finer than an idle window measured in minutes.
-
-**What the stamp reaches.** A sandbox has one bridge and so one filter, and there is nothing in an
-HTTP CONNECT that says which container opened it - so the stamp marks every service on that bridge
-**that declared an allow-list of its own**. A service with no `egress_allow` is not on it and
-sleeps on its ordinary timer. Measured: an allow-listed box calling out every five seconds stayed
-awake through twelve consecutive 30-second idle windows, while a plain service beside it in the
-same sandbox slept on schedule. Two allow-listed services in one sandbox do keep each other awake;
-if that matters, put them in different sandboxes.
+- **Where the filter runs.** Inside `sbx serve` on native Linux docker. On a VM-backed docker
+  (colima, Docker Desktop, rootless) it runs as a small container on the sandbox's bridge.
+- **Calls out count as activity.** The box stays awake while calling out and sleeps on its timer
+  once it stops. Activity is stamped on bytes, so a streaming response keeps it awake.
+- **What the stamp reaches.** Every service on the sandbox's bridge that declared its own
+  allow-list. A service without one sleeps on its own timer. Two allow-listed services in one
+  sandbox keep each other awake.
 
 ### `egress_policy` is a network policy, and it changes while the box runs
 
@@ -388,28 +369,31 @@ if that matters, put them in different sandboxes.
                                  { "action": "deny",  "target": "10.0.0.0/8" } ] } }
 ```
 
-The shape is OpenSandbox's `NetworkPolicy`, verbatim, and so are the semantics - checked against
-its `release-1.1.0` source and cited in `internal/egress/policy.go`:
+The shape and semantics are OpenSandbox's `NetworkPolicy` (release-1.1.0):
 
 | | |
 |---|---|
-| **targets** | `example.com` is that host exactly. `*.example.com` is every subdomain, **not** the apex - list both for both. An IP or a CIDR, v4 or v6 |
-| **name rules** | **first match in list order** wins, exact and wildcard alike |
-| **address rules** | a **deny beats an allow** whatever the order - upstream compiles them into nftables sets and drops before it accepts |
-| **default** | `defaultAction` for anything no rule matches. Omitted means `deny`; `{}` is deny-all |
-| **a hostname** | judged by name first, then **every address it resolves to** against the address rules, and the address that was checked is the one dialled. A name you allowed cannot be pointed into a range you denied |
-| **stricter than upstream** | a URL or `host:port` as a target is refused, where upstream accepts it as a rule that never matches. For a deny, that is a hole that looks like a control |
+| **targets** | `example.com` is that host. `*.example.com` is every subdomain, **not** the apex. IPs and CIDRs, v4 or v6 |
+| **name rules** | first match in list order wins |
+| **address rules** | a deny beats an allow, whatever the order |
+| **default** | `defaultAction` for anything unmatched. Omitted means `deny` |
+| **a hostname** | judged by name, then every address it resolves to against the address rules |
+| **refused** | a URL or `host:port` as a target |
 
-`egress: "allow"` is the same thing with nothing in it - `{"defaultAction":"allow"}` - for a box
-that should start open and be narrowed later. `egress_allow: ["openai.com"]` is still accepted and
-means what it always did: deny by default, and each entry allows the host **and** its subdomains
-(it becomes `openai.com` plus `*.openai.com`). The three are alternatives; a spec naming two is
-refused, as are two services of one sandbox declaring different policies - they share one filter,
-and it would be enforcing a mixture nobody wrote.
+`egress: "allow"` equals `{"defaultAction":"allow"}`. `egress_allow: ["openai.com"]` equals
+deny-by-default plus `openai.com` and `*.openai.com`. Two services in one sandbox must declare the
+same policy, since they share one filter.
 
-**Changing it on the running service.** Nothing is recreated and nothing restarts:
+**Limits.** The filter carries HTTP and HTTPS only, so a default-allow box has no raw TCP out
+(`git://`, SSH, a remote database). The filter refuses its own loopback and link-local addresses
+(including `169.254.0.0/16`, cloud metadata) unless a rule names them. Traffic to sibling services
+on the sandbox's own bridge is not egress and is not filtered.
 
-```
+### Change a running sandbox's policy: `sbx egress`
+
+Nothing is recreated or restarted.
+
+```sh
 sbx egress agent-1                                     # what is in force
 sbx egress agent-1 --deny '*.pastebin.com' --deny 10.0.0.0/8
 sbx egress agent-1 --default deny --allow api.anthropic.com
@@ -418,126 +402,33 @@ sbx egress agent-1 --reset                             # back to what the spec d
 sbx egress agent-1 --json                              # OpenSandbox's policy status
 ```
 
-New rules go **ahead** of the existing ones (OpenSandbox's PATCH), so a deny carved out of a
-wildcard you allowed earlier takes hold. A request is judged by the policy in force when it
-arrives; a tunnel already open is not cut, the same as a firewall that matches new connections.
-This is what lets a box fetch its dependencies wide open and then lock down before untrusted work
-starts, which used to take two sandboxes. It is one Go API (`daemon.EgressControl`), which is
-also what OpenSandbox's `networkpolicy` endpoints are built on.
+- New rules go **ahead** of existing ones, so a deny can carve into an earlier wildcard allow.
+- Each new request is judged by the policy in force; open tunnels are not cut.
+- The live policy is saved in `~/.sbx/egress/<sandbox>.json` and survives a daemon restart or
+  reboot. `sbx rm` deletes it.
+- Only a sandbox created with `egress_policy`, `egress_allow` or `egress: "allow"` has a filter to
+  change.
 
-The live policy is kept by the filter and on the host (`~/.sbx/egress/<sandbox>.json`), so a
-daemon restart, a reboot or a replaced filter container comes back enforcing it - not the one the
-sandbox was created with. It belongs to that sandbox: `sbx rm` drops it, and a recreate from a spec
-that declares a different policy starts from the new declaration.
-
-**What is enforced, measured.** A CIDR rule is not advisory, and neither is a deny under a default
-of allow, because a filtered service is on the no-NAT bridge: the filter is the only way out.
-Checked on a real sandbox (`TestLiveEgressPolicyOnARealSandbox`, colima on a Mac): with
-`deny 1.1.1.0/24` under `defaultAction: allow`, a client that unset the proxy variables and dialled
-`1.1.1.1:80` directly got no route - and so did one dialling `8.8.8.8:53`, which no rule mentions -
-while the same box through the proxy got `403` for `1.1.1.1` and fetched `example.com`. The same
-test with masquerade switched on reaches `1.1.1.1` directly, which is the failure it exists to
-catch. A deny patched in live refused the next request, with the service and the filter container
-keeping their IDs and start times.
-
-**What it costs.** Because the filter is the only door, *open* means open to what the filter
-carries: HTTP and HTTPS, through `HTTP_PROXY`/`HTTPS_PROXY`. A default-allow box has no raw TCP
-out - `git://`, SSH to a remote, a database on another host. That is the price of every deny being
-real, and it is the same price `egress_allow` has always had.
-
-**Two things the filter refuses unless a rule names them.** Its own loopback and link-local
-(`127.0.0.0/8`, `::1`, `169.254.0.0/16` - cloud metadata - and the rest): the filter runs on the host
-or beside the sandbox, so `CONNECT 127.0.0.1:2375` through it would reach *its* machine, which the
-workload never could on its own. An explicit allow for the address opens it.
-
-**What it does not reach.** Destinations that are not routed: the sandbox's own bridge (its sibling
-services) and the bridge gateway, which is the host. Those are local delivery, not egress, and a
-rule covering them is enforced only for traffic that goes through the proxy. And the kubernetes
-provider **refuses** every filtered service - `egress_policy`, `egress_allow` and `egress: "allow"`
-alike - rather than creating one whose policy nothing enforces.
-
-### `cap_add` grants a capability, and is not `privileged`
-
-```json
-{ "image": "golang:1.26", "ports": [7777], "cap_add": ["SYS_PTRACE"] }
-```
-
-Some workloads cannot run without a Linux capability, and say so in a way that names nothing you
-can act on. A debugger inside a sandbox fails on `ptrace` with a bare permission error. CRIU -
-which a memory checkpoint is made of - says:
-
-```
-CRIU needs to have the CAP_SYS_ADMIN or the CAP_CHECKPOINT_RESTORE capability
-```
-
-Neither is a bug in sbx, and neither can be fixed from inside the container. Name the capability
-(without the `CAP_` prefix) and it is granted.
-
-**A list, not a flag.** `privileged` is not "a few more permissions": it turns off seccomp and
-AppArmor, grants every capability, and hands over the host's devices - a container that can
-reconfigure the machine it runs on. A spec asking for `SYS_PTRACE` says what it needs and gets
-that; a reviewer reading the committed file can see the difference. sbx does not offer
-`privileged`, and this is why.
-
-**What it does not reach.** Docker's default seccomp profile is separate from capabilities and
-still applies. CRIU with `CAP_SYS_ADMIN` gets past its own capability check and then fails on a
-filtered `mount`:
-
-```
-Fail to mount tmfps to /tmp/.criu.move_mount_set_group...: Permission denied
-```
-
-Getting further needs `seccomp=unconfined`, which is most of the way to privileged, so it is not
-offered. Run CRIU on the host - `sbx checkpoint` drives it there, through podman - rather than
-inside a sandbox.
-
-The kubernetes provider **refuses** `cap_add` rather than emitting a `securityContext`: whether a
-pod may hold a capability is decided by the namespace's Pod Security admission, not by the
-manifest. Emitting it would either be rejected at admission with an error naming a policy instead
-of your spec, or grant a capability on a shared cluster because a laptop's file asked for it.
-
-### `idle` keeps a box awake while it works
-
-```json
-{ "image": "ubuntu:24.04", "ports": [7777], "idle": "never" }
-```
-
-sbx sleeps a service after the idle window with no traffic through its port. An agent doing work
-*inside* the box - a long command, a compute loop, waiting on an API - sends nothing through sbx,
-so the default timer would sleep the container and end the work. `"never"` (or `"0"`) keeps it
-awake until you sleep or remove it; a duration like `"30m"` sets a longer window. The box still
-wakes on a connection like everything else - this only changes when it goes back to sleep.
-
-A box with `egress_allow` needs this less. Its calls out are counted as activity, so it stays awake
-while it is working and sleeps when it stops - which is what `"never"` cannot do.
-
-The stamp reaches every service on the sandbox's bridge that declared an allow-list of its own; a
-service without one sleeps on its ordinary timer regardless.
-
-### `optional` still reserves its ports
-
-A branch that never queries the analytics store shouldn't pay for one. But the ports stay
-reserved, so adding it later doesn't renumber everything else.
-→ [DECISIONS.md](DECISIONS.md#optional-services-still-reserve-their-ports)
+A common pattern: start with `"egress": "allow"`, install dependencies, then lock down with
+`sbx egress <sandbox> --default deny --allow <api-host>` before untrusted work starts.
 
 ---
 
 ## The same spec as microVMs
 
-Nothing in the file names a backend. `--provider firecracker` realises the same spec with each
-service in a Firecracker microVM, and where that runs depends on the host, not the spec:
+Nothing in the file names a backend. `--provider firecracker` runs each service in a Firecracker
+microVM. Where that runs depends on the host:
 
-| host | backend | |
+| host | backend | status |
 |---|---|---|
-| Linux with `/dev/kvm` | direct | the provider drives Firecracker itself |
-| macOS, Apple M3+, macOS 15+ | helper VM | lima (else colima) VM `sbx-fc` with nested virtualisation, created on first use. Run end to end with colima; lima is built and unit-tested, not yet run end to end (`SBX_FC_VM_DRIVER=colima` picks colima) |
-| Windows 11 | helper VM | a WSL2 distro `sbx-fc`; refused, quoting the `.wslconfig` line, when nested virtualisation is off. **Built and unit-tested; not yet run on a Windows host** |
-| kubernetes | RuntimeClass | `--isolation firecracker` sets `runtimeClassName: kata-fc` (`SBX_KATA_FC_RUNTIMECLASS` renames it). **Unit-tested (the RuntimeClass it names); not yet run on a cluster with kata-fc installed** |
-| anything else | refused | with the reason and the fix - never a silent fallback to a container |
+| Linux with `/dev/kvm` | direct | verified |
+| macOS 15+, Apple M3+ | helper VM `sbx-fc` (lima, else colima) | verified with colima; lima unit-tested only. `SBX_FC_VM_DRIVER=colima` picks colima |
+| Windows 11 | WSL2 distro `sbx-fc` | built and unit-tested; not yet run on a Windows host |
+| Kubernetes | `--isolation firecracker` → RuntimeClass `kata-fc` | unit-tested; not yet run on a cluster with kata-fc |
+| anything else | refused, with the reason and the fix | |
 
-Through a helper VM, `sbx env` prints the same ports on the host as in the VM, and a connection
-to one wakes the microVM exactly as it wakes a container. `sbx fc backend` and `sbx doctor` say
-which row this machine is on.
+Through a helper VM, `sbx env` prints the same ports on the host, and a connection wakes the
+microVM as it would a container. `sbx fc backend` and `sbx doctor` say which row you are on.
 → [DECISIONS.md](DECISIONS.md#a-microvm-off-linux-runs-in-a-helper-vm-not-on-virtualizationframework)
 
 ---
@@ -549,33 +440,30 @@ sbx templates                             # analytics browser nginx postgres web
 sbx create my-site --template nginx
 ```
 
-The templates are the [`examples/`](../examples/), embedded in the binary - so an agent asked
-to spin up a Postgres can do it in one line, with nothing on disk.
+The templates are the [`examples/`](../examples/), embedded in the binary.
 
 ---
 
 ## Coming from docker-compose
 
-Most teams already declare their backing services in a `docker-compose.yml`, and a compose
-service is close to isomorphic to an sbx one. The mapping, field for field:
+A compose service maps almost field for field:
 
 | docker-compose | sandbox.json | note |
 |---|---|---|
-| `image` | `image` | the same, and pin it |
-| `build.context` / `build.dockerfile` | `build.context` / `build.dockerfile` | sbx tags by a hash of the context |
-| `ports: ["5432:5432"]` | `ports: [5432]` | **container side only** - the host side is assigned from the sandbox's slot |
+| `image` | `image` | pin it |
+| `build.context` / `build.dockerfile` | `build.context` / `build.dockerfile` | tagged by a hash of the context |
+| `ports: ["5432:5432"]` | `ports: [5432]` | **container side only**; the host side is assigned |
 | `environment` | `env` | `${VAR}` works in both |
-| `command` | `args` | appended to the image's entrypoint |
-| `volumes: ["pgdata:/var/lib/postgresql/data"]` | `volume: "/var/lib/postgresql/data"` | one per service, named after the sandbox |
+| `entrypoint` | `entrypoint` | |
+| `command` | `args` | |
+| `volumes: ["pgdata:/var/lib/postgresql/data"]` | `volume: "/var/lib/postgresql/data"` | one per service |
 | `volumes: ["./my.conf:/etc/my.conf:ro"]` | `files: {"./my.conf": "/etc/my.conf"}` | read-only, relative to the spec |
+| `volumes: ["./src:/work"]` | `mounts: {"./src": "/work"}` | read-write, docker only |
 | `healthcheck.test` | `health` | a shell command, run inside the container |
-| `depends_on` | `depends_on` | ordering only, as in compose without a condition |
+| `depends_on` | `depends_on` | waits for health (`service_healthy`) |
 | `deploy.resources.limits` | `cpu`, `memory` | |
 | `profiles` | `optional` | created with `--optional` |
-| - | `exports` | the piece compose has no equivalent of, and the reason adoption is cheap |
-
-**The one that surprises people is `ports`.** Compose lets you choose the host port; sbx does
-not - you declare the container port and read the assigned one back through `exports`.
+| - | `exports` | names the assigned ports for your tools |
 
 A two-service compose file:
 
@@ -603,7 +491,7 @@ becomes:
       "ports": [5432],
       "env": { "POSTGRES_USER": "app", "POSTGRES_PASSWORD": "app", "POSTGRES_DB": "app" },
       "volume": "/var/lib/postgresql/data",
-      "health": "pg_isready -U app"
+      "health": "psql -U app -d app -c 'select 1'"
     },
     "cache": { "image": "redis:7-alpine", "ports": [6379], "health": "redis-cli ping" }
   },
@@ -611,12 +499,5 @@ becomes:
 }
 ```
 
-Anything reading `DATABASE_PORT` keeps working; `docker compose up` had it on 5432 and sbx
-has it wherever this sandbox's slot puts it.
-
-**What does not carry over**: compose's `networks` (each sandbox gets its own), `restart`
-(the daemon owns lifecycle - there is no start and no stop), and `depends_on` *conditions*
-(sbx waits for health before creating a dependent, which is the `service_healthy` behaviour;
-there is no other condition to choose).
-
-`sbx validate` checks the result without creating anything.
+Anything reading `DATABASE_PORT` keeps working. Compose's `networks` (each sandbox gets its own)
+and `restart` (the daemon owns lifecycle) do not carry over. Run `sbx validate` on the result.

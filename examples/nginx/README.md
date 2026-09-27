@@ -5,7 +5,7 @@ A web server that costs nothing until somebody loads a page.
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
 sbx create my-site --template nginx
-eval "$(sbx env my-site --template nginx)"
+eval "$(sbx env my-site)"
 open "http://$WEB_HOST:$WEB_PORT"
 ```
 

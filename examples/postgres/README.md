@@ -4,7 +4,7 @@ The smallest spec that is still useful.
 
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
-sbx create my-branch
+sbx create my-branch --template postgres
 eval "$(sbx env my-branch)"
 psql "postgres://app:app@$DATABASE_HOST:$DATABASE_PORT/app" -c '\dt'
 ```

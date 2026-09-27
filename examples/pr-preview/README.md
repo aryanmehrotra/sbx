@@ -3,10 +3,9 @@
 A URL per pull request, for reviewers - on a box you own, where the idle ones cost **0 B** of
 memory instead of a per-environment bill.
 
-This is the use case the comparison sends to Northflank, Uffizzi and Okteto. What they give you
-that sbx does not is a managed control plane and a team UI; what sbx gives you that they do not
-is that a preview nobody is looking at sleeps to zero and wakes when a reviewer opens the link.
-On a hosted preview platform an idle environment still costs; here it does not.
+Hosted preview platforms (Northflank, Uffizzi, Okteto; see [COMPARISON.md](../../docs/COMPARISON.md))
+give you a managed control plane and a team UI. sbx gives you previews that sleep to zero when
+nobody is looking and wake when a reviewer opens the link.
 
 ## The shape
 
@@ -17,7 +16,8 @@ sbx runs on one persistent host you own - a small always-on VM, not the CI runne
 # on the preview host, once
 sbx serve --idle 30m &
 sbx create golden --template postgres
-sbx exec golden postgres psql -U app -d app -f schema.sql   # seed + migrate once
+sbx cp   golden postgres ./schema.sql :/tmp/schema.sql
+sbx exec golden postgres psql -U app -d app -f /tmp/schema.sql   # seed + migrate once
 sbx snapshot golden golden
 ```
 

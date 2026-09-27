@@ -4,15 +4,16 @@ A real headless Chrome, asleep until something connects to it.
 
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
-sbx create my-branch
+sbx create my-branch --template browser
 eval "$(sbx env my-branch)"
 
 curl "http://$CDP_HOST:$CDP_PORT/json/version"
 # {"Browser": "HeadlessChrome/124.0.6367.78", ...}
 ```
 
-Measured: asleep at **0 B**, woken by that request in about **4.4 s cold** and **0.75 s warm**
-(n=5, macOS arm64 - see [BENCHMARKS.md](../../docs/BENCHMARKS.md)), then driven over CDP.
+Measured: asleep at **0 B**, woken by that request in a median **3.7 s cold** and **0.77 s warm**
+(n=5, macOS arm64, v0.1.0 - see [BENCHMARKS.md](../../docs/BENCHMARKS.md#a-heavier-workload-headless-chrome)),
+then driven over CDP.
 Chrome is a heavy thing to start; the wake is its own startup, not sbx's.
 
 Point Playwright or chromedp at it:
@@ -29,5 +30,4 @@ answers nothing.
 
 **The health command must exist in the image.** `chromedp/headless-shell` ships no `wget`
 and no `curl`, so a `wget` health check can never pass there and the sandbox looks broken.
-This example uses `zenika/alpine-chrome`, which has a shell toolchain. Both of these cost an
-afternoon to find and a line to avoid.
+This example uses `zenika/alpine-chrome`, which has a shell toolchain.

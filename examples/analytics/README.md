@@ -4,8 +4,8 @@ Postgres for the app, ClickHouse for the analytics - and ClickHouse marked `opti
 
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
-sbx create my-branch              # postgres only
-sbx create my-branch --optional   # both
+sbx create my-branch --template analytics              # postgres only
+sbx create my-branch --template analytics --optional   # both
 ```
 
 **Why optional.** An idle ClickHouse is about 200 MB, against Postgres's 22 MB, and most
