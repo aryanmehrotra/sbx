@@ -1,6 +1,6 @@
 # pr-preview
 
-A URL per pull request, for reviewers - on a box you own, where the idle ones cost **0 B** of
+A URL per pull request, for reviewers - on a machine you own, where the idle ones cost **0 B** of
 memory instead of a per-environment bill.
 
 Hosted preview platforms (Northflank, Uffizzi, Okteto; see [COMPARISON.md](../../docs/COMPARISON.md))
@@ -10,7 +10,8 @@ nobody is looking and wake when a reviewer opens the link.
 ## The shape
 
 sbx runs on one persistent host you own - a small always-on VM, not the CI runner - with
-`sbx serve` up and a **golden** sandbox seeded once (schema, fixtures, migrations):
+`sbx serve` up and a **golden** sandbox seeded once (schema, fixtures, migrations) and saved as a
+snapshot (a copy of its files) that each PR forks:
 
 ```sh
 # on the preview host, once
@@ -29,8 +30,9 @@ Then CI, per pull request:
   The link goes on the PR as a comment.
 - **closed** → `sbx rm pr-<number>` destroys the sandbox and its volume.
 
-Between reviews the environment sleeps to 0 B and the next click wakes it - the reviewer waits
-the one wake (sub-second for most stacks), and you pay for nothing in between.
+Between reviews the environment sleeps to 0 B of RAM and the next click wakes it. The reviewer
+waits for one wake (348 ms median for postgres on v0.14.0,
+[BENCHMARKS.md](../../docs/BENCHMARKS.md#headline-numbers)), and nothing runs in between.
 
 ## The workflow
 

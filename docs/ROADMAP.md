@@ -3,9 +3,12 @@
 > **What this page is:** what sbx builds next, why, and what it will not build. For users and
 > contributors deciding whether to bet on sbx. As of **v0.14.0 (2026-09-27)**.
 
-The wake path is the product. Next comes what makes it trustworthy for untrusted code and agents:
-secrets kept out of the sandbox, the microVM measured on bare metal and proven on a Mac, and the
-rest of the OpenSandbox API. Nothing here turns sbx into a hosted service.
+The wake path is the product: a sleeping sandbox wakes when anything connects, and that first
+connection is held, not refused. Next comes what makes sbx trustworthy for untrusted code and AI
+agents: secrets kept out of the sandbox, the microVM (a small VM with its own kernel) measured on
+bare metal and proven on a Mac, and the rest of the OpenSandbox API (an open-source API standard
+for AI-agent sandboxes). Nothing here turns sbx into a hosted service. Other terms are in the
+[README glossary](../README.md#glossary).
 
 Sizes are rough: **S** is under a week, **M** is 2–4 weeks, **L** is over a month, for one engineer.
 They are estimates, not commitments, and there are no dates because they would be invented.
@@ -34,15 +37,19 @@ three, and holds itself to a bar it can measure.
 
 ## Shipped recently
 
-Details are in each version's release notes, such as [v0.14.0](release-notes/v0.14.0.md).
+Every release, with what changed and what to do before upgrading, is in the
+[release notes](release-notes/README.md). The last few:
 
-- **v0.11.0** — the Firecracker microVM provider: own kernel, sleep keeps RAM and processes; a helper VM on M3+ Macs.
-- **v0.12.0** — the OpenSandbox API served from microVMs, with `pvc` volumes and disk-snapshot forks.
-- **v0.13.0** — a microVM warm pool, every VMM under Firecracker's jailer, and a host guard that fails closed.
-- **v0.13.2** — upstream's `pool` and `e2e` conformance files pass; refusals no longer promise a release.
-- **v0.14.0** — a network namespace per jailed VMM, a size limit on its writes, and a shared read-only root.
+- **v0.11.0** — the Firecracker microVM provider: each sandbox gets its own kernel, and sleep keeps
+  its memory and running processes. A helper VM runs it on M3+ Macs.
+- **v0.12.0** — the OpenSandbox API served from microVMs, with persistent volumes and forks.
+- **v0.13.0** — a warm pool of ready microVMs, each microVM process locked down by Firecracker's
+  jailer, and a host firewall that fails closed.
+- **v0.13.2** — upstream OpenSandbox's `pool` and `e2e` test files pass.
+- **v0.14.0** — each jailed microVM gets its own network namespace, a cap on how much it can
+  write, and a shared read-only root filesystem.
 
-Also shipped in this period: live egress updates (`sbx egress`), CIDR and IP rules, and execd
+Also shipped in this period: live egress changes (`sbx egress`), IP-range rules, and command
 sessions and background commands through the OpenSandbox API.
 
 ## Now
@@ -53,21 +60,21 @@ In progress or next up.
 |---|---|:---:|---|
 | **Bare-metal microVM wake and burst numbers** | E2B, isorun and OpenSandbox ("~80ms" pools) publish microVM figures; sbx has only nested runs | S | harness exists: `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider`; needs a bare-metal host |
 | **The microVM's disk cost in `sbx doctor` and BENCHMARKS** | "0 B at rest" needs its asterisk: a snapshot is about the VM's RAM on disk. Vercel bills snapshot storage openly | S | not started |
-| **The helper VM run end to end on a Mac and on Windows 11** | microsandbox and Docker Sandboxes run microVMs on all three OSes today | M | provider measured on an M4; the API through it is unit-tested only; Windows built, not run |
+| **The helper VM run end to end on a Mac and on Windows 11** | microsandbox and Docker Sandboxes run microVMs on all three OSes today | M | see [platform status](../README.md#platform-status) |
 | **The warm pool through the helper VM** | burst on a Mac is otherwise the docker pool | M | not built |
-| **Docs people can find** | E2B, Daytona, Modal and OpenSandbox have docs sites; sbx ranks last on adoption | S | docs overhaul in progress; a site is next |
+| **A docs site with search** | E2B, Daytona, Modal and OpenSandbox have one | S | not started |
 
 ## Next
 
 | Item | Why (competitive) | Size | Status |
 |---|---|:---:|---|
 | **Secrets kept out of the sandbox** | OpenSandbox (vault), Vercel (brokering), isorun (proxy) and Cloudflare (header injection) have it; sbx does not | L | designed below |
-| **Egress matchers** | path, method, header and query predicates on a rule; pure logic above `Permits()` | S | not started |
-| **Isolated sessions** (`/v1/isolated/*`) | the biggest OpenSandbox gap: 48 upstream tests fail on it | not estimated | upstream's execd not yet read |
+| **Egress rules by path, method and header** | allow `POST api.x.com/v1/*` but not `DELETE` | S | not started |
+| **Isolated sessions** | the biggest OpenSandbox API gap: 48 upstream tests fail on it | not estimated | needs design |
 | **A code-interpreter guide** | E2B, Cloudflare, Daytona and OpenSandbox lead with one. sbx serves OpenSandbox's code-interpreter image already | S | the upstream `e2e` file passes; no guide |
-| **Guides for Claude Code, Cursor and Codex**, and a GitHub Action | community growth: E2B's cookbook, microsandbox's examples and showcase | S each | [AI-AGENTS.md](AI-AGENTS.md) exists; no action |
+| **Guides for Claude Code, Cursor and Codex**, and a GitHub Action | community growth: E2B's cookbook, microsandbox's examples and showcase | S each | [GUIDES.md](GUIDES.md#ai-agents) exists; no action |
 | **`files`, `init` and host mounts into a microVM** | the multi-service bar above; the microVM refuses them today | M | refused by name |
-| **Exec sessions on the CLI** | execd has sessions and background commands; `sbx exec` does not. Vercel's `runCommand` has `detached` | S | API shipped, CLI not |
+| **Exec sessions on the CLI** | the OpenSandbox API has command sessions and background commands; `sbx exec` does not. Vercel's `runCommand` has `detached` | S | API shipped, CLI not |
 | **The daemon off root; a quota on the state filesystem** | prerequisites before anonymous untrusted code on a shared host | M | open; see [SECURITY.md](../SECURITY.md) |
 
 ### Secrets kept out of the sandbox
@@ -93,7 +100,7 @@ everything else is spliced on the SNI as today, undecrypted. The filter's design
 | Item | Why | Size |
 |---|---|:---:|
 | **Snapshot retention** (expiry, keep-last-N) | a long-lived branch should not accumulate; Vercel has `keepLastSnapshots` | S |
-| **Reusable volumes with a lease** | `pvc` volumes outlive a sandbox; missing is single-writer leasing for a shared cache | M |
+| **Reusable volumes with a lease** | persistent (`pvc`) volumes outlive a sandbox; missing is single-writer leasing for a shared cache | M |
 | **Egress filtering on kubernetes** | a cluster refuses `egress_policy` today; the answer is a NetworkPolicy plus an egress gateway | S–M |
 | **Forking a microVM's memory under a new name** | E2B and microsandbox fork live sandboxes; sbx forks a VM's disk | M |
 | **A local Go API** | a test harness drives sandboxes in-process. **Local only**, see below | S–M |
@@ -102,8 +109,8 @@ everything else is spliced on the SNI as today, undecrypted. The filter's design
 
 ## Not built yet in the OpenSandbox API
 
-When the OpenSandbox API or execd answers `501 … not built yet (docs/ROADMAP.md)`, the feature is
-listed here. Each is refused by name, never approximated, as the
+When the OpenSandbox API, or execd (the small command server sbx runs inside each API sandbox),
+answers `501 … not built yet (docs/ROADMAP.md)`, the feature is listed here. Each is refused by name, never approximated, as the
 [OpenSandbox decisions](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-pid-1-the-token-is-the-apis-a-snapshot-is-the-disk)
 require.
 
@@ -116,7 +123,7 @@ require.
 | **server-proxied endpoints** (`use_server_proxy=true`) | execd reached through the lifecycle server | not estimated |
 | **registry credentials in image.auth** | pull credentials in the create request; today, `docker login` on the host | not estimated |
 | **lifecycle hooks** · **renew-on-access** | hooks around lifecycle events; an expiry extended by each access | not estimated |
-| **the API on kubernetes** | needs an init-container `Injector` to put execd into any image | M |
+| **the API on kubernetes** | needs an init container that puts execd into any image | M |
 
 Network policies answer 501 for a different reason: the daemon was started without egress control.
 
@@ -135,14 +142,8 @@ A roadmap that only lists additions is a wish list. These are ruled out by an ex
 | **A remote control plane** | Same decision. `create`, `rm` and `exec` stay local. `sbx connect` is a data-plane tunnel. An SDK that creates sandboxes over the network is this item in a different hat, which is why the Go API is local |
 | **A browser IDE** | `sbx ssh` gives VS Code, Cursor and JetBrains a Remote-SSH path over the wake path. Codespaces, Coder and Ona win here, deliberately |
 | **Per-agent users inside one sandbox** | two agents get two sandboxes: one agent's writes cannot reach the other's |
-| **A second VMM on Apple's Virtualization.framework** | it cannot snapshot for third parties and would cost cgo and the static binary. [DECISIONS.md](DECISIONS.md#a-microvm-off-linux-runs-in-a-helper-vm-not-on-virtualizationframework) |
+| **A second VM engine on Apple's Virtualization.framework** | it cannot snapshot for third parties and would cost cgo and the static binary. [DECISIONS.md](DECISIONS.md#a-microvm-off-linux-runs-in-a-helper-vm-not-on-virtualizationframework) |
 | **Kubernetes inside a docker sandbox** | k3s and docker-in-docker need `seccomp=unconfined` or `privileged`, which sbx does not offer. Not yet tried on the microVM provider |
-
-## Decisions for the owner
-
-- **The name.** Docker Sandboxes also ships a CLI called `sbx` (`brew install docker/tap/sbx`).
-  Keep the name with a disambiguation line, or add a distinct package name or binary alias. This
-  is the owner's call, not the roadmap's.
 
 ## How something gets on this list, or off it
 
@@ -154,3 +155,6 @@ read the code it touches.
 A rejected one moves to [DECISIONS.md](DECISIONS.md) with the measurement that killed it. Nothing is
 quietly deleted, because the reason an item failed is worth more than the item was. The previous
 roadmap, including the microVM plan and its estimates, is in git history at v0.14.0.
+
+**Want something here sooner?** Open an issue, or upvote one, and say what you would use it for.
+Items with a measured need move up.

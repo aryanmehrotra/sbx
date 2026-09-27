@@ -29,7 +29,7 @@ One is a recipe rather than a spec:
 
 | | what it gives you | why it is here |
 |---|---|---|
-| [`pr-preview`](pr-preview/) | a URL per pull request, on a box you own | idle previews sleep to 0 B instead of billing; a GitHub Actions template + the fork/`sbx url`/teardown pattern |
+| [`pr-preview`](pr-preview/) | a URL per pull request, on a machine you own | idle previews sleep to 0 B of RAM instead of billing; a GitHub Actions template + the fork/`sbx url`/teardown pattern |
 
 ## Two things worth copying from all of them
 

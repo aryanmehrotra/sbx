@@ -101,7 +101,7 @@ give it `--only PREFIX`.
 - **`sbx serve --idle 30m &` does not survive a GitHub Actions step.** Each step is a new shell.
   Start the daemon and use the sandbox in the same step, or install the unit from
   [`deploy/`](../deploy/) on a self-hosted runner.
-- **Jobs on one runner share the daemon.** They get different slots but are not isolated:
+- **Jobs on one runner share the daemon.** They get different ports but are not isolated:
   `sbx rm` in one job can remove the other's sandbox. Name sandboxes after branch *and* job.
 - **`sbx with` removes its sandbox even on failure**, which keeps a runner clean.
 
@@ -136,16 +136,17 @@ Desktop) shares only some host paths: `$HOME` usually, `/var/folders` on macOS u
 
 ### Two `sbx create` at the same moment fail on a port conflict
 
-**Cause:** two racing creates can pick the same free slot. A lock under `~/.sbx` and a port probe
-make this rare on one machine. Two machines driving one remote `DOCKER_HOST` share no lock.
+**Cause:** two racing creates can pick the same free block of ports. A lock under `~/.sbx` and a
+port probe narrow this: measured on a laptop, 17 of 20 racing creates succeeded (5 of 20 before
+the lock). Two machines driving one remote `DOCKER_HOST` share no lock.
 
-**Fix:** retry. The retry sees the first create's containers and takes the next slot. On colima or
+**Fix:** retry. The retry sees the first create's containers and takes the next block. On colima or
 Docker Desktop a port forward can outlive its container for a few seconds after `sbx rm`; wait a
 moment and retry.
 
 ### `sbx create` is slow the more sandboxes exist
 
-It should not be: finding a free slot is one API call. If you see it, report it with
+It should not be: finding a free block of ports is one API call. If you see it, report it with
 `sbx list | wc -l`.
 
 ### `sbx list` shows nothing, or a sandbox you cannot remove
@@ -193,7 +194,7 @@ A connection pool must also survive a server-side close: sleeping a sandbox clos
 ### A fork is missing the write I just made
 
 **Cause:** `sbx snapshot` does not stop the service. It takes a crash-consistent copy. Postgres
-replays its WAL on the fork's start, but under heavy load the copy can catch the WAL mid-write,
+replays its WAL (write-ahead log) on the fork's start, but under heavy load the copy can catch the WAL mid-write,
 and the **last** write before the snapshot can be missing.
 
 **Fix:** if the snapshot must be exact, stop writing first:
@@ -207,7 +208,8 @@ The usual seed → snapshot → fork flow has nothing writing at snapshot time.
 
 ### `sbx checkpoint` works but `sbx resume` fails
 
-**Cause:** you are on docker, whose checkpoint restore is unmaintained. Errors look like
+**Cause:** you are on docker, whose checkpoint restore is unmaintained. (Checkpoints use CRIU, a
+Linux tool that saves a running process's memory to disk.) Errors look like
 `bind-mount /proc/0/ns/net -> …: no such file or directory` or `content … already exists`.
 `criu check` passes on the same host.
 
@@ -219,7 +221,7 @@ checkpoint and resume through podman. On macOS checkpoint is refused (CRIU needs
 
 ## Networking and egress
 
-### A box with `egress_allow` cannot reach a host
+### A service with `egress_allow` cannot reach a host
 
 **Cause:** only listed hosts (and their subdomains) are reachable, and only through
 `HTTP_PROXY`/`HTTPS_PROXY`. A client that ignores those variables has no route. Raw TCP (`git://`,
@@ -233,20 +235,24 @@ or use HTTPS instead of raw TCP. → [SPEC.md](SPEC.md#egress-the-network-a-serv
 **Cause:** only a sandbox created with `egress_policy`, `egress_allow` or `egress: "allow"` has a
 filter. **Fix:** add `"egress": "allow"` to the spec, recreate, then narrow it live.
 
-### A box that works inside itself sleeps mid-task
+### A sandbox that works inside itself sleeps mid-task
 
 **Cause:** idleness is measured on bytes through the service's ports. Compiling or editing inside
 sends none. **Fix:** declare `egress_allow` (its calls out count as activity), a longer `idle`,
-or `"idle": "never"`. → [SPEC.md](SPEC.md#idle-keeps-a-box-awake-while-it-works)
+or `"idle": "never"`. → [SPEC.md](SPEC.md#idle-keeps-a-sandbox-awake-while-it-works)
 
 ---
 
 ## MicroVMs
 
+A microVM is a small virtual machine with its own kernel, run by Firecracker when you pass
+`--provider firecracker`. Background: [GUIDES.md](GUIDES.md#stronger-isolation-with-microvms).
+
 ### `sbx doctor` or `sbx fc backend` refuses firecracker on this host
 
-**Cause:** there is no `/dev/kvm` and no supported helper VM: Linux without KVM, a Mac older than
-M3 or macOS 15, or Windows without nested virtualisation. The message names the reason and the fix.
+**Cause:** there is no `/dev/kvm` (Linux's hardware virtualisation device) and no supported
+helper VM (the small Linux VM sbx starts on a Mac or Windows to run microVMs in): Linux without
+KVM, a Mac older than M3 or macOS 15, or Windows without nested virtualisation. The message names the reason and the fix.
 On a Mac chip sbx cannot identify, `SBX_FC_ASSUME_NESTED=1` lets it try.
 
 ### A firecracker create is refused: "runs as USER ..."
@@ -258,7 +264,8 @@ an image whose `USER` is root.
 ### A microVM fails "making sbxfcN-M's network namespace"
 
 **Cause:** the host cannot make a network namespace or veth pair. With the jailer on (the
-default) each VMM runs in its own namespace. It needs iproute2 with `ip netns`, a writable
+default) each VMM (the Firecracker process behind one microVM) is confined by Firecracker's
+jailer and runs in its own namespace. It needs iproute2 with `ip netns`, a writable
 `/var/run/netns`, and a kernel with `CONFIG_NET_NS` and `CONFIG_VETH`. A container running sbx may
 forbid namespaces.
 
@@ -271,7 +278,7 @@ namespace; see [SECURITY.md](../SECURITY.md)).
 `SBX_FC_KERNEL` may not.
 
 **Fix:** use a kernel with `CONFIG_OVERLAY_FS=y`, or set `SBX_FC_ROOTFS=copy`. Each VM then gets
-a whole copy of its image, as in v0.13 and earlier (slower to create without reflink).
+a whole copy of its image (slower to create without reflink).
 
 ### A microVM's workload says "No space left on device"
 
@@ -283,12 +290,22 @@ sparse).
 
 ### A microVM "could not sleep: execd did not confirm its seal"
 
-**Cause:** the guest did not answer in time, almost always because the host is short of memory.
-sbx asked three times (10 s, 20 s, 30 s), took no snapshot, and **left the VM running**. Nothing is
-lost; the daemon retries on its next idle check.
+**What it means:** before a microVM sleeps, sbx asks execd (sbx's agent inside the VM, which runs
+your commands) to seal itself: stop answering until it is given a new secret. Only then is the
+VM's memory saved, so the saved copy never restores already serving. The message means execd did
+not confirm in time.
 
-The third failed sleep in a row stops the VM instead. Its next wake is a cold boot: the disk is
-kept, the memory is not.
+**Cause:** the guest did not answer, almost always because the host is short of memory. sbx asked
+three times (10 s, 20 s, 30 s) and took no snapshot. It then gave execd a fresh secret, which
+proves it is not sealed, and **left the VM running**. Nothing is lost; the daemon retries on its
+next idle check.
+
+The VM is stopped instead in two cases. Its next wake is then a cold boot: the disk is kept, the
+memory is not.
+
+- The third failed sleep in a row: the message says "the 3 sleeps in a row it has not".
+- The fresh secret could not be given either: the message says "the re-key that would have
+  proved it unsealed failed too".
 
 **Fix:** check `sbx doctor` (memory, swap), keep fewer sandboxes awake, or lower `memory` per
 microVM.
@@ -319,8 +336,10 @@ An endpoint that refuses connections means the mirror could not bind that port h
 
 ### The SDK or `sbx mcp` gets 401 `MISSING_API_KEY` or `INVALID_API_KEY`
 
-**Cause:** `sbx serve --osb-addr` always requires the `OPEN-SANDBOX-API-KEY` header, loopback
-included. With no `--osb-key` or `SBX_OSB_KEY`, the key is generated into `~/.sbx/osb/key`.
+**Cause:** `sbx serve --osb-addr` serves the OpenSandbox API (an open-source sandbox API whose
+SDKs and MCP server sbx supports; see [GUIDES.md](GUIDES.md#opensandbox-sdks)). It always requires
+the `OPEN-SANDBOX-API-KEY` header, loopback included. With no `--osb-key` or `SBX_OSB_KEY`, the
+key is generated into `~/.sbx/osb/key`.
 
 **Fix:**
 
@@ -332,18 +351,18 @@ sbx mcp --url https://osb.example.dev --key "$KEY"     # a remote server
 
 ### Warm pool creates are slow (the pool always misses)
 
-**Cause:** a create hits the pool only if image, entrypoint and `resourceLimits` (plus ports,
-platform and `sbx.idle`) match the pool's. The pool uses the SDK defaults: entrypoint
+**Cause:** a warm pool (`--osb-pool`) keeps sandboxes created ahead of time. A create hits it only
+if image, entrypoint and `resourceLimits` (plus ports, platform and `sbx.idle`) match the pool's. The pool uses the SDK defaults: entrypoint
 `["tail", "-f", "/dev/null"]`, `cpu: "1"`, `memory: "2Gi"`.
 
 **Fix:** read the daemon log, which names the difference, e.g.
-`pool miss for image python:3.11-slim: resourceLimits.cpu is unset, the pool's is "1"`. Send the
-SDK defaults, or drop the custom entrypoint.
+`osb: pool miss for image "python:3.11-slim": resourceLimits.cpu is unset, the pool's is "1" - it takes the cold path…`.
+Send the SDK defaults, or drop the custom entrypoint.
 
 ### An API sandbox is `Failed` with `runtime_error`
 
-**Cause:** the container stopped before its agent answered. `status.message` gives the docker
-state, exit code, `OOMKilled`, and the engine's start error. Exit 137 with no output is SIGKILL:
+**Cause:** the container stopped before execd (sbx's agent inside it) answered. `status.message`
+gives the docker state, exit code, `OOMKilled`, and the engine's start error. Exit 137 with no output is SIGKILL:
 out of memory (host or `resourceLimits.memory`) or a `docker kill`. 143 is SIGTERM from outside.
 
 **Fix:** raise `resourceLimits.memory` or free host memory. The same cause is in the daemon log
@@ -377,8 +396,8 @@ columns read `n/a`. A deployment older than v0.5.0 also has no usage fields.
 
 ### `sbx ui --connect` will not let me wake or remove anything
 
-**Cause:** the deployment runs in **front mode** (`sbx serve --front`). There sbx carries ports
-beside a workload and manages no sandboxes, so wake, sleep, limit, remove and logs are refused.
+**Cause:** the deployment runs in **front mode** (`sbx serve --front`). There sbx only forwards
+ports to a workload beside it and manages no sandboxes, so wake, sleep, limit, remove and logs are refused.
 
 A deployment that manages sandboxes (`sbx serve --connect-addr` with a provider) accepts all of
 them from `sbx ui --connect`, authorised by the connect token.
@@ -396,8 +415,8 @@ them from `sbx ui --connect`, authorised by the connect token.
 `build`, `mounts`, `cap_add`, `egress`, `egress_allow`, `egress_policy`, `on_idle: "freeze"`.
 `sbx url` is refused too.
 
-**Fix:** name an `image` instead of `build`; use `volume` instead of `mounts`; use your CNI's
-NetworkPolicy for egress; use an Ingress for a public URL. The full table is in
+**Fix:** name an `image` instead of `build`; use `volume` instead of `mounts`; use a Kubernetes
+NetworkPolicy (enforced by your cluster's network plugin) for egress; use an Ingress for a public URL. The full table is in
 [SPEC.md](SPEC.md#provider-support).
 
 ---
@@ -439,10 +458,10 @@ What `~/.sbx` holds:
 | `fc/` | microVM disks and state (`SBX_FC_STATE`) |
 | `execd/` | the cached in-sandbox agent binary |
 | `history.jsonl` | the `sbx history` journal (`SBX_HISTORY`) |
-| `daemon.json`, `daemons/`, `slots.lock` | daemon presence records and the slot lock |
+| `daemon.json`, `daemons/`, `slots.lock` | which daemons are running, and the lock that stops two creates taking the same ports |
 | `update.json` | the update-check cache |
 
-Deleting it while sandboxes exist loses the live egress policies, the OSB key, microVM sandboxes
+Deleting it while sandboxes exist loses the live egress policies, the OpenSandbox API key, microVM sandboxes
 and history. Container sandboxes keep running.
 
 ---

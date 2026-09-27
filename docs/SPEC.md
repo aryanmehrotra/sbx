@@ -5,6 +5,7 @@ It says what exists, how to tell it is serving, and how to reach it. It never sa
 or stop; `sbx serve` does that by watching the ports.
 
 `sbx init > sandbox.json` writes a working one. `sbx validate` checks one without creating anything.
+For tasks built on these fields (seeding, CI, agents, microVMs), see [GUIDES.md](GUIDES.md).
 
 ---
 
@@ -90,10 +91,10 @@ public port of mysql's 3306.
 | `depends_on` | string list | | Services that must serve first, at create and on every wake |
 | `optional` | bool | `false` | Created only with `--optional`. Still reserves its ports |
 | `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep |
-| `on_idle` | string | `"stop"` | `"freeze"` pauses instead: memory and processes kept, thawed in about 10 ms |
+| `on_idle` | string | `"stop"` | `"freeze"` pauses instead: memory and processes kept, resumed in about 10 ms |
 | `egress` | string | open | `"deny"`: no routed egress. `"allow"`: open, but through the filter |
 | `egress_allow` | string list | | Reach only these hosts and their subdomains |
-| `egress_policy` | object | | OpenSandbox `NetworkPolicy`. Changeable live with `sbx egress` |
+| `egress_policy` | object | | A network policy in OpenSandbox's format. Changeable live with `sbx egress` |
 | `cpu` | string | unlimited | Cores: `"0.5"`, `"2"` |
 | `memory` | string | unlimited | Cap: `"512m"`, `"2g"` |
 | `cap_add` | string list | | Linux capabilities without `CAP_`: `["SYS_PTRACE"]`. Docker only |
@@ -120,7 +121,8 @@ On Kubernetes, `files` and `gpus` are currently not applied to the pod and raise
 
 ### On `--provider firecracker`
 
-The same file, with a microVM underneath. What changes:
+The same file, with a microVM underneath: a small virtual machine with its own Linux kernel, run
+by Firecracker (see [GUIDES.md](GUIDES.md#stronger-isolation-with-microvms)). What changes:
 
 | field | on firecracker |
 |---|---|
@@ -171,8 +173,8 @@ $ sbx create feat-y            # same context
 
 ### Ports are assigned
 
-Each sandbox gets a slot, and its public ports come from it, so two sandboxes can both run "a
-postgres". Read them with `sbx env`; `exports` gives them the names your tools expect.
+Each sandbox gets its own block of public ports, so two sandboxes can both run "a postgres".
+The container side is the port you declare; the public side is assigned. Read them with `sbx env`; `exports` gives them the names your tools expect.
 
 ### `health` is close to required
 
@@ -283,22 +285,23 @@ Set them when you run many sandboxes.
 ```
 
 Name only what the workload needs. sbx does not offer `privileged`, which turns off seccomp and
-AppArmor and hands over the host's devices. Docker's default seccomp profile still applies, so
-CRIU inside a sandbox fails on `mount`; run `sbx checkpoint` on the host instead.
+AppArmor (the kernel filters that limit what a container may do) and hands over the host's
+devices. Docker's default seccomp profile still applies, so CRIU (the process-checkpoint tool)
+inside a sandbox fails on `mount`; run `sbx checkpoint` on the host instead.
 
 Kubernetes refuses `cap_add`: Pod Security admission, not the manifest, decides capabilities.
 
-### `idle` keeps a box awake while it works
+### `idle` keeps a sandbox awake while it works
 
 ```json
 { "image": "ubuntu:24.04", "ports": [7777], "idle": "never" }
 ```
 
 sbx sleeps a service after the idle window with no traffic through its port. Work *inside* the
-box (a long command, a compute loop) sends none. `"never"` (or `"0"`) keeps it awake until you
+sandbox (a long command, a compute loop) sends none. `"never"` (or `"0"`) keeps it awake until you
 sleep or remove it; `"30m"` sets a longer window. It still wakes on a connection as usual.
 
-A box with `egress_allow` needs this less: its calls out count as activity. See
+A service with `egress_allow` needs this less: its calls out count as activity. See
 [below](#egress_allow-is-a-domain-allow-list).
 
 ### `on_idle: "freeze"` keeps memory instead
@@ -308,8 +311,9 @@ A box with `egress_allow` needs this less: its calls out count as activity. See
 ```
 
 When idle, the service is paused rather than stopped: memory and running processes are kept, no
-CPU is used, and the next connection thaws it in about 10 ms. It holds its memory while asleep.
-Sandboxes created through the OpenSandbox API default to `freeze`.
+CPU is used, and the next connection resumes it in about 10 ms. It holds its memory while asleep.
+Docker and firecracker support it; Kubernetes refuses it. Sandboxes created through the
+OpenSandbox API default to `freeze`.
 
 ### `optional` still reserves its ports
 
@@ -320,7 +324,8 @@ adding it later does not renumber anything. → [DECISIONS.md](DECISIONS.md#opti
 
 ## Egress: the network a service may reach
 
-Four settings, from strictest to most flexible:
+Egress is traffic going *out* of a service, to the internet or your network. Four settings, from
+strictest to most flexible:
 
 | you want | write |
 |---|---|
@@ -353,13 +358,13 @@ proxy; a client that ignores them has no route out at all.
 
 - **Where the filter runs.** Inside `sbx serve` on native Linux docker. On a VM-backed docker
   (colima, Docker Desktop, rootless) it runs as a small container on the sandbox's bridge.
-- **Calls out count as activity.** The box stays awake while calling out and sleeps on its timer
+- **Calls out count as activity.** The service stays awake while calling out and sleeps on its timer
   once it stops. Activity is stamped on bytes, so a streaming response keeps it awake.
 - **What the stamp reaches.** Every service on the sandbox's bridge that declared its own
   allow-list. A service without one sleeps on its own timer. Two allow-listed services in one
   sandbox keep each other awake.
 
-### `egress_policy` is a network policy, and it changes while the box runs
+### `egress_policy` is a network policy, and it changes while the sandbox runs
 
 ```json
 { "image": "python:3.12", "ports": [8000],
@@ -369,7 +374,8 @@ proxy; a client that ignores them has no route out at all.
                                  { "action": "deny",  "target": "10.0.0.0/8" } ] } }
 ```
 
-The shape and semantics are OpenSandbox's `NetworkPolicy` (release-1.1.0):
+The shape and semantics are the `NetworkPolicy` of OpenSandbox (an open-source sandbox API that
+sbx also serves), at release-1.1.0:
 
 | | |
 |---|---|
@@ -384,7 +390,7 @@ The shape and semantics are OpenSandbox's `NetworkPolicy` (release-1.1.0):
 deny-by-default plus `openai.com` and `*.openai.com`. Two services in one sandbox must declare the
 same policy, since they share one filter.
 
-**Limits.** The filter carries HTTP and HTTPS only, so a default-allow box has no raw TCP out
+**Limits.** The filter carries HTTP and HTTPS only, so a default-allow service has no raw TCP out
 (`git://`, SSH, a remote database). The filter refuses its own loopback and link-local addresses
 (including `169.254.0.0/16`, cloud metadata) unless a rule names them. Traffic to sibling services
 on the sandbox's own bridge is not egress and is not filtered.
@@ -419,13 +425,16 @@ A common pattern: start with `"egress": "allow"`, install dependencies, then loc
 Nothing in the file names a backend. `--provider firecracker` runs each service in a Firecracker
 microVM. Where that runs depends on the host:
 
-| host | backend | status |
-|---|---|---|
-| Linux with `/dev/kvm` | direct | verified |
-| macOS 15+, Apple M3+ | helper VM `sbx-fc` (lima, else colima) | verified with colima; lima unit-tested only. `SBX_FC_VM_DRIVER=colima` picks colima |
-| Windows 11 | WSL2 distro `sbx-fc` | built and unit-tested; not yet run on a Windows host |
-| Kubernetes | `--isolation firecracker` → RuntimeClass `kata-fc` | unit-tested; not yet run on a cluster with kata-fc |
-| anything else | refused, with the reason and the fix | |
+| host | backend |
+|---|---|
+| Linux with `/dev/kvm` | direct |
+| macOS 15+, Apple M3+ | helper VM `sbx-fc` (lima, else colima; `SBX_FC_VM_DRIVER=colima` picks colima) |
+| Windows 11 | WSL2 distro `sbx-fc` |
+| Kubernetes | `--isolation firecracker` → RuntimeClass `kata-fc` |
+| anything else | refused, with the reason and the fix |
+
+A helper VM is a small Linux VM that sbx starts on demand, because microVMs need Linux.
+What is tested on each host: [README platform status](../README.md#platform-status).
 
 Through a helper VM, `sbx env` prints the same ports on the host, and a connection wakes the
 microVM as it would a container. `sbx fc backend` and `sbx doctor` say which row you are on.

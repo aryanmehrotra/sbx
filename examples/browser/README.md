@@ -1,6 +1,7 @@
 # browser
 
-A real headless Chrome, asleep until something connects to it.
+A real headless Chrome, asleep until something connects to it. Playwright, Puppeteer and
+chromedp drive it over CDP (the Chrome DevTools Protocol).
 
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
@@ -11,10 +12,11 @@ curl "http://$CDP_HOST:$CDP_PORT/json/version"
 # {"Browser": "HeadlessChrome/124.0.6367.78", ...}
 ```
 
-Measured: asleep at **0 B**, woken by that request in a median **3.7 s cold** and **0.77 s warm**
-(n=5, macOS arm64, v0.1.0 - see [BENCHMARKS.md](../../docs/BENCHMARKS.md#a-heavier-workload-headless-chrome)),
-then driven over CDP.
-Chrome is a heavy thing to start; the wake is its own startup, not sbx's.
+Measured: asleep at **0 B** of RAM. Woken by that request, plan for seconds on the first touch
+in a session (3.7 s median, macOS arm64, v0.1.0) and well under a second once the image is warm
+(387 ms median, n=5, v0.14.0, Linux x86_64 cloud VM). Details:
+[BENCHMARKS.md](../../docs/BENCHMARKS.md#a-heavier-workload-headless-chrome). Most of the wake is
+Chrome's own startup, not sbx's.
 
 Point Playwright or chromedp at it:
 

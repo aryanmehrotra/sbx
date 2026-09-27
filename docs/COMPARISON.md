@@ -1,15 +1,17 @@
-# Compared
+# sbx vs E2B, Daytona, OpenSandbox, Testcontainers and others
 
-> **Who this is for:** anyone choosing between sbx and a hosted or self-hosted sandbox. It covers
-> where sbx wins, where it loses, and when to pick something else.
+> **Who this is for:** anyone choosing between sbx and another sandbox, hosted or self-hosted, or
+> a local tool such as docker compose or Testcontainers. It covers where sbx wins, where it
+> loses, and when to pick something else.
 > **Vendor cells re-verified 2026-09-27** unless a row carries its own date.
 > **Sourcing rule:** every sbx number is measured by a script in this repo
 > ([BENCHMARKS.md](BENCHMARKS.md)). Every vendor fact is quoted from the vendor's own page, with a
 > link. A cell nobody checked says `–`, never a guess.
 
 sbx is self-hosted sandboxes for every branch and AI agent: a real Postgres, Redis or browser that
-sleeps at 0 B and wakes the moment anything connects. No SDK, no account, one binary.
-"sbx" here is `aryanmehrotra/sbx`, not Docker Sandboxes' `sbx` CLI (see [below](#docker-sandboxes-the-other-sbx)).
+sleeps at 0 B of RAM and wakes the moment anything connects. No SDK required, no account, one
+binary. Unfamiliar terms (microVM, gVisor, OpenSandbox, egress) are explained in the
+[README glossary](../README.md#glossary).
 
 ## At a glance
 
@@ -18,71 +20,109 @@ sleeps at 0 B and wakes the moment anything connects. No SDK, no account, one bi
 
 | | sbx | E2B | Daytona | Modal | OpenSandbox | Vercel | Cloudflare | Fly |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Wakes on an unmodified client connection | ● any TCP | ○ SDK | ○ API | ○ SDK | ○ API | ○ SDK | ◐ HTTP via Worker | ◐ via Fly Proxy¹ |
+| Wakes on an unmodified client connection | ● any TCP | ○ SDK | ○ API | ○ SDK | ○ API | ○ SDK | ◐ HTTP² | ◐ HTTP¹ |
 | Runs on your laptop | ● | ○ | ○ | ○ | ● | ○ | ○ | ○ |
-| Self-hosted, no account | ● MIT | ◐ infra, Apache-2.0 | ◐ AGPL, frozen 2026-06 | ○ | ● Apache-2.0 | ○ | ○ | ○ |
+| Self-hosted, no account | ● MIT | ◐ infra³ | ◐ frozen⁴ | ○ | ● Apache-2.0 | ○ | ○ | ○ |
 | Hosted, nothing to run | ○ | ● | ● | ● | ○ | ● | ● | ● |
 | Several services in one spec | ● | ○ | ○ | ○ | – | ○ | ○ | ◐ |
 | Idle cost | $0, 0 B RAM | storage | storage | storage | $0, your infra | snapshot storage | storage | storage |
-| Sleep keeps RAM + processes | ● microVM · ○ docker | ● | ◐ VM sandboxes | ◐ alpha | ● | ○ files only | ○ | ● suspend |
+| Sleep keeps RAM + processes | ● microVM · ◐ docker⁵ | ● | ◐ VM only | ◐ alpha | ● | ○ files only | ○ | ● suspend |
 | Isolation boundary | container · jailed microVM | Firecracker | container; VM optional | gVisor | container to Firecracker | Firecracker | container in a VM | Firecracker |
 | SDKs | OpenSandbox's 5 · CLI · MCP | Python, JS | 5 languages | Python, JS, Go [src][modal-sdk] | 5 languages | TS, Python | TS | REST API |
 | Speaks the OpenSandbox API | ● | ○ | ○ | ○ | ● reference | ○ | ○ | – |
-| Egress policy, changed live | ● not on k8s | ● | ◐ by tier | ● CIDR; domains beta | ● | ● | ● HTTP | – |
+| Egress policy, changed live | ◐ docker, microVM | ● | ◐ by tier | ● CIDR; domains beta | ● | ● | ● HTTP | – |
 | Credentials kept out of the sandbox | ○ [planned](ROADMAP.md#next) | – | – | – | ● vault | ● brokering | ◐ header injection | – |
 | GPU | ◐ docker only | – | – | ● | – | – | ○ | ● |
 
-¹ HTTP wakes freely; raw TCP needs a dedicated IPv4 and is unreliable on a shared one (checked
-2026-08-31). Also worth knowing: microsandbox (self-hosted microVMs, Linux, Mac and Windows) and
-Docker Sandboxes (runs coding agents in microVMs) are in [the details](#each-alternative-briefly).
+¹ Through Fly Proxy. HTTP wakes freely; raw TCP needs a dedicated IPv4 and is unreliable on a
+shared one (checked 2026-08-31). ² A request through your Worker. ³ Its infrastructure code is
+Apache-2.0. ⁴ AGPL; the open-source core has had no updates since 2026-06. ⁵ Opt-in
+`on_idle: "freeze"`: memory and processes are kept, so RAM stays in use while idle
+([SPEC](SPEC.md#on_idle-freeze-keeps-memory-instead)).
+
+Also worth knowing: microsandbox (self-hosted microVMs, Linux, Mac and Windows) and Docker
+Sandboxes (runs coding agents in microVMs) are in [the details](#each-alternative-briefly). For a
+laptop or CI, the closer rivals are [docker compose and Testcontainers](#vs-docker-compose-and-testcontainers).
 Neon matters only if all you need is Postgres.
 
-## Honest ranking
+## Which one should I use?
 
-**This is the project's own judgement, not a measurement.** It ranks sbx among the nine tools
-above plus microsandbox (10 in all). 1 is best. Sources are the links on this page and
-[BENCHMARKS.md](BENCHMARKS.md).
+| You want | Use | Why |
+|---|---|---|
+| A database or stack per branch, PR or agent, on your own machine | **sbx** | one spec, assigned ports, 0 B of RAM while asleep |
+| Unmodified clients (`psql`, pools, Playwright) to wake a sleeping service | **sbx** | the first connection is held, not refused, over any TCP protocol |
+| OpenSandbox or E2B-style agent sandboxes, self-hosted, from one binary | **sbx** | OpenSandbox's SDKs and MCP tools work unchanged |
+| One spec on a laptop, a cluster and a microVM | **sbx** | docker, kubernetes and firecracker providers |
+| Test containers started and stopped from inside test code | Testcontainers | in-process lifecycle and a large module ecosystem; `sbx with` if you want any language |
+| A few always-on services for one project | docker compose | already installed, nothing new to learn |
+| Nothing to run yourself | E2B, Daytona, Modal, Vercel or Cloudflare | hosted; sbx has no hosted option |
+| A VM boundary on a Mac or Windows, verified today | microsandbox | sbx's helper-VM path is not yet fully run on either ([status](../README.md#platform-status)) |
+| To run a coding agent itself in a microVM | Docker Sandboxes | that is its job; sbx runs the services an agent uses |
+| Only Postgres branches | Neon | wakes on the Postgres protocol and branches the data |
 
-| Dimension | sbx rank | Why |
-|---|:---:|---|
-| Idle cost | **1** | 0 B RAM asleep on your own hardware, measured. Hosted rivals still bill storage |
-| Multi-service stacks | **1** | one `sandbox.json` with Postgres, Redis and a browser; rivals model one box you exec into |
-| Wake latency (asleep → serving) | **1–2** (low confidence) | 216 ms Redis (docker, v0.14.0, Linux cloud VM), 216 ms microVM on a Mac; Fly suspend is close. Not like-for-like |
-| Self-hosting | **2** | one binary, laptop to cluster; OpenSandbox has more runtimes and a far larger community |
-| Docs (depth, honesty) | 4 | measured numbers with scripts; no docs site, search or cookbook |
-| SDK breadth | 4 | OpenSandbox's 5 SDKs work unchanged, but its isolated sessions and vault are not built |
-| Onboarding | 5 | install, `sbx serve`, create; needs a Docker runtime. Vercel and Docker are one command |
-| Isolation | 6 (tied) | the default is a container, as on OpenSandbox; the jailed microVM is opt-in, run on Linux and an M4 Mac |
-| Community and adoption | **10 (last)** | 2 stars on 2026-09-27; OpenSandbox 15.5k, E2B 14k, microsandbox 8.4k |
-| Hosted option | **10 (last, tied)** | none, by design; OpenSandbox and microsandbox have none either |
+### Also choose something else if…
 
-Create-to-first-command speed is not ranked: sbx is not on ComputeSDK's board
-([below](#create--first-command-measured-the-same-way)), so there is no fair rank to give.
-
-## Choose something else if…
-
-- **You want nothing to run yourself.** Pick E2B, Daytona, Modal, Vercel or Cloudflare. sbx is a
-  tool you run; there is no hosted sbx and none is planned.
 - **You need the fastest burst create today.** isorun and Daytona lead ComputeSDK's board.
 - **You need secrets kept out of the sandbox now.** OpenSandbox's vault, Vercel's brokering or
   isorun's proxy do it; sbx does not yet.
-- **You need a VM boundary on a Mac or Windows today, verified.** microsandbox runs microVMs on
-  all three. sbx's helper-VM path is measured on an M4 but the API through it is not yet run end
-  to end on a Mac, and Windows is not yet run on a Windows host.
-- **You want to run a coding agent itself in a microVM.** That is Docker Sandboxes' job.
 - **You want a browser IDE on a managed machine.** Pick Codespaces, Coder or Ona.
-- **You only need Postgres branches.** Neon wakes on the Postgres protocol and branches the data.
 - **Your apps are HTTP and already behind Traefik or Caddy.** Sablier fits that stack.
 - **You want memory restore on a Kubernetes cluster you already run.** zeropod does it as a shim.
 - **You need GPUs at scale.** Modal or Fly.
 - **You need a large community and support.** Every alternative here is bigger.
 
-## Choose sbx if…
+## Honest ranking
 
-- Your tools are unmodified clients: `psql`, a pool, Playwright, a test runner someone else wrote.
-- You want a sandbox per branch or per agent on hardware you already own, at $0 while idle.
-- One spec should run on a laptop, a cluster, or a jailed microVM without changes.
-- You already use the OpenSandbox SDKs and want a single-binary server for them.
+**This is the project's own judgement, not a measurement.** It ranks sbx among the eight tools in
+[At a glance](#at-a-glance) plus microsandbox (10 in all, counting sbx). 1 is best. Sources are the
+links on this page and [BENCHMARKS.md](BENCHMARKS.md).
+
+| Dimension | sbx rank | Why |
+|---|:---:|---|
+| Idle cost | **1** (tied with OpenSandbox on $) | 0 B RAM asleep on your own hardware, measured. Hosted rivals still bill storage |
+| Multi-service stacks | **1** (OpenSandbox not checked) | one `sandbox.json` with Postgres, Redis and a browser; the rest model one box you exec into |
+| Self-hosting | **2** | one binary, laptop to cluster; OpenSandbox has more runtimes and a far larger community |
+| Docs (depth, honesty) | 4 | measured numbers with scripts; no docs site, search or cookbook |
+| SDK breadth | 4 | OpenSandbox's 5 SDKs work unchanged, but its isolated sessions and vault are not built |
+| Onboarding | 5 | install, `sbx serve`, create; needs a Docker runtime. Vercel and Docker are one command |
+| Isolation | 6 (tied) | the default is a container, as on OpenSandbox; the jailed microVM is opt-in |
+| Community and adoption | **10 (last)** | 2 GitHub stars on 2026-09-27; OpenSandbox 15.5k, E2B 14k, microsandbox 8.4k |
+| Hosted option | **10 (last, tied)** | none, by design; OpenSandbox and microsandbox have none either |
+
+**Not ranked**, because no like-for-like measurement exists:
+
+- **Wake latency (asleep → serving).** sbx: 216 ms Redis and 348 ms Postgres on docker (v0.14.0,
+  Linux cloud VM); 216 ms for a microVM on an M4 through the helper VM (v0.11.0, before the
+  jailer). Vendors publish resume times measured their own way ([below](#what-asleep-costs-and-what-it-keeps)).
+- **Create → first command.** sbx is not on ComputeSDK's board
+  ([below](#create--first-command-measured-the-same-way)).
+
+## vs docker compose and Testcontainers
+
+For branch environments and CI fixtures, these are what most teams use today.
+
+- **docker compose** is Docker's tool for defining and running multi-container applications
+  ([docs][compose]). Services run until you stop them, and a fixed host port such as `5432:5432`
+  clashes when two branches want it; leave the host port out and Docker picks one ([ports][compose-ports]).
+- **Testcontainers** is a family of open-source libraries (Java, Go, .NET, Node.js, Python, Rust
+  and more) that start "throwaway, lightweight instances of databases, message brokers, web
+  browsers" from inside your tests ([site][tc]). Each container gets a random free host port
+  ([networking][tc-net]).
+
+| | sbx | docker compose | Testcontainers |
+|---|:---:|:---:|:---:|
+| Ports | ● assigned, read from `sbx env` | ◐ fixed unless you omit the host port | ● random free port |
+| Idle services | ● sleep at 0 B of RAM, wake on connect | ○ run until stopped | ○ removed after the tests |
+| Lives across test runs and branches | ● | ● | ◐ per test session by default |
+| Snapshot a seeded database, fork it per branch | ● `sbx snapshot`, `sbx fork` | ○ | ○ |
+| Language | ● any, through environment variables | ● any | ◐ a library per language |
+| Control from inside test code | ◐ `sbx with -- <test command>` | ○ | ● in-process lifecycle |
+| Ready-made modules for common services | ◐ 5 templates | ○ | ● a large module catalogue |
+
+**Testcontainers wins** when the test code should own the container: in-process lifecycle, typed
+modules, and a large ecosystem. **Compose wins** when a few services always run for one project.
+**sbx wins** when many copies of a stack must coexist on one machine, sleep when unused, and be
+reached by tools that know nothing about sbx. Moving a compose file: [SPEC](SPEC.md#coming-from-docker-compose).
 
 ## The axis that actually separates them
 
@@ -97,7 +137,7 @@ decides who is allowed to be the client.
 | Vercel Sandbox | any SDK call auto-resumes | only your own code | ○ |
 | Cloudflare Sandbox | a request through your Worker | HTTP to your Worker | ○ |
 | Fly Machines | a request through Fly Proxy | HTTP freely; raw TCP needs a dedicated IPv4 | ○ their proxy |
-| Knative | an HTTP request through the activator | HTTP, gRPC, WebSocket | ● needs a cluster |
+| Knative (serverless on Kubernetes) | an HTTP request through its activator | HTTP, gRPC, WebSocket | ● needs a cluster |
 | Neon | a Postgres connection | Postgres clients only | ○ |
 
 A connection pool cannot call `sandbox.connect()`. Neither can `psql`, `pg_dump`, a migration tool
@@ -113,7 +153,7 @@ runs on your laptop, with no account, for any protocol. Sources: [Vercel persist
 | | at rest | wake | what survives |
 |---|---|---|---|
 | **sbx, docker** | **0 B RAM**, plus its volume | **216 ms** Redis · 348 ms Postgres · 1534 ms k8s | disk; processes cold-start |
-| **sbx, microVM** | 0 B RAM; a memory image on disk | 216 ms to first byte, M4 through the helper VM | **RAM + running processes** |
+| **sbx, microVM** | 0 B RAM; a memory image on disk | 216 ms to first byte, M4 through the helper VM (v0.11.0) | **RAM + running processes** |
 | E2B | storage | ~1 s resume [src][e2b-p] | disk, RAM, processes |
 | Fly, suspended · stopped | storage | a few hundred ms · ~2 s+ [src][fly-sr] | RAM · disk |
 | Cloudflare | – | 1–3 s from stopped [src][cf-arch] | nothing: files deleted, processes end [src][cf-sb] |
@@ -122,11 +162,12 @@ runs on your laptop, with no account, for any protocol. Sources: [Vercel persist
 
 sbx figures come from `scripts/bench.sh` and the helper-VM run in [BENCHMARKS.md](BENCHMARKS.md),
 where each carries its machine and date. Redis and Postgres are v0.14.0 on a Linux cloud VM.
-The 1534 ms k8s figure is v0.1.0 and has not been re-run.
+The 1534 ms k8s figure is v0.1.0 and has not been re-run; the microVM figure predates the jailer.
 
 A microVM sleep is a snapshot, so a woken Postgres resumes rather than replaying its WAL. The cost
-is disk: the memory image is roughly the VM's RAM. On docker, `sbx checkpoint` and `sbx resume`
-restore memory through CRIU on a Linux podman runtime only.
+is disk: the memory image is roughly the VM's RAM. On docker, `on_idle: "freeze"` keeps memory by pausing
+instead of sleeping, which holds the RAM; `sbx checkpoint` and `sbx resume` save memory to disk
+through CRIU (a Linux tool that saves a running process and restores it) on a podman runtime only.
 
 ## Create → first command, measured the same way
 
@@ -155,38 +196,38 @@ There is no bare-metal microVM number yet ([ROADMAP](ROADMAP.md#now)).
 
 ## Each alternative, briefly
 
-**E2B** — hosted Firecracker sandboxes with Python and JS SDKs. Pause keeps memory and processes,
+**E2B** — a hosted service that runs AI agents' code in Firecracker microVMs, with Python and JS SDKs. Pause keeps memory and processes,
 ~1 s to resume ([persistence][e2b-p]). The default timeout is 5 min and `onTimeout` defaults to
 kill; auto-pause is opt-in ([fork][e2b-fork]). Its infrastructure is Apache-2.0 ([e2b-dev/infra][e2b-infra]).
 
-**Daytona** — hosted sandboxes, 5 SDKs, advertises creation "sub 90ms" ([pricing][dt-price]). Memory
+**Daytona** — a hosted service for AI-agent sandboxes, with 5 SDKs; it advertises creation "sub 90ms" ([pricing][dt-price]). Memory
 is kept only for VM sandboxes ([sandboxes][dt-sb]). The open-source repo says core development
 moved to a private codebase in June 2026 and it "will receive no further updates" ([repo][dt-gh]).
 
-**Modal** — hosted, gVisor isolation ([security][modal-sec]); memory snapshots are alpha
+**Modal** — a hosted serverless platform for Python and AI workloads with sandboxes; gVisor isolation ([security][modal-sec]); memory snapshots are alpha
 ([snapshots][modal-snap]). Egress by CIDR, domains in beta ([networking][modal-net]).
 
-**OpenSandbox** — the reference server for the API sbx implements. Self-hosted, Apache-2.0,
+**OpenSandbox** — an open-source API standard for AI-agent sandboxes, with SDKs in 5 languages; this is its reference server, whose API sbx implements. Self-hosted, Apache-2.0,
 container, gVisor, Kata or Firecracker runtimes, a credential vault, and "~80ms" Firecracker
 pools ([repo][osb], [performance][osb-perf]). sbx serves its SDKs from one binary; its isolated
 sessions and vault are [not built in sbx yet](ROADMAP.md#not-built-yet-in-the-opensandbox-api).
 
-**Vercel Sandbox** — hosted Firecracker. Persistence is the default, but it saves the filesystem,
+**Vercel Sandbox** — Vercel's hosted sandboxes for running untrusted code, on Firecracker. Persistence is the default, but it saves the filesystem,
 not memory; any SDK call auto-resumes a stopped sandbox ([persistence][vc-p]). Egress firewall and
 credential brokering ([firewall][vc-fw]).
 
-**Cloudflare Sandbox** — sleeps after 10 min by default (`sleepAfter`); on sleep, files are deleted
+**Cloudflare Sandbox** — containers you drive from a Cloudflare Worker (their serverless functions). It sleeps after 10 min by default (`sleepAfter`); on sleep, files are deleted
 and processes end, and the next request starts a fresh container ([lifecycle][cf-sb]). Persistence
 is an R2 backup ([backup][cf-bk]). Has a code interpreter and header injection ([docs][cf]).
 
-**Fly Machines and Sprites** — Fly Proxy stops or suspends idle Machines and starts them on the
+**Fly Machines and Sprites** — Fly.io's hosted VMs. Fly Proxy stops or suspends idle Machines and starts them on the
 next request ([autostop][fly-proxy], [suspend][fly-sr]). Sprites wake on inbound HTTP ([sprites][fly-sprites]).
 
-**microsandbox** — self-hosted microVMs on Linux, macOS and Windows; forks live sandboxes; SDKs in
+**microsandbox** — an open-source tool that runs sandboxes as self-hosted microVMs on Linux, macOS and Windows; forks live sandboxes; SDKs in
 5 languages; no daemon; "beta software" ([repo][msb]). Closest to sbx's microVM provider, but it
 does not document waking on a connection or a multi-service spec.
 
-**isorun** — hosted KVM sandboxes, #1 on the Burst TTI board; a pause keeps the same PIDs
+**isorun** — a hosted sandbox service on KVM virtual machines, #1 on the Burst TTI board; a pause keeps the same PIDs
 ([lifecycle][iso-l]); a credential proxy ([site][iso]).
 
 ### Docker Sandboxes (the other `sbx`)
@@ -196,7 +237,7 @@ agents such as Claude Code and Codex in microVMs, locally or in Docker's cloud (
 It runs the agent. This sbx runs the services an agent or a branch needs. If both are installed,
 the one first on `PATH` wins.
 
-**Neon** — hosted Postgres with copy-on-write branches that wakes on a Postgres connection, "a few
+**Neon** — a hosted Postgres service with copy-on-write branches that wakes on a Postgres connection, "a few
 hundred milliseconds" ([latency][neon-lat]). If Postgres is all you need, it is the better fit.
 
 ## The self-hosted prior art
@@ -216,16 +257,19 @@ The projects that solve the same wake problem on your own machines. Read them be
   (`scripts/zeropod-probe.sh`). It needs a cluster, and calls arm64 in a Linux VM on macOS
   "somewhat flaky".
 - **Sablier** is an API that reverse-proxy middleware calls (Traefik, Caddy, Nginx and others). It
-  is HTTP-only, so nothing wakes `psql`, with ~1.5–2 ms per request against sbx's ~15 µs. An
+  is HTTP-only, so nothing wakes `psql`, with ~1.5–2 ms per request against sbx's ~10 µs per round trip (v0.14.0). An
   unofficial [sablier-proxy][sablier-proxy] adds TCP (checked 2026-08-30).
 - **Lazytainer** stops containers below a packet threshold, and your traffic must route through
-  it. Side by side, **sbx served 5/5 first connections; Lazytainer served 0/5** (BENCHMARKS.md).
+  it. Side by side, **sbx served 20/20 first connections; Lazytainer served 0/5** (v0.14.0, BENCHMARKS.md).
 - **KubeElasti** queues requests while a Deployment is at zero; Kubernetes only.
 
 What none of them combines: arbitrary TCP, no runtime to replace, a committed spec file, and the
 same binary on a laptop and a cluster.
 
 ## What the alternatives cost, for one developer
+
+<details>
+<summary>Monthly cost of each alternative</summary>
 
 One environment of about 2 vCPU and 4 GB, 8 h a day, 20 days a month (160 h). Rates read from each
 vendor's pricing page on **2026-08-30**; the monthly figures are **computed**, not quoted.
@@ -250,7 +294,15 @@ vendor's pricing page on **2026-08-30**; the monthly figures are **computed**, n
 What the money buys: somebody else's machine, somebody else running it, and an editor that already
 works. sbx is free because it is your hardware. For a team that owns none, that is not a saving.
 
+</details>
+
 ## Dev environments
+
+sbx is not a dev-environment product, but it is often compared with one. The short answer: pick
+Codespaces, Coder or Ona for an editor on a managed machine.
+
+<details>
+<summary>Dev environments, compared</summary>
 
 | | sbx | Codespaces | Coder | Ona | DevPod | code-server |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -270,30 +322,22 @@ Nothing here sleeps while an editor is attached, sbx included. VS Code sends a k
 No byte threshold separates "reading code" from "tab left open". Of VS Code's remote modes, only
 Remote-SSH opens a TCP connection sbx can wake on.
 
+</details>
+
 ## One spec, three providers
 
-The spec and everyday commands are the same everywhere; capabilities are not. A missing capability
-is refused with a reason, never approximated. How each provider works: [ARCHITECTURE.md](ARCHITECTURE.md).
-
-| | docker | kubernetes | microVM |
-|---|:---:|:---:|:---:|
-| Wakes on any TCP, holds the first connection | ● | ● activator | ● |
-| Sleeps to 0 B RAM | ● | ● scale to 0 | ● snapshot on disk |
-| Sleep keeps RAM + processes | ○ | ○ | ● |
-| `list` `env` `logs` `exec` `cp` `rm` `ready` | ● | ● | ● |
-| cpu / memory limits | ● in place | ◐ rolls the pod | ○ fixed at boot |
-| cpu / memory usage | ● | ○ needs metrics-server | – |
-| Snapshot and fork | ● filesystem | ○ | ● with memory; fork is the disk |
-| `build:` · `gpus:` | ● | ○ | ○ |
-| `files` · `init` · host mounts | ● | – | ○ not yet |
-| Egress deny · filter | ● | ○ refused | ● |
-| `--isolation gvisor\|kata` | ● | ● RuntimeClass | n/a: own kernel |
-
-On macOS and Windows every provider needs a Linux VM somewhere; on Linux there is none.
+The spec and everyday commands are the same on docker, kubernetes and microVM; capabilities are
+not. All three wake on any TCP connection and hold the first one (kubernetes through an activator,
+a proxy that holds it while the pod scales up), and all three sleep to 0 B of RAM. Only the
+microVM keeps memory and processes while asleep. Which fields each provider accepts or refuses is
+in [SPEC](SPEC.md#provider-support); how each one works is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Corrections
 
 Vendor cells this page got wrong, and what changed. Commits carry the detail.
+
+<details>
+<summary>Corrections log</summary>
 
 | date | was | now |
 |---|---|---|
@@ -307,11 +351,16 @@ Vendor cells this page got wrong, and what changed. Commits carry the detail.
 | 2026-09-27 | Cloudflare, Modal, Daytona, E2B cells | RAM-state and isolation cells corrected to the vendors' pages |
 | 2026-09-27 | sbx restores RAM only via podman; isolation via gVisor/Kata | microVM sleep keeps RAM; jailed microVM provider |
 | 2026-09-27 | OpenSandbox at `alibaba/OpenSandbox` | `opensandbox-group/OpenSandbox`; zeropod at `laravel/zeropod` |
+| 2026-09-27 | docker sleep keeps RAM ○; wake latency ranked 1–2 | ◐ via `on_idle: "freeze"`; wake latency not ranked (no like-for-like data) |
+
+</details>
 
 [cf]: https://developers.cloudflare.com/sandbox/
 [cf-sb]: https://developers.cloudflare.com/sandbox/concepts/sandboxes/
 [cf-bk]: https://developers.cloudflare.com/sandbox/guides/backup-restore/
 [cf-arch]: https://developers.cloudflare.com/containers/platform-details/architecture/
+[compose]: https://docs.docker.com/compose/
+[compose-ports]: https://docs.docker.com/reference/compose-file/services/#ports
 [csdk-m]: https://github.com/computesdk/benchmarks/blob/master/METHODOLOGY.md
 [csdk-r]: https://github.com/computesdk/benchmarks/blob/master/results/burst_tti/latest.json
 [docker-sb]: https://www.docker.com/products/docker-sandboxes/
@@ -338,6 +387,8 @@ Vendor cells this page got wrong, and what changed. Commits carry the detail.
 [osb]: https://github.com/opensandbox-group/OpenSandbox
 [osb-perf]: https://github.com/opensandbox-group/OpenSandbox/blob/main/docs/architecture/fast-sandbox/performance.md
 [sablier]: https://github.com/sablierapp/sablier
+[tc]: https://testcontainers.com/
+[tc-net]: https://java.testcontainers.org/features/networking/
 [sablier-proxy]: https://github.com/vbrandl/sablier-proxy
 [vc-fw]: https://vercel.com/docs/sandbox/concepts/firewall
 [vc-p]: https://vercel.com/docs/sandbox/concepts/persistent-sandboxes

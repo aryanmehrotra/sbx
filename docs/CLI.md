@@ -1,8 +1,10 @@
 # CLI reference
 
 Every `sbx` command, its flags, the `sbx serve` daemon flags, and every `SBX_*` environment
-variable. This is a reference page: for a walkthrough start with the [README](../README.md).
-`sbx <command> --help` prints the same synopsis and an example for one command.
+variable. This is a reference page: for a walkthrough start with [QUICKSTART.md](QUICKSTART.md),
+and for tasks see [GUIDES.md](GUIDES.md). `sbx <command> --help` prints the same synopsis and an
+example for one command. Terms such as OpenSandbox, MCP, microVM and helper VM are explained in
+[GUIDES.md](GUIDES.md) where each is used, and in the [README glossary](../README.md#glossary).
 
 Source of truth: `internal/app/app.go` (commands), `internal/app/help.go` (synopses),
 `internal/daemon/serve.go` (daemon flags). If this page and the code disagree, the code wins.
@@ -25,7 +27,7 @@ Every command that touches a sandbox also takes these. The table marks those com
 | command | purpose | flags |
 |---|---|---|
 | `sbx doctor` | What this machine can and cannot do. Run it first. | `--json` |
-| `sbx init` | Ask what the branch needs and write `sandbox.json`. Piped, prints the spec to stdout. | `--template NAME` (default `postgres`), `--yes`, `--from-devcontainer PATH` (gated: `devcontainer`) |
+| `sbx init` | Ask what the branch needs and write `sandbox.json`. Piped, or with `--template`, prints the spec to stdout (`sbx init --template postgres > sandbox.json`). | `--template NAME` (default `postgres`), `--yes`, `--from-devcontainer PATH` (gated: `devcontainer`) |
 | `sbx serve` | The daemon. One per machine. See [sbx serve](#sbx-serve). | see below |
 | `sbx selftest` | Create, sleep, wake and check a sandbox on this machine. **B** | `--keep` |
 
@@ -55,7 +57,7 @@ Every command that touches a sandbox also takes these. The table marks those com
 | `sbx wake <sandbox>` | Wake now and wait until serving. **B** | `--timeout 90s` |
 | `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. **B** | none |
 | `sbx egress <sandbox> [service]` | Read or change a running sandbox's network policy. **B** | `--allow H`, `--deny H`, `--remove H` (all repeatable), `--default allow\|deny`, `--reset`, `--show`, `--json` |
-| `sbx mcp` | MCP server on stdio, with OpenSandbox's 19 tools. | `--url` (see [env](#opensandbox-api-and-mcp)), `--key` |
+| `sbx mcp` | MCP server (tools an AI app can call) on stdio, with OpenSandbox's 19 tools. Needs `sbx serve --osb-addr`. [Setup](GUIDES.md#mcp). | `--url` (see [env](#opensandbox-api-and-mcp)), `--key` |
 | `sbx ssh <sandbox> [service]` | Reach a service with an editor over ssh. Gated: `SBX_FEATURES=ssh`. **B** | `--user` (default `root`), `--folder` (default `/work`), `--template`, `--spec` |
 
 ### Data
@@ -64,7 +66,7 @@ Every command that touches a sandbox also takes these. The table marks those com
 |---|---|---|
 | `sbx snapshot <sandbox> <name>` | Save every service's filesystem. **B** | none |
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. **B** | `--spec`, `--template`, `--optional` |
-| `sbx checkpoint <sandbox> <name>` | Save memory and processes (CRIU, Linux; verified on podman). **B** | none |
+| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only. **B** | none |
 | `sbx resume <sandbox> <name>` | Restore from a checkpoint. **B** | none |
 | `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. **B** | `--older-than DURATION`, `--snapshots`, `--force` |
 
@@ -76,7 +78,7 @@ Every command that touches a sandbox also takes these. The table marks those com
 | `sbx templates` | The built-in specs and when their images were pinned. | none |
 | `sbx validate [sandbox.json]` | Check a spec, create nothing. | `--spec`, `--template` |
 | `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. **B** | `--spec FILE` |
-| `sbx features` | List gated preview features and whether each is on. | none |
+| `sbx features` | List preview features and whether each is on. | none |
 | `sbx version` | Print the version. Also `--version`, `-v`. | none |
 | `sbx help` | Top-level help. Also `--help`, `-h`. | none |
 
@@ -94,7 +96,7 @@ You rarely need `sbx fc vm`: `sbx serve --provider firecracker` starts the helpe
 
 ### Gated features
 
-Preview features are off until named in `SBX_FEATURES` (comma-separated). `sbx features` lists them.
+A gated (preview) feature is off until named in `SBX_FEATURES` (comma-separated). `sbx features` lists them.
 
 | feature | turns on |
 |---|---|
@@ -121,7 +123,7 @@ sleeps it after `--idle`. Run one per machine, or one per `--only` scope.
 | `--connect-addr ADDR` | `$SBX_CONNECT_ADDR`, else off | Serve the `sbx connect` endpoint here. Needs `SBX_CONNECT_TOKEN` |
 | `--front SPEC` | `$SBX_FRONT`, else off | Carry non-sandbox ports: `5432`, `db=5432,cache=6379`, `db=10.0.4.7:3306` |
 | `--behind-proxy` | off | A proxy in front terminates TLS, so a non-loopback address is allowed |
-| `--osb-addr ADDR` | `$SBX_OSB_ADDR`, else off | Serve the OpenSandbox lifecycle API, e.g. `127.0.0.1:8080` |
+| `--osb-addr ADDR` | `$SBX_OSB_ADDR`, else off | Serve the OpenSandbox lifecycle API (the one its SDKs and `sbx mcp` call), e.g. `127.0.0.1:8080` |
 | `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` | Required `OPEN-SANDBOX-API-KEY` |
 | `--osb-insecure-no-key` | off | Serve the API with no key. Loopback only |
 | `--osb-host-paths DIRS` | `$SBX_OSB_HOST_PATHS`, else none | Host directories an OpenSandbox host volume may bind from |
@@ -134,8 +136,12 @@ sleeps it after `--idle`. Run one per machine, or one per `--only` scope.
 Every `--connect-addr` and `--front` setup needs `SBX_CONNECT_TOKEN`. Read [SECURITY.md](../SECURITY.md)
 before fronting a private address.
 
-On a Mac or Windows, `sbx serve --provider firecracker` runs the daemon in the helper VM. There
-the key is always on, and `--osb-insecure-no-key`, `--osb-pool` and `--osb-pool-freeze` are refused.
+On a Mac or Windows, `sbx serve --provider firecracker` runs the daemon in the helper VM (a small
+Linux VM sbx starts, because microVMs need Linux). There the API key is always on. Only
+`--idle`, `--ready`, `--refresh`, `--only`, `--osb-addr`, `--osb-key`, `--osb-host-paths` and
+`--osb-insecure-no-jailer` are accepted. `--osb-insecure-no-key`, `--osb-pool`,
+`--osb-pool-freeze` and `SBX_OSB_POOL` are refused with a reason; any other flag in this table
+fails as "flag provided but not defined", and `SBX_CONNECT_ADDR` / `SBX_FRONT` are not read.
 
 ## Environment variables
 
@@ -185,13 +191,13 @@ the key is always on, and `--osb-insecure-no-key`, `--osb-pool` and `--osb-pool-
 | variable | default | meaning |
 |---|---|---|
 | `SBX_FC_STATE` | `~/.sbx/fc` | Where VM disks and state live |
-| `SBX_FC_ROOTFS` | `layered` | `copy` gives each VM a whole copy of its image (as in v0.13 and earlier) |
+| `SBX_FC_ROOTFS` | `layered` | `copy` gives each VM a whole copy of its image (slower to create without reflink) |
 | `SBX_FC_DISK_SIZE` | `10g` | Size of a layered VM's writable layer (sparse) |
 | `SBX_FC_VOLUME_SIZE` | `10g` | Size of a new volume (sparse) |
 | `SBX_FC_BOOT_TIMEOUT` | `60s` | How long to wait for a VM to boot |
 | `SBX_FC_BINARY`, `SBX_FC_KERNEL` | pinned downloads | Use this firecracker binary or guest kernel instead |
 | `SBX_FC_JAILER_BINARY` | pinned download | Use this jailer binary instead |
-| `SBX_FC_JAILER` | on | `off` runs VMMs unjailed, as root. Development only; see SECURITY.md |
+| `SBX_FC_JAILER` | on | `off` runs each VMM (the Firecracker process behind one microVM) without its jailer, as root. Development only; see SECURITY.md |
 | `SBX_FC_JAILER_UID_BASE` | `900000` | Start of the uid range jailed VMMs run as |
 | `SBX_FC_FIREWALL` | `managed` | Default for `serve --fc-firewall` |
 | `SBX_VM_EGRESS_ALLOW` | none | Default for `serve --vm-egress-allow` |

@@ -1,14 +1,16 @@
 # Quickstart
 
-A ten-minute tutorial for a first-time user. You will install sbx, watch a real Postgres sleep and
-wake on a plain `psql`, copy a seeded database with a snapshot and a fork, and give an AI agent
-its own sandboxes. Every command here is copy-pasteable.
+A ten-minute tutorial for a first-time user. Every command here is copy-pasteable.
+
+You'll finish with: a Postgres that woke on a plain `psql`, a forked copy of it, and an AI agent
+creating its own sandboxes. A *sandbox* is one named, isolated copy of a project's services, such
+as a Postgres for one branch.
 
 ## What you need
 
 - A running Docker engine: Docker Desktop, colima, or Docker on Linux. On Windows, use WSL2.
 - `psql` on your PATH is nice to have. Step 3 shows a way round it.
-- About 200 MB of disk for the `postgres:16-alpine` image.
+- Disk space for the `postgres:16-alpine` image, which the first create pulls.
 
 ## 1. Install and check the machine
 
@@ -25,12 +27,17 @@ If `doctor` says Docker is not reachable, start your engine and run it again.
 ## 2. Start the daemon
 
 ```sh
-sbx serve --idle 1m &
+sbx serve --idle 1m --osb-addr 127.0.0.1:8080 & SBX_PID=$!
 ```
 
-`sbx serve` is the one long-running process: it owns every sandbox's ports, wakes services when
-something connects, and sleeps them after `--idle` with no traffic. Run one per machine, not one
-per sandbox. A one-minute idle timer makes this tutorial quicker; the default is five minutes.
+`sbx serve` is the daemon, the one long-running process: it owns every sandbox's ports, wakes
+services when something connects, and sleeps them after `--idle` with no traffic. Run one per
+machine, not one per sandbox. A one-minute idle timer makes this tutorial quicker; the default is
+five minutes. `--osb-addr` turns on the API that step 5 uses. `SBX_PID` remembers the daemon so
+step 6 can stop it.
+
+Its log lines appear in this terminal. If you prefer a quiet one, run the command in a second
+terminal instead (without `& SBX_PID=$!`) and press Ctrl-C there in step 6.
 
 ## 3. Create a Postgres and wake it with `psql`
 
@@ -43,14 +50,18 @@ env | grep -E '^(PG|DATABASE_)'
 `sbx env` prints the addresses this sandbox got: `PGHOST` and `PGPORT` for libpq, and
 `DATABASE_HOST` and `DATABASE_PORT` for your app. Never hard-code the port; read it from `sbx env`.
 
-Now put it to sleep by hand, instead of waiting a minute:
+A new sandbox starts asleep: nothing runs until something connects. Check, then connect:
 
 ```sh
-sbx sleep demo
-sbx list                                   # demo's postgres is asleep: 0 B of memory
+sbx list
 PGPASSWORD=app psql -U app -d app -c 'select count(*) from todo'
-sbx list                                   # awake again
+sbx list
 ```
+
+The first `sbx list` shows `demo  postgres  asleep` with an address such as `127.0.0.1:20000`
+(your port may differ): no container is running, so it uses 0 B of RAM. `psql` prints a count of
+`0`, and the second `sbx list` shows `awake`. After a minute with no traffic it sleeps again;
+`sbx sleep demo` puts it to sleep at once.
 
 The `psql` call did not fail and did not retry. sbx held its connection open while Postgres
 started, then handed it over. That is the whole trick: any client that opens a TCP socket wakes
@@ -93,22 +104,23 @@ sbx with ci-db --template postgres -- sh -c 'PGPASSWORD=app psql -U app -d app -
 
 There are two ways. Use one or both.
 
-**As a CLI the agent shells out to.** Copy the block under "The block to paste" in
-[AI-AGENTS.md](AI-AGENTS.md) into your repo's `AGENTS.md` or `CLAUDE.md`. It tells the agent to
-create one sandbox per task, read addresses from `sbx env`, and remove only what it created.
+**As a CLI the agent shells out to.** Copy the block under "Paste this into your agent's
+instructions" in [GUIDES.md](GUIDES.md#ai-agents) into your repo's `AGENTS.md` or `CLAUDE.md`. It
+tells the agent to create one sandbox per task, read addresses from `sbx env`, and remove only
+what it created.
 
-**As MCP tools.** Restart the daemon with the OpenSandbox API turned on, then register `sbx mcp`
-with your agent. The example uses Claude Code:
+**As MCP tools.** MCP (Model Context Protocol) is the standard way AI assistants such as Claude
+Code or Cursor call outside tools. The daemon from step 2 already serves the OpenSandbox API (an
+open-source API standard for AI-agent sandboxes) and wrote its key to `~/.sbx/osb/key`. Register
+`sbx mcp` with your agent; the example uses Claude Code:
 
 ```sh
-kill %1                                          # the daemon from step 2; sandboxes survive it
-sbx serve --idle 5m --osb-addr 127.0.0.1:8080 &  # generates an API key into ~/.sbx/osb/key
 claude mcp add sbx -- sbx mcp                    # reads that key itself
 ```
 
 In a new Claude Code session, ask: *"Create a sandbox from `node:22-slim` and run `node -v` in it."*
-The agent gets the same 19 tools as OpenSandbox's own MCP server. The Cursor configuration and the
-OpenSandbox SDK settings are in [AI-AGENTS.md](AI-AGENTS.md).
+The agent gets the same 19 tools as OpenSandbox's own MCP server. Cursor, Codex and the
+OpenSandbox SDKs are in [GUIDES.md](GUIDES.md#ai-agents).
 
 ## 6. Look around, then clean up
 
@@ -123,7 +135,7 @@ sbx rm demo
 sbx rm demo-fork
 sbx gc --snapshots            # lists what is left, including the "seeded" snapshot
 sbx gc --snapshots --force    # deletes it
-kill %1                       # stop the daemon
+kill $SBX_PID                 # stop the daemon (or Ctrl-C in its own terminal)
 ```
 
 `sbx rm` deletes the sandbox and its data. To keep the daemon running across reboots, use the
@@ -132,6 +144,6 @@ launchd plist or systemd unit in [`deploy/`](../deploy/), both of which run as y
 ## Next
 
 - Describe your own services in a `sandbox.json`: [SPEC.md](SPEC.md), or run `sbx init`.
-- See the shapes sbx fits, from branch previews to CI: [USE-CASES.md](USE-CASES.md).
+- Every task, from branch previews to CI and AI agents: [GUIDES.md](GUIDES.md).
 - Look up any command or flag: [CLI.md](CLI.md).
 - Something went wrong: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
