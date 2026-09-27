@@ -7,7 +7,7 @@ package daemon
 // on a laptop can present the *same* local port numbers and `psql` connects to a sandbox on
 // another machine without knowing anything happened.
 //
-// Read docs/superpowers/specs/2026-08-16-sbx-connect-design.md before changing this. Two
+// Read docs/design/2026-08-16-sbx-connect-design.md before changing this. Two
 // things there are load-bearing and neither is obvious from the code:
 //
 //   - A port number is not an identity. Slots are reassigned when a sandbox is recreated, and

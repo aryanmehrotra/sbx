@@ -6,7 +6,7 @@
 // Why re-key at all: a Firecracker snapshot captures userspace exactly, so every clone restored
 // from one snapshot starts with the same execd access token, the same control secret and the
 // same env. The kernel reseeds its RNG per clone (VMGenID), userspace does not - measured in
-// docs/superpowers/specs/2026-09-26-firecracker-spike.md. Without a re-key, a caller holding one
+// docs/design/2026-09-26-firecracker-spike.md. Without a re-key, a caller holding one
 // clone's token holds all of them.
 //
 // The protocol, host's view:

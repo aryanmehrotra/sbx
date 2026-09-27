@@ -37,7 +37,10 @@ PAD_X = 14
 PAD_Y = 40  # room for the window chrome
 
 SGR = re.compile(rb"\x1b\[([0-9;]*)m")
-OTHER_ESC = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+# Cursor moves and friends, plus OSC sequences such as the OSC 8 hyperlinks the dashboard puts
+# on addresses: ESC ] ... terminated by BEL or ESC \. Left in, their control bytes make the SVG
+# invalid XML and the picture renders as a broken image.
+OTHER_ESC = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 class Pen:

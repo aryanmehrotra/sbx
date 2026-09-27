@@ -1,274 +1,98 @@
 # Roadmap
 
-> **Short version:** the wake path is the product. The microVM provider — `Start` as a snapshot
-> restore, so memory and running processes come back — **shipped across v0.11–v0.13**; what is
-> left of it is the part still open for untrusted code. After that: the egress filter growing into
-> a real network policy, and the two parts of the OpenSandbox API sbx has not built. Nothing here
-> turns sbx into a hosted service.
+What sbx builds next and what it will not build, as of v0.14.0 (2026-09-27). What already shipped
+is in the [release notes](release-notes/README.md).
 
-Estimates are in engineer-weeks and they are estimates, not commitments. Ordering is deliberate;
-dates are not given because they would be invented.
+An item gets on this list if it makes the wake path faster, work on more workloads, or run behind
+a stronger boundary. It names the [decision](DECISIONS.md) it answers to or the gap it closes.
+Sizes are rough estimates for one engineer: S is under a week, M is 2–4 weeks, L is over a month.
+There are no dates.
 
-Every item names the decision in [DECISIONS.md](DECISIONS.md) it answers to. An item that cannot
-name one is a wish, not a plan, and belongs in an issue instead.
+## Now
 
----
+| Item | Why | Size | Status |
+|---|---|:---:|---|
+| `sbx create` and `sbx with` tell the daemon at once | A new sandbox waits for the daemon's 15 s refresh, so `sbx with` took 5.0 s where Testcontainers took 2.5 s ([BENCHMARKS](BENCHMARKS.md#databases-for-branches-and-tests)) | S | Not started |
+| Bare-metal microVM wake and burst numbers | E2B, isorun and OpenSandbox publish microVM figures; sbx has only nested runs | S | Harness exists: `SBX_FC_E2E=1 go test -run FirecrackerE2E ./internal/provider`; needs a bare-metal host |
+| The microVM's disk cost in `sbx doctor` and BENCHMARKS | A sleeping microVM keeps a snapshot about the size of its RAM on disk | S | Not started |
+| The helper VM run end to end on a Mac and on Windows 11 | microsandbox and Docker Sandboxes run microVMs on all three OSes | M | See [platform status](ARCHITECTURE.md#platform-status) |
+| The warm pool through the helper VM | Without it, burst creates on a Mac use the docker pool | M | Not built |
+| `sbx connect` picks up sandboxes created after it starts | Agents on other machines cannot reach a new sandbox without a restart, which [SELF-HOSTING.md](SELF-HOSTING.md) works around | S | The helper VM already mirrors new sandboxes; `sbx connect` does not |
+| A systemd unit for the microVM daemon in `deploy/` | `deploy/` ships one for docker only; SELF-HOSTING.md gives an untested one | S | Not started |
+| A docs site with search | E2B, Daytona, Modal and OpenSandbox have one | S | Not started |
 
-## The rule this list is filtered through
+## Next
 
-sbx is one claim: **the connection is the wake-up call, it never gets refused, and idle costs
-nothing.** An item earns a place here by making that claim truer — faster, on more workloads, or
-on a stronger boundary. An item that only widens the surface does not, however good it would look
-in a feature table.
+| Item | Why | Size | Status |
+|---|---|:---:|---|
+| Secrets kept out of the sandbox | OpenSandbox, Vercel, isorun and Cloudflare have it ([comparison](COMPARISON.md#honest-ranking)) | L | Designed below |
+| Egress rules by path, method and header | Allow `POST api.x.com/v1/*` but not `DELETE` | S | Not started |
+| Isolated sessions | The biggest OpenSandbox API gap: 48 upstream tests fail on it | not estimated | Needs design |
+| A code-interpreter guide | sbx already serves OpenSandbox's code-interpreter image | S | Upstream `e2e` file passes; no guide |
+| Guides for Claude Code, Cursor and Codex, and a GitHub Action | Agent users look for a cookbook | S each | [GUIDES.md](GUIDES.md#ai-agents) exists; no Action |
+| `files`, `init` and host mounts in a microVM | The microVM refuses them today | M | Refused by name |
+| Exec sessions on the CLI | The OpenSandbox API has command sessions and background commands; `sbx exec` does not | S | API shipped, CLI not |
+| The daemon off root; a quota on the state filesystem | Needed before anonymous untrusted code on a shared host | M | Open; see [SECURITY.md](../SECURITY.md) |
 
-That is why the list below is short and why the last section is as long as the rest.
+### Secrets kept out of the sandbox
 
----
+Today an agent that calls an API needs the key in its environment, so it can leak it. The plan is
+to terminate TLS at the egress filter and add the credential there. The agent sends an
+unauthenticated request to an allowed host, and the filter adds the header on the way out.
+OpenSandbox's credential vault API then sits on top.
 
-## 1 · A microVM provider
+It needs a per-sandbox CA, leaf certificates minted on demand, and that CA in each image's trust
+store. Postgres needs its own path, because it starts TLS after the TCP connection is up. Only
+domains with a rule that needs it are decrypted; everything else passes through as today. The
+filter's design: [DECISIONS.md](DECISIONS.md#a-live-egress-policy-is-held-by-the-filter-and-pushed-to-it).
 
-> **Shipped** in v0.11.0 (the provider), v0.12.0 (the OpenSandbox API on it) and v0.13.0 (warm
-> pool, jailer, a host guard that fails closed). The case for it stays below because it is still
-> the reason; what is not built yet is under **Status**.
+## Later
 
-**The big one.** Today a sleeping sandbox is a stopped container with its volume intact, so a wake
-is a cold process start against warm data: 191 ms for redis, 931 ms for postgres, and Postgres
-replays its WAL on the way back. That is the right trade against `docker start`, and it is not the
-best trade available.
+| Item | Why | Size |
+|---|---|:---:|
+| Snapshot retention (expiry, keep-last-N) | A long-lived branch should not pile up snapshots | S |
+| Reusable volumes with a lease | Single-writer leasing for a shared cache volume | M |
+| Egress filtering on Kubernetes | A cluster refuses `egress_policy` today. Plan: NetworkPolicy plus an egress gateway | S–M |
+| Forking a microVM's memory under a new name | sbx forks a VM's disk only | M |
+| A local Go API | Drive sandboxes from a test harness in-process. Local only | S–M |
+| `devcontainer.json` import out of preview | Coder, Ona and DevPod read it natively | S |
+| Deploy recipes for your own VM or cluster | One command to your own cloud, not a hosted sbx | S |
 
-A microVM's snapshot restore brings back **memory and running processes**, not just the disk:
+## Not built yet in the OpenSandbox API
 
-| | today, docker | with a microVM provider |
-|---|---|---|
-| wake | 191 ms redis · 931 ms postgres | **4–28 ms, projected** (published restore figures; not measured by sbx). Measured so far, only nested: 212 ms median to first byte on an M4 through the helper VM (BENCHMARKS.md); bare metal is still unmeasured |
-| what comes back | disk warm, process **cold** | **RAM + processes, already running** |
-| boundary | namespaces, host kernel | **dedicated guest kernel** |
-| memory at rest | 0 B | 0 B — the image is on disk, not resident |
+When the OpenSandbox API, or the command server sbx runs inside each API sandbox, answers
+`501 … not built yet (docs/ROADMAP.md)`, the feature is listed here. Each is refused by name, not
+approximated ([why](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-pid-1-the-token-is-the-apis-a-snapshot-is-the-disk)).
 
-The wake stops being a function of the workload. A Postgres that took 931 ms to replay its WAL
-comes back in the same few milliseconds as a redis, because nothing starts — it resumes.
+| Refused feature | What it is | Size |
+|---|---|:---:|
+| Isolated sessions (`/v1/isolated/*`) | A command session with its own PID namespace, `/tmp` and overlay | not estimated |
+| `credentialProxy`, credential vault | Credentials added to matching outbound requests | L, on the secrets work above |
+| Server-side pools (`extensions.poolRef`) | A pool the server owns, named at create. `--osb-pool` serves unnamed creates | not estimated |
+| `secureAccess`, signed endpoints (`?expires=`) | Endpoints that need a signature or token | not estimated |
+| Server-proxied endpoints (`use_server_proxy=true`) | The command server reached through the lifecycle server | not estimated |
+| Registry credentials in `image.auth` | Pull credentials in the create request. Today, `docker login` on the host | not estimated |
+| Lifecycle hooks, renew-on-access | Hooks around lifecycle events; an expiry extended by each access | not estimated |
+| The API on Kubernetes | Needs an init container that puts the command server into any image | M |
 
-### Why it fits rather than fights
+Network policies answer 501 for another reason: the daemon was started without egress control.
 
-Four things about the current design make this an addition and not a rewrite:
+Upstream conformance (`tests/go`, release-1.1.0, docker, CI, 2026-09-27): the v0.10.0 tier and
+upstream's `pool` and `e2e` files pass in CI. The v0.11.0 tier was 70 passed, 48 failed (all
+`isolated_session`), 6 skipped; `credential_vault` skips for want of a target host.
 
-| | |
+## Not doing
+
+| | Why |
 |---|---|
-| **`Provider` is an interface, and has been since the cluster backend** | A third implementation is the sanctioned extension point. Docker and kubernetes already prove the interface is not shaped like either one. |
-| **Firecracker's control plane is REST over a unix socket** | A stdlib `http.Client` with a unix `DialContext` drives it. **`go.mod` stays at zero dependencies** — no VMM SDK, no cgo. This is the constraint that decides the whole design; see the macOS section for where it bites. |
-| **Capabilities are negotiated, not stubbed** | `Snapshotter` is already optional. A microVM backend implements it *natively and better*, because its snapshot includes memory — which is the one thing `sbx snapshot` cannot do today outside CRIU on podman. |
-| **Isolation already fails closed and says why** | `sbx doctor` has the refusal machinery. A provider the machine cannot run is refused in one second with a reason, which is the behaviour this needs on day one. |
+| Hosting sbx for anyone | [sbx is a tool people run, not a service](DECISIONS.md#sbx-is-a-tool-people-run-not-a-service-anyone-offers). Deploy recipes for your own infrastructure are fine |
+| Auth, tenancy, quotas, per-user tokens | Same decision. Put a gateway in front |
+| A remote control plane | Same decision. `create`, `rm` and `exec` stay local; `sbx connect` only tunnels traffic |
+| A browser IDE | `sbx ssh` gives editors a Remote-SSH path. Use Codespaces, Coder or Ona |
+| Per-agent users inside one sandbox | Two agents get two sandboxes |
+| A VM engine on Apple's Virtualization.framework | It cannot snapshot for third parties and needs cgo. [Why](DECISIONS.md#a-microvm-off-linux-runs-in-a-helper-vm-not-on-virtualizationframework) |
+| Kubernetes inside a docker sandbox | k3s and docker-in-docker need `privileged`, which sbx does not offer |
 
-The two-port wake proxy does not change at all. It splices bytes and has no opinion about what is
-upstream of it.
-
-### The work
-
-| | | est |
-|---|---|---|
-| **VMM driver** | boot-source, drives, network-interfaces, machine-config, actions, snapshot create/load, over the unix socket | 2 wk |
-| **OCI → rootfs pipeline** | pull, apply layers in userspace honouring `.wh.` whiteouts, build ext4, cache behind a `.built` sentinel with atomic rename, clone per-VM with `FICLONE` | **4 wk** |
-| **Guest kernel** | pin one per architecture; unwrap EFI zboot images (`MZ` at 0, `zimg` at 4) | 2 wk |
-| **Guest agent** | a static musl binary on `AF_VSOCK` speaking a framed protocol — this is what backs `Exec`, `ExecTTY`, `Copy` and `Logs` | 3 wk |
-| **Networking** | a tap per VM on a bridge. The no-NAT bridge that `egress: "deny"` already uses maps straight over | 2 wk |
-| **Wake path** | `Start` becomes snapshot-load, `Stop` becomes snapshot-create. The whole point of the exercise | 2 wk |
-| **doctor, refusals, tests** | to the bar the repo already holds itself to | 3 wk |
-
-**≈ 18 weeks on Linux, one engineer.** The rootfs pipeline is the bulk and the part to spike
-first; the VMM driver is the part that looks hard and is not.
-
-**Status (v0.13.0).** Built: the VMM driver (`internal/fc`), pinned artifacts, the rootfs
-pipeline, per-VM clones, tap networking, `sbx fc-init` as PID 1, and `--provider firecracker` with
-the wake path (Start = load, Stop = Diff snapshot), `Pauser`, `Snapshotter` (memory included) and
-`Limiter`. The rootfs pipeline came in far under four weeks, because `docker export` hands back the
-filesystem already flattened - there are no layers or `.wh.` whiteouts to apply (DECISIONS.md).
-Since built: exec, copy, logs and the spec's `health` through execd over vsock (`fc.VsockGuest`),
-the helper VM for M3+ Macs and Windows 11 (`internal/fchost`), and egress through the filter on
-each VM bridge with the host closed behind it, and the OpenSandbox API on a Linux host with KVM,
-`pvc` volumes and disk-snapshot forks included (v0.12), and its warm pool (v0.13). Not yet:
-forking a VM's memory under another name (a snapshot fork is its disk); `files`, `init` and host
-volumes into a VM; the warm pool through a helper VM (the API itself is served there now,
-unit-tested, not yet run on a Mac); the bare-metal
-measurement the spike asked for, which `SBX_FC_E2E=1 go test -run FirecrackerE2E
-./internal/provider` takes on any Linux host with KVM (CI runs it on every change, and fails
-without `/dev/kvm`).
-
-**v0.13, the prerequisites for anonymous use.** Every VMM runs under Firecracker's pinned jailer by
-default - chrooted inside its VM's directory, as its own non-root uid, in a cgroup v2 sized from the
-spec - and the host guard fails closed: a VM whose bridge cannot be guarded is refused, unless the
-operator declares `--fc-firewall=unmanaged` (DECISIONS.md, "Every VMM runs under Firecracker's
-jailer"; SECURITY.md). Since v0.14 each jailed VMM also has its own network namespace. Still open:
-moving the daemon itself off root.
-
-### Two landmines, written down before anyone hits them
-
-**vsock modules must vermagic-match the kernel exactly.** `vsock`,
-`vmw_vsock_virtio_transport_common` and `vmw_vsock_virtio_transport` have to be loaded before
-boot, and a version mismatch **fails silently** — the guest boots, and the agent simply never
-connects. That reads like a broken agent and is a kernel packaging problem. Budget the debugging
-there, not in the VMM.
-
-**A restored snapshot is not a fresh one.** Resuming the same memory image more than once reuses
-whatever the guest had already generated: entropy pools, session identifiers, anything derived
-from them. That is fine for `resume` and wrong for `fork`, so a forked VM has to re-seed rather
-than simply start from the parent's image.
-
-### macOS: pick A, then B, and do not build C
-
-Firecracker needs KVM. That makes the host question the real decision in this item, not the VMM
-one.
-
-| | | cost |
-|---|---|---|
-| **A · Linux only, refused elsewhere** | `--provider microvm` is refused on darwin, and `sbx doctor` says why. Exactly the behaviour `--isolation gvisor\|kata` already has | **+0** |
-| **B · nested virtualisation** | M3-and-later on macOS 15+ exposes a real `/dev/kvm` inside a Linux VM, which runs Firecracker unmodified | **shipping in v0.11** |
-| **C · a second VMM on Apple's Virtualization.framework** | a second backend behind the same provider | +8–12 wk, **and it does not work** |
-
-**C is a trap and the reason is specific.** Virtualization.framework cannot snapshot: its own
-`validateSaveRestoreSupport` reports success, and then `saveMachineStateToURL` fails with a
-generic internal error, because the entitlement it needs is restricted to Apple's own
-applications. So the option costs cgo — and with it the pure-Go static binary that is half of
-what people install this for — and then does not deliver the fast resume the whole item exists to
-get. It is on this list only so that nobody spends two months rediscovering it.
-
-**A ships the provider. B is the macOS story. C stays unbuilt.**
-
-As built, A is not a flat refusal on darwin: `internal/fc/hostcap` returns **helper-vm** on a Mac
-that can nest (M3 or later, macOS 15 or later) and on Windows, and hands that decision to the
-helper-VM layer - B - through `provider.HelperVMProvider`. A build without that layer says so; a
-Mac that cannot nest, and every other case with no path, is refused with the one thing to change.
-
-**B is shipping in v0.11**, moved up from "later" once the spike ([2026-09-26](superpowers/specs/2026-09-26-firecracker-spike.md))
-measured it working on an M4: `--provider firecracker` on an M3+ Mac runs in a helper VM sbx
-manages (`sbx fc vm status|start|stop|rm`), and the same design covers Windows 11 through a WSL2
-distro (built and unit-tested; not yet run on a Windows host). How and why: DECISIONS, "A microVM
-off Linux runs in a helper VM". It is dev parity, not speed - 88 ms single restore, and nested
-virtualisation collapses at burst - so the macOS Burst-TTI path stays the docker warm pool.
-
-### The honest trade
-
-**"0 B at rest" survives; "costs nothing at rest" gets an asterisk.** A snapshot is a memory image
-on disk, roughly the size of the VM's RAM. No resident memory, but no longer free either — and a
-fleet of twenty sleeping sandboxes now has a disk number attached to it where before it had a
-volume and nothing else. That belongs in `sbx doctor` and in BENCHMARKS.md when it lands, not in a
-footnote.
-
----
-
-## 2 · The egress filter becomes a network policy
-
-`egress_policy` is OpenSandbox's network policy — ordered allow and deny rules on hosts,
-wildcards, IPs and CIDRs — enforced by a CONNECT proxy on a bridge with no route out, and
-changeable on the running service. The mechanism is right — a filtering proxy in the data path, a
-component with a lifecycle — and what it still cannot see is anything below the host.
-
-**Shipped, and off this table** (for the next release's notes): **live updates** — `sbx egress`
-and `daemon.EgressControl` change the policy of a running service with nothing recreated or
-restarted; and **CIDR and IP rules, allow and deny** — enforced for a client that dials an address
-directly too, because the no-NAT bridge leaves it no route and the proxy is the only door, measured
-from inside a real sandbox. The estimate said the bridge would have to enforce CIDRs; it already
-did, since nothing routed leaves it. The costs are in
-[DECISIONS.md](DECISIONS.md#a-live-egress-policy-is-held-by-the-filter-and-pushed-to-it) and
-[DECISIONS.md](DECISIONS.md#default-allow-is-enforced-by-the-same-door-and-it-costs-raw-tcp).
-
-| | | est |
-|---|---|---|
-| **Matchers** | path, method, header and query predicates on a rule. Pure logic above `Permits()` | 2 d |
-| **A terminating mode, and credential brokering on top of it** | see below | 4–8 wk |
-
-### Credential brokering is the one worth the money
-
-The problem it solves is one sbx has no answer to today: an agent needs to authenticate to an API,
-so the key goes in the sandbox's environment, so the agent can exfiltrate it. Allow-listing the
-domain does not help — the key is still in the box.
-
-Terminating TLS at the filter and injecting the credential there means **the secret never enters
-the sandbox at all.** The agent makes an unauthenticated request to an allowed host; the filter
-adds the header on the way out.
-
-What it costs: a per-sandbox CA, leaf certificates minted on demand, and that CA installed into
-each image's trust store with the environment variables that make the common runtimes honour it.
-Postgres needs its own path because it negotiates TLS after the TCP connection is up. Call it
-2,000 lines and a threat model to defend in [SECURITY.md](../SECURITY.md).
-
-It also unlocks forwarding a matched request to a proxy the operator controls, which is the
-mechanism for restricting a domain to particular paths rather than all of it.
-
-**This does not weaken the allow-list.** Termination happens only for domains carrying a rule that
-needs it. Everything else is spliced on the SNI as it is today, undecrypted.
-
----
-
-## 3 · Smaller, and unblocked
-
-| | | est |
-|---|---|---|
-| **Exec sessions** | detached commands, streamed output, exit codes carried back. `Exec` and `ExecTTY` exist; what is missing is a session that outlives one call | 1 wk |
-| **A local Go API** | the daemon's own package, importable, so a test harness can drive sandboxes in-process instead of shelling out. **Local only** — see the exclusions below | 1–2 wk |
-| **Reusable volumes** | a named volume that outlives the sandbox that made it, single-writer, for a dependency cache several sandboxes take turns on. Docker volumes already do the storage; what is missing is the lease and the lifecycle | 2–3 wk |
-| **Snapshot retention** | an expiry and a keep-last-N on `sbx snapshot`, so a long-lived branch does not accumulate | 1 wk |
-| **Egress filtering on kubernetes** | `egress_policy`, `egress_allow` and `egress: "allow"` are docker-only, and a cluster now refuses them rather than creating a pod they do not reach. A cluster expresses them as a NetworkPolicy plus an egress gateway | 1–2 wk |
-
----
-
-## 4 · The rest of the OpenSandbox API
-
-The conformance gate stops at upstream's **v0.10.0 tier**. The plan once scheduled everything
-below for v0.11.0, and v0.11.0 went to the microVM provider instead, so it is listed here rather
-than promised in a release. Every item is refused today with a 501 that names it and points here.
-
-**Measured 2026-09-27** (upstream `tests/go` at release-1.1.0, docker, CI). Every v0.10.0-tier
-file still passes. With the renew fix (PR #3) and a Redis for the SDK's pool, the v0.11.0 tier is
-**70 passed, 48 failed, 6 skipped** (run 36309125832; 54 / 56 / 14 before).
-
-| file | result | why |
-|---|---|---|
-| `isolated_session` | 48 failed | not built: execd answers 501 |
-| `pool` | **20 passed** (was 4 · 8 failed · 8 skipped) | the 8 failures were one sbx bug: a renew that shortened the expiry was refused, and upstream's server allows it (PR #3). The 8 skips need `OPENSANDBOX_TEST_REDIS_URL`: the pool is the SDK's, backed by Redis |
-| `credential_vault` | 4 skipped | the tests need a target host (`OPENSANDBOX_CREDENTIAL_VAULT_E2E_TARGET_IP`); sbx serves no `/credential-vault` either way |
-| `e2e` (v0.12.0 tier) | 3 failed, then fixed | never ran before: the harness's `--no-key` path was broken. It creates the code-interpreter image with `tail -f /dev/null` as the entrypoint, so Jupyter never starts, and sbx held the sandbox `Pending` until Jupyter answered (a 3 min bound). Upstream reports `Running` once the container runs and leaves Jupyter to its SDK (`CreateCodeInterpreter`); sbx now reports `Running` once execd answers ([DECISIONS.md](DECISIONS.md), "Running means usable", reversed) |
-
-What is not built:
-
-| | what it is | est |
-|---|---|---|
-| **Isolated sessions** | execd's `/v1/isolated/*`: a session with its own PID namespace, `/tmp` and overlay, with runs and file operations inside it | not estimated; nobody has read upstream's execd for it yet |
-| **Credential vault** · `credentialProxy` | credentials and bindings injected into matching outbound requests, changed at runtime | the mechanism is §2's credential brokering (4–8 wk); the API over it is extra |
-| **Server-side pools** (`extensions.poolRef`) | a pool the server owns, named at create. sbx's `--osb-pool` serves matching creates without being named | not estimated |
-| **`secureAccess`** · **signed endpoints** (`?expires=`) | endpoints that need a signature or token to reach | not estimated |
-| **Server-proxied endpoints** (`use_server_proxy=true`) | execd reached through the lifecycle server rather than directly | not estimated |
-| **Registry credentials** (`image.auth`) | pull credentials in the create request; today, `docker login` on the host | not estimated |
-| **Lifecycle hooks** · **renew-on-access** | hooks run around lifecycle events; an expiry extended by each access | not estimated |
-
-Until then all of these follow the pattern the OpenSandbox sections of [DECISIONS.md](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-pid-1-the-token-is-the-apis-a-snapshot-is-the-disk)
-use for everything not built, such as a host volume on a microVM: refused by name, not
-approximated.
-
----
-
-## What this deliberately does not include
-
-A roadmap that only lists additions is a wish list. These are ruled out, and by an existing
-decision rather than by this document.
-
-| | why |
-|---|---|
-| **Auth, tenancy, quotas, per-user tokens** | [DECISIONS.md — *sbx is a tool people run, not a service anyone offers*](DECISIONS.md). The line is written there: the moment sbx grows something answering "who are you" rather than "is this yours", it has become the thing that section rules out, and the answer is a gateway in front rather than an identity system inside. |
-| **A remote control plane** | Same decision. `create`, `rm` and `exec` stay local-only. `sbx connect` is a data-plane tunnel with one token proving you own the deployment, and it stays that. **An SDK that creates sandboxes over the network is this item wearing a different hat** — which is why the local API above is scoped as local. |
-| **Hosting it for anyone** | Same decision. "Somebody else runs it" is a different product and sbx is run by you. |
-| **A browser IDE** | Still none, still not planned. `sbx ssh` reaches a sandbox with VS Code Remote-SSH over the wake path that already exists. |
-| **Per-agent users inside one sandbox** | sbx's answer to two agents is two sandboxes, and that answer is better: one agent's writes cannot reach another's, which user separation inside a shared box does not give you. |
-| **Kubernetes inside a sandbox** | k3s and docker-in-docker want `seccomp=unconfined` or full `privileged`, and sbx offers neither. `cap_add` was the missing mechanism and it is not sufficient. The microVM provider changes this question completely — revisit it there, not here. |
-
----
-
-## How something gets on this list, or off it
-
-**On:** it makes the wake path faster, or correct on a workload where it is not, or safe on a
-boundary where it is not. It can name the decision it answers to. Its cost is estimated in weeks
-by someone who has read the code it touches.
-
-**Off:** it shipped, or it was measured and did not pay. Both leave a trace — a shipped item moves
-to the release notes, a rejected one moves to [DECISIONS.md](DECISIONS.md) with the measurement
-that killed it. Nothing is quietly deleted, because the reason an item failed is worth more than
-the item was.
+Shipped items move to the release notes. Rejected ones move to [DECISIONS.md](DECISIONS.md) with
+the measurement that ruled them out. To move something up, open or upvote an issue and say what
+you would use it for.

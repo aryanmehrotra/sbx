@@ -1,77 +1,78 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-label="sbx - a real Postgres, Redis or browser for every branch, task or agent, that costs 0 B of RAM idle and wakes on a TCP connection">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="sbx: self-hosted sandboxes for AI agents. A fresh microVM or container for each agent, asleep at 0 B and awake on the first connection. Measured on v0.14.0: a sandbox from a warm pool in 12.8 ms, a microVM from a pool in 144 ms. An agent connects, sbx holds the connection open while the microVM resumes from 0 B, and the same socket is served. Written in Go, one binary, zero dependencies.">
+  <title>sbx: self-hosted sandboxes for AI agents</title>
   <defs>
-    <radialGradient id="glow" cx="82%" cy="18%" r="60%">
-      <stop offset="0%" stop-color="#3fb950" stop-opacity="0.18"/>
-      <stop offset="55%" stop-color="#1f6feb" stop-opacity="0.06"/>
-      <stop offset="100%" stop-color="#0d1117" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="wm" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e6edf3"/>
-      <stop offset="100%" stop-color="#9fb0c0"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#111a24"/>
     </linearGradient>
-    <style>
-      .mono{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace}
-      .sans{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
-    </style>
-  </defs>
-
-  <rect width="1200" height="360" rx="18" fill="#0d1117"/>
-  <rect width="1200" height="360" rx="18" fill="url(#glow)"/>
-  <rect x="0.5" y="0.5" width="1199" height="359" rx="17.5" fill="none" stroke="#30363d" stroke-width="1"/>
-
-  <!-- wordmark + tagline -->
-  <text x="64" y="150" class="mono" font-size="118" font-weight="700" fill="url(#wm)" letter-spacing="-3">sbx</text>
-  <rect x="70" y="176" width="150" height="4" rx="2" fill="#3fb950"/>
-
-  <text x="66" y="228" class="sans" font-size="27" font-weight="600" fill="#c9d1d9">A real Postgres, Redis or browser for every</text>
-  <text x="66" y="264" class="sans" font-size="27" font-weight="600" fill="#c9d1d9">branch or agent — <tspan fill="#3fb950">0 B idle</tspan>, <tspan fill="#58a6ff">woken by a connection</tspan>.</text>
-
-  <!-- chips -->
-  <g class="mono" font-size="16">
-    <rect x="66" y="296" width="122" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
-    <circle cx="86" cy="313" r="4" fill="#3fb950"/>
-    <text x="98" y="318" fill="#adbac7">0 B idle</text>
-
-    <rect x="198" y="296" width="168" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
-    <circle cx="218" cy="313" r="4" fill="#58a6ff"/>
-    <text x="230" y="318" fill="#adbac7">wakes ~191 ms</text>
-
-    <rect x="376" y="296" width="196" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
-    <circle cx="396" cy="313" r="4" fill="#d2a8ff"/>
-    <text x="408" y="318" fill="#adbac7">zero dependencies</text>
-  </g>
-
-  <!-- sandbox cards motif (right) -->
-  <g class="mono" font-size="17">
-    <!-- serving -->
-    <rect x="812" y="64" width="324" height="52" rx="10" fill="#132018" stroke="#238636"/>
-    <circle cx="838" cy="90" r="5" fill="#3fb950"/>
-    <text x="856" y="95" fill="#e6edf3">main</text>
-    <text x="1116" y="95" text-anchor="end" fill="#3fb950">● serving</text>
-
-    <!-- asleep -->
-    <rect x="812" y="126" width="324" height="52" rx="10" fill="#0f141a" stroke="#21262d"/>
-    <circle cx="838" cy="152" r="5" fill="#484f58"/>
-    <text x="856" y="157" fill="#8b949e">feature-x</text>
-    <text x="1116" y="157" text-anchor="end" fill="#6e7681">○ 0 B asleep</text>
-
-    <rect x="812" y="188" width="324" height="52" rx="10" fill="#0f141a" stroke="#21262d"/>
-    <circle cx="838" cy="214" r="5" fill="#484f58"/>
-    <text x="856" y="219" fill="#8b949e">agent-4711</text>
-    <text x="1116" y="219" text-anchor="end" fill="#6e7681">○ 0 B asleep</text>
-
-    <rect x="812" y="250" width="324" height="52" rx="10" fill="#0f141a" stroke="#21262d"/>
-    <circle cx="838" cy="276" r="5" fill="#484f58"/>
-    <text x="856" y="281" fill="#8b949e">review-99</text>
-    <text x="1116" y="281" text-anchor="end" fill="#6e7681">○ 0 B asleep</text>
-
-    <!-- connect arrow into feature-x -->
-    <text x="700" y="157" class="mono" font-size="15" fill="#58a6ff">psql ▸</text>
-    <path d="M754 152 H806" stroke="#58a6ff" stroke-width="2" fill="none" marker-end="url(#ah)"/>
-  </g>
-  <defs>
-    <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-      <path d="M0 0 L6 3 L0 6 Z" fill="#58a6ff"/>
+    <radialGradient id="glow" cx="0.86" cy="0.1" r="0.55">
+      <stop offset="0" stop-color="#3fb950" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#3fb950" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#8b949e"/>
+    </marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#3fb950"/>
     </marker>
   </defs>
+  <style>
+    .s{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,'Liberation Sans',sans-serif}
+    .m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace}
+    .fg{fill:#e6edf3}.mu{fill:#9da7b3}.g{fill:#3fb950}.b{fill:#58a6ff}
+  </style>
+
+  <!-- card: paints its own ground so it reads the same on GitHub's light and dark pages -->
+  <rect x="0.5" y="0.5" width="1199" height="439" rx="18" fill="url(#bg)" stroke="#30363d"/>
+  <rect x="0.5" y="0.5" width="1199" height="439" rx="18" fill="url(#glow)"/>
+
+  <!-- wordmark -->
+  <text x="56" y="84" class="m fg" font-size="40" font-weight="700" letter-spacing="-1">sbx</text>
+  <rect x="134" y="58" width="16" height="28" rx="2" class="g"/>
+  <rect x="166" y="56" width="52" height="32" rx="8" fill="none" stroke="#00ADD8" stroke-width="1.5"/>
+  <text x="192" y="79" text-anchor="middle" class="s" font-size="18" font-weight="700" fill="#00ADD8">Go</text>
+
+  <!-- headline + promise -->
+  <text x="56" y="148" class="s fg" font-size="44" font-weight="700" letter-spacing="-0.5">Self-hosted sandboxes</text>
+  <text x="56" y="200" class="s fg" font-size="44" font-weight="700" letter-spacing="-0.5">for AI agents</text>
+  <text x="56" y="246" class="s mu" font-size="21">A fresh <tspan class="b" font-weight="700">microVM</tspan> or container for each agent.</text>
+  <text x="56" y="276" class="s mu" font-size="21">Asleep at 0 B, awake on the first connection.</text>
+
+  <!-- measured numbers -->
+  <line x1="812" y1="52" x2="812" y2="262" stroke="#30363d"/>
+  <text x="978" y="86" text-anchor="end" class="m g" font-size="32" font-weight="700">0 B</text>
+  <text x="994" y="84" class="s mu" font-size="17">asleep</text>
+  <text x="978" y="138" text-anchor="end" class="m b" font-size="32" font-weight="700">12.8 ms</text>
+  <text x="994" y="136" class="s mu" font-size="17">from a warm pool</text>
+  <text x="978" y="190" text-anchor="end" class="m b" font-size="32" font-weight="700">144 ms</text>
+  <text x="994" y="188" class="s mu" font-size="17">microVM from a pool</text>
+  <text x="862" y="228" class="s fg" font-size="17" font-weight="600">Written in Go.</text>
+  <text x="862" y="252" class="s fg" font-size="17" font-weight="600">One binary, zero deps.</text>
+
+  <!-- how a wake works -->
+  <rect x="40" y="304" width="1120" height="104" rx="14" fill="#161b22" stroke="#30363d"/>
+
+  <rect x="64" y="324" width="150" height="64" rx="10" fill="#0d1117" stroke="#388bfd" stroke-opacity="0.6"/>
+  <text x="84" y="351" class="m b" font-size="20" font-weight="700">agent</text>
+  <text x="84" y="375" class="s mu" font-size="16">connects</text>
+
+  <line x1="220" y1="356" x2="262" y2="356" stroke="#8b949e" stroke-width="2" marker-end="url(#ah)"/>
+
+  <rect x="268" y="324" width="262" height="64" rx="10" fill="#0f2417" stroke="#3fb950"/>
+  <text x="288" y="351" class="m g" font-size="20" font-weight="700">sbx</text>
+  <text x="288" y="375" class="s fg" font-size="16">holds the connection open</text>
+
+  <line x1="536" y1="356" x2="578" y2="356" stroke="#8b949e" stroke-width="2" marker-end="url(#ah)"/>
+
+  <rect x="584" y="324" width="240" height="64" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <text x="604" y="351" class="m fg" font-size="20" font-weight="700">microVM</text>
+  <text x="604" y="375" class="s mu" font-size="16">resumes from 0 B</text>
+
+  <line x1="830" y1="356" x2="872" y2="356" stroke="#3fb950" stroke-width="2" marker-end="url(#ahg)"/>
+
+  <rect x="878" y="324" width="258" height="64" rx="10" fill="#0d1117" stroke="#3fb950" stroke-opacity="0.6"/>
+  <text x="898" y="351" class="s g" font-size="20" font-weight="700">✓ served</text>
+  <text x="898" y="375" class="s mu" font-size="16">same socket, never refused</text>
+
+  <text x="1160" y="428" text-anchor="end" class="s mu" font-size="14">create → first command, medians, v0.14.0: container on Linux x86_64, microVM on CI (nested KVM) · docs/BENCHMARKS.md</text>
 </svg>

@@ -2,12 +2,12 @@ package provider
 
 // The firecracker provider: each service is a microVM, and asleep means a snapshot on disk.
 //
-// The wake verbs change meaning, and that is the whole point (ROADMAP §1). Create builds the
-// root filesystem, boots the VM once, waits for it to serve, and snapshots it - so a new service
-// is born asleep, like every other. Start loads the snapshot and resumes: memory and processes
-// come back as they were, rather than a cold process against a warm disk. Stop snapshots again
-// and kills the VMM: a Diff when this VM was itself restored (only the pages it dirtied), folded
-// into the base so the next load is still one file.
+// The wake verbs change meaning, and that is the whole point (DECISIONS.md, the microVM entries).
+// Create builds the root filesystem, boots the VM once, waits for it to serve, and snapshots it -
+// so a new service is born asleep, like every other. Start loads the snapshot and resumes: memory
+// and processes come back as they were, rather than a cold process against a warm disk. Stop
+// snapshots again and kills the VMM: a Diff when this VM was itself restored (only the pages it
+// dirtied), folded into the base so the next load is still one file.
 //
 // Everything is on disk, under one directory per VM, and nothing is held in this process: the
 // VM that `sbx create` boots is stopped by `sbx serve` and woken by it again after a restart,

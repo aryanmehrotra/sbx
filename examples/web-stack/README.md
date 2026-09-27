@@ -1,22 +1,14 @@
 # web-stack
 
-Postgres and Redis - the shape most applications actually have.
+Postgres and Redis, as two services that sleep and wake on their own. A branch that only uses
+Postgres never starts Redis.
 
 ```sh
 sbx serve --idle 5m &                 # once per machine; nothing answers without it
-sbx create my-branch
-eval "$(sbx env my-branch)"
-# DATABASE_HOST/PORT and REDIS_HOST/PORT are now set
+sbx create my-branch --template web-stack
+eval "$(sbx env my-branch)"           # DATABASE_HOST/PORT and REDIS_HOST/PORT
 npm run dev
-```
 
-The two services **sleep and wake independently**. A branch that only ever touches Postgres
-never pays for Redis, and vice versa - which is why this is two services rather than one
-image with both in it.
-
-Watch them as one thing:
-
-```sh
 sbx logs my-branch -f
 # postgres | 2026-08-15 ... database system is ready to accept connections
 # redis    | 1:M ... Ready to accept connections tcp

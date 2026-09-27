@@ -1,8 +1,11 @@
 # sbx — tunnels, networking, VS Code: what history says and what I measured
 
-Date: 2026-08-30. Corpus: 73 sbx transcripts (~101 MB) across
-`~/.claude/projects/-Users-raramuri-Projects-aryanmehrotra-sbx` and the two `personal-sbx`
-dirs, mined with a Go scanner (350 keyword-correlated hits reviewed), plus the repo's own
+**Status:** research note, not a spec. Its fixes (Part 1 B, Part 2 D1–D3) shipped in v0.8.0; the
+editor recommendation shipped as `sbx ssh` (feature gate `ssh`), not `sbx code`. This file joins
+two notes, findings and plan, that referred to each other as `FINDINGS.md` and `PLAN.md`.
+
+Date: 2026-08-30. Corpus: 73 sbx development-session transcripts (~101 MB) from the maintainer's
+local agent history, mined with a Go scanner (350 keyword-correlated hits reviewed), plus the repo's own
 `docs/DECISIONS.md`, `docs/TROUBLESHOOTING.md` and the `sbx connect` design spec.
 
 Everything below marked **measured** was run on this machine today against a live daemon,
@@ -120,10 +123,10 @@ state. There is no byte-level signal that separates "present and reading" from "
 
 This is a negative result and it should be written down rather than rediscovered.
 
-### What to build instead — see PLAN.md
+### What to build instead — see the plan below
 # Plan — tunnels and VS Code sandboxes
 
-Read `FINDINGS.md` first; every recommendation here is downstream of a number in it.
+Read the findings above first; every recommendation here is downstream of a number in them.
 
 ---
 

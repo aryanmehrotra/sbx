@@ -6,7 +6,7 @@
 #       The upstream test files (tests/go/<file>_e2e_test.go; "e2e" is tests/go/e2e_test.go)
 #       that must pass from this release on. Tiers are cumulative: asking for v0.10.0 runs
 #       every v0.9.0 file as well. This is the table in
-#       docs/superpowers/specs/2026-09-25-opensandbox-compat-design.md, "Releases".
+#       docs/design/2026-09-25-opensandbox-compat-design.md, "Releases".
 #
 #   skip <Test> | <text the skip message must contain> | <why this skip is acceptable>
 #       A SKIP is not a pass. A test not listed here that skips fails the run, and a listed

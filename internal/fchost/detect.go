@@ -12,8 +12,9 @@
 //	kubernetes                  kata-runtimeclass runtimeClassName on a kata-fc RuntimeClass
 //	anything else               refused           with the reason and the fix
 //
-// The helper VM is ROADMAP §1 option B, and the spike behind it measured it on this Mac
-// (docs/superpowers/specs/2026-09-26-firecracker-spike.md): a real /dev/kvm through colima
+// The helper VM is the "nested virtualisation" option the microVM plan chose (DECISIONS.md, "A microVM
+// off Linux runs in a helper VM"), and the spike behind it measured it on this Mac
+// (docs/design/2026-09-26-firecracker-spike.md): a real /dev/kvm through colima
 // --nested-virtualization on an M4, Firecracker unmodified, 88 ms restore to first byte.
 //
 // Detection reads what the host's own tools print, through Probe, so every branch - including

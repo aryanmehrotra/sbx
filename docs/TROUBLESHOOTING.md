@@ -1,440 +1,302 @@
 # When something is wrong
 
-Keyed by what you see, not by what is wrong - the second is what this page is for.
+Find what you see, then apply the fix. Point a stuck agent here too. Run `sbx doctor` first. If
+it reports a missing tool or runtime, `sbx install` installs it: `sbx install gvisor`,
+`sbx install checkpoint`, or no name for all it can. It shows each command and asks first;
+`--dry-run` only prints. On Docker Desktop or colima, the VM that runs docker owns its config, and
+`sbx install` says so instead.
 
-Run this first; it answers four of the entries below on its own:
+## Install and doctor
 
-```sh
-sbx doctor
-```
+### "colima is not running" / "the container runtime is not running"
 
-When what it reports is a missing tool or runtime rather than something broken, `sbx install`
-installs it - `sbx install gvisor`, `sbx install checkpoint`, or no name for everything it can do
-here. It prints each command and asks first; `--dry-run` only prints. The runtimes are
-registered in `/etc/docker/daemon.json` on a Linux host's own dockerd; where docker runs in a VM
-(Docker Desktop, colima) that VM's manager owns its config, and install says so instead.
+The runtime's socket is missing. Start it with `colima start`, `open -a Docker` or
+`podman machine start`; the message names the one you need.
 
----
+Your sandboxes survive, and the first connection after the runtime returns wakes them. sbx never
+starts or stops the runtime. If colima stopped on its own, `~/.colima/_lima/colima/ha.stderr.log`
+shows whether something ran `colima stop`.
 
-## "connection refused" on the port `sbx env` printed
+### "docker did not answer in time"
 
-**Almost always: no `sbx serve` is running.** The ports `sbx env` exports are the daemon's, not
-docker's - docker publishes a *backing* port, the daemon owns the public one, so an address with
-no daemon behind it refuses.
+The runtime is up but too slow. On a loaded colima, listing seven containers took 1 minute 36
+seconds, and sbx waits ten seconds per refresh. Confirm with `time docker ps -a` and
+`colima status`; in `sbx ui`, press `a` to see every container and what it holds. Then free
+memory or restart the VM. `colima restart` stops your containers. sbx sandboxes wake on the next connection; containers
+you started by hand do not.
 
-```sh
-sbx doctor | grep 'sbx serve'
-sbx serve --idle 5m &          # once per machine, not once per sandbox
-```
+### "`<name>` is preview and off by default"
 
-`sbx create` checks this. [`deploy/`](../deploy/) has a launchd plist and a systemd unit to run
-it supervised, so it survives your terminal.
+The command is a preview feature (`ssh`, `devcontainer`, `waiting-page`). Turn it on per command,
+as in `SBX_FEATURES=ssh sbx ssh <sandbox>`. `sbx features` lists them.
 
-**If a daemon *is* running:** it discovers new sandboxes on its `--refresh` interval (15 s by
-default), so one created seconds ago may not be fronted yet. `sbx ready <name>` waits.
+### `sbx ui` says a newer version is available
 
-**If the running daemon was started with `--only`:** it fronts only the sandboxes its scope
-names, and `sbx doctor` says so (`scoped only: pid N --only osb-`). A sandbox outside that scope
-has no daemon, and `sbx create`, `sbx list` and `sbx ui` name it. Before v0.13 a scoped daemon
-wrote no record the CLI could find, so all of them reported "no `sbx serve` is running" even for
-sandboxes it was fronting; `sbx sleep` and `sbx wake` reach it through the port and always did.
+`sbx ui` checks GitHub releases at most once a day. No other command checks, and CI never does.
+Upgrade, or set `SBX_NO_UPDATE_CHECK=1` ([CLI.md](CLI.md#update-check)).
 
----
+## The daemon
 
-## "colima is not running" / "the container runtime is not running"
+### "connection refused" on the port `sbx env` printed
 
-Its socket is not there. sbx names the runtime from where that socket was and gives you the
-command:
+Almost always, no `sbx serve` is running, and the daemon owns those ports. Check with
+`sbx doctor | grep 'sbx serve'`, then start one per machine with `sbx serve --idle 5m &`.
 
-```sh
-colima start                 # or: open -a Docker, podman machine start
-```
+- To run it supervised, use the launchd plist or systemd unit in [`deploy/`](../deploy/).
+- A running daemon finds new sandboxes every `--refresh` (15 s by default). `sbx ready <name>` waits.
+- A daemon started with `--only PREFIX` fronts only matching sandboxes. `sbx doctor` shows
+  `scoped only: pid N --only osb-`. Start an unscoped daemon, or one whose `--only` covers it.
 
-**Your sandboxes survive it.** They are containers with volumes; stopping the runtime stops
-them, and the first connection after it returns wakes them again. Nothing is lost.
+### `sbx serve` says it is already running
 
-sbx never starts or stops the runtime itself. If yours stopped without you asking,
-`~/.colima/_lima/colima/ha.stderr.log` records whether something ran `colima stop` - a clean
-stop, not a crash - before you go looking for a bug here.
+An unscoped daemon already owns this machine's sandbox ports. If its pid is gone, the next start
+clears the stale record. If it is alive, you already have one; pass `--only PREFIX` for a second.
 
----
+### On a shared or persistent CI runner
 
-## "docker did not answer in time"
+- `sbx serve --idle 30m &` does not survive a GitHub Actions step, since each step is a new shell.
+  Start the daemon and use the sandbox in one step, or install the unit from [`deploy/`](../deploy/).
+- Jobs on one runner share the daemon. They get different ports, but `sbx rm` in one job can
+  remove another's sandbox. Name sandboxes after branch and job.
+- `sbx with` removes its sandbox even on failure, which keeps a runner clean.
 
-The runtime is running and not replying. Measured on a loaded colima: **1 minute 36 seconds** to
-list seven containers, versus milliseconds on an idle one. sbx gives it ten seconds per refresh
-and says so rather than reporting an empty fleet - a timed-out listing and an empty machine are
-different answers.
+## Create
 
-It is the VM, not sbx - every command waits on that same daemon, so all are slow together.
-Confirm by hand:
+### "never became ready within ..."
 
-```sh
-time docker ps -a          # if this is slow, everything is
-colima status              # or Docker Desktop's own dashboard
-```
+The service started but its `health` command never passed.
+- If the message says the command "cannot run in this image", the tool is not in the container.
+  Check with `docker run --rm --entrypoint sh <image> -c 'command -v pg_isready curl wget'`.
+- Otherwise the workload is not coming up. Read `sbx logs <sandbox> <service> --tail 50`, which
+  does not wake anything.
 
-Usual causes: the machine out of memory or cpu - `sbx ui`, press `a` for what is on it - or the
-VM up long enough to want restarting. `colima restart` stops your containers; sbx sandboxes
-survive it and wake on the next connection, but anything you started by hand does not.
+### The service's config file is a directory inside the container
 
----
+The runtime could not reach the host path in `files`, so docker created an empty directory. A
+VM-backed docker (colima, Docker Desktop) shares `$HOME` but usually not `/var/folders` on macOS.
+Move the file under your home directory. sbx checks for this after create and says so.
 
-## "never became ready within 2m0s"
+### Two `sbx create` at the same moment fail on a port conflict
 
-The service started and its health command never passed.
+Two racing creates can pick the same block of ports. A lock under `~/.sbx` makes this rare, but
+two machines sharing one remote `DOCKER_HOST` share no lock. Retry, and the retry takes the next
+block. On colima or Docker Desktop a port forward can outlive its container for a few seconds
+after `sbx rm`, so wait a moment first.
 
-**If the message names the command and says "cannot run in this image"**, the command is not
-inside the container - the most common first-run mistake. A health command runs *in* the
-container, so `pg_isready` needs postgres tooling in that image and `curl` needs curl:
+### `sbx list` shows nothing, or a sandbox you cannot remove
 
-```sh
-docker run --rm --entrypoint sh <image> -c 'command -v pg_isready curl wget'
-```
+`sbx list` is rebuilt from container labels. A container whose `sbx.ports` label does not parse
+is skipped, so `list` and `rm` cannot see it. Find it with
+`docker ps -a --filter label=sbx.sandbox --format '{{.Names}}\t{{.Labels}}'` and remove it with
+`docker rm -f <name>`.
 
-**Otherwise the workload really is not coming up.** Look at what it said:
+## Wake
 
-```sh
-sbx logs <sandbox> <service> --tail 50
-```
+### The first query after an idle period fails, but the next one works
 
-`logs` is the one command that wakes nothing, so this is safe on a sleeping sandbox.
+Your client's connect timeout is shorter than the wake. Typical wakes are in
+[BENCHMARKS.md](BENCHMARKS.md): under a second for redis, about a second for postgres, several
+seconds for a cold browser. Raise the connect timeout:
 
----
-
-## The service's config file is a directory inside the container
-
-You declared `files: {"./my.conf": "/etc/thing/my.conf"}` and the container behaves as if the
-file is empty or missing.
-
-**The runtime could not reach the host path, so docker created an empty directory at the
-destination** rather than failing. A VM-backed docker - Colima, Docker Desktop - shares only some
-host paths; `/var/folders` on macOS usually is not one, `$HOME` usually is.
-
-sbx checks for this after create and says so by name. Move the file under your home directory.
-
----
-
-## `sbx list` shows nothing, or a sandbox you cannot remove
-
-`sbx list` is rebuilt from labels on the containers. A container whose `sbx.ports` label will not
-parse is skipped, so it is invisible to `list` and `rm`.
-
-```sh
-docker ps -a --filter label=sbx.sandbox --format '{{.Names}}\t{{.Labels}}'
-docker rm -f <name>            # the escape hatch; sbx is not hiding anything from you
-```
-
----
-
-## `sbx serve` says it is already running
-
-One daemon serves the whole machine - it owns every sandbox's public ports, so a second would
-bind nothing. If the pid it names is gone, the record is stale and the next start clears it; if
-it is alive, you already have what you were about to start.
-
----
-
-## The first query after an idle period fails, but the next one works
-
-**Your client's connect timeout is shorter than the wake.** The wake is paid on `connect`, not
-the query, so a client set to give up in two seconds will.
-
-Typical wakes: ~191 ms for redis, a second or so for postgres, several seconds for a browser on
-a cold cache. Raise the connect timeout above that:
-
-| client | knob |
+| client | setting |
 |---|---|
 | libpq / psql | `PGCONNECT_TIMEOUT`, or `connect_timeout=` in the URL |
 | JDBC | `connectTimeout` |
 | Playwright / Puppeteer | the launch/connect timeout, not the navigation one |
 
-A pooled client must also tolerate a server-initiated close: sleeping a sandbox closes the
-connections it holds.
+A connection pool must also survive a server-side close, because sleeping closes connections.
 
----
+### Wakes are slower than the numbers in BENCHMARKS.md
 
-## A microVM fails "making sbxfcN-M's network namespace"
+- No `health` command adds a flat 2 s per wake. Add one ([SPEC.md](SPEC.md#health-is-close-to-required)).
+- A first wake on a cold machine includes the image pull. Run `sbx prewarm` first.
+- A wake cannot report faster than `health_interval` (300 ms by default)
+  ([SPEC.md](SPEC.md#health_interval-is-what-those-probes-cost)).
 
-**The host cannot make a network namespace or a veth pair.** With the jailer on (the default), each
-microVM's VMM runs in a namespace of its own (`ip netns add`, then a veth into the sandbox's bridge).
-It needs iproute2 with `ip netns`, a writable `/var/run/netns`, and a kernel with `CONFIG_NET_NS`
-and `CONFIG_VETH` - every distribution kernel has both. The error quotes `ip`'s own words. A
-container or sandbox that runs sbx may forbid namespaces: run sbx on the host, or accept the risk
-with `SBX_FC_JAILER=off` (no jailer and no namespace - SECURITY.md).
+### A sandbox that works inside itself sleeps mid-task
 
-## A microVM fails "mounting the image root (overlay ...)"
+Idleness is measured on bytes through the service's ports, and compiling or editing inside sends
+none. Set `egress_allow` (its calls out count as activity), a longer `idle`, or `"idle": "never"`
+([SPEC.md](SPEC.md#idle-keeps-a-sandbox-awake-while-it-works)).
 
-**The guest kernel has no overlayfs.** A microVM's root is its image, shared read-only, with a
-writable layer laid over it by overlayfs. sbx's pinned kernels have it built in; a kernel named by
-`SBX_FC_KERNEL` may not. Use a kernel with `CONFIG_OVERLAY_FS=y`, or `SBX_FC_ROOTFS=copy` (each VM
-gets a whole copy of its image, as before v0.13 - slower to create without reflink).
+## Sleep and data
 
-## A microVM's workload says "No space left on device"
+### A fork is missing the write I just made
 
-**Its writable layer is full.** What a microVM writes to `/` goes to a layer of its own, as big as
-`SBX_FC_DISK_SIZE` (10G by default; sparse, so it costs only what is written). Recreate the sandbox
-with a larger `SBX_FC_DISK_SIZE` set for `sbx serve`/`sbx create`, or write the data to a volume.
+`sbx snapshot` does not stop the service, so it takes a crash-consistent copy. Under heavy load
+the last write before the snapshot can be missing. If the snapshot must be exact, stop writing
+first, or run `docker stop sbx-<sandbox>-<service>` before `sbx snapshot`. The usual seed,
+snapshot, fork flow has nothing writing at snapshot time.
 
----
+### `sbx snapshot` fails: "the source is empty or does not exist"
 
-## A microVM "could not sleep: execd did not confirm its seal"
+On docker in v0.14.0, snapshot fails when any service in the sandbox has no `volume`. That
+includes the `web-stack` template's Redis and services added with `sbx add`. Snapshot only
+sandboxes whose services all declare a `volume`.
 
-**The guest did not answer its seal in time** - almost always a host short of memory, which
-starves the guest's vCPUs. sbx asked three times (10 s, 20 s, 30 s), took no snapshot (an unsealed
-one would restore with this VM's identity), re-keyed execd to prove it is serving, and **left the
-VM running with its memory**. Nothing is lost; the daemon tries the sleep again on its next idle
-check.
+### `sbx checkpoint` works but `sbx resume` fails
 
-The third such sleep in a row stops the VM instead (`... the 3 sleeps in a row it has not`), and
-its next wake is a cold boot: its disk is kept, its memory is not. So is a sleep whose re-key failed
-too (`... the re-key that would have proved it unsealed failed too`).
+You are on docker, whose checkpoint restore is unmaintained. Errors look like
+`bind-mount /proc/0/ns/net -> …: no such file or directory` or `content … already exists`, even
+though `criu check` passes. Use podman: set `DOCKER_HOST=unix:///run/podman/podman.sock` and sbx
+routes checkpoint and resume through it. macOS refuses checkpoint. `sbx snapshot` and `fork` work
+on any runtime.
 
-If you see it often: `sbx doctor` (memory, swap), fewer sandboxes awake at once, or a smaller
-`memory` per microVM.
+## Networking and egress
 
----
+### A service with `egress_allow` cannot reach a host
 
-## Wakes are slower than the numbers in BENCHMARKS.md
+Only listed hosts and their subdomains are reachable, and only through `HTTP_PROXY`/`HTTPS_PROXY`.
+A client that ignores those variables has no route, and raw TCP (`git://`, SSH, a remote
+database) never passes. Add the host with `sbx egress <sandbox> --allow <host>`, make the client
+use the proxy, or switch to HTTPS ([SPEC.md](SPEC.md#egress-the-network-a-service-may-reach)).
 
-**A service with no `health` command costs a flat 2 s per wake.** With nothing to probe - docker
-binds the host side the instant the container starts - the daemon cannot tell "port bound" from
-"server ready", so it waits a fixed moment and goes. Declaring `health` replaces that with a real
-check, and is why every bundled template has one. → [SPEC.md](SPEC.md)
+### `sbx egress` says there is no filter to change
 
-**A first wake on a cold machine includes the image pull.** `sbx prewarm` moves it somewhere you
-can cache.
+Only a sandbox created with `egress_policy`, `egress_allow` or `"egress": "allow"` has a filter.
+Add `"egress": "allow"` to the spec, recreate, then narrow it live.
 
-**A wake cannot be reported faster than the probe interval**, re-evaluated only every
-`health_interval` - 300 ms by default. A service ready in 40 ms reports as 300 ms, or a second if
-you set `1s`. Turn it down to catch readiness quickly; turn it up, sandbox-wide, to spend less of
-the machine probing a mostly-idle fleet. → [SPEC.md](SPEC.md)
+## MicroVMs
 
----
+For `--provider firecracker` ([GUIDES.md](GUIDES.md#stronger-isolation-with-microvms)).
 
-## `sbx create` is slow the more sandboxes exist
+### `sbx doctor` or `sbx fc backend` refuses firecracker on this host
 
-It should not be. Creating a sandbox lists the existing ones to pick a free port slot; that used
-to fork a `docker inspect` per container - it is one API call now. If you still see it, that is a
-bug worth reporting with `sbx list | wc -l`.
+There is no `/dev/kvm` and no supported helper VM: Linux without KVM, a Mac older than M3 or
+macOS 15, or Windows without nested virtualisation. The message names the fix. On a Mac chip sbx
+cannot identify, `SBX_FC_ASSUME_NESTED=1` lets it try.
 
----
+### A firecracker create is refused: "runs as USER ..."
 
-## Two `sbx create` at the same moment fail on a port conflict
+Everything in the VM runs as root, so sbx refuses an image whose `USER` is not root. Use
+`--provider docker`, or an image that runs as root.
 
-Slot allocation reads which slots are spoken for and takes the first gap, but ports are only
-really claimed when a container binds them - so two racing creates can be handed the same gap.
-sbx narrows this from both sides: a lock under `~/.sbx` serialises the claim on one machine, and
-`AllocSlot` binds a candidate slot's backing and public ports before returning it - the public
-ones so that a second sbx daemon on this machine, driving another engine, never hands out a
-slot whose wake ports the first daemon already holds.
+### A microVM fails "making sbxfcN-M's network namespace"
 
-Neither closes it completely: two machines driving one remote `DOCKER_HOST` share no lock.
-Measured on a laptop, four concurrent creates repeated five times: 5 of 20 succeeded before, 17
-of 20 after. **If one fails, retry it** - the retry sees the winner's containers and takes the
-next slot.
+Each Firecracker process runs in its own network namespace. That needs iproute2 with `ip netns`, a
+writable `/var/run/netns`, and a kernel with `CONFIG_NET_NS` and `CONFIG_VETH`. A container
+running sbx may forbid namespaces. Run sbx on the host, or accept the risk with
+`SBX_FC_JAILER=off` ([SECURITY.md](../SECURITY.md)).
 
-On a VM-backed docker (Colima, Docker Desktop) the host-side port forward can outlive its
-container by a few seconds, so a create right after an `sbx rm` can collide with a forward docker
-already considers gone. Waiting a moment, or retrying, is the answer there too.
+### A microVM fails "mounting the image root (overlay ...)"
 
----
+The guest kernel has no overlayfs. sbx's pinned kernels have it; one named by `SBX_FC_KERNEL` may
+not. Use a kernel with `CONFIG_OVERLAY_FS=y`, or set `SBX_FC_ROOTFS=copy` (a full image copy per
+VM, slower to create without reflink).
 
-## An API sandbox is `Failed` with `runtime_error`
+### A microVM's workload says "No space left on device"
 
-The container stopped before its agent answered. `status.message` says how, in the engine's
-words, before any output: the docker state, the exit code, `OOMKilled` when the kernel killed it
-for memory, and the engine's own start error (an OCI runtime refusal lands there, never in the
-container's logs). "It printed nothing" with exit code 137 is a SIGKILL - out of memory on the
-host or under the sandbox's `resourceLimits.memory`, or a `docker kill`; 143 is a SIGTERM from
-outside. The same cause is in the daemon log (`Failed (runtime_error): ...`) and in
-`sbx history <id>`, without the container's output.
+The writable root layer is full. Its size is `SBX_FC_DISK_SIZE` (10g by default, sparse). Recreate
+the sandbox with a larger value set for both `sbx serve` and `sbx create`, or write to a `volume`.
 
----
+### A microVM "could not sleep: execd did not confirm its seal"
 
-## `sbx serve --provider firecracker --osb-addr` on a Mac will not start
+Before sleeping, sbx asks its in-VM agent (execd) to lock itself, so a saved VM never restores
+already serving. The agent did not confirm, almost always because the host is short of memory.
+sbx tried three times, took no snapshot, and left the VM running. Nothing is lost; the daemon
+retries on its next idle check.
 
-On an M3+ Mac or Windows the API runs in the helper VM and is fronted here; the front checks it
-before serving and says which check failed:
+If the message says "the 3 sleeps in a row it has not" or "the re-key that would have proved it
+unsealed failed too", the VM was stopped instead. Its next wake is a cold boot with the disk kept.
+Check `sbx doctor` for memory and swap, keep fewer sandboxes awake, or lower `memory` per microVM.
 
-- **"answered N to a request without the key"** - the in-VM API is not keyed. The front refuses,
-  because its ssh forward is on this machine's loopback, reachable from containers. Restart
-  `sbx serve --provider firecracker --osb-addr ...`, which rewrites the in-VM daemon's key.
-- **"rejects the key this machine holds"** - the in-VM daemon is still running with another key
-  (a different `--osb-key`, or `~/.sbx/osb/key` was replaced). Restarting `sbx serve` restarts it
-  with this one.
-- **"never answered"** - the in-VM daemon did not start its API. Its log:
-  `colima ssh --profile sbx-fc -- sudo journalctl -u sbx-fc-serve -n 50` (lima: `limactl shell
-  sbx-fc sudo journalctl ...`). A jailer or guard refusal there is the same one Linux gives -
-  `--osb-insecure-no-jailer` is passed through only when typed.
-- **"--osb-insecure-no-key is refused"** / **"--osb-pool ... is not carried into the helper VM"**
-  - by design on this path; drop the flag (or `SBX_OSB_POOL`).
+### `sbx serve --provider firecracker --osb-addr` on a Mac will not start
 
-An endpoint the API returned that refuses a connection means the mirror could not bind that port
-here (its log says `cannot open 127.0.0.1:N`): something else on this machine holds it.
+On an M3+ Mac or Windows the API runs in the helper VM and is fronted here. The front says which
+check failed:
 
----
+| message | fix |
+|---|---|
+| "answered N to a request without the key" | restart `sbx serve --provider firecracker --osb-addr ...` |
+| "rejects the key this machine holds" | the in-VM daemon has another key; restart `sbx serve` |
+| "never answered" | the in-VM daemon did not start; read its log (below) |
+| "--osb-insecure-no-key is refused" / "--osb-pool ... is not carried into the helper VM" | not supported here; drop the flag or `SBX_OSB_POOL` |
 
-## A fork is missing the write I just made
+The in-VM log: `colima ssh --profile sbx-fc -- sudo journalctl -u sbx-fc-serve -n 50`, or with
+lima, `limactl shell sbx-fc sudo journalctl -u sbx-fc-serve -n 50`.
 
-`sbx snapshot` does **not** stop the service first. It takes a crash-consistent copy - the state
-the database would recover from after a power cut - because stopping would silently interrupt
-whoever is using the sandbox.
+An endpoint that refuses connections could not bind that port here (log:
+`cannot open 127.0.0.1:N`). Something else on this machine holds it.
 
-Databases normally survive that: an acknowledged Postgres commit is already in the WAL, and the
-fork replays it on start. But the copy can catch the WAL mid-write, and Postgres stops replay at
-the first torn record - so under heavy load the **last** write before the snapshot can be missing.
-Seen once here, under several suites competing for one docker daemon.
+## OpenSandbox API and MCP
 
-**If the snapshot must be exact**, quiesce it first:
+### The SDK or `sbx mcp` gets 401 `MISSING_API_KEY` or `INVALID_API_KEY`
+
+The OpenSandbox API ([GUIDES.md](GUIDES.md#opensandbox-sdks)) always requires the
+`OPEN-SANDBOX-API-KEY` header, loopback included ([why](../SECURITY.md#access-and-exposure)).
+Without `--osb-key` or `SBX_OSB_KEY`, the key is generated into `~/.sbx/osb/key`.
 
 ```sh
-docker stop sbx-<sandbox>-<service>     # or just stop writing to it
-sbx snapshot <sandbox> golden
+export OPEN_SANDBOX_API_KEY="$(cat ~/.sbx/osb/key)"    # SDKs
+sbx mcp                                                # reads the key file itself, loopback only
+sbx mcp --url https://osb.example.dev --key "$KEY"     # a remote server
 ```
 
-For the ordinary case - seed, snapshot, fan out - nothing is writing at snapshot time and this
-does not arise.
+### Warm pool creates are slow (the pool always misses)
 
----
+A create hits the pool only if it matches what the pool was built with
+([rules](GUIDES.md#opensandbox-sdks)). Each miss is logged as `osb: pool miss for image ...` with
+the field that differed. Send the SDK defaults, or drop the custom entrypoint.
 
-## `sbx ui --connect` shows rows but no cpu or memory
+### An API sandbox is `Failed` with `runtime_error`
 
-**The deployment's backend cannot be metered.** Usage is optional, as it is locally: a
-kubernetes-backed sbx has no `docker stats` to call, so the columns read `n/a` rather than a zero
-nobody measured. A docker-backed deployment fills them.
+The container stopped before sbx's in-sandbox agent answered. `status.message` gives the docker
+state, exit code, `OOMKilled` and the start error. Exit 137 with no output is SIGKILL: out of
+memory (host or `resourceLimits.memory`) or a `docker kill`. 143 is SIGTERM from outside. Raise
+`resourceLimits.memory` or free host memory. The daemon log and `sbx history <id>` show the same.
 
-**Or the deployment is older than v0.5.0.** The usage fields are new; an older `sbx serve` answers
-the same listing without them, so every row reads `n/a`. `sbx pack` pins the version, so redeploy
-to move it forward.
+## Remote deployments
 
-Sampling is done only when asked (`?stats=1`), so a plain `sbx connect` costs the deployment what
-it always did - one listing, no per-container round trips.
+### `sbx connect` cannot reach a deployment the platform calls healthy
 
----
+The platform's health check is not the tunnel. Work down this list:
 
-## `sbx ui --connect` will not let me wake or remove anything
+| message or symptom | fix |
+|---|---|
+| "rejected the token" | `SBX_CONNECT_TOKEN` differs from the deployment's; update it there |
+| "the handshake was answered by something that is not this endpoint" | something else answers the URL; `curl -sS https://<url>/healthz` answers only if sbx is there |
+| "active" but nothing answers | the container died at start; read its logs. Pin the sbx version as `sbx pack` does |
+| "... is http, so SBX_CONNECT_TOKEN would cross the network in the clear" | use `https://`, or `SBX_CONNECT_INSECURE=1` on a trusted network |
+| "... came after a flag, where it would have been ignored" | put flags last; the message prints the working line |
+| "db and replica both want 127.0.0.1:5432" | `--port-offset replica=1000` |
+| "cannot open 127.0.0.1:<port>" | your local `sbx serve` owns that port; `--port-offset 1000` |
+| "the sandbox behind this port was recreated" | restart `sbx connect` |
 
-**That is deliberate, not a missing feature.** A connect endpoint's token buys two things: read
-what is fronted, and carry bytes to a port. Waking, sleeping, capping and removing are none of
-those, and a leaked token is a far worse incident if it can also destroy a sandbox's volume.
+### `sbx ui --connect` shows rows but no cpu or memory
 
-Run the command where the sandbox is - a shell on that host, or `kubectl exec` - and the
-dashboard there has every key.
+A Kubernetes-backed deployment cannot be metered, so the columns read `n/a`. A deployment older
+than v0.5.0 has no usage fields; redeploy it with a current `sbx pack`.
 
----
+### `sbx ui --connect` will not let me wake or remove anything
 
-## `sbx connect` cannot reach a deployment the platform calls healthy
+The deployment runs in front mode (`sbx serve --front`). It only forwards ports and manages no
+sandboxes, so wake, sleep, limit, remove and logs are refused. Act on the workload where it runs
+(a shell on that host, or `kubectl exec`).
 
-The platform's health check and the tunnel are not the same fact: a container can be up and serve
-nothing that answers `sbx connect`. Work down this list - ordered by how often each was the answer
-while this was built.
+## Kubernetes
 
-**"rejected the token".** `SBX_CONNECT_TOKEN` here is not the one the deployment was given. It is
-set in two places, and the deployment's copy is the one people forget after a redeploy.
+### A create on `--provider kubernetes` is refused
 
-**"the handshake was answered by something that is not this endpoint".** Something is in front of
-sbx - a platform login page, a router sending `/` elsewhere, or a URL belonging to a different
-service. Check `curl -sS https://<url>/healthz`: that route needs no token and answers only if
-sbx itself is on the other end.
-
-**The deployment is "active" but nothing answers at all.** Almost always the container died at
-startup and the platform restarted it quietly. Read its logs. The one that catches people is a
-hand-written Dockerfile installing sbx with `@latest`: releases before this feature have no
-`--connect-addr`, so the process exits on an unknown flag. `sbx pack` pins the version for exactly
-this reason - if you wrote the image yourself, pin it too.
-
-**"... is http, so SBX_CONNECT_TOKEN would cross the network in the clear".** The token is the
-whole of the security, and `http://` sends it as text to anything in between. Use the `https://`
-URL the platform gave you. `SBX_CONNECT_INSECURE=1` waives it for a network you trust, and a
-loopback address never needed it - a `kubectl port-forward` or local daemon is exempt already.
-
-**"... came after a flag, where it would have been ignored".** Flags go last. `sbx connect db=…
---port-offset 1000 cache=…` would otherwise connect `db` alone and never mention `cache` - a port
-map with a hole in it: whatever else answers on the missing port, often this machine's own `sbx
-serve`, gets the connection instead. The message prints the line that would have worked.
-
-**"db and replica both want 127.0.0.1:5432".** Two deployments are fronting the same port - what
-happens when a sandbox has two of the same service. They cannot share one local port, so move
-one: `--port-offset replica=1000`. The listing then says which was shifted, because its own `sbx
-env` values no longer apply here.
-
-**"cannot open 127.0.0.1:<port>".** This machine's own `sbx serve` already owns that port, because
-the deployment hands out the same numbers it would locally. `--port-offset 1000` moves the whole
-block; the addresses printed at startup are then correct, and the deployment's own `sbx env`
-values are not.
-
-**"the sandbox behind this port was recreated".** The container was replaced while you were
-connected, so the port now serves a different instance. Restart `sbx connect` to pick up the new
-map. A deliberate refusal: silently reconnecting would point your open `psql` at a database that
-is not the one it started talking to.
-
----
-
-## `sbx checkpoint` works but `sbx resume` fails
-
-Almost always: you are on **docker**, whose checkpoint/restore is unmaintained. The dump
-succeeds and the restore dies - `bind-mount /proc/0/ns/net -> …: no such file or directory`, or
-`content … already exists`. These are docker/containerd bugs, not CRIU's: `criu check` passes on
-the same host.
-
-**Use a podman runtime.** Podman's CRIU integration restores reliably, and sbx routes through it
-automatically when podman is the runtime - point `DOCKER_HOST` at podman's socket
-(`unix:///run/podman/podman.sock`) and both `sbx serve` and the CLI will use it. On macOS
-checkpoint is refused outright, because CRIU needs a Linux host. Filesystem save-and-restore
-(`sbx snapshot` / `fork`) works on either runtime.
-
----
+These cannot be enforced in a cluster, so they are refused by name: `build`, `mounts`, `cap_add`,
+`egress`, `egress_allow`, `egress_policy`, `on_idle: "freeze"`, and `sbx url`. Use an `image`
+instead of `build`, a `volume` instead of `mounts`, a NetworkPolicy for egress, and an Ingress for
+a public URL ([SPEC.md](SPEC.md#provider-support)).
 
 ## Removing sbx
 
-Nothing here is hidden, and all of it is reversible.
-
 ```sh
-# 1. stop the daemon
-launchctl unload ~/Library/LaunchAgents/dev.sbx.daemon.plist   # macOS
+launchctl unload ~/Library/LaunchAgents/dev.sbx.daemon.plist   # stop the daemon: macOS
 systemctl --user disable --now sbx                             # linux
 pkill -f 'sbx serve'                                           # or just this
-
-# 2. destroy the sandboxes - THIS DELETES THEIR DATA
-sbx list                       # see what exists first
-sbx rm <each-sandbox>
-
-# 3. reclaim what is left: snapshots, orphaned volumes
-sbx gc --snapshots             # lists, deletes nothing
-sbx gc --snapshots --force
-
-# 4. sbx's own state, and the binary
-rm -rf ~/.sbx                  # templates, origins, presence and lock files
-rm "$(command -v sbx)"
+sbx list; sbx rm <each-sandbox>          # DELETES THEIR DATA; sbx snapshot first to keep one
+sbx gc --snapshots --force               # snapshots and orphaned volumes (without --force, lists)
+sbx fc vm rm --yes                       # the microVM helper VM, if you used one
+rm -rf ~/.sbx && rm "$(command -v sbx)"  # sbx's own state, and the binary
 ```
 
-**`sbx rm` destroys the sandbox's volume with it.** That is the point - a sandbox is meant to be
-cheap to throw away - but `sbx rm` on a branch you cared about loses that branch's database. `sbx
-snapshot` first if you want it back.
-
-`~/.sbx` holds no data of yours: extracted templates, a record of which spec each sandbox came
-from, the daemon's pid file and a lock. Deleting it while sandboxes exist costs you the `--spec`
-convenience and nothing else.
-
----
-
-## On a shared or persistent CI runner
-
-**One daemon per machine, per user.** It owns the public ports for every sandbox on the box, and
-a second `sbx serve` refuses to start rather than fight it.
-
-**`sbx serve --idle 30m &` does not survive a GitHub Actions step.** Each step is a new shell and
-the background job dies with it. Start the daemon and use the sandbox **in the same step**, or
-install the supervised unit from [`deploy/`](../deploy/) on a self-hosted runner.
-
-Two jobs on one runner share the 20000+ port range and the same daemon. That is fine - they get
-different slots - but they are not isolated, and `sbx rm` in one job will happily destroy the
-other's sandbox. Name sandboxes after the branch *and* the job if they can overlap.
-
----
+Deleting `~/.sbx` while sandboxes exist loses live egress policies, the OpenSandbox API key,
+microVM sandboxes and `sbx history`. Container sandboxes keep running.
 
 ## Nothing here matches
 
-`sbx doctor --json` is machine-readable, and every number this project publishes has the script
-that produced it beside it in [BENCHMARKS.md](BENCHMARKS.md). Issues and patches welcome.
+Open an issue with the output of `sbx doctor --json`.
