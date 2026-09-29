@@ -10,18 +10,19 @@
 // connects. A container label cannot say "snapshot", because a label cannot be added to a
 // container that exists; so the CLI leaves a file here for the length of the pause.
 //
-// The file holds the pid of the snapshot. A snapshot that was killed before it could remove
-// it leaves a file whose pid is gone, and Held treats that as no mark - the daemon must never
-// be wedged by a mark nobody will take back. This is slotlock's convention, for the same reason.
+// The file holds the snapshot's pid and start time (internal/procid). A snapshot that was killed
+// before it could remove it leaves a file whose process is gone - or whose pid now belongs to
+// something else - and Held treats that as no mark: the daemon must never be wedged by a mark
+// nobody will take back. This is slotlock's convention, for the same reason.
 package snapshotpause
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
+
+	"github.com/aryanmehrotra/sbx/internal/procid"
 )
 
 // Hold marks ref as paused by this process and returns how to take the mark back. It never
@@ -37,7 +38,7 @@ func Hold(ref string) (release func()) {
 		return func() {}
 	}
 
-	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(procid.Self().String()), 0o644); err != nil {
 		return func() {}
 	}
 
@@ -57,22 +58,13 @@ func Held(ref string) bool {
 		return false
 	}
 
-	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
-	if err != nil || pid <= 0 {
+	rec, ok := procid.Parse(string(body))
+	if !ok {
 		_ = os.Remove(path)
 		return false
 	}
 
-	if pid == os.Getpid() {
-		return true
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err == nil {
-		err = proc.Signal(syscall.Signal(0))
-	}
-
-	if err != nil {
+	if !rec.Alive() {
 		_ = os.Remove(path)
 		return false
 	}

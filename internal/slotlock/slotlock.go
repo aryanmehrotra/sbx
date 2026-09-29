@@ -32,6 +32,8 @@ package slotlock
 // Both are files under $HOME, so they cover one machine and not a shared remote DOCKER_HOST.
 // A pid file rather than flock(2): it is the mechanism this lock already had, it builds on all
 // eight platforms without build tags, and the holder's pid is what the error needs to print.
+// The file holds the holder's pid and start time (internal/procid), so a pid recycled to an
+// unrelated process after the holder died reads as stale rather than as held.
 // A machine with no usable $HOME gets the in-process half only, as before: refusing every
 // create there would wedge a working command over a race it may never have.
 
@@ -44,8 +46,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/procid"
 )
 
 var (
@@ -64,12 +67,17 @@ var (
 
 const retry = 50 * time.Millisecond
 
-// HeldError is a lock that was still held when the wait ran out.
+// kindWith marks a name lock as held by `sbx with` for its whole run: the sandbox under it is
+// ephemeral and removed when that command ends, so a create or add is refused at once.
+const kindWith = "with"
+
+// HeldError is a lock that was held when this caller gave up on it.
 type HeldError struct {
-	What   string        // "the slot lock", "sandbox \"x\""
-	Path   string        // the lock file, when there is one
-	Holder int           // the holding pid, 0 when it could not be read
-	Waited time.Duration // how long this caller waited
+	What      string        // "the slot lock", "sandbox \"x\""
+	Path      string        // the lock file, when there is one
+	Holder    int           // the holding pid, 0 when it could not be read
+	Waited    time.Duration // how long this caller waited
+	Ephemeral bool          // held by a live `sbx with`, which removes the sandbox when it ends
 }
 
 func (e *HeldError) Error() string {
@@ -121,6 +129,17 @@ func nameLocal(sandbox string) chan struct{} {
 	return c
 }
 
+// lock is one lock file and how to take it.
+type lock struct {
+	what  string
+	path  string
+	err   error // why there is no path; the in-process half is then all there is
+	local chan struct{}
+	wait  time.Duration
+	kind  string // written into the file: "" or kindWith
+	names bool   // a name lock, so one a live `sbx with` holds is refused at once
+}
+
 // Acquire waits for the slot lock and returns its release. onWait, if set, is called once
 // with the holder's pid when the wait has gone on long enough to be worth mentioning.
 //
@@ -129,22 +148,33 @@ func nameLocal(sandbox string) chan struct{} {
 func Acquire(ctx context.Context, onWait func(holder int)) (func(), error) {
 	path, err := Path()
 
-	return take(ctx, "the slot lock", path, err, slotLocal, SlotWait, onWait)
+	return take(ctx, lock{what: "the slot lock", path: path, err: err, local: slotLocal, wait: SlotWait}, onWait)
 }
 
-// AcquireName waits for sandbox's name lock.
+// AcquireName waits for sandbox's name lock. A name a live `sbx with` owns is not waited for:
+// it returns a *HeldError with Ephemeral set at once.
 func AcquireName(ctx context.Context, sandbox string, onWait func(holder int)) (func(), error) {
-	path, err := NamePath(sandbox)
-
-	return take(ctx, fmt.Sprintf("sandbox %q", sandbox), path, err, nameLocal(sandbox), NameWait, onWait)
+	return take(ctx, nameLock(sandbox, NameWait, ""), onWait)
 }
 
 // TryName takes sandbox's name lock only if nobody holds it, and otherwise returns a
 // *HeldError naming the holder at once.
 func TryName(sandbox string) (func(), error) {
+	return take(context.Background(), nameLock(sandbox, 0, ""), nil)
+}
+
+// ClaimEphemeral is TryName for `sbx with`, which holds the name for as long as it runs. The
+// lock says so, and any create or add of the name meanwhile is refused at once rather than made
+// to wait for a command that may run for an hour and then removes what it made.
+func ClaimEphemeral(sandbox string) (func(), error) {
+	return take(context.Background(), nameLock(sandbox, 0, kindWith), nil)
+}
+
+func nameLock(sandbox string, wait time.Duration, kind string) lock {
 	path, err := NamePath(sandbox)
 
-	return take(context.Background(), fmt.Sprintf("sandbox %q", sandbox), path, err, nameLocal(sandbox), 0, nil)
+	return lock{what: fmt.Sprintf("sandbox %q", sandbox), path: path, err: err, local: nameLocal(sandbox),
+		wait: wait, kind: kind, names: true}
 }
 
 func Path() (string, error) {
@@ -159,19 +189,26 @@ func Path() (string, error) {
 // NamePath is where sandbox's name lock lives. Names are validated before they get here, so
 // they are safe as a file name.
 func NamePath(sandbox string) (string, error) {
+	dir, err := namesDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, sandbox+".lock"), nil
+}
+
+func namesDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(home, ".sbx", "locks", sandbox+".lock"), nil
+	return filepath.Join(home, ".sbx", "locks"), nil
 }
 
-func take(ctx context.Context, what, path string, pathErr error, local chan struct{}, wait time.Duration,
-	onWait func(int),
-) (func(), error) {
+func take(ctx context.Context, l lock, onWait func(int)) (func(), error) {
 	began := time.Now()
-	deadline := began.Add(wait)
+	deadline := began.Add(l.wait)
 	noticed := false
 
 	notice := func(holder int) {
@@ -181,19 +218,38 @@ func take(ctx context.Context, what, path string, pathErr error, local chan stru
 		}
 	}
 
-	held := func(holder int) error {
-		return &HeldError{What: what, Path: path, Holder: holder, Waited: time.Since(began)}
+	held := func(holder int, ephemeral bool) error {
+		return &HeldError{What: l.what, Path: l.path, Holder: holder, Waited: time.Since(began), Ephemeral: ephemeral}
+	}
+
+	// A live `sbx with` owns the name for its whole run: refuse now rather than wait. Asked on
+	// every pass, including while the in-process half is held, because the `with` may be in
+	// this process.
+	ephemeral := func() error {
+		if !l.names || l.path == "" {
+			return nil
+		}
+
+		if rec, kind, ok := readRecord(l.path); ok && kind == kindWith && rec.Alive() {
+			return held(rec.PID, true)
+		}
+
+		return nil
 	}
 
 	// The in-process half first. Polled rather than a blocking select on a timer, so the
 	// progress notice fires on the same schedule as the file half's.
 	for taken := false; !taken; {
 		select {
-		case local <- struct{}{}:
+		case l.local <- struct{}{}:
 			taken = true
 		default:
+			if err := ephemeral(); err != nil {
+				return nil, err
+			}
+
 			if !time.Now().Before(deadline) {
-				return nil, held(os.Getpid())
+				return nil, held(os.Getpid(), false)
 			}
 
 			notice(os.Getpid())
@@ -206,23 +262,28 @@ func take(ctx context.Context, what, path string, pathErr error, local chan stru
 		}
 	}
 
-	unlocal := func() { <-local }
+	unlocal := func() { <-l.local }
 
-	if pathErr != nil || path == "" {
+	if l.err != nil || l.path == "" {
 		return releaseOnce(unlocal), nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return releaseOnce(unlocal), nil
+	}
+
+	body := procid.Self().String()
+	if l.kind != "" {
+		body += "\n" + l.kind
 	}
 
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d", os.Getpid())
+			_, _ = f.WriteString(body)
 			_ = f.Close()
 
-			return releaseOnce(func() { _ = os.Remove(path); unlocal() }), nil
+			return releaseOnce(func() { _ = os.Remove(l.path); unlocal() }), nil
 		}
 
 		if !errors.Is(err, os.ErrExist) {
@@ -233,19 +294,25 @@ func take(ctx context.Context, what, path string, pathErr error, local chan stru
 
 		// Held by something. If that something is gone - a create that was killed - the lock
 		// is rubbish and must not block the machine for ever.
-		if clearStale(path) {
+		if clearStale(l.path) {
 			continue
 		}
 
-		holder := readHolder(path)
+		if err := ephemeral(); err != nil {
+			unlocal()
+
+			return nil, err
+		}
+
+		rec, _, _ := readRecord(l.path)
 
 		if !time.Now().Before(deadline) {
 			unlocal()
 
-			return nil, held(holder)
+			return nil, held(rec.PID, false)
 		}
 
-		notice(holder)
+		notice(rec.PID)
 
 		select {
 		case <-ctx.Done():
@@ -257,26 +324,30 @@ func take(ctx context.Context, what, path string, pathErr error, local chan stru
 	}
 }
 
-func readHolder(path string) int {
+// readRecord reads a lock file: the holder's record on the first line, its kind on the second.
+func readRecord(path string) (procid.Record, string, bool) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return 0
+		return procid.Record{}, "", false
 	}
 
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(body)))
+	first, kind, _ := strings.Cut(string(body), "\n")
 
-	return pid
+	rec, ok := procid.Parse(first)
+
+	return rec, strings.TrimSpace(kind), ok
 }
 
-// clearStale removes a lock whose owner is no longer running, and reports whether it did.
-func clearStale(path string) bool {
+// stale reports whether the lock at path is rubbish: unreadable, or held by a process that is
+// no longer running - including one whose pid now belongs to something else.
+func stale(path string) bool {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return errors.Is(err, os.ErrNotExist) // gone already: try again at once
+		return false
 	}
 
-	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
-	if err != nil || pid <= 0 {
+	rec, _, ok := readRecord(path)
+	if !ok {
 		// Empty is also what a lock looks like in the instant between its creator's open and
 		// its write, and removing it then would let two holders in. So an empty file is only
 		// rubbish once it has stayed empty for a while.
@@ -286,30 +357,82 @@ func clearStale(path string) bool {
 			}
 		}
 
-		_ = os.Remove(path)
-
 		return true
 	}
 
-	if pid == os.Getpid() {
+	if rec.PID == os.Getpid() {
 		return false // ours, held by another goroutine; do not delete it underneath it
 	}
 
-	proc, err := os.FindProcess(pid)
+	return !rec.Alive()
+}
+
+// clearStale removes a lock whose owner is no longer running, and reports whether it did.
+func clearStale(path string) bool {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return true // gone already: try again at once
+	}
+
+	if !stale(path) {
+		return false
+	}
+
+	_ = os.Remove(path)
+
+	return true
+}
+
+// Stale lists the lock files - the slot lock and every name lock - whose holder is gone. A
+// stale lock is cleared by the next caller for the same name, which may never come; `sbx gc`
+// asks this instead.
+func Stale() ([]string, error) {
+	var paths []string
+
+	if p, err := Path(); err == nil {
+		paths = append(paths, p)
+	}
+
+	dir, err := namesDir()
 	if err != nil {
-		_ = os.Remove(path)
-
-		return true
+		return nil, err
 	}
 
-	// EPERM is a process that exists and belongs to someone else - alive, so still the holder.
-	if err := proc.Signal(syscall.Signal(0)); err != nil && !errors.Is(err, syscall.EPERM) {
-		_ = os.Remove(path)
-
-		return true
+	names, err := filepath.Glob(filepath.Join(dir, "*.lock"))
+	if err != nil {
+		return nil, err
 	}
 
-	return false
+	var out []string
+
+	for _, p := range append(paths, names...) {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+
+		if stale(p) {
+			out = append(out, p)
+		}
+	}
+
+	return out, nil
+}
+
+// RemoveStale removes the locks Stale listed, each re-checked first: a lock taken again since
+// the listing belongs to a live holder now.
+func RemoveStale(paths []string) error {
+	var errs []error
+
+	for _, p := range paths {
+		if !stale(p) {
+			continue
+		}
+
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // releaseOnce wraps a cleanup so it runs exactly once, however many times the caller calls it.
