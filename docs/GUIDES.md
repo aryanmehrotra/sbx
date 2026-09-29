@@ -101,6 +101,9 @@ From a devcontainer (preview feature):
 build, ports, env, the workspace mount and the create commands, and lists what it skipped on
 stderr. Features, `postStartCommand` and `postAttachCommand` are dropped; pass `remoteUser` as
 `sbx ssh --user`. A `dockerComposeFile` is refused; add those services to `sandbox.json` yourself.
+In env, `${localEnv:X}` becomes `${X}`, and a default is dropped and listed.
+`${containerWorkspaceFolder}` becomes the workspace path. Any other `${` is written as `$${`, so the
+container gets it as written; `${containerEnv:X}` is listed as not evaluated.
 
 ## Keep a sandbox awake, or limit where it can connect
 
