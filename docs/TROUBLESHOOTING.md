@@ -263,12 +263,13 @@ A client that ignores those variables has no route. Add the host with `sbx egres
 
 **Fix:** add the port to `egress_allow` as `host:port` (`"github.com:22"`) and run `sbx create`
 again. `egress_policy` and `sbx egress` have no port field, so a sandbox that needs another port
-uses `egress_allow`.
+uses `egress_allow`. A 403 that ends "(port N is not carried either)" is the policy denying the
+host: allow the host first.
 
 ### 403 "the machine the egress filter runs on, or one behind it"
 
 **Symptom:** a request to `host.docker.internal`, `host.lima.internal`, `172.17.0.1` or another
-docker gateway gets 403 although a rule allows it.
+docker gateway gets 403 although a rule allows it, on any port.
 
 **Cause:** on colima and Docker Desktop those addresses are the VM and your Mac. No policy opens
 them ([SECURITY.md](../SECURITY.md#containers)).

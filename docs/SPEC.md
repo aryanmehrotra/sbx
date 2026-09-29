@@ -323,6 +323,12 @@ Limits:
   docker network's gateway, the default bridge, and what `host.docker.internal`,
   `host.lima.internal` and `gateway.docker.internal` resolve to (the whole `/24`). A service
   cannot reach the VM or your Mac through the proxy.
+- A docker network created after a filter started is refused from the next discovery pass of
+  `sbx serve` (`--refresh`, 15 s by default), which pushes the engine's gateways to every
+  filter. While no `sbx serve` runs, and on a remote docker, a network created later is not
+  refused until the sandbox is removed and created again.
+- A request to one of those addresses gets 403 saying so, on any port. The port hint ("list
+  `host:port` in `egress_allow`") is given only to a host the policy would otherwise let through.
 - Traffic between services in the same sandbox is not filtered.
 
 Run `sbx create` again after editing `egress_policy` or `egress_allow` and the filter is replaced

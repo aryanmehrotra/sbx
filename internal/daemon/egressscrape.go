@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
@@ -29,19 +31,30 @@ const scrapeTimeout = 2 * time.Second
 
 // scrapeEgress reads every container filter's activity endpoint and stamps the units behind it
 // when the reading has advanced since last time.
+//
+// The endpoint is behind the filter's control token, because the workload can reach it too; the
+// address and token come from filterEndpoint, not from the service's stat label, which also goes
+// stale when the filter is replaced and docker publishes it somewhere new.
 func (d *daemon) scrapeEgress(ctx context.Context, found []provider.Unit) {
-	stats := map[string]string{} // gateway -> loopback stat address
+	filters := map[string]string{} // gateway -> sandbox
 
 	for _, u := range found {
 		if u.EgressStat != "" && u.EgressGateway != "" {
-			stats[u.EgressGateway] = u.EgressStat
+			filters[u.EgressGateway] = u.Sandbox
 		}
 	}
 
-	for gw, addr := range stats {
-		last, err := readLastActivity(ctx, addr)
+	for gw, sandbox := range filters {
+		ep, ok := d.filterEndpoint(ctx, sandbox)
+		if !ok {
+			continue
+		}
+
+		last, err := readLastActivity(ctx, ep)
 		if err != nil {
-			logs.Default.Debug("", "", "egress filter %s did not answer: %v", addr, err)
+			d.forgetFilterEndpoint(sandbox)
+			logs.Default.Debug(sandbox, "", "egress filter %s did not answer: %v", ep.addr, err)
+
 			continue
 		}
 
@@ -62,14 +75,16 @@ func (d *daemon) scrapeEgress(ctx context.Context, found []provider.Unit) {
 }
 
 // readLastActivity asks one filter when it last carried a permitted byte.
-func readLastActivity(ctx context.Context, addr string) (int64, error) {
+func readLastActivity(ctx context.Context, ep filterEndpoint) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, scrapeTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/last", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ep.addr+"/last", nil)
 	if err != nil {
 		return 0, err
 	}
+
+	req.Header.Set(egress.TokenHeader, ep.token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -77,6 +92,10 @@ func readLastActivity(ctx context.Context, addr string) (int64, error) {
 	}
 
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("/last answered %s", resp.Status)
+	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
 	if err != nil {

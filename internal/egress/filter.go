@@ -147,12 +147,17 @@ func (f *Filter) refused(a netip.Addr) bool {
 }
 
 // errDenied is a destination the policy refuses, as opposed to one that could not be reached.
-type errDenied struct{ why string }
+type errDenied struct {
+	why string
+
+	// door is a refusal Refuse made: no policy or grant opens it, so nothing may suggest one.
+	door bool
+}
 
 func (e *errDenied) Error() string { return "egress not allowed: " + e.why }
 
-// carries refuses a port this filter does not carry for host. It is asked before the policy and
-// before any lookup, so a refused port costs no DNS query and opens no socket.
+// carries refuses a port this filter does not carry for host. It is asked before any lookup, so a
+// refused port costs no DNS query and opens no socket; check decides which refusal is given.
 //
 // host is what the client named. A grant for a name is matched against the name, never against
 // an address it resolved to, so "github.com:22" does not open port 22 on whatever else shares
@@ -189,7 +194,7 @@ func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 
 	if a, err := netip.ParseAddr(host); err == nil {
 		if f.refused(a) {
-			return nil, &errDenied{why: host + closedOff}
+			return nil, &errDenied{why: host + closedOff, door: true}
 		}
 
 		if !c.allowsAddr(a) {
@@ -212,7 +217,7 @@ func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 	// name that can be steered to it, and which one a client dials is not ours to choose.
 	for _, a := range addrs {
 		if f.refused(a) {
-			return nil, &errDenied{why: fmt.Sprintf("%s resolves to %s%s", host, a, closedOff)}
+			return nil, &errDenied{why: fmt.Sprintf("%s resolves to %s%s", host, a, closedOff), door: true}
 		}
 
 		if c.deniesResolved(a) {
@@ -231,13 +236,63 @@ func (f *Filter) resolve(ctx context.Context, host string) ([]netip.Addr, error)
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
-// dial opens a connection to host:port, admitted and at a checked address.
-func (f *Filter) dial(ctx context.Context, host, port string) (net.Conn, error) {
-	if err := f.carries(host, port); err != nil {
-		return nil, err
+// check decides one request: the port, the destination, and which refusal to give when both
+// fail. It returns the addresses host:port may be dialled at.
+//
+// The refusal has to be advice that works. The port used to be checked first, so a request to a
+// door on an uncarried port - GET http://host.lima.internal:28777/ - was told to list
+// host.lima.internal:28777 in egress_allow, which would then have been refused as a door. So an
+// uncarried port still asks about the destination: a door says it is one, a host the policy
+// denies says that, and only a host that would otherwise be let through gets the port hint.
+//
+// It asks only what it can answer without a lookup, because a refused port must cost no DNS
+// query (TestDefaultAllowRefusesPortsOtherThanHTTPAndHTTPS): an address literal is judged in
+// full, a name by the policy's name rules and by whether it is one of HostDoorNames. A name that
+// resolves to a door only through some other record still gets the port hint; with the port
+// granted, its next request is refused as a door, by address, and says so.
+func (f *Filter) check(ctx context.Context, host, port string) ([]netip.Addr, error) {
+	perr := f.carries(host, port)
+	if perr == nil {
+		return f.admit(ctx, host)
 	}
 
-	addrs, err := f.admit(ctx, host)
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return nil, perr // not a port at all: nothing about the host would change the answer
+	}
+
+	var err error
+
+	switch _, lerr := netip.ParseAddr(host); {
+	case lerr == nil:
+		_, err = f.admit(ctx, host) // a literal: no lookup
+	case isDoorName(host):
+		err = &errDenied{why: host + closedOff, door: true}
+	case !f.pol.Load().allowsName(host):
+		err = &errDenied{why: host}
+	}
+
+	var d *errDenied
+	if errors.As(err, &d) {
+		if d.door {
+			return nil, d
+		}
+
+		return nil, &errDenied{why: d.why + fmt.Sprintf(" (port %s is not carried either)", port)}
+	}
+
+	return nil, perr
+}
+
+// isDoorName reports one of HostDoorNames, which name the machine behind a container filter.
+func isDoorName(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+
+	return slices.Contains(HostDoorNames, host)
+}
+
+// dial opens a connection to host:port, admitted and at a checked address.
+func (f *Filter) dial(ctx context.Context, host, port string) (net.Conn, error) {
+	addrs, err := f.check(ctx, host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -356,15 +411,10 @@ func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := f.carries(host, port); err != nil {
-		refuse(w, err)
-		return
-	}
-
 	// Checked per request, not only at dial: the transport pools connections, and one opened
 	// under an older, looser policy must not carry a request the current policy refuses.
 	admitCtx, cancel := context.WithTimeout(detach(r), setupTimeout)
-	_, err := f.admit(admitCtx, host)
+	_, err := f.check(admitCtx, host, port)
 	cancel()
 
 	if err != nil {

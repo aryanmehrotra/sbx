@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -163,8 +164,12 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 			bresp.StatusCode)
 	}
 
-	// And the stat endpoint the daemon scrapes moved, because traffic went through.
-	sresp, err := http.Get("http://127.0.0.1:" + statPort + "/last")
+	// And the stat endpoint the daemon scrapes moved, because traffic went through. It answers
+	// the daemon's token only: the workload can reach this port.
+	sreq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+statPort+"/last", nil)
+	sreq.Header.Set(TokenHeader, "t0ken")
+
+	sresp, err := http.DefaultClient.Do(sreq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +177,7 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 	defer sresp.Body.Close()
 
 	raw, _ := io.ReadAll(sresp.Body)
-	if strings.TrimSpace(string(raw)) == "" {
+	if _, perr := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); sresp.StatusCode != http.StatusOK || perr != nil {
 		t.Fatal("the stat endpoint returned nothing; the daemon would never stamp this sandbox")
 	}
 
