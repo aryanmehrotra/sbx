@@ -102,3 +102,4 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx logs -f` says so when the followed service goes to sleep.
 - `sbx install checkpoint` on macOS gives the real reason, a restore needs a Linux host.
 - `sbx pack` on a source build suggests the release the build is based on.
+- A `sbx serve` without `--only` leaves the sandboxes a running `--only` daemon covers to that daemon, and takes them back within one `--refresh` after it stops; both used to bind the same ports.
