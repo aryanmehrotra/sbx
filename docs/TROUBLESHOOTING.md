@@ -89,6 +89,23 @@ nothing. Pick an unused name, or run against the existing sandbox without removi
 Up to v0.15.1, `sbx with` reused an existing sandbox and then removed it with its volumes, and a
 create that failed partway was left behind. Fixed after v0.15.1.
 
+### `sbx with` says the sandbox "is being created or changed by another sbx"
+
+Another `sbx create`, `sbx add` or `sbx with` holds that name right now. `sbx with` does not wait
+for it, because it would refuse the name once it exists. Pick another name. If the pid in the
+error is not an sbx (`ps -p <pid>`), remove the lock file the error names.
+
+Up to v0.15.1, two `sbx with` of one name started together shared one sandbox, and the first to
+finish removed it while the other still ran. Fixed after v0.15.1: the second is refused, and a
+teardown removes only the containers its own run made.
+
+### `sbx with` left its sandbox after Ctrl-C or SIGTERM
+
+Up to v0.15.1, SIGINT or SIGTERM ended `sbx with` at once, with status 130 or 143, and left the
+sandbox. Remove it with `sbx rm <sandbox>`. Fixed after v0.15.1: the signal is passed on to the
+command, the sandbox is removed, and the status is still 130 or 143. A third interrupt leaves the
+sandbox, for when you would rather not wait.
+
 ## Create
 
 ### "never became ready within ..."
@@ -110,8 +127,9 @@ The runtime could not reach the host path in `files`, so docker created an empty
 VM-backed docker (colima, Docker Desktop) shares `$HOME` but usually not `/var/folders` on macOS.
 Move the file under your home directory. sbx checks for this after create and says so.
 
-The check removes that service's container, because every start would mount the same wrong path,
-and keeps the rest of the sandbox. Fix the path and re-run the same `sbx create` to finish it. A
+The check removes that service's container, because every start would mount the same wrong path.
+The error lists the services it kept and those it did not reach. Fix the path and re-run the same
+`sbx create` to finish the sandbox. A
 backend that cannot remove one service stops it instead; then `sbx rm` the sandbox and create it
 again.
 
@@ -145,6 +163,27 @@ Two racing creates can pick the same block of ports. A lock under `~/.sbx` makes
 two machines sharing one remote `DOCKER_HOST` share no lock. Retry, and the retry takes the next
 block. On colima or Docker Desktop a port forward can outlive its container for a few seconds
 after `sbx rm`, so wait a moment first.
+
+When a new sandbox's first `docker run` fails with "port is already allocated", create removes
+the container it left and tries the next free slot once. If there is none, re-run. Up to v0.15.1
+the container stayed in `Created`, and `sbx wake` reported it serving with no network: remove it
+with `sbx rm <sandbox>`.
+
+### `sbx create` says the slot lock, or a sandbox, "is still held by pid N"
+
+For 10 minutes another create has either been making its first container (the slot lock) or
+creating or changing the same sandbox (its name lock). `ps -p N -o pid,etime,command` shows what
+it is doing. If it is not an sbx, remove the lock file the error names and re-run.
+
+Up to v0.15.1 the slot wait gave up after 90 seconds and went ahead without the lock, so creates
+queued behind a slow health check could take one slot and fail on its ports. Fixed after v0.15.1.
+
+### `sbx create` warns that a volume "already existed before this create"
+
+A service's data volume is named after its sandbox and service, so a new sandbox takes over one
+an earlier sandbox of that name left behind, for example after a fork that failed. The service
+starts on that data. To start clean: `sbx rm <sandbox>`, then `docker volume rm <volume>` if it is
+still listed, and create again.
 
 ### `sbx list` shows nothing, or a sandbox you cannot remove
 

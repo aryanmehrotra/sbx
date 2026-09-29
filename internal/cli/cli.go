@@ -34,12 +34,26 @@ import (
 const defaultHealthTimeout = 120 * time.Second
 
 func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation) error {
+	if err := ValidateName("sandbox", sandbox); err != nil {
+		return err
+	}
+
+	// Held for the whole create, from reading what exists to the last service's init. Two creates
+	// of one name each decided from their own look at the sandbox and interleaved, and `sbx with`
+	// has to know nobody else is filling in the name it has just found unused.
+	release, err := lockName(ctx, sandbox)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	return createWithin(ctx, p, path, sandbox, withOptional, iso, defaultHealthTimeout)
 }
 
-// createWithin is Create with the health-wait budget made explicit. It exists because `sbx with`
-// takes a --timeout, and a create that waited its own fixed two minutes inside that budget made
-// `sbx with --timeout 20s` wait 2m against a service that never answered.
+// createWithin is Create with the health-wait budget made explicit, for a caller that already
+// holds the sandbox's name lock. The budget exists because `sbx with` takes a --timeout, and a
+// create that waited its own fixed two minutes inside that budget made `sbx with --timeout 20s`
+// wait 2m against a service that never answered.
 func createWithin(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, healthTimeout time.Duration) error {
 	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
@@ -55,15 +69,24 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 		return err
 	}
 
-	// Held only until the first container exists - see slotlock.go. After that the slot is
-	// claimed by something every other create can see.
-	releaseSlot := lockSlots()
-	defer releaseSlot()
-
-	slot, err := p.AllocSlot(ctx, sandbox)
+	// What existed before this create touched anything. A sandbox with no units is new, and that
+	// changes two things below: a data volume already under its name is a leftover, and a port
+	// clash on its first container is a lost race worth one retry on another slot.
+	before, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
 	}
+
+	fresh := len(before) == 0
+
+	// The slot is claimed when the first service is about to be created, not here: a `build`
+	// service is built first, and holding every other create on the machine through a docker
+	// build is the serialisation the lock is meant to avoid. It is released the moment that
+	// first container exists - see internal/slotlock.
+	slot := -1
+	releaseSlot := func() {}
+
+	defer func() { releaseSlot() }()
 
 	fmt.Printf("sandbox %q  provider %s  isolation %s\n", sandbox, p.Name(), iso)
 
@@ -93,7 +116,9 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 
 	skipped := map[string]bool{}
 
-	for _, name := range order {
+	var done []string // the services this create got through, for the report when one fails
+
+	for i, name := range order {
 		svc := sp.Services[name]
 
 		if len(svc.EgressAllow) > 0 {
@@ -134,14 +159,50 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 		// and eventually disagreeing about what the spec said.
 		svc.HealthInterval = sp.ProbeInterval(svc).String()
 
-		if err := createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout); err != nil {
-			return err
+		if slot < 0 {
+			release, err := lockSlots(ctx)
+			if err != nil {
+				return err
+			}
+
+			releaseSlot = release
+
+			if slot, err = p.AllocSlot(ctx, sandbox); err != nil {
+				return err
+			}
 		}
 
-		// The slot now belongs to a real container, so nothing else can be handed it. Every
-		// remaining service - pulls, health checks, init - proceeds unserialised.
-		releaseSlot()
+		if fresh && svc.Volume != "" {
+			warnLeftoverVolume(ctx, p, sandbox, name)
+		}
 
+		// releaseSlot runs as soon as this service's container exists: from then on the slot
+		// belongs to something every other AllocSlot can see, so the health wait and init - which
+		// can take minutes - no longer hold every other create on the machine.
+		err := createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout, releaseSlot)
+
+		// The slot was probed free while this held the lock, so a clash on a new sandbox's first
+		// container is something outside the lock - another engine's daemon, an OpenSandbox
+		// create, a process - taking the port in between. The failed container is gone by now,
+		// so asking again gives a different slot if there is one.
+		if err != nil && fresh && len(done) == 0 && lostPortRace(err) {
+			if next, aerr := p.AllocSlot(ctx, sandbox); aerr == nil && next != slot {
+				fmt.Printf("  %-12s slot %d's ports were taken while this create claimed them; trying slot %d\n",
+					name, slot, next)
+
+				slot = next
+				err = createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout, releaseSlot)
+			} else {
+				err = fmt.Errorf("%w\n     Something outside sbx took slot %d's ports while this create claimed them. "+
+					"Re-run the same sbx create %s", err, slot, sandbox)
+			}
+		}
+
+		if err != nil {
+			return createProgress(err, done, notAttempted(sp, order[i+1:], withOptional))
+		}
+
+		done = append(done, name)
 		created = append(created, p.Endpoints(sandbox, name, slot, start, svc.Ports)...)
 	}
 
@@ -234,11 +295,15 @@ func waitReachable(eps []provider.Endpoint, timeout time.Duration) bool {
 func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, start int,
 	name string, svc spec.Service, specDir string, iso provider.Isolation,
 ) error {
-	return createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, defaultHealthTimeout)
+	return createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, defaultHealthTimeout, nil)
 }
 
+// createOneWithin creates one service and waits for it. onCreated, if set, runs as soon as the
+// service's container exists - before its checks, health wait and init - and is how create lets
+// go of the slot lock without holding it through a slow health check.
 func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, slot, start int,
 	name string, svc spec.Service, specDir string, iso provider.Isolation, healthTimeout time.Duration,
+	onCreated func(),
 ) error {
 	eps := p.Endpoints(sandbox, name, slot, start, svc.Ports)
 
@@ -246,23 +311,34 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 	// Running cannot say. A microVM's Create ends by putting the new VM to sleep, so a service
 	// made a moment ago lists as not running too - and it still needs its health wait and init.
 	prior, lookupErr := unitFor(ctx, p, sandbox, name)
-	asleepBefore := lookupErr == nil && !prior.Running
+	existed := lookupErr == nil
 
 	if err := p.Create(ctx, sandbox, slot, start, name, svc, eps, specDir, iso); err != nil {
-		return fmt.Errorf("service %q: %w", name, err)
+		return fmt.Errorf("service %q: %w%s", name, err, discardFailedRun(ctx, p, sandbox, name, prior, existed))
 	}
 
-	ref, err := refFor(ctx, p, sandbox, name)
+	if onCreated != nil {
+		onCreated()
+	}
+
+	after, err := unitFor(ctx, p, sandbox, name)
 	if err != nil {
 		return err
 	}
+
+	ref := after.Ref
 
 	// A service that already existed and is asleep is left as it is. Its mount check, health wait
 	// and init all exec into it, and an exec into a stopped container fails - which the file check
 	// used to report as "your file mounted as a directory". They ran when it was created. Waking
 	// it here to repeat them would start a container behind the daemon's back, so this says how
 	// to re-run them instead.
-	if asleepBefore {
+	//
+	// Only when it is still the same container, though. Create replaces a service whose image
+	// changed - an edited `build` context is a new image - and the replacement is new, running,
+	// and has had none of its checks or init. Decided from the state before Create, this said
+	// "asleep - left as it is" about a container that was up and never initialised.
+	if existed && !prior.Running && after.Instance == prior.Instance {
 		fmt.Printf("  %-12s asleep - left as it is; to re-run its checks and init: sbx wake %s, then this create again\n",
 			name, sandbox)
 		return nil
@@ -297,8 +373,10 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 // A mount is fixed when the container is created, so this container is broken by construction:
 // every start mounts the same wrong path. It used to be left up and awake after the error,
 // serving with the broken mount, and a re-run after fixing the path found it "already exists" and
-// kept it. The rest of the sandbox is deliberately kept - re-running create is how a half-built
+// kept it. The other services are deliberately kept - re-running create is how a half-built
 // sandbox is finished, and rolling everything back would throw away services that are fine.
+// Which ones those are is createProgress's to say: this sees one service, and used to promise
+// "the rest is kept" to a sandbox that had no rest.
 //
 // A backend that cannot remove one service's workload stops it instead. That keeps it from
 // serving, but a re-run leaves a stopped service as it is, so the message says to remove the
@@ -307,7 +385,7 @@ func discardBrokenMount(ctx context.Context, p provider.Provider, sandbox, ref s
 	if r, ok := p.(provider.UnitRemover); ok {
 		if err := r.RemoveUnit(ctx, ref); err == nil {
 			return fmt.Sprintf("     Its container was removed (removed %s): every start would mount the same wrong path.\n"+
-				"     The rest of the sandbox is kept. Fix the path, then re-run the same sbx create %s to finish it.",
+				"     Fix the path, then re-run the same sbx create %s.",
 				ref, sandbox)
 		}
 	}
@@ -320,6 +398,119 @@ func discardBrokenMount(ctx context.Context, p provider.Provider, sandbox, ref s
 	return fmt.Sprintf("     Its container was stopped (stopped %s) so it does not serve with the broken mount. This\n"+
 		"     backend cannot remove one service, so fix the path, then: sbx rm %s, and create it again.",
 		ref, sandbox)
+}
+
+// discardFailedRun removes the container a failed Create left behind, and returns what to add to
+// the error about it.
+//
+// `docker run` creates the container before it starts it, so a start that fails - "port is
+// already allocated", a bad flag, a missing device - leaves one in "Created". Left there, it
+// carries the sandbox's labels: the next create found it "already exists", and wake started it
+// and reported it serving with no network. It is removed only if this Create made it: a service
+// that was there before, with the same identity, is not this create's to take away.
+func discardFailedRun(ctx context.Context, p provider.Provider, sandbox, service string, prior provider.Unit, existed bool) string {
+	after, err := unitFor(ctx, p, sandbox, service)
+	if err != nil {
+		return "" // nothing was left
+	}
+
+	if existed && after.Instance == prior.Instance {
+		return ""
+	}
+
+	r, ok := p.(provider.UnitRemover)
+	if !ok {
+		return fmt.Sprintf("\n     It left %s behind, and this backend cannot remove one service: sbx rm %s", after.Ref, sandbox)
+	}
+
+	if err := r.RemoveUnit(ctx, after.Ref); err != nil {
+		return fmt.Sprintf("\n     It left %s behind, and removing it failed (%v). Remove the sandbox: sbx rm %s",
+			after.Ref, err, sandbox)
+	}
+
+	return fmt.Sprintf("\n     The container it left behind was removed (removed %s).", after.Ref)
+}
+
+// lostPortRace reports whether a failed Create lost its ports to something else. Docker says it
+// two ways, depending on whether the port is held by another container or by a host process.
+func lostPortRace(err error) bool {
+	s := err.Error()
+
+	return strings.Contains(s, "port is already allocated") || strings.Contains(s, "address already in use")
+}
+
+// notAttempted is the services after a failure that create would have gone on to make.
+func notAttempted(sp *spec.Spec, rest []string, withOptional bool) []string {
+	var out []string
+
+	for _, name := range rest {
+		if sp.Services[name].Optional && !withOptional {
+			continue
+		}
+
+		out = append(out, name)
+	}
+
+	return out
+}
+
+// createProgress adds to a failed create's error what state the sandbox is in: which services
+// are there, and which were never reached. Without it, a failure on the second of three services
+// said nothing about the third, which simply did not exist afterwards.
+//
+// Nothing is added when the failing service is the only one, because there is nothing else to
+// account for.
+func createProgress(err error, done, rest []string) error {
+	if len(done) == 0 && len(rest) == 0 {
+		return err
+	}
+
+	kept := "Nothing else was created."
+	if len(done) > 0 {
+		kept = "Kept: " + strings.Join(done, ", ") + "."
+	}
+
+	if len(rest) > 0 {
+		kept += " Not attempted: " + strings.Join(rest, ", ") + "."
+	}
+
+	return fmt.Errorf("%w\n     %s", err, kept)
+}
+
+// dataVolumes is a backend whose `volume` field is a named volume it can name for a service.
+type dataVolumes interface {
+	DataVolume(sandbox, service string) string
+}
+
+// warnLeftoverVolume says when a new sandbox's service is about to mount a data volume that is
+// already there.
+//
+// A service's data volume is named after its sandbox and service, so a new sandbox reuses one
+// that outlived an earlier sandbox of the same name - a failed fork, a removal that could not
+// take the volume. It used to do that silently, and the new sandbox started on old data. Kept
+// rather than refused, because the data may be wanted; the reader is told whose it is and how
+// to start clean.
+func warnLeftoverVolume(ctx context.Context, p provider.Provider, sandbox, service string) {
+	dv, ok := p.(dataVolumes)
+	if !ok {
+		return
+	}
+
+	nv, ok := p.(provider.NamedVolumes)
+	if !ok {
+		return
+	}
+
+	name := dv.DataVolume(sandbox, service)
+
+	if exists, err := nv.VolumeExists(ctx, name); err != nil || !exists {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "sbx: warning: volume %s already existed before this create, so %s starts on the\n"+
+		"     data in it, left by an earlier sandbox named %q. To start clean instead: sbx rm %s,\n"+
+		"     then docker volume rm %s if it is still listed, and create again.\n",
+		name, service, sandbox, sandbox, name)
 }
 
 // checkMounts asserts that every declared file arrived as a file.
@@ -422,6 +613,12 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 	checked := false
 
 	for time.Now().Before(deadline) {
+		// An interrupted `sbx with` cancels ctx, and waiting out the rest of the budget before
+		// its teardown can run is the wait the interrupt was meant to end.
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s: stopped waiting for health: %w", ref, context.Cause(ctx))
+		}
+
 		if serving, declared := p.Probe(ctx, ref); serving {
 			return nil
 		} else if !declared {
@@ -652,6 +849,18 @@ func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, imag
 		return err
 	}
 
+	if err := ValidateName("sandbox", sandbox); err != nil {
+		return err
+	}
+
+	// The same name lock create holds, from the duplicate check to the container: two adds of
+	// one service, or an add during a create, would otherwise both pass the check below.
+	release, err := lockName(ctx, sandbox)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
@@ -665,6 +874,15 @@ func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, imag
 		if u.Service == name {
 			return fmt.Errorf("sandbox %q already has a service called %q", sandbox, name)
 		}
+	}
+
+	// After the refusals, so a service that is not going to be added gets no advice about how it
+	// would have been woken.
+	if health == "" {
+		fmt.Fprintln(os.Stderr,
+			"sbx: warning: no --health given, so waking this service can only wait for its\n"+
+				"     published port, which docker answers before the server does. The first\n"+
+				"     query after a wake may hit a socket that is about to close.")
 	}
 
 	start, err := freeIndex(specPath, units, len(containerPorts))

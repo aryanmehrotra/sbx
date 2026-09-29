@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
@@ -24,7 +25,11 @@ func TestSlotLockIsExclusive(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			release := lockSlots()
+			release, err := lockSlots(context.Background())
+			if err != nil {
+				t.Error(err)
+				return
+			}
 			defer release()
 
 			mu.Lock()
@@ -55,12 +60,18 @@ func TestSlotLockIsExclusive(t *testing.T) {
 func TestReleasingTwiceIsSafe(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	release := lockSlots()
+	release, err := lockSlots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	release()
 	release()
 
 	// Still takeable, and taking it once more must not be blocked by the double release.
-	second := lockSlots()
+	second, err := lockSlots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer second()
 
 	path, err := slotLockPath()

@@ -26,6 +26,7 @@ amended entry carries a **Status:** line under its heading.
 | [Optional services still reserve their ports](#optional-services-still-reserve-their-ports) | Addressing and slots | v0.1.0 | current |
 | [128 docker slots, bounded by the ephemeral range](#128-docker-slots-bounded-by-the-ephemeral-range) | Addressing and slots | v0.10.0 | current |
 | [The API's creates hold the slot lock for the choice only](#the-apis-creates-hold-the-slot-lock-for-the-choice-only) | Addressing and slots | v0.10.0 | current |
+| [A lock wait that runs out is an error, and a name has a lock too](#a-lock-wait-that-runs-out-is-an-error-and-a-name-has-a-lock-too) | Addressing and slots | unreleased | current |
 | [Three containers, not one image with everything in it](#three-containers-not-one-image-with-everything-in-it) | Spec, images and templates | v0.1.0 | current |
 | [A built image is keyed by its content, never by its age](#a-built-image-is-keyed-by-its-content-never-by-its-age) | Spec, images and templates | v0.1.0 | current |
 | [Adding an optional spec field does not bump `version`](#adding-an-optional-spec-field-does-not-bump-version) | Spec, images and templates | v0.1.0 | current |
@@ -150,6 +151,23 @@ run` can now pick the same slot, where before it waited. It fails at `docker run
 the port probe in the choice narrows this, as it already did for two machines on one remote
 engine - and a retry takes the next slot (TROUBLESHOOTING.md). Closing it would mean the CLI
 asking the daemon for a slot, a protocol this does not add.
+
+### A lock wait that runs out is an error, and a name has a lock too
+
+The CLI's slot lock is held from choosing a slot until the first container exists, and no
+longer: health waits and init run without it. A wait for it that runs out after 10 minutes is an
+error naming the holding pid. It used to go ahead unlocked after 90 seconds, which was the race
+the lock exists for: behind a create that held it through a slow health check, four waiters gave
+up together and two sandboxes were listed on one slot.
+
+A sandbox name has a lock of the same kind (`~/.sbx/locks/<name>.lock`). `sbx create` and
+`sbx add` hold it from reading what the sandbox has to making what it lacks; `sbx with` takes it
+without waiting, refuses a name someone holds, and records the containers it made so its
+teardown removes only those. Two `sbx with` of one name used to share a sandbox, and the first
+to finish removed it under the other.
+
+Pid files rather than `flock`: it is what the slot lock already was, it builds on all eight
+platforms, and the pid is what the error prints. One machine only, as before.
 
 
 ---

@@ -23,7 +23,8 @@ specs; [examples/](../examples/) explains each. To add a service mid-task:
 ## Test fixtures in CI
 
 `sbx with` creates a sandbox, waits until it answers, runs the command, then removes it, even on
-failure. It exits with the command's status. `--keep` leaves the sandbox for inspection.
+failure. It exits with the command's status. `--keep` leaves the sandbox for inspection. On Ctrl-C
+or SIGTERM it passes the signal to the command, removes the sandbox, and exits 130 or 143.
 
 It takes only a name that is not in use, because it removes the sandbox afterwards. Against an
 existing sandbox, use `eval "$(sbx env <sandbox>)"` instead. A create that fails is removed too,
