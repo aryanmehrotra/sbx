@@ -23,14 +23,17 @@ func TestASnapshotPauseIsNotCorrectedAsAFreeze(t *testing.T) {
 		u := newUnit("t", "db", "sbx-t-db", "inst", "sbx-t-db", nil, true)
 		u.setAwake(true)
 
-		d := &daemon{provider: &transitionRecorder{}, units: map[string]*unit{u.ref: u}}
+		// correctAwake asks the provider again before it trusts a listing that contradicts it
+		// (r2/daemon-idle), so the provider must say what an engine would: still paused.
+		paused := provider.Unit{Sandbox: "t", Service: "db", Ref: u.ref, Paused: true}
+		d := &daemon{provider: &listsOneUnit{unit: paused}, units: map[string]*unit{u.ref: u}}
 
 		release := func() {}
 		if held {
 			release = snapshotpause.Hold(u.ref)
 		}
 
-		d.correctAwake(provider.Unit{Ref: u.ref, Paused: true})
+		d.correctAwake(paused)
 		release()
 
 		// Unmarked, the existing behaviour stands: a pause outside sbx is a freeze to thaw on
