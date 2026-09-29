@@ -431,6 +431,7 @@ func (d *dockerClient) exitState(ctx context.Context, name string) (ExitState, e
 			ExitCode  int    `json:"ExitCode"`
 			OOMKilled bool   `json:"OOMKilled"`
 			Error     string `json:"Error"`
+			StartedAt string `json:"StartedAt"`
 		} `json:"State"`
 	}
 
@@ -440,5 +441,8 @@ func (d *dockerClient) exitState(ctx context.Context, name string) (ExitState, e
 
 	st := got.State
 
-	return ExitState{Status: st.Status, ExitCode: st.ExitCode, OOMKilled: st.OOMKilled, Error: st.Error}, nil
+	started, _ := time.Parse(time.RFC3339Nano, st.StartedAt) // zero when absent or unparsable
+
+	return ExitState{Status: st.Status, ExitCode: st.ExitCode, OOMKilled: st.OOMKilled, Error: st.Error,
+		StartedAt: started}, nil
 }

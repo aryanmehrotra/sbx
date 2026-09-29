@@ -10,8 +10,9 @@ package cli
 // Dialling the backing port from the host did not fix it, and was wrong both ways (see
 // askInside). So a container's port is judged from inside the container: is something listening
 // there where outside can reach it, and does the container have a network. The host dial is kept
-// only where the container cannot be asked - a microVM, an image with no `cat`, a runtime that
-// does not say which port inside a backing port reaches - and it sends no protocol bytes: a
+// only where the container cannot be asked - a microVM, an image with no `cat` under gVisor or
+// Kata (elsewhere a helper reads its tables: see helperTables), a runtime that does not say
+// which port inside a backing port reaches - and it sends no protocol bytes: a
 // server either speaks first (mysql, ssh) or waits for the client (redis, postgres, http), and a
 // proxy with nothing behind it hangs up at once.
 
@@ -151,7 +152,7 @@ type insideAnswer struct {
 }
 
 // askInside reads two facts inside the container behind one published port, with nothing but
-// `cat` and no protocol bytes:
+// `cat` (or, for an image without one, a helper in its network namespace) and no protocol bytes:
 //
 //   - is something LISTENING on the port inside the container, bound where outside can reach it
 //     (a wildcard or a real address; a bind to 127.0.0.1 or ::1 serves only the container itself);
@@ -194,24 +195,30 @@ func askInside(ctx context.Context, p provider.Provider, sandbox, service string
 		return p.Exec(ctx, u.Ref, []string{"cat", file})
 	}
 
-	dev, err := cat("/proc/net/dev")
-	if err != nil {
-		if noTool(err) {
+	var dev, tcp, tcp6 string
+
+	dev, err = cat("/proc/net/dev")
+
+	switch {
+	case err != nil && noTool(err):
+		// No cat in the image. Read the same tables from a helper in its network namespace.
+		t, ok := helperTables(ctx, p, *u)
+		if !ok {
 			return insideAnswer{fallback: true}
 		}
 
+		dev, tcp, tcp6 = t.Dev, t.TCP, t.TCP6
+	case err != nil:
 		return insideAnswer{err: err}
-	}
+	default:
+		if tcp, err = cat("/proc/net/tcp"); err != nil {
+			return insideAnswer{err: err}
+		}
 
-	tcp, err := cat("/proc/net/tcp")
-	if err != nil {
-		return insideAnswer{err: err}
-	}
-
-	// A kernel with IPv6 off has no tcp6 table, which is not a failure to ask.
-	tcp6, err := cat("/proc/net/tcp6")
-	if err != nil && !strings.Contains(err.Error(), "No such file") {
-		return insideAnswer{err: err}
+		// A kernel with IPv6 off has no tcp6 table, which is not a failure to ask.
+		if tcp6, err = cat("/proc/net/tcp6"); err != nil && !strings.Contains(err.Error(), "No such file") {
+			return insideAnswer{err: err}
+		}
 	}
 
 	ifaces := interfacesOf(dev)
@@ -231,8 +238,75 @@ func askInside(ctx context.Context, p provider.Provider, sandbox, service string
 		return insideAnswer{why: fmt.Sprintf("it listens on %d only on %s inside the container, which nothing "+
 			"outside it can connect to - bind 0.0.0.0 (or ::) instead", port, local)}
 	default:
-		return insideAnswer{why: fmt.Sprintf("nothing listens on %d inside the container", port)}
+		why := fmt.Sprintf("nothing listens on %d inside the container", port)
+
+		// The usual cause is a port number, not a process that is not running: say which.
+		if others := reachableListeners(tcp + "\n" + tcp6); len(others) > 0 {
+			why += fmt.Sprintf("; it listens on %s - declare that port in the spec, or make the "+
+				"workload listen on %d", joinPorts(others), port)
+		}
+
+		return insideAnswer{why: why}
 	}
+}
+
+// reachableListeners is every port something LISTENS on where outside the container can connect
+// (not a loopback bind), sorted, once each.
+func reachableListeners(tables string) []int {
+	var out []int
+
+	for _, line := range strings.Split(tables, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[3] != "0A" {
+			continue
+		}
+
+		addr, hexPort, ok := strings.Cut(f[1], ":")
+		if !ok {
+			continue
+		}
+
+		p, err := strconv.ParseUint(hexPort, 16, 16)
+		if ip := procIP(addr); err != nil || ip == nil || ip.IsLoopback() {
+			continue
+		}
+
+		if !slices.Contains(out, int(p)) {
+			out = append(out, int(p))
+		}
+	}
+
+	slices.Sort(out)
+
+	return out
+}
+
+func joinPorts(ports []int) string {
+	s := make([]string, len(ports))
+	for i, p := range ports {
+		s[i] = strconv.Itoa(p)
+	}
+
+	return strings.Join(s, ", ")
+}
+
+// helperTables reads a unit's network tables through the provider's helper (NetTabler), for an
+// image with no cat. Not ok - dial from the host instead - where the provider has no helper, where
+// the helper could not run (no alpine:3 on an offline machine is not a verdict on the workload),
+// and under gVisor or Kata: their guest kernel holds the workload's sockets, and the namespace a
+// helper can join on the host would say "nothing listens" of a sandbox that serves.
+func helperTables(ctx context.Context, p provider.Provider, u provider.Unit) (provider.NetTables, bool) {
+	nt, ok := p.(provider.NetTabler)
+	if !ok || (u.Isolation != "" && u.Isolation != provider.IsolationContainer) {
+		return provider.NetTables{}, false
+	}
+
+	t, err := nt.NetTables(ctx, u.Ref)
+	if err != nil {
+		return provider.NetTables{}, false
+	}
+
+	return t, true
 }
 
 // noTool reports an exec that failed because the image has no such program: distroless, scratch.
@@ -400,7 +474,14 @@ func judgeWorkload(ctx context.Context, d workloadDial) string {
 // Only services this create made, and only those running now: a microVM's create ends by putting
 // it to sleep, and its port has nothing behind it until a connection wakes it, which is not a
 // failure. Asking is cheap for the rest, so this does not wait for anything to wake.
-func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox string, made []string, deadline time.Time) error {
+//
+// Not running is a failure in one case: the runtime records that it started during this create
+// (at or after began) and has exited since. That container outlived its tick and died before this
+// check, which skipped it and printed "ready" for a sandbox whose service was gone. One asleep
+// before this create - left as it is on a re-run - started earlier, and still passes.
+func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox string, made []string,
+	began, deadline time.Time,
+) error {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
@@ -411,13 +492,35 @@ func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox str
 		want[s] = true
 	}
 
-	var check []provider.Unit
+	var (
+		check  []provider.Unit
+		exited []string
+	)
+
+	er, _ := p.(provider.ExitReporter)
 
 	for _, u := range units {
-		if want[u.Service] && u.Running {
+		switch {
+		case !want[u.Service]:
+		case u.Running:
 			check = append(check, u)
+		case er != nil:
+			st, err := er.ExitOf(ctx, u.Ref)
+			if err == nil && st.Status != "running" && !st.StartedAt.IsZero() && !st.StartedAt.Before(began) {
+				exited = append(exited, fmt.Sprintf("\n     %s: its container is not running: %s\n       see why: sbx logs %s %s",
+					u.Service, st, sandbox, u.Service))
+			}
 		}
 	}
 
-	return waitWorkloads(ctx, sandbox, workloadDials(p, check), deadline)
+	err = waitWorkloads(ctx, sandbox, workloadDials(p, check), deadline)
+
+	switch {
+	case len(exited) == 0:
+		return err
+	case err != nil:
+		return fmt.Errorf("%w%s", err, strings.Join(exited, ""))
+	default:
+		return fmt.Errorf("sandbox %q is not serving:%s", sandbox, strings.Join(exited, ""))
+	}
 }

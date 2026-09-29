@@ -139,3 +139,25 @@ func TestRmOfADeadWithsSandboxGoesAhead(t *testing.T) {
 		t.Error("the dead with's stale lock was left behind")
 	}
 }
+
+// A create killed before any container stayed leaves no sandbox, but its origin record and its
+// name lock. `sbx rm` of the name goes through the missing-sandbox path, and clears both there.
+func TestRmOfAMissingSandboxClearsItsRecordAndStaleLock(t *testing.T) {
+	paths := origins(t, "never-placed")
+	lock := writeNameLock(t, "never-placed", 1<<22+12345, "")
+
+	var err error
+
+	out := captureOutput(t, func() { err = Rm(context.Background(), &snapStub{}, "never-placed") })
+	if err != nil {
+		t.Fatalf("rm of a leftover record failed: %v\n%s", err, out)
+	}
+
+	if exists(paths["never-placed"]) {
+		t.Error("the leftover origin record is still there")
+	}
+
+	if exists(lock) {
+		t.Errorf("sbx rm left the stale name lock %s", lock)
+	}
+}

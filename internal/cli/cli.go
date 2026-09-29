@@ -115,6 +115,8 @@ type createOpts struct {
 // create that waited its own fixed two minutes inside that budget made `sbx with --timeout 20s`
 // wait 2m against a service that never answered.
 func createWithin(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, o createOpts) error {
+	began := time.Now() // what create's final check calls "started during this create"
+
 	healthTimeout, placed := o.healthTimeout, o.placed
 
 	if err := ValidateName("sandbox", sandbox); err != nil {
@@ -291,7 +293,7 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 
 	// Healthy inside the container is not serving from outside it: ask what sbx ready asks before
 	// saying "ready". Thirty seconds covers a process still binding its port after its health check.
-	if err := checkCreatedWorkloads(ctx, p, sandbox, done, time.Now().Add(createServeWait)); err != nil {
+	if err := checkCreatedWorkloads(ctx, p, sandbox, done, began, time.Now().Add(createServeWait)); err != nil {
 		return &notServingError{err: err, sandbox: sandbox}
 	}
 
@@ -433,6 +435,8 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 		return fmt.Errorf("service %q: %w%s", name, err, discardFailedRun(ctx, p, sandbox, name, prior, existed))
 	}
 
+	made := time.Now()
+
 	if onCreated != nil {
 		onCreated()
 	}
@@ -477,6 +481,10 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 		if _, err := p.Exec(ctx, ref, []string{"sh", "-c", step}); err != nil {
 			return fmt.Errorf("service %q: init step failed: %w", name, err)
 		}
+	}
+
+	if err := exitedAfterCreate(ctx, p, sandbox, name, made); err != nil {
+		return err
 	}
 
 	fmt.Printf("  %-12s ✓ %s\n", name, joinEndpoints(eps))
@@ -2065,8 +2073,16 @@ func Rm(ctx context.Context, p provider.Provider, sandbox string) error {
 	// Checked here rather than trusting the backend's own refusal: a provider reports
 	// "no sandbox" without knowing which ones do exist, and a typo is the usual reason
 	// somebody is reading this.
+	// A failed create can leave an origin record, and a killed one its name lock, with no
+	// sandbox behind either; rm clears both rather than answering "no such sandbox" forever.
 	if units, err := p.List(ctx, sandbox); err == nil && len(units) == 0 {
-		return UnknownSandbox(ctx, p, sandbox)
+		err := RemoveMissing(ctx, p, sandbox)
+
+		if path, ok := slotlock.ClearStaleName(sandbox); ok {
+			fmt.Printf("  removed its stale name lock %s\n", path)
+		}
+
+		return err
 	}
 
 	if err := Remove(ctx, p, sandbox); err != nil {

@@ -40,7 +40,11 @@ func GC(ctx context.Context, p provider.Provider, w io.Writer, olderThan time.Du
 		return err
 	}
 
-	return gcLocks(w, force)
+	if err := gcLocks(w, force); err != nil {
+		return err
+	}
+
+	return gcOrigins(ctx, p, w, force)
 }
 
 // gcWith is the part worth testing, separated from finding the collector so the rules can

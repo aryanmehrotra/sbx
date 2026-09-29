@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// The reaper used to tick every 30s no matter what --idle said, so anything under half a
-// minute took two fixed ticks to sleep: a sandbox set to 5s slept after 60.
-func TestReapEveryFollowsIdle(t *testing.T) {
+// How often a never-served unit's health is asked follows its window - the cadence the whole
+// reaper ran at before it ticked every second, kept for the one provider call a tick can make.
+func TestHealthEveryFollowsIdle(t *testing.T) {
 	cases := []struct{ idle, want time.Duration }{
 		{3 * time.Second, time.Second},       // floor: never busier than once a second
 		{30 * time.Second, 10 * time.Second}, // a third of the window
@@ -16,16 +16,16 @@ func TestReapEveryFollowsIdle(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := reapEvery(c.idle); got != c.want {
-			t.Errorf("reapEvery(%s) = %s, want %s", c.idle, got, c.want)
+		if got := healthEvery(c.idle); got != c.want {
+			t.Errorf("healthEvery(%s) = %s, want %s", c.idle, got, c.want)
 		}
 	}
 
 	// The property that actually matters: a sandbox must be eligible to sleep well inside
 	// its own idle window, not several windows later.
 	for _, idle := range []time.Duration{time.Second, 3 * time.Second, time.Minute} {
-		if reapEvery(idle) > idle {
-			t.Errorf("reapEvery(%s) = %s, which is longer than the window itself", idle, reapEvery(idle))
+		if healthEvery(idle) > idle {
+			t.Errorf("healthEvery(%s) = %s, which is longer than the window itself", idle, healthEvery(idle))
 		}
 	}
 }

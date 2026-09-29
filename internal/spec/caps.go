@@ -39,25 +39,37 @@ var linuxCapabilities = map[string]bool{
 //
 // A blank entry is refused: it names nothing, so it is a typo or an empty template variable,
 // and the docker provider silently dropping it would hide which.
+//
+// Every bad entry is named in one error, as env's unset variables are (resolveEnv): stopping at
+// the first made ["NOT_A_CAP", "ALSO_BAD", ""] three failed validates to find out.
 func checkCapAdd(name string, caps []string) error {
+	var bad []string
+
 	for _, raw := range caps {
 		c := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(raw)), "CAP_")
 
 		switch {
 		case c == "":
-			return fmt.Errorf("service %q: cap_add has a blank entry - remove it, or name the "+
-				"capability, like \"SYS_PTRACE\"", name)
+			bad = append(bad, "cap_add has a blank entry - remove it, or name the capability, like \"SYS_PTRACE\"")
 		case c == "ALL":
-			return fmt.Errorf("service %q: cap_add %q grants every capability, and sbx has no "+
-				"privileged option - list the specific capabilities the workload needs, like "+
-				"[\"SYS_PTRACE\", \"NET_ADMIN\"] (`man 7 capabilities`)", name, raw)
+			bad = append(bad, fmt.Sprintf("cap_add %q grants every capability, and sbx has no privileged "+
+				"option - list the specific capabilities the workload needs, like [\"SYS_PTRACE\", \"NET_ADMIN\"] "+
+				"(`man 7 capabilities`)", raw))
 		case linuxCapabilities[c]:
 			continue
 		default:
-			return fmt.Errorf("service %q: cap_add %q is not a Linux capability - use a name "+
-				"from `man 7 capabilities`, like \"SYS_PTRACE\"", name, raw)
+			bad = append(bad, fmt.Sprintf("cap_add %q is not a Linux capability - use a name from "+
+				"`man 7 capabilities`, like \"SYS_PTRACE\"", raw))
 		}
 	}
 
-	return nil
+	switch len(bad) {
+	case 0:
+		return nil
+	case 1:
+		return fmt.Errorf("service %q: %s", name, bad[0])
+	default:
+		return fmt.Errorf("service %q: %d cap_add entries are refused:\n  - %s", name, len(bad),
+			strings.Join(bad, "\n  - "))
+	}
 }
