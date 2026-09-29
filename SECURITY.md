@@ -166,6 +166,27 @@ Anything that breaks a boundary sbx claims to hold:
 
 ## Advisories
 
+### v0.15.1 and earlier: the egress filter reaches the host on a VM-backed engine (fixed in v0.16.0)
+
+Affected: every version with a container egress filter, on colima and Docker Desktop, for a
+service with `egress: "allow"`, or an `egress_allow`/`egress_policy` that allowed the addresses
+below.
+
+- The filter runs as a container on the engine's VM. Through it, a workload could `CONNECT` to
+  `host.lima.internal`, `host.docker.internal` or `192.168.5.2`, which the VM forwards to the
+  Mac's own loopback - every service bound to `127.0.0.1` there, including other sandboxes'
+  published ports - and to the bridge gateway, which reached the VM's sshd.
+- `CONNECT` also tunnelled any port, so an allowed name opened raw TCP to that host, not only
+  HTTP and HTTPS.
+- A workload with no egress filter was not affected: it has no route to any of these.
+- Fixed in v0.16.0: the filter refuses every gateway of its networks, the default bridge's subnet
+  and the `/24` around each host alias, re-read every 30 s, whatever the policy says; and it
+  carries only ports 80 and 443 unless an `egress_allow` entry names another as `host:port`.
+- Upgrading is not enough for an existing sandbox: run `sbx create` again over it (with v0.16.0 it
+  replaces a filter built by an older sbx), or `sbx rm` and create it.
+- Workaround before upgrading: use `egress: "deny"`, or an allow-list, for any sandbox that runs
+  code you do not trust.
+
 ### v0.9.0: a keyless OpenSandbox API is reachable from every container (fixed in v0.9.1)
 
 Affected: v0.9.0, only when `sbx serve --osb-addr` ran without `--osb-key` or `SBX_OSB_KEY`.

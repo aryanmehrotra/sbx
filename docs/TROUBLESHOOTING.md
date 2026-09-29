@@ -119,6 +119,19 @@ was asleep: it could not look inside a stopped container and reported the file a
 If the same path is a regular file once awake (`sbx exec <sandbox> <service> stat -c %F <path>`),
 the mount was fine. Fixed after v0.15.0: an asleep service is left as it is, and create says so.
 
+### A spec that validated before is refused at load
+
+From v0.16.0 `sbx validate` and every command that reads a spec refuse, at load, values that used
+to fail only at create or reach the container as written:
+
+- `cap_add "NOT_A_CAP" is not a Linux capability` - use a name from `man 7 capabilities`.
+- `cap_add "CAP_SYS_PTRACE": write it without the CAP_ prefix` - write `"SYS_PTRACE"`.
+- `env ... uses "${X:-y}", which sbx does not expand` - only plain `${NAME}` is substituted;
+  compute a default in your shell and reference it as `${NAME}`.
+- `memory "lots" is not a size`, `cpu "-1" is not a number of cores`, `gpus "..." is not ...` -
+  use `"512m"`, `"0.5"`, `"all"` or `"device=0"`.
+- `services depend on each other in a cycle: a → b → a` - remove one `depends_on` edge.
+
 ### Two `sbx create` at the same moment fail on a port conflict
 
 Two racing creates can pick the same block of ports. A lock under `~/.sbx` makes this rare, but
