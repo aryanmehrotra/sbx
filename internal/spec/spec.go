@@ -679,6 +679,12 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
+	// A cycle is a property of the file, so it is refused at load with the file's name like
+	// every other mistake in it - not later, by whichever command first asks for an order.
+	if _, err := s.CreationOrder(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
 	if err := s.checkEgressFilters(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
