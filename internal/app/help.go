@@ -139,7 +139,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx gc [--older-than DURATION] [--snapshots] [--force]",
 		"Reclaim volumes and images that dead sandboxes left behind. Lists what it would\n" +
 			"remove and does nothing else unless you pass --force. A snapshot a sandbox still\n" +
-			"runs from is never offered, with or without --force.",
+			"runs from is never offered, with or without --force. Lock files left by a killed\n" +
+			"create (~/.sbx/locks) are listed and removed the same way.",
 		"sbx gc --older-than 168h --force",
 	},
 	"doctor": {
