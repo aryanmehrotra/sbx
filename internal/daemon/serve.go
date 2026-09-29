@@ -629,32 +629,64 @@ func (d *daemon) correctAwake(f provider.Unit) {
 		return
 	}
 
-	// Frozen or stopped decides which verb wakes it, and a pause done outside sbx (`docker
-	// pause`) is otherwise invisible until a Start is refused. Synced whenever no wake is in
-	// flight, awake or not - it is a fact about the container, not a belief about serving.
-	if f.Paused != u.isFrozen() && u.waking.TryLock() {
-		u.setFrozen(f.Paused)
-		u.waking.Unlock()
-	}
-
-	if !u.isAwake() {
+	// Nothing to correct - every sleeping unit on every tick - costs nothing more than it did.
+	if f.Paused == u.isFrozen() && !u.isAwake() {
 		return
 	}
 
 	if !u.waking.TryLock() {
-		return // a wake is in progress; its own bookkeeping is the truth
+		return // a wake or a sleep is in progress; its own bookkeeping is the truth
 	}
 	defer u.waking.Unlock()
 
-	// Re-checked under the lock: a wake may have finished between the test above and here.
+	// The listing may predate the lock, so it is asked again now that nothing can move the unit.
+	//
+	// Taking the lock proves no wake is in flight NOW, not that none finished after the listing
+	// was taken. That gap is not hypothetical: a connection arriving during a stop wakes the unit
+	// the moment the stop returns, and the discovery tick due during the stop listed the
+	// container as exited just before. The wake finished (woke in 175ms), discover then applied
+	// its 17ms-stale "not running", and the unit was marked asleep with its container up - where
+	// the reaper, which only considers units it believes awake, never looked at it again. A
+	// "idle": "3s" service stayed up for minutes.
+	//
+	// A listing only reaches here when it contradicts the daemon, so the second ask is rare.
+	now, ok := d.relist(f)
+	if !ok || now.Running {
+		return
+	}
+
+	// Frozen or stopped decides which verb wakes it, and a pause done outside sbx (`docker
+	// pause`) is otherwise invisible until a Start is refused. Synced whenever no wake is in
+	// flight, awake or not - it is a fact about the container, not a belief about serving.
+	u.setFrozen(now.Paused)
+
 	if !u.isAwake() {
 		return
 	}
 
-	u.setFrozen(f.Paused)
-
 	u.setAwake(false)
 	logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; will be started on demand")
+}
+
+// relist asks the provider for one unit's state now. ok is false if it could not say, which
+// leaves the daemon's belief alone: a wrong "awake" is corrected by the next tick or the next
+// dial, a wrong "asleep" is a running container nothing will ever sleep.
+func (d *daemon) relist(f provider.Unit) (provider.Unit, bool) {
+	ctx, cancel := context.WithTimeout(d.lifetime(context.Background()), 10*time.Second)
+	defer cancel()
+
+	units, err := d.provider.List(ctx, f.Sandbox)
+	if err != nil {
+		return provider.Unit{}, false
+	}
+
+	for _, u := range units {
+		if u.Ref == f.Ref {
+			return u, true
+		}
+	}
+
+	return provider.Unit{}, false
 }
 
 // peersOf resolves service names to units within one sandbox.
