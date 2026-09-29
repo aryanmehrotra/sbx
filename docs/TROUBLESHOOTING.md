@@ -242,7 +242,9 @@ reach it, and whether the container has a network interface besides loopback. Th
 the one that failed:
 
 - "nothing listens on 6379 inside the container": the process has not bound the port, or bound
-  another one. Read `sbx logs <sandbox> <service>`.
+  another one. When it listens elsewhere the message adds "it listens on 9090": declare that port
+  in the spec, or move the workload to the declared one. Otherwise read
+  `sbx logs <sandbox> <service>`.
 - "listens on 6379 only on 127.0.0.1": the process serves only the container itself. Configure it
   to bind `0.0.0.0` (redis: `--bind 0.0.0.0`).
 - "no network interface but loopback": the runtime gave the container no network, seen with Kata
@@ -251,9 +253,12 @@ the one that failed:
 - "could not ask its container": the exec failed, for example because the container is paused.
   sbx keeps asking until `--timeout` and never passes a service it could not ask.
 
-An image with no `cat` (distroless, scratch), and a microVM, cannot be asked this way. sbx dials
-the port from the host instead. That dial judges a listener that accepts and closes without
-sending a byte as not serving, by design: from outside it looks the same as nothing there.
+On docker, an image with no `cat` (distroless, scratch) is asked through a throwaway `alpine:3`
+helper that shares its network namespace. Under gVisor or Kata, and in a microVM, the container
+cannot be asked this way: the workload's sockets live in its own kernel. sbx dials the port from
+the host instead, as it also does if the helper cannot run. That dial judges a listener that
+accepts and closes without sending a byte as not serving, by design: from outside it looks the
+same as nothing there.
 
 Up to v0.15.1, `sbx ready` and `sbx wake` checked only the daemon's port and reported such a
 service as serving. Fixed after v0.15.1.

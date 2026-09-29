@@ -978,6 +978,22 @@ type ExitReporter interface {
 	ExitOf(ctx context.Context, ref string) (ExitState, error)
 }
 
+// NetTabler reads a running unit's network tables - /proc/net/dev, tcp and tcp6 - from outside its
+// image: a throwaway helper that joins the unit's network namespace, so an image with no `cat`
+// (scratch, distroless) can still be asked whether it listens. Only meaningful where the
+// workload's sockets live in that namespace, which is not so under gVisor or Kata: their guest
+// kernel keeps them, and the host-side namespace a helper joins holds none. The caller decides.
+//
+// TCP6 is empty on a kernel with IPv6 off.
+type NetTabler interface {
+	NetTables(ctx context.Context, ref string) (NetTables, error)
+}
+
+// NetTables is what NetTabler read.
+type NetTables struct {
+	Dev, TCP, TCP6 string
+}
+
 // UnitRemover removes one service's workload and its anonymous volumes, leaving the rest of the
 // sandbox and its named data volumes. Create uses it to take out a container whose mount check
 // failed: the mount is fixed at creation, so that container can only ever serve the wrong path.

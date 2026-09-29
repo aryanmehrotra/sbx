@@ -10,8 +10,9 @@ package cli
 // Dialling the backing port from the host did not fix it, and was wrong both ways (see
 // askInside). So a container's port is judged from inside the container: is something listening
 // there where outside can reach it, and does the container have a network. The host dial is kept
-// only where the container cannot be asked - a microVM, an image with no `cat`, a runtime that
-// does not say which port inside a backing port reaches - and it sends no protocol bytes: a
+// only where the container cannot be asked - a microVM, an image with no `cat` under gVisor or
+// Kata (elsewhere a helper reads its tables: see helperTables), a runtime that does not say
+// which port inside a backing port reaches - and it sends no protocol bytes: a
 // server either speaks first (mysql, ssh) or waits for the client (redis, postgres, http), and a
 // proxy with nothing behind it hangs up at once.
 
@@ -151,7 +152,7 @@ type insideAnswer struct {
 }
 
 // askInside reads two facts inside the container behind one published port, with nothing but
-// `cat` and no protocol bytes:
+// `cat` (or, for an image without one, a helper in its network namespace) and no protocol bytes:
 //
 //   - is something LISTENING on the port inside the container, bound where outside can reach it
 //     (a wildcard or a real address; a bind to 127.0.0.1 or ::1 serves only the container itself);
@@ -194,24 +195,30 @@ func askInside(ctx context.Context, p provider.Provider, sandbox, service string
 		return p.Exec(ctx, u.Ref, []string{"cat", file})
 	}
 
-	dev, err := cat("/proc/net/dev")
-	if err != nil {
-		if noTool(err) {
+	var dev, tcp, tcp6 string
+
+	dev, err = cat("/proc/net/dev")
+
+	switch {
+	case err != nil && noTool(err):
+		// No cat in the image. Read the same tables from a helper in its network namespace.
+		t, ok := helperTables(ctx, p, *u)
+		if !ok {
 			return insideAnswer{fallback: true}
 		}
 
+		dev, tcp, tcp6 = t.Dev, t.TCP, t.TCP6
+	case err != nil:
 		return insideAnswer{err: err}
-	}
+	default:
+		if tcp, err = cat("/proc/net/tcp"); err != nil {
+			return insideAnswer{err: err}
+		}
 
-	tcp, err := cat("/proc/net/tcp")
-	if err != nil {
-		return insideAnswer{err: err}
-	}
-
-	// A kernel with IPv6 off has no tcp6 table, which is not a failure to ask.
-	tcp6, err := cat("/proc/net/tcp6")
-	if err != nil && !strings.Contains(err.Error(), "No such file") {
-		return insideAnswer{err: err}
+		// A kernel with IPv6 off has no tcp6 table, which is not a failure to ask.
+		if tcp6, err = cat("/proc/net/tcp6"); err != nil && !strings.Contains(err.Error(), "No such file") {
+			return insideAnswer{err: err}
+		}
 	}
 
 	ifaces := interfacesOf(dev)
@@ -281,6 +288,25 @@ func joinPorts(ports []int) string {
 	}
 
 	return strings.Join(s, ", ")
+}
+
+// helperTables reads a unit's network tables through the provider's helper (NetTabler), for an
+// image with no cat. Not ok - dial from the host instead - where the provider has no helper, where
+// the helper could not run (no alpine:3 on an offline machine is not a verdict on the workload),
+// and under gVisor or Kata: their guest kernel holds the workload's sockets, and the namespace a
+// helper can join on the host would say "nothing listens" of a sandbox that serves.
+func helperTables(ctx context.Context, p provider.Provider, u provider.Unit) (provider.NetTables, bool) {
+	nt, ok := p.(provider.NetTabler)
+	if !ok || (u.Isolation != "" && u.Isolation != provider.IsolationContainer) {
+		return provider.NetTables{}, false
+	}
+
+	t, err := nt.NetTables(ctx, u.Ref)
+	if err != nil {
+		return provider.NetTables{}, false
+	}
+
+	return t, true
 }
 
 // noTool reports an exec that failed because the image has no such program: distroless, scratch.
