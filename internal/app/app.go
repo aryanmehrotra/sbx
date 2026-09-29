@@ -1019,22 +1019,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		// Checked here rather than trusting the backend's own refusal: a provider reports
-		// "no sandbox" without knowing which ones do exist, and a typo is the usual reason
-		// somebody is reading this.
-		ctx := context.Background()
-
-		if units, err := p.List(ctx, positional[0]); err == nil && len(units) == 0 {
-			return cli.UnknownSandbox(ctx, p, positional[0])
-		}
-
-		if err := cli.Remove(ctx, p, positional[0]); err != nil {
-			return err
-		}
-
-		cli.Forget(positional[0])
-
-		return nil
+		return cli.Rm(context.Background(), p, positional[0])
 
 	case "selftest":
 		fs := newFlagSet("selftest")

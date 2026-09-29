@@ -23,6 +23,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/slotlock"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -2050,6 +2051,40 @@ func listJSON(w io.Writer, units []provider.Unit, backend string) error {
 
 // ── rm ───────────────────────────────────────────────────────────────────────
 
+// Rm is `sbx rm`: Remove, for a person naming a sandbox.
+func Rm(ctx context.Context, p provider.Provider, sandbox string) error {
+	// Refused like a create or add of the name: a running `sbx with` removes this sandbox itself
+	// when its command ends. Removed under it, the command lost its services mid-run and the
+	// `with` exited 0 with no word of it. No --force: stopping that `with` removes the sandbox,
+	// and once it is gone its lock is stale and this goes ahead.
+	if pid, ok := slotlock.EphemeralHolder(sandbox); ok {
+		return fmt.Errorf("%s is an ephemeral sandbox of `sbx with` (pid %d); it is removed when that "+
+			"command ends - stop it (kill %d) to remove the sandbox now", sandbox, pid, pid)
+	}
+
+	// Checked here rather than trusting the backend's own refusal: a provider reports
+	// "no sandbox" without knowing which ones do exist, and a typo is the usual reason
+	// somebody is reading this.
+	if units, err := p.List(ctx, sandbox); err == nil && len(units) == 0 {
+		return UnknownSandbox(ctx, p, sandbox)
+	}
+
+	if err := Remove(ctx, p, sandbox); err != nil {
+		return err
+	}
+
+	Forget(sandbox)
+
+	// A create killed part-way leaves its name lock with its sandbox; the lock goes with it. Only
+	// when its holder has gone - a create of this name still running keeps its lock.
+	if path, ok := slotlock.ClearStaleName(sandbox); ok {
+		fmt.Printf("  removed its stale name lock %s\n", path)
+	}
+
+	return nil
+}
+
+// Remove takes the sandbox away. `sbx with` calls it for its own sandbox, under its own name lock.
 func Remove(ctx context.Context, p provider.Provider, sandbox string) error {
 	if err := p.Remove(ctx, sandbox); err != nil {
 		return err

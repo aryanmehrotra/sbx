@@ -110,11 +110,13 @@ Up to v0.15.1, two `sbx with` of one name started together shared one sandbox, a
 finish removed it while the other still ran. Fixed after v0.15.1: the second is refused, and a
 teardown removes only the containers its own run made.
 
-### `sbx create` or `sbx add` says "is an ephemeral sandbox of `sbx with`"
+### `sbx create`, `sbx add` or `sbx rm` says "is an ephemeral sandbox of `sbx with`"
 
 A running `sbx with` owns that name and removes the sandbox when its command ends. Use another
 name. Before this was refused, a create during the command reported the sandbox ready moments
-before `sbx with` deleted it.
+before `sbx with` deleted it. To remove the sandbox now, stop that `sbx with` (`kill <pid>`, the
+pid the error names): it removes the sandbox on the way out. Before `sbx rm` was refused too, it
+pulled the sandbox out from under the running command, and `sbx with` still exited 0.
 
 ### `sbx with` left its sandbox after Ctrl-C or SIGTERM
 
