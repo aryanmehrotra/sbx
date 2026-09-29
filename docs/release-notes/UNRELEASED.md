@@ -34,3 +34,4 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 ## Fixed
 
 - `sbx serve --help` lists `firecracker` among the `--provider` values.
+- An `egress_allow` host no longer answers 502 "operation was canceled" to busybox `wget` (every alpine image) over HTTPS.
