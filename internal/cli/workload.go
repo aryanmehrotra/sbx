@@ -151,3 +151,32 @@ func waitWorkloads(ctx context.Context, sandbox string, dials []workloadDial, de
 		time.Sleep(200 * time.Millisecond)
 	}
 }
+
+// checkCreatedWorkloads is the workload check for the services a create just made. Create used to
+// print "ready" once each health check passed, and a health check runs inside the container - so a
+// guest with no network (Kata in nested colima) passed it while every host connection was dropped.
+//
+// Only services this create made, and only those running now: a microVM's create ends by putting
+// it to sleep, and its port has nothing behind it until a connection wakes it, which is not a
+// failure. Asking is cheap for the rest, so this does not wait for anything to wake.
+func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox string, made []string, deadline time.Time) error {
+	units, err := p.List(ctx, sandbox)
+	if err != nil {
+		return err
+	}
+
+	want := map[string]bool{}
+	for _, s := range made {
+		want[s] = true
+	}
+
+	var check []provider.Unit
+
+	for _, u := range units {
+		if want[u.Service] && u.Running {
+			check = append(check, u)
+		}
+	}
+
+	return waitWorkloads(ctx, sandbox, workloadDials(p, check), deadline)
+}

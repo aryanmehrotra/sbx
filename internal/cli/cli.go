@@ -206,6 +206,12 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 		created = append(created, p.Endpoints(sandbox, name, slot, start, svc.Ports)...)
 	}
 
+	// Healthy inside the container is not serving from outside it: ask what sbx ready asks before
+	// saying "ready". Thirty seconds covers a process still binding its port after its health check.
+	if err := checkCreatedWorkloads(ctx, p, sandbox, done, time.Now().Add(30*time.Second)); err != nil {
+		return fmt.Errorf("%w\n     The sandbox was created; `sbx rm %s` removes it", err, sandbox)
+	}
+
 	fmt.Println()
 	fmt.Println(readiness(sandbox, created))
 
