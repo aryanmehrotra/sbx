@@ -74,14 +74,17 @@ func Locate(ctx context.Context, arch, version string) (Source, error) {
 		}
 	}
 
-	if version != "" && version != "dev" {
+	// Only a release has a published image. The test was `version != "dev"`, so a build stamped
+	// by git describe - v0.15.1-dev+ffd872d - asked docker for an image that was never pushed and
+	// whose tag docker cannot even parse ('+'), and the user was told to raise a timeout.
+	if Release(version) {
 		return Source{Image: Activator + ":" + version}, nil
 	}
 
 	msg := fmt.Sprintf("no linux/%s sbx binary to run as the sandbox agent: this is a dev build "+
-		"(no published image matches it), go is not on PATH or the source was not found, and "+
+		"(%q; no published image matches it), go is not on PATH or the source was not found, and "+
 		"SBX_EXECD_BINARY is not set. Build one - `CGO_ENABLED=0 GOOS=linux GOARCH=%s go build -o "+
-		"sbx-linux-%s .` in the sbx checkout - and set SBX_EXECD_BINARY to it", arch, arch, arch)
+		"sbx-linux-%s .` in the sbx checkout - and set SBX_EXECD_BINARY to it", arch, version, arch, arch)
 
 	if buildErr != nil {
 		msg += fmt.Sprintf(" (the cross-compile was tried and failed: %v)", buildErr)

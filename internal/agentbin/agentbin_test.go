@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +71,31 @@ func TestAReleaseNeverCompilesANearbyCheckout(t *testing.T) {
 
 	if src, err := Locate(context.Background(), arch, "dev"); err != nil || compiled != 1 || src.File != "/built/sbx" {
 		t.Fatalf("dev: %+v, %v, compiled %d times", src, err, compiled)
+	}
+}
+
+// A dev build stamped by `git describe` - v0.15.1-dev+ffd872d - is not "dev", and it is not a
+// release either. Only a release has a published activator image; anything else asked docker for
+// ghcr.io/...:v0.15.1-dev+ffd872d, which is not even a valid reference ('+'), and the user got
+// "invalid reference format" plus a hint to raise ready_timeout_seconds. It must take the dev
+// path instead: compile if it can, and otherwise say to set SBX_EXECD_BINARY.
+func TestANonReleaseBuildNeverAsksForAPublishedImage(t *testing.T) {
+	t.Setenv("SBX_EXECD_BINARY", "")
+	t.Setenv("PATH", t.TempDir()) // no go: the cross-compile is not available
+
+	arch := "arm64"
+	if runtime.GOARCH == "arm64" {
+		arch = "amd64"
+	}
+
+	for _, v := range []string{"v0.15.1-dev+ffd872d", "v0.15.1-3-gffd872d", "v0.15.1-dirty", "(devel)"} {
+		src, err := Locate(context.Background(), arch, v)
+		if src.Image != "" {
+			t.Errorf("%s: asked for image %s, which was never published", v, src.Image)
+		}
+
+		if err == nil || !strings.Contains(err.Error(), "SBX_EXECD_BINARY") {
+			t.Errorf("%s: want the dev-build error naming SBX_EXECD_BINARY, got %v", v, err)
+		}
 	}
 }

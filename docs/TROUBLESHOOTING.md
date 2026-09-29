@@ -275,6 +275,13 @@ state, exit code, `OOMKilled` and the start error. Exit 137 with no output is SI
 memory (host or `resourceLimits.memory`) or a `docker kill`. 143 is SIGTERM from outside. Raise
 `resourceLimits.memory` or free host memory. The daemon log and `sbx history <id>` show the same.
 
+### An API create on a source build fails with "invalid reference format"
+
+Up to v0.15.1, a build whose version is not a release tag (`v0.15.1-dev+ffd872d`) asked docker for
+an activator image of that version, which was never published and is not a valid tag. It also left
+an empty `sbx-execd-<version>` volume; remove it with `docker volume rm`. Fixed after v0.15.1: such a
+build compiles the agent from its checkout, or asks you to set `SBX_EXECD_BINARY`.
+
 ## Remote deployments
 
 ### `sbx connect` cannot reach a deployment the platform calls healthy
