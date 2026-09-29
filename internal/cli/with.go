@@ -66,6 +66,16 @@ func (e *Interrupted) ChildStatus() int {
 // second signal says what is still happening; a third is let through, for someone who would
 // rather leave the sandbox than wait.
 func SignalContext(parent context.Context) (context.Context, func()) {
+	return signalContext(parent, "sbx: still removing the sandbox - interrupt once more to leave it behind")
+}
+
+// CreateSignalContext is SignalContext for `sbx create`, which after an interrupt is only finishing
+// the step it is in and letting go of its locks - so a second signal says that, not "removing".
+func CreateSignalContext(parent context.Context) (context.Context, func()) {
+	return signalContext(parent, "sbx: still stopping the create - interrupt once more to exit now, leaving its name lock")
+}
+
+func signalContext(parent context.Context, still string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
 
 	ch := make(chan os.Signal, 2)
@@ -83,7 +93,7 @@ func SignalContext(parent context.Context) (context.Context, func()) {
 
 		select {
 		case <-ch:
-			fmt.Fprintln(os.Stderr, "sbx: still removing the sandbox - interrupt once more to leave it behind")
+			fmt.Fprintln(os.Stderr, still)
 			signal.Stop(ch)
 		case <-done:
 		}

@@ -38,7 +38,44 @@ const defaultHealthTimeout = 120 * time.Second
 // about the sandbox (its spec, for `sbx env` from another directory) is there even when the create
 // then fails: a failure after that point leaves a sandbox to address, inspect and remove.
 func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, placed func()) error {
-	return createLocked(ctx, p, path, sandbox, withOptional, iso, createOpts{healthTimeout: defaultHealthTimeout, placed: placed})
+	err := createLocked(ctx, p, path, sandbox, withOptional, iso, createOpts{healthTimeout: defaultHealthTimeout, placed: placed})
+
+	return interruptedCreate(ctx, p, sandbox, err)
+}
+
+// interruptedCreate reports a create that a signal stopped, and hands back the signal itself so
+// main exits 130 or 143 - it matches the exit status on the error, not on one wrapping it.
+//
+// A plain `sbx create` had no handler, so SIGTERM killed it mid-health-wait with no word and its
+// name lock left behind. What it placed is kept, as a create that fails keeps it: re-running the
+// same create is how a half-built sandbox is finished. The name lock is already released by the
+// time this runs - createLocked's defer - which is the other half of what the kill lost.
+func interruptedCreate(ctx context.Context, p provider.Provider, sandbox string, err error) error {
+	var in *Interrupted
+	if err == nil || !errors.As(context.Cause(ctx), &in) {
+		return err
+	}
+
+	// A fresh context: the create's own is the cancelled one.
+	left := "Nothing was created."
+
+	if units, lerr := p.List(context.Background(), sandbox); lerr != nil {
+		left = fmt.Sprintf("Could not list what it made (%v); sbx list %s shows it.", lerr, sandbox)
+	} else if len(units) > 0 {
+		services := make([]string, 0, len(units))
+		for _, u := range units {
+			services = append(services, u.Service)
+		}
+
+		sort.Strings(services)
+
+		left = fmt.Sprintf("Kept: %s. Re-run sbx create %s to finish it, or sbx rm %s to remove it.",
+			strings.Join(slices.Compact(services), ", "), sandbox, sandbox)
+	}
+
+	fmt.Fprintf(os.Stderr, "sbx: create of %q interrupted: %v\n     %s\n", sandbox, err, left)
+
+	return in
 }
 
 // createLocked is Create with its options: the name lock, then createWithin.
@@ -159,6 +196,12 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 
 	for i, name := range order {
 		svc := sp.Services[name]
+
+		// An interrupt between services starts no more of them: the caller is waiting to exit.
+		if ctx.Err() != nil {
+			return fmt.Errorf("stopped before creating %s: %w",
+				strings.Join(notAttempted(sp, order[i:], withOptional), ", "), context.Cause(ctx))
+		}
 
 		if len(svc.EgressAllow) > 0 {
 			svc.EgressAllow = shared
