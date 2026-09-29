@@ -342,8 +342,7 @@ func dispatch(cmd string, args []string) error {
 		tmpl := fs.String("template", "", "use a built-in spec instead")
 		shell := fs.String("shell", "", "posix | fish | powershell | cmd | json; detected if unset")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -623,10 +622,9 @@ func dispatch(cmd string, args []string) error {
 		lines := fs.Int("tail", 100, "how many lines")
 		follow := fs.Bool("f", false, "keep streaming")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
-		if len(positional) < 1 {
+		if len(positional) < 1 || len(positional) > 2 {
 			return fmt.Errorf("usage: sbx logs <sandbox> [service] [--tail N] [-f]")
 		}
 
@@ -1170,6 +1168,19 @@ func parseInterleaved(fs *flag.FlagSet, args []string) []string {
 	}
 
 	return positional
+}
+
+// parsePositional is parseInterleaved that also honours a bare --: everything after it is a
+// name, even one that starts with a dash. parseInterleaved alone would read the second word
+// after -- as a flag again, since each re-parse starts fresh.
+//
+// splitPositional, which most commands still use, takes only LEADING names, so a flag first
+// (`sbx logs -f sb svc`, the way `tail -f` and `docker logs -f` are typed) hid every name
+// behind it and printed a usage error.
+func parsePositional(fs *flag.FlagSet, args []string) []string {
+	head, tail := splitAtDoubleDash(args)
+
+	return append(parseInterleaved(fs, head), tail...)
 }
 
 // splitPositional peels up to n leading non-flag arguments off the front.
