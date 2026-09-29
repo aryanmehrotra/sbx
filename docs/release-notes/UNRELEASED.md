@@ -101,6 +101,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - A failed mount check lists the services kept and those not attempted.
 - `sbx with --keep` says the sandbox was kept; `sbx add` refuses a duplicate service before any `--health` warning.
 - A lock, daemon record or snapshot pause mark whose pid was reused by another process no longer blocks a name or claims a daemon.
+- A firecracker helper-VM lock whose pid was reused by another process no longer blocks `sbx fc` and firecracker creates for 15 minutes.
 - `sbx env` and `sbx ready` find the spec of a sandbox whose create failed after making containers.
 - Re-creating a sandbox from a different spec refuses a service a port its own old service holds, naming both, instead of failing in docker.
 - `sbx with` no longer suggests `sbx rm` for a sandbox it already removed.
