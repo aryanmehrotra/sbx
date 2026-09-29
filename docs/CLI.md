@@ -118,7 +118,7 @@ The daemon. It owns the ports `sbx env` prints, wakes a sandbox on connect and s
 | `--front SPEC` | `$SBX_FRONT`, else off | Carry non-sandbox ports: `5432`, `db=5432,cache=6379`, `db=10.0.4.7:3306` |
 | `--behind-proxy` | off | A proxy in front terminates TLS, so a non-loopback address is allowed |
 | `--osb-addr ADDR` | `$SBX_OSB_ADDR`, else off | Serve the OpenSandbox lifecycle API (the one its SDKs and `sbx mcp` call), e.g. `127.0.0.1:8080` |
-| `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` | Required `OPEN-SANDBOX-API-KEY` |
+| `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` once the API starts (a refused start writes none) | Required `OPEN-SANDBOX-API-KEY` |
 | `--osb-insecure-no-key` | off | Serve the API with no key. Loopback only |
 | `--osb-host-paths DIRS` | `$SBX_OSB_HOST_PATHS`, else none | Host directories an OpenSandbox host volume may bind from |
 | `--osb-pool IMAGE[=N]` | `$SBX_OSB_POOL`, else none | Keep N (default 8) warm sandboxes of this image. Repeatable |

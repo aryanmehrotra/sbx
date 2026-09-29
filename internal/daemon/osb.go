@@ -38,11 +38,6 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		key = os.Getenv("SBX_OSB_KEY")
 	}
 
-	key, err := d.osbKey(addr, key)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	if d.provider == nil {
 		return nil, nil, fmt.Errorf("--osb-addr needs a container runtime to create sandboxes in, "+
 			"and this daemon has none: %v", d.startupErr)
@@ -59,6 +54,22 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 			"excludes; add --only osb-", scope)
 	}
 
+	// Bound before the key, like every other refusal that does not depend on it: a port already
+	// taken is a refusal too, and says nothing about keys.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
+	}
+
+	// The key last, after every refusal that does not depend on it. It used to come first, so a
+	// start refused for --osb-addr 0.0.0.0:8080 had already minted ~/.sbx/osb/key - a credential
+	// on disk for an API that never ran, which `sbx mcp` would then find and use.
+	key, err = d.osbKey(addr, key)
+	if err != nil {
+		_ = ln.Close()
+		return nil, nil, err
+	}
+
 	api, err := osb.New(osb.Options{
 		Provider:     d.provider,
 		Runtime:      d,
@@ -73,12 +84,8 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		PoolFreeze:   poolFreeze,
 	})
 	if err != nil {
+		_ = ln.Close()
 		return nil, nil, err
-	}
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
 	}
 
 	d.servesOSB = true
