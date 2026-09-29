@@ -739,3 +739,16 @@ func (k *kubeProvider) Remove(_ context.Context, sandbox string) error {
 
 	return nil
 }
+
+// Where implements Locator: the kubectl context, since sbx talks to whichever cluster that names
+// and Name carries only the namespace. "" when kubectl cannot say.
+func (k *kubeProvider) Where() string {
+	out, err := kubectl("", "config", "current-context")
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(out)
+}
+
+var _ Locator = (*kubeProvider)(nil)

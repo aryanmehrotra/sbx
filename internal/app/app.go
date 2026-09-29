@@ -339,7 +339,7 @@ func dispatch(cmd string, args []string) error {
 		defer stop()
 
 		return cli.Create(ctx, p, path, name, *optional, iso,
-			func() { cli.Remember(name, *tmpl, *spec) })
+			func() { cli.Remember(p, name, *tmpl, *spec) })
 
 	case "env":
 		fs := newFlagSet("env")
@@ -508,7 +508,7 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		if *tmpl != "" || wasSet(fs, "spec") {
-			cli.Remember(positional[1], *tmpl, *spec)
+			cli.Remember(p, positional[1], *tmpl, *spec)
 		} else {
 			cli.Inherit(positional[0], positional[1])
 		}
