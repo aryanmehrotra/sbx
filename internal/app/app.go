@@ -333,7 +333,12 @@ func dispatch(cmd string, args []string) error {
 		// found no spec - or, beside a different sandbox.json, the wrong one. sbx rm forgets it.
 		name := positional[0]
 
-		return cli.Create(context.Background(), p, path, name, *optional, iso,
+		// SIGINT and SIGTERM stop the create rather than kill it: killed, it said nothing about the
+		// half-built sandbox and left its name lock behind. See cli.Create.
+		ctx, stop := cli.CreateSignalContext(context.Background())
+		defer stop()
+
+		return cli.Create(ctx, p, path, name, *optional, iso,
 			func() { cli.Remember(name, *tmpl, *spec) })
 
 	case "env":
@@ -1014,22 +1019,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		// Checked here rather than trusting the backend's own refusal: a provider reports
-		// "no sandbox" without knowing which ones do exist, and a typo is the usual reason
-		// somebody is reading this.
-		ctx := context.Background()
-
-		if units, err := p.List(ctx, positional[0]); err == nil && len(units) == 0 {
-			return cli.UnknownSandbox(ctx, p, positional[0])
-		}
-
-		if err := cli.Remove(ctx, p, positional[0]); err != nil {
-			return err
-		}
-
-		cli.Forget(positional[0])
-
-		return nil
+		return cli.Rm(context.Background(), p, positional[0])
 
 	case "selftest":
 		fs := newFlagSet("selftest")

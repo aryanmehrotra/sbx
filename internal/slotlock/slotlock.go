@@ -443,3 +443,39 @@ func releaseOnce(cleanup func()) func() {
 
 	return func() { once.Do(cleanup) }
 }
+
+// EphemeralHolder reports the pid of the live `sbx with` that owns sandbox's name, if one does.
+// `sbx rm` asks it: the sandbox under that lock is removed when the `with` ends, and taking it
+// away earlier pulls it out from under a command that is still using it.
+func EphemeralHolder(sandbox string) (int, bool) {
+	path, err := NamePath(sandbox)
+	if err != nil {
+		return 0, false
+	}
+
+	if rec, kind, ok := readRecord(path); ok && kind == kindWith && rec.Alive() {
+		return rec.PID, true
+	}
+
+	return 0, false
+}
+
+// ClearStaleName removes sandbox's name lock when its holder is no longer running, and reports
+// the path it removed. A live holder's lock is never touched. `sbx rm` calls it: a create killed
+// part-way leaves both its sandbox and its lock, and removing one left the other for `sbx gc`.
+func ClearStaleName(sandbox string) (string, bool) {
+	path, err := NamePath(sandbox)
+	if err != nil {
+		return "", false
+	}
+
+	if _, err := os.Stat(path); err != nil || !stale(path) {
+		return "", false
+	}
+
+	if err := os.Remove(path); err != nil {
+		return "", false
+	}
+
+	return path, true
+}

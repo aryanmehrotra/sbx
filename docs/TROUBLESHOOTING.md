@@ -110,11 +110,13 @@ Up to v0.15.1, two `sbx with` of one name started together shared one sandbox, a
 finish removed it while the other still ran. Fixed after v0.15.1: the second is refused, and a
 teardown removes only the containers its own run made.
 
-### `sbx create` or `sbx add` says "is an ephemeral sandbox of `sbx with`"
+### `sbx create`, `sbx add` or `sbx rm` says "is an ephemeral sandbox of `sbx with`"
 
 A running `sbx with` owns that name and removes the sandbox when its command ends. Use another
 name. Before this was refused, a create during the command reported the sandbox ready moments
-before `sbx with` deleted it.
+before `sbx with` deleted it. To remove the sandbox now, stop that `sbx with` (`kill <pid>`, the
+pid the error names): it removes the sandbox on the way out. Before `sbx rm` was refused too, it
+pulled the sandbox out from under the running command, and `sbx with` still exited 0.
 
 ### `sbx with` left its sandbox after Ctrl-C or SIGTERM
 
@@ -194,6 +196,9 @@ creating or changing the same sandbox (its name lock). `ps -p N -o pid,etime,com
 it is doing. If it is not an sbx, remove the lock file the error names and re-run. A lock whose
 holder has exited, or whose pid now belongs to another process, is cleared on its own; `sbx gc`
 lists such leftovers and `sbx gc --force` removes them.
+A lock file written by an older sbx holds only a pid, with no start time; if that pid now
+belongs to an unrelated live process, the name stays blocked and `sbx gc` does not list the lock
+as stale. Delete it by hand: `rm ~/.sbx/locks/<sandbox>.lock`.
 
 Up to v0.15.1 the slot wait gave up after 90 seconds and went ahead without the lock, so creates
 queued behind a slow health check could take one slot and fail on its ports. Fixed after v0.15.1.
