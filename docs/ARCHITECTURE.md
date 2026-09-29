@@ -145,7 +145,7 @@ runs.
             a connection / exec / URL hit
    ASLEEP (0 B) ─────────────────────────────▶ AWAKE
         ◀──────── no bytes for --idle ─────────
-                 (reaped every idle/3)
+   (reaped every shortest idle/3, 1-30 s)
    the volume or PVC persists across both
    guard: a sandbox cannot sleep until seen serving once
 ```
