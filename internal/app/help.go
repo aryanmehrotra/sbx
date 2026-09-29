@@ -116,7 +116,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"start against a warm disk. Needs CRIU on a Linux host. Verified on a **podman**\n" +
 			"runtime, whose CRIU restore is reliable; docker's own checkpoint restore is\n" +
 			"unmaintained and fails even where podman succeeds, so sbx routes through podman when\n" +
-			"it is the runtime. Refused with a reason on macOS. Filesystem-only is sbx snapshot.",
+			"it is the runtime. Refused against a local engine on macOS (a VM); a Linux daemon\n" +
+			"reached over tcp:// is checked like any other. Filesystem-only is sbx snapshot.",
 		"sbx checkpoint agent-42 mid-thought",
 	},
 	"resume": {

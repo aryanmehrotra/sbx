@@ -63,7 +63,7 @@ Commands marked (B) below also take these.
 | `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. A failed snapshot removes what it wrote. (B) | none |
 | `sbx snapshot --rm <name>` | Delete one snapshot's images and volumes. (B) | none |
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
-| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused on macOS. (B) | none |
+| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |
 | `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
 | `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 

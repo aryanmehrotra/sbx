@@ -169,8 +169,9 @@ You are on docker, whose checkpoint restore is unmaintained. Errors look like
 though `criu check` passes. Use podman: set `DOCKER_HOST=unix:///run/podman/podman.sock` and sbx
 routes checkpoint and resume through it. `sbx snapshot` and `fork` work on any runtime.
 
-On macOS the engine runs in a VM, where a checkpoint can be taken but never restored, so
-`sbx checkpoint` refuses up front. Up to v0.15.1 it only refused when docker reported
+On macOS a local engine (a unix socket or a loopback port) runs in a VM, where a checkpoint can
+be taken but never restored, so `sbx checkpoint` refuses up front. A Linux daemon reached over
+`tcp://` is checked like any other. Up to v0.15.1 it only refused when docker reported
 experimental=false. Colima with experimental on took the checkpoint, froze the service, and
 failed at resume with the bind-mount error above. `sbx sleep` then `sbx wake` brings such a
 service back, cold.

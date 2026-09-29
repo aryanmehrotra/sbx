@@ -777,18 +777,54 @@ var ErrCheckpointNeedsLinux = errors.New("memory checkpoint needs a Linux host: 
 	"can be taken but never restored. Filesystem snapshot works here: sbx snapshot <sandbox> " +
 	"<name>, then sbx fork. sbx doctor reports this as `docker checkpoint`")
 
-// CheckpointHostOK reports whether this machine can resume a memory checkpoint at all, before
-// any runtime is asked. `sbx doctor` shows the same answer.
+// CheckpointHostOK reports whether the docker engine this machine would use can resume a
+// memory checkpoint at all, before the engine is asked. `sbx doctor` shows the same answer.
 func CheckpointHostOK() error {
-	if hostOS != "linux" {
-		return ErrCheckpointNeedsLinux
+	ep, err := resolveDockerHost("")
+	if err != nil {
+		return nil // no engine to judge; whatever asks next reports that better
 	}
 
-	return nil
+	return checkpointHost(ep)
+}
+
+// checkpointHost refuses an engine that runs in a VM on this Mac or Windows machine.
+//
+// It is the engine's kernel that matters, not the CLI's. A macOS CLI driving a Linux daemon
+// over tcp:// has CRIU and a real network namespace under its containers, so it is left to that
+// daemon's own experimental/CRIU checks. A unix socket off Linux is a local VM (Colima, Docker
+// Desktop, podman machine) - an ssh-forwarded socket to a remote Linux looks the same, and is
+// refused too, which is the safe direction. So is a loopback tcp port, which is how Docker
+// Desktop and colima expose the same VM over tcp.
+func checkpointHost(ep dockerEndpoint) error {
+	if hostOS == "linux" {
+		return nil
+	}
+
+	if ep.Network == "tcp" && !isLoopbackHost(ep.Address) {
+		return nil
+	}
+
+	return ErrCheckpointNeedsLinux
+}
+
+func isLoopbackHost(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+
+	if host == "localhost" || host == "" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+
+	return ip != nil && ip.IsLoopback()
 }
 
 func (d *dockerProvider) checkpointReady() error {
-	if err := CheckpointHostOK(); err != nil {
+	if err := checkpointHost(d.endpoint); err != nil {
 		return err
 	}
 
