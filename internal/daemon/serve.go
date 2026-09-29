@@ -493,8 +493,16 @@ func (d *daemon) discover(ctx context.Context) {
 		seen[f.Ref] = true
 
 		d.mu.Lock()
-		_, known := d.units[f.Ref]
+		cur, known := d.units[f.Ref]
 		d.mu.Unlock()
+
+		// Same Ref, different thing: retire the old unit and serve this one as new. See replaced.
+		if known && replaced(cur, f, legsOf(d.provider, f)) {
+			logs.Default.Info(f.Sandbox, f.Service, "replaced under the same name - serving the new one")
+			d.forget(f.Ref, cur)
+
+			known = false
+		}
 
 		if known {
 			d.correctAwake(f)
@@ -683,6 +691,37 @@ func (d *daemon) forget(ref string, want *unit) {
 
 	delete(d.units, ref)
 	delete(d.stop, ref)
+}
+
+// replaced reports that the unit served under a Ref is no longer the one the provider lists.
+//
+// A Ref alone cannot say. On docker it is the container's name, derived from the sandbox and
+// service, so `sbx rm x && sbx create x` between two ticks hands discover the identical Ref for a
+// new container on a new slot. Treated as known, the old unit kept the old slot's ports - the
+// new ones printed by `sbx env` had nothing listening - and its idle timer later stopped the new
+// container by name. The instance (a container ID, a VM's id) changes on recreate; where a
+// provider reports none, the ports it is fronted on still do.
+func replaced(cur *unit, f provider.Unit, legs []leg) bool {
+	if cur.instance != "" && f.Instance != "" && cur.instance != f.Instance {
+		return true
+	}
+
+	if len(legs) == 0 {
+		// Nothing to front is not evidence of a replacement; the new-unit path skips it anyway.
+		return false
+	}
+
+	if len(cur.legs) != len(legs) {
+		return true
+	}
+
+	for i := range legs {
+		if cur.legs[i].Listen != legs[i].Listen {
+			return true
+		}
+	}
+
+	return false
 }
 
 // reapEvery keeps the check frequent enough that the idle window is honoured and rare

@@ -46,6 +46,10 @@ Almost always, no `sbx serve` is running, and the daemon owns those ports. Check
 - A running daemon finds new sandboxes every `--refresh` (15 s by default). `sbx ready <name>` waits.
 - A daemon started with `--only PREFIX` fronts only matching sandboxes. `sbx doctor` shows
   `scoped only: pid N --only osb-`. Start an unscoped daemon, or one whose `--only` covers it.
+- Up to v0.15.1, `sbx rm x` then `sbx create x` inside one `--refresh` window could leave the
+  daemon serving x's old ports, when the recreate landed on a new slot. `sbx list` shows the new
+  ports; `lsof -nP -iTCP -sTCP:LISTEN | grep sbx` shows the old ones. Restart `sbx serve`.
+  Fixed after v0.15.1: the daemon notices the new container and serves its ports.
 
 ### `sbx serve` says it is already running
 
