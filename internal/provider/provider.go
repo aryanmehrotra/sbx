@@ -47,6 +47,7 @@ const (
 	labelDependsOn     = "sbx.dependsOn"      // comma-joined depends_on, so wake can follow it
 	labelOnIdle        = "sbx.onIdle"         // "freeze" when idle should pause rather than stop
 	labelOSB           = "sbx.osb"            // set on containers the OpenSandbox API created: whose they are
+	labelIsolation     = "sbx.isolation"      // the isolation tier it was created with, so `sbx add` can match it
 
 	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
 	// names rather than risking a silently rejected manifest.
@@ -144,6 +145,11 @@ type Unit struct {
 	// OSB is the sbx.osb label: non-empty on a container created through the OpenSandbox API. A
 	// daemon that does not serve the API, and was not scoped to include them, leaves these alone.
 	OSB string
+
+	// Isolation is the tier the unit was created with, from its sbx.isolation label. Empty for
+	// a unit created before the label existed, or by a provider that does not record it;
+	// callers read empty as "container" on docker, which is what those units got.
+	Isolation Isolation
 }
 
 // EgressProxyPort is where a sandbox's egress filter listens on its no-NAT bridge gateway. The
@@ -303,6 +309,13 @@ type Snapshotter interface {
 	// RemoveImage deletes a saved image; one already gone is success. An image still used by
 	// a unit is refused by the backend, and that refusal is returned rather than forced.
 	RemoveImage(ctx context.Context, image string) error
+}
+
+// ImageLabeler reads one label off a saved image, "" when it has none. Optional beside
+// Snapshotter: a snapshot records which snapshot it belongs to and whether it carries a volume
+// as labels on its images, and a backend without labels falls back to reading the image name.
+type ImageLabeler interface {
+	ImageLabel(ctx context.Context, image, key string) (string, error)
 }
 
 // SnapshotterFor returns the provider's snapshot support, or a refusal naming the backend.

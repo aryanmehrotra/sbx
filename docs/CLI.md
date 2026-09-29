@@ -31,7 +31,7 @@ Commands marked (B) below also take these.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx create <sandbox>` | Make a sandbox. Services start asleep. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
+| `sbx create <sandbox>` | Make a sandbox. Services start asleep. Run again, it recreates only a service whose image changed (an edited `build` context), keeping its volume. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
 | `sbx with <sandbox> -- <cmd>` | Create, wait until ready, run `cmd` with the env, then remove. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` |
 | `sbx env <sandbox>` | Print the services' addresses as shell exports. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
 | `sbx list` | Every sandbox, its services, state and address. (B) | `--json` |
@@ -45,7 +45,7 @@ Commands marked (B) below also take these.
 | `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything. (B) | `--tail N` (default 100), `-f` |
 | `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. (B) | `-t` attaches a terminal |
 | `sbx cp <sandbox> <service> <src> <dst>` | Copy a file in or out. Prefix the in-service path with `:`. (B) | none |
-| `sbx add <sandbox> <service>` | Add a service the spec never declared. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
+| `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` is refused. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
 | `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`) |
@@ -60,10 +60,11 @@ Commands marked (B) below also take these.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx snapshot <sandbox> <name>` | Save every service's filesystem. (B) | none |
-| `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. (B) | `--spec`, `--template`, `--optional` |
-| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only. (B) | none |
-| `sbx resume <sandbox> <name>` | Restore from a checkpoint. (B) | none |
+| `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. A failed snapshot removes what it wrote. (B) | none |
+| `sbx snapshot --rm <name>` | Delete one snapshot's images and volumes. (B) | none |
+| `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
+| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused on macOS. (B) | none |
+| `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
 | `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 
 ### Finding out

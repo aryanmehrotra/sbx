@@ -97,9 +97,10 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx egress agent-1 --deny '*.pastebin.com' --deny 10.0.0.0/8 --default allow",
 	},
 	"snapshot": {
-		"sbx snapshot <sandbox> <name>",
+		"sbx snapshot <sandbox> <name> | sbx snapshot --rm <name>",
 		"Save every service's filesystem under a name. Data only: processes start cold when\n" +
-			"a fork of it is woken.",
+			"a fork of it is woken. A failed snapshot removes what it wrote. --rm deletes one\n" +
+			"snapshot's images and volumes; sbx gc --snapshots --force deletes them all.",
 		"sbx snapshot main golden",
 	},
 	"fork": {
@@ -121,7 +122,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 	"resume": {
 		"sbx resume <sandbox> <name>",
 		"Restore a sandbox from a checkpoint, resuming its memory and processes where they were\n" +
-			"frozen. The pair to checkpoint.",
+			"frozen. The pair to checkpoint. A service running now was woken after the checkpoint,\n" +
+			"so resume refuses it: sbx sleep the sandbox first to go back to the checkpoint.",
 		"sbx resume agent-42 mid-thought",
 	},
 	"gc": {

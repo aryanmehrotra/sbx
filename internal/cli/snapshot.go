@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -84,32 +87,124 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 		return nil, UnknownSandbox(ctx, p, sandbox)
 	}
 
+	vols, _ := p.(provider.NamedVolumes)
+
+	// Everything this call writes, so a failure can take it back. A snapshot that fails part
+	// way used to leave its first images and volumes behind under a message saying nothing
+	// was changed - and SnapshotsOf finds a snapshot by its images, so a fork would happily
+	// start from the half that got made.
+	var madeImages, madeVolumes []string
+
+	fail := func(err error) ([]SnapshotRef, error) {
+		for _, img := range madeImages {
+			_ = snap.RemoveImage(ctx, img)
+		}
+
+		if vols != nil {
+			for _, v := range madeVolumes {
+				_ = vols.RemoveVolume(ctx, v)
+			}
+		}
+
+		return nil, fmt.Errorf("%w\n\nno snapshot %q was saved: the %d image(s) and %d volume(s) "+
+			"this attempt wrote were removed", err, name, len(madeImages), len(madeVolumes))
+	}
+
+	// Volumes first, then images - and the order is the point. Images are how SnapshotsOf
+	// finds a snapshot, so while any volume is still being copied there is no image for a
+	// fork to find, even if this process is killed before it can roll back.
+	volumeOf := make(map[string]string, len(units))
+
+	for _, u := range units {
+		src := snap.VolumeFor(sandbox, u.Service)
+		if src == "" {
+			continue // the backend keeps no per-service volume (a microVM's disk is in its image)
+		}
+
+		// A service that declared no `volume` has none. Copying from it anyway had docker
+		// create an empty source to mount, which the copy then refused, failing the whole
+		// snapshot. Its state is its filesystem, which the image carries.
+		if vols != nil {
+			ok, err := vols.VolumeExists(ctx, src)
+			if err != nil {
+				return fail(fmt.Errorf("snapshotting %s's data: %w", u.Service, err))
+			}
+
+			if !ok {
+				continue
+			}
+		}
+
+		dst := snapshotVolume(name, u.Service)
+
+		existed := false
+		if vols != nil {
+			existed, _ = vols.VolumeExists(ctx, dst)
+		}
+
+		err := snap.CopyVolume(ctx, src, dst)
+
+		// An empty volume is the state of a service that has not written anything yet: a
+		// fork starting from a fresh volume starts from exactly that, so it is image-only
+		// rather than a failure. CopyVolume has already removed what its mounts created.
+		if errors.Is(err, provider.ErrEmptyVolume) {
+			continue
+		}
+
+		if !existed {
+			madeVolumes = append(madeVolumes, dst)
+		}
+
+		if err != nil {
+			return fail(fmt.Errorf("snapshotting %s's data: %w", u.Service, err))
+		}
+
+		volumeOf[u.Service] = dst
+	}
+
 	refs := make([]SnapshotRef, 0, len(units))
 
 	for _, u := range units {
 		img := snapshotImage(name, u.Service)
+		dst := volumeOf[u.Service]
 
-		if err := snap.Commit(ctx, u.Ref, img); err != nil {
-			return nil, fmt.Errorf("snapshotting %s: %w", u.Service, err)
-		}
-
-		// The part that actually carries the data.
-		src := snap.VolumeFor(sandbox, u.Service)
-		dst := snapshotVolume(name, u.Service)
-
-		if src != "" {
-			if err := snap.CopyVolume(ctx, src, dst); err != nil {
-				return nil, fmt.Errorf("snapshotting %s's data: %w", u.Service, err)
+		// Labels say which snapshot the image belongs to - its name alone is ambiguous when
+		// one snapshot's name is a prefix of another's - and whether a volume goes with it,
+		// so a fork can tell "image-only" from "its volume was deleted".
+		// A backend with no per-service volume takes no image-config changes either.
+		var changes []string
+		if snap.VolumeFor(sandbox, u.Service) != "" {
+			changes = []string{
+				"LABEL " + labelSnapshotName + "=" + name,
+				"LABEL " + labelSnapshotVolume + "=" + cmp.Or(dst, noVolume),
 			}
 		}
 
-		fmt.Printf("  %-12s → %s  + volume %s\n", u.Service, img, dst)
+		if err := snap.Commit(ctx, u.Ref, img, changes...); err != nil {
+			return fail(fmt.Errorf("snapshotting %s: %w", u.Service, err))
+		}
+
+		madeImages = append(madeImages, img)
+
+		if dst != "" {
+			fmt.Printf("  %-12s → %s  + volume %s\n", u.Service, img, dst)
+		} else {
+			fmt.Printf("  %-12s → %s  (no volume)\n", u.Service, img)
+		}
 
 		refs = append(refs, SnapshotRef{Service: u.Service, Image: img, Volume: dst})
 	}
 
 	return refs, nil
 }
+
+// Image labels a snapshot writes. noVolume is recorded rather than an absent label, because an
+// absent label is what every snapshot taken before these existed looks like.
+const (
+	labelSnapshotName   = "sbx.snapshot.name"
+	labelSnapshotVolume = "sbx.snapshot.volume"
+	noVolume            = "none"
+)
 
 // ForkSpec rewrites a spec so each service starts from the snapshot's image instead of the
 // original one. The volume is deliberately dropped: a named volume would be shared by every
@@ -129,6 +224,11 @@ func ForkSpec(sp map[string]any, name string, refs []SnapshotRef) error {
 
 		svc["image"] = r.Image
 
+		// The snapshot's image replaces the build, which has already happened. Left in, a spec
+		// with both is refused, so a fork of any sandbox with a built service failed - after
+		// its data had been restored.
+		delete(svc, "build")
+
 		// The volume STAYS. The fork gets its own, restored from the snapshot's copy after
 		// creation - an earlier version deleted it on the theory that the image carried the
 		// data, and the fork started blank because docker commit does not capture volumes.
@@ -142,6 +242,159 @@ func ForkSpec(sp map[string]any, name string, refs []SnapshotRef) error {
 	return nil
 }
 
+// snapshotRefs resolves a snapshot name to its images and volumes.
+//
+// Images are found by the prefix sbx-snap-<name>-, which also matches every snapshot whose
+// name continues past it: "qa" matches "qa-s1"'s images. A labelled image says which snapshot
+// it belongs to, so those are exact. An image from before the labels is taken on the prefix
+// alone, as it always was - unless strict, where a service part with a dash in it could be
+// another snapshot's and is returned in ambiguous instead. Strict is for deleting.
+//
+// The volume label decides Volume: "none" is an image-only service, a name is the volume that
+// goes with it (checked when a fork copies from it), and no label is the older convention of
+// sbx-snapvol-<name>-<service>.
+func snapshotRefs(ctx context.Context, snap provider.Snapshotter, name string, strict bool,
+) (refs []SnapshotRef, ambiguous []string, err error) {
+	images, err := snap.Images(ctx, "sbx-snap-"+name+"-")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	labeler, _ := snap.(provider.ImageLabeler)
+
+	read := func(img, key string) (string, error) {
+		if labeler == nil {
+			return "", nil
+		}
+
+		v, err := labeler.ImageLabel(ctx, img, key)
+		if v == "<no value>" {
+			v = ""
+		}
+
+		return strings.TrimSpace(v), err
+	}
+
+	for _, img := range images {
+		service := strings.TrimSuffix(strings.TrimPrefix(img, "sbx-snap-"+name+"-"), ":latest")
+		if service == "" {
+			continue
+		}
+
+		owner, err := read(img, labelSnapshotName)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		switch {
+		case owner != "" && owner != name:
+			continue // another snapshot's, whose name starts with this one
+		case owner == "" && strict && strings.Contains(service, "-"):
+			ambiguous = append(ambiguous, img)
+			continue
+		}
+
+		vol, err := read(img, labelSnapshotVolume)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		ref := SnapshotRef{Service: service, Image: img, Volume: snapshotVolume(name, service)}
+
+		switch vol {
+		case "":
+		case noVolume:
+			ref.Volume = ""
+		default:
+			ref.Volume = vol
+		}
+
+		refs = append(refs, ref)
+	}
+
+	return refs, ambiguous, nil
+}
+
+// RemoveSnapshot deletes one snapshot: its images and the volumes that go with them. The only
+// other way was `sbx gc --snapshots --force`, which deletes every snapshot there is.
+func RemoveSnapshot(ctx context.Context, p provider.Provider, name string) error {
+	if err := ValidateSnapshotName(name); err != nil {
+		return err
+	}
+
+	snap, err := provider.SnapshotterFor(p)
+	if err != nil {
+		return err
+	}
+
+	refs, ambiguous, err := snapshotRefs(ctx, snap, name, true)
+	if err != nil {
+		return err
+	}
+
+	for _, img := range ambiguous {
+		fmt.Printf("  skipped %s: made before snapshots were labelled, it may belong to a "+
+			"snapshot whose name starts with %q. If it is this one's: docker rmi %s\n", img, name+"-", img)
+	}
+
+	if len(refs) == 0 {
+		return fmt.Errorf("no snapshot %q - sbx gc --snapshots lists the ones there are", name)
+	}
+
+	vols, _ := p.(provider.NamedVolumes)
+
+	var failed []string
+
+	for _, r := range refs {
+		if err := snap.RemoveImage(ctx, r.Image); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", r.Image, err))
+			continue
+		}
+
+		fmt.Printf("  removed %s\n", r.Image)
+
+		// The conventional name too, not only the labelled one: a snapshot of an empty volume
+		// is labelled "none" but a copy from an earlier snapshot of the same name may remain.
+		for _, v := range compactVolumes(r.Volume, snapshotVolume(name, r.Service)) {
+			if vols == nil {
+				break
+			}
+
+			if ok, _ := vols.VolumeExists(ctx, v); !ok {
+				continue
+			}
+
+			if err := vols.RemoveVolume(ctx, v); err != nil {
+				failed = append(failed, fmt.Sprintf("%s: %v", v, err))
+				continue
+			}
+
+			fmt.Printf("  removed %s\n", v)
+		}
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("snapshot %q was only partly removed - a fork still using an image "+
+			"keeps it; remove the fork (sbx rm) and run this again:\n  %s", name, strings.Join(failed, "\n  "))
+	}
+
+	fmt.Printf("snapshot %q removed\n", name)
+
+	return nil
+}
+
+func compactVolumes(vs ...string) []string {
+	var out []string
+
+	for _, v := range vs {
+		if v != "" && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+
+	return out
+}
+
 // SnapshotsOf lists the images belonging to a snapshot name, so a fork can find them again
 // without being told which services existed.
 func SnapshotsOf(ctx context.Context, p provider.Provider, name string) ([]SnapshotRef, error) {
@@ -150,22 +403,9 @@ func SnapshotsOf(ctx context.Context, p provider.Provider, name string) ([]Snaps
 		return nil, err
 	}
 
-	images, err := snap.Images(ctx, "sbx-snap-"+name+"-")
+	refs, _, err := snapshotRefs(ctx, snap, name, false)
 	if err != nil {
 		return nil, err
-	}
-
-	refs := make([]SnapshotRef, 0, len(images))
-
-	for _, img := range images {
-		service := strings.TrimSuffix(strings.TrimPrefix(img, "sbx-snap-"+name+"-"), ":latest")
-		if service == "" {
-			continue
-		}
-
-		refs = append(refs, SnapshotRef{
-			Service: service, Image: img, Volume: snapshotVolume(name, service),
-		})
 	}
 
 	if len(refs) == 0 {
@@ -219,7 +459,9 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 		return err
 	}
 
-	forked := filepath.Join(filepath.Dir(specPath), "sandbox."+snapshot+".json")
+	// Named after the fork, not the snapshot: every fork of one snapshot would otherwise
+	// write the same file, and the hint below would send the first fork to the last one's spec.
+	forked := filepath.Join(filepath.Dir(specPath), "sandbox."+sandbox+".json")
 	if err := os.WriteFile(forked, append(out, '\n'), 0o644); err != nil {
 		return err
 	}
