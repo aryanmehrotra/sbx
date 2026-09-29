@@ -182,14 +182,16 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx cp main postgres ./schema.sql :/tmp/schema.sql",
 	},
 	"pack": {
-		"sbx pack [service] [--spec sandbox.json] [--out DIR]",
+		"sbx pack [service] [--spec sandbox.json] [--out DIR] [--version vX.Y.Z]",
 		"Build contexts for a platform that takes one container and one HTTP port.\n\n" +
 			"A sandbox is normally a set of containers on a machine sbx controls. A PaaS gives\n" +
 			"neither, so this writes the image that fits it: the workload exactly as it was, plus\n" +
 			"sbx carrying its ports over the one port the platform routes. Deploy that image with\n" +
 			"SBX_CONNECT_TOKEN set, then `sbx connect` turns it back into ordinary local ports.\n\n" +
 			"The generated image starts the base image's own process, read out of the image rather\n" +
-			"than guessed - so it works for whatever you packed, not just for postgres.",
+			"than guessed - so it works for whatever you packed, not just for postgres.\n\n" +
+			"The image installs sbx at a release: this one, or --version. A source build has no\n" +
+			"published version to install, so it needs --version.",
 		"sbx pack db --spec sandbox.json",
 	},
 	"connect": {

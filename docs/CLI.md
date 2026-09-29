@@ -48,7 +48,7 @@ Commands marked (B) below also take these.
 | `sbx add <sandbox> <service>` | Add a service the spec never declared. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
-| `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`) |
+| `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |
 | `sbx ready <sandbox>` | Block until every service really answers. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
 | `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. (B) | none |

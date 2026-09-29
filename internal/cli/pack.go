@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aryanmehrotra/sbx/internal/agentbin"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -33,12 +34,18 @@ type PackOptions struct {
 	Service string // one service, or empty for all of them
 	Out     string
 	Version string // the sbx version to build into the image
+	Pin     string // --version: the release to install instead of this build's own
 	Inspect func(image string) (entrypoint, cmd []string, err error)
 	Out2    io.Writer
 }
 
 // Pack writes a deployable directory per service.
 func Pack(_ context.Context, opt PackOptions) error {
+	version, err := packPin(opt.Version, opt.Pin)
+	if err != nil {
+		return err
+	}
+
 	s, err := spec.LoadSpec(opt.Spec)
 	if err != nil {
 		return err
@@ -90,7 +97,7 @@ func Pack(_ context.Context, opt PackOptions) error {
 				"nothing for the packed image to run", name, svc.Image)
 		}
 
-		if err := writePack(dir, name, svc, start, opt.Version); err != nil {
+		if err := writePack(dir, name, svc, start, version); err != nil {
 			return err
 		}
 
@@ -131,8 +138,6 @@ func front(name string, ports []int) string {
 }
 
 func writePack(dir, name string, svc spec.Service, start []string, version string) error {
-	version = packVersion(version)
-
 	env := make([]string, 0, len(svc.Env))
 	for _, k := range sortedKeys(svc.Env) {
 		env = append(env, fmt.Sprintf("ENV %s=%q", k, svc.Env[k]))
@@ -158,7 +163,7 @@ func writePack(dir, name string, svc spec.Service, start []string, version strin
 
 %[5]s
 FROM golang:1.26-alpine AS sbx
-RUN go install github.com/aryanmehrotra/sbx@%[3]s
+RUN go install -ldflags "-X main.version=%[3]s" github.com/aryanmehrotra/sbx@%[3]s
 
 FROM %[1]s
 COPY --from=sbx /go/bin/sbx /usr/local/bin/sbx
@@ -202,38 +207,41 @@ exec sbx serve --connect-addr=":${PORT}" --behind-proxy --front=%q
 	return os.WriteFile(filepath.Join(dir, "start.sh"), []byte(script), 0o755)
 }
 
-// packVersion decides which sbx the generated image installs.
+// packPin decides which sbx the generated image installs: --version when given, else this
+// build's own version - and in both cases only a published release.
 //
-// Never `@latest`, which pins nothing: it is whatever was published most recently, so the
-// image silently changes underneath a deployment that nobody edited. Worse while the tunnel is
-// newer than the newest release - then @latest installs an sbx with no --connect-addr and the
-// container dies at startup on an unknown flag, a failure that reads as "the generated image is
-// broken" rather than "it installed the wrong version".
-//
-// A release tag is used when sbx is running as one, because then the packed image and the thing
-// that packed it are the same code. A development build has no tag worth pinning, so it takes
-// main and says so.
-// pinNote is the comment above the install line, which needs a different explanation
-// depending on which version is being pinned. Read by whoever opens the generated Dockerfile
-// and asks why it does not say @latest - a question worth answering where it is asked.
-func pinNote(version string) string {
-	if strings.HasPrefix(version, "v") {
-		return "# " + version + ` rather than @latest: it is the sbx that wrote this file, so
-# the image and the tool that packed it are the same code. @latest drifts the day the next
-# release lands, which is how a build that worked last week fails on a machine nobody touched.`
+// The image runs `go install github.com/aryanmehrotra/sbx@VERSION`, which fetches VERSION from
+// the module proxy. A release tag is there. A source build's version is not: v0.15.1-dev+ffd872d
+// was written into the Dockerfile and the image failed to build. @latest and @main are no fix,
+// since both pin nothing and the image changes under a deployment nobody edited. So a
+// non-release build refuses and says to name the release to pin.
+func packPin(build, pin string) (string, error) {
+	if pin != "" {
+		if !agentbin.Release(pin) {
+			return "", fmt.Errorf("--version %q is not a release: the packed image installs sbx "+
+				"from the Go module proxy, which has only tags like v0.15.1 - see "+
+				"https://github.com/aryanmehrotra/sbx/releases", pin)
+		}
+
+		return pin, nil
 	}
 
-	return `# main rather than @latest: this image needs a tunnel that is newer than the newest
-# release, so @latest would install an sbx with no --connect-addr and the container would die
-# at startup on an unknown flag. Once a release carries it, pin this to that tag.`
+	if agentbin.Release(build) {
+		return build, nil
+	}
+
+	return "", fmt.Errorf("this sbx is a source build (%q), not a release, so there is no "+
+		"published version for the packed image to install. Name the release to pin: "+
+		"`sbx pack --version v0.15.1` (the list is at https://github.com/aryanmehrotra/sbx/releases)", build)
 }
 
-func packVersion(version string) string {
-	if strings.HasPrefix(version, "v") {
-		return version
-	}
-
-	return "main"
+// pinNote is the comment above the install line. Read by whoever opens the generated Dockerfile
+// and asks why it does not say @latest - a question worth answering where it is asked.
+func pinNote(version string) string {
+	return "# " + version + ` rather than @latest: a published release, so the image builds the
+# same sbx every time. @latest drifts the day the next release lands, which is how a build that
+# worked last week fails on a machine nobody touched. -X main.version stamps the version, which
+# go install does not, or the packed sbx would call itself "dev" in every log line.`
 }
 
 // InspectImage reads an image's entrypoint and command, pulling it if it is not local.

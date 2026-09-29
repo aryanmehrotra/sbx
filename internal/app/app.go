@@ -666,6 +666,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("pack")
 		specPath := fs.String("spec", "sandbox.json", "the spec to pack")
 		out := fs.String("out", "sbx-pack", "directory to write the build contexts into")
+		pin := fs.String("version", "", "the sbx release the image installs (default: this build, if it is a release)")
 		positional, rest := splitPositional(args, 1)
 		_ = fs.Parse(rest)
 
@@ -679,6 +680,7 @@ func dispatch(cmd string, args []string) error {
 			Service: service,
 			Out:     *out,
 			Version: version,
+			Pin:     *pin,
 			Inspect: cli.InspectImage(dockerCLI),
 			Out2:    os.Stdout,
 		})
