@@ -184,12 +184,26 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) (r
 			existed, _ = vols.VolumeExists(ctx, dst)
 		}
 
+		// Created here, labelled with the snapshot's name, rather than left for the copy's mount to
+		// create bare. The name alone cannot say whose it is once the service name has a dash in
+		// it - sbx-snapvol-a-web-ui is "a"'s web-ui or "a-web"'s ui - and a volume an interrupted
+		// snapshot leaves has no image to ask. The label is what `--rm` and gc resolve it by.
+		if !existed && vols != nil {
+			if err := vols.CreateVolume(ctx, dst, map[string]string{labelSnapshotName: name}); err != nil {
+				return fail(fmt.Errorf("snapshotting %s's data: %w", u.Service, err))
+			}
+		}
+
 		err := snap.CopyVolume(ctx, src, dst)
 
 		// An empty volume is the state of a service that has not written anything yet: a
 		// fork starting from a fresh volume starts from exactly that, so it is image-only
 		// rather than a failure. CopyVolume has already removed what its mounts created.
 		if errors.Is(err, provider.ErrEmptyVolume) {
+			if !existed && vols != nil {
+				_ = vols.RemoveVolume(ctx, dst) // the labelled volume made above, now with nothing to hold
+			}
+
 			continue
 		}
 
@@ -889,6 +903,7 @@ func leftoverVolumes(ctx context.Context, p provider.Provider, snap provider.Sna
 
 	labeler, _ := snap.(provider.ImageLabeler)
 	claimed := map[string]bool{}
+	volLabeler, _ := p.(provider.VolumeLabeler)
 
 	for _, img := range images {
 		claimed["sbx-snapvol-"+strings.TrimSuffix(strings.TrimPrefix(img, "sbx-snap-"), ":latest")] = true
@@ -905,6 +920,17 @@ func leftoverVolumes(ctx context.Context, p provider.Provider, snap provider.Sna
 	for _, v := range candidates {
 		if claimed[v] {
 			continue
+		}
+
+		// A volume labelled with its snapshot needs no guessing, dash or not.
+		if volLabeler != nil {
+			if owner, err := volLabeler.VolumeLabel(ctx, v, labelSnapshotName); err == nil && owner != "" {
+				if owner == name {
+					ours = append(ours, v)
+				}
+
+				continue
+			}
 		}
 
 		if strings.Contains(strings.TrimPrefix(v, "sbx-snapvol-"+name+"-"), "-") {

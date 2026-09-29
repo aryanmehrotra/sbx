@@ -314,8 +314,10 @@ it. Fixed after v0.15.1: snapshot pauses running services for the copy and thaws
 A snapshot killed mid-copy (`kill -9`, a lost machine) copies volumes before it commits any
 image, so it leaves volumes with no image. Up to v0.15.1, `--rm` looked a snapshot up by its
 images and found none. Remove them with `docker volume rm sbx-snapvol-<name>-<service>`. Fixed
-after v0.15.1: `--rm` finds them by name, and `sbx gc --snapshots` lists them as "no image". A
-volume whose service part has a dash is left alone, because it may be another snapshot's.
+after v0.15.1: a snapshot volume carries its snapshot's name as a label, `--rm` finds it by that,
+and `sbx gc --snapshots` lists it as "no image" with the command that removes it. A volume made
+before the label, whose service part has a dash, may be another snapshot's: `--rm` leaves it
+alone and gc prints `docker volume rm` for it.
 
 ### `sbx snapshot` fails: "the source is empty or does not exist"
 

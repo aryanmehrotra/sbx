@@ -595,6 +595,10 @@ type Artifact struct {
 	// NoImage marks a snapshot volume no snapshot image claims: what `sbx snapshot` leaves when
 	// it is killed mid-copy, since it copies every volume before it commits any image.
 	NoImage bool
+
+	// SnapshotName is the snapshot a snapshot volume belongs to, from its label; "" when it has
+	// none (made before volumes were labelled), and then nothing can say.
+	SnapshotName string
 }
 
 // Collector finds and removes what sandboxes leave behind.
@@ -1058,4 +1062,11 @@ type Helper struct{ Image, For string }
 // it by name needs to find them without an image to start from.
 type VolumeLister interface {
 	Volumes(ctx context.Context, prefix string) ([]string, error)
+}
+
+// VolumeLabeler reads one label off a volume, "" when it has none. Optional beside NamedVolumes:
+// a snapshot volume carries its snapshot's name, which its own name cannot give when the
+// service name has a dash in it.
+type VolumeLabeler interface {
+	VolumeLabel(ctx context.Context, volume, key string) (string, error)
 }

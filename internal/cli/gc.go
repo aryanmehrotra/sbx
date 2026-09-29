@@ -94,7 +94,7 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 		return nil
 	}
 
-	var noImage []string
+	var noImage []provider.Artifact
 
 	for _, a := range sweep {
 		what := a.Kind
@@ -104,22 +104,24 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 
 		if a.NoImage {
 			what += ", no image"
-			noImage = append(noImage, a.Name)
+			noImage = append(noImage, a)
 		}
 
 		fmt.Fprintf(w, "  %-40s %-26s %s\n", a.Name, what, age(a.Age))
 	}
 
 	// Named, because a volume with no image reads as half of a snapshot that is still there, and
-	// it is not: `sbx snapshot` was killed mid-copy, before any image. The name is read up to the
-	// last dash, which is right unless the service name has a dash in it.
-	for _, v := range noImage {
-		name := strings.TrimPrefix(v, "sbx-snapvol-")
-		if i := strings.LastIndex(name, "-"); i > 0 {
-			name = name[:i]
+	// it is not: `sbx snapshot` was killed mid-copy, before any image. The snapshot is the one its
+	// label names. Never read from the volume name: sbx-snapvol-a-web-ui is "a"'s web-ui or
+	// "a-web"'s ui, and a guessed `--rm` removes the wrong snapshot or none. Unlabelled (made
+	// before snapshot volumes carried one), the command that is always right is removing it.
+	for _, a := range noImage {
+		fix := "docker volume rm " + a.Name
+		if a.SnapshotName != "" {
+			fix = "sbx snapshot --rm " + a.SnapshotName
 		}
 
-		fmt.Fprintf(w, "  %s has no image: an interrupted snapshot left it. sbx snapshot --rm %s removes it.\n", v, name)
+		fmt.Fprintf(w, "  %s has no image: an interrupted snapshot left it. %s removes it.\n", a.Name, fix)
 	}
 
 	if !force {

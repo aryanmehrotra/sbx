@@ -28,6 +28,7 @@ type engine struct {
 	commitErr map[string]error             // image -> error Commit returns
 	users     map[string][]string          // image or volume -> sandboxes using it (InUse)
 	events    []string                     // pause, copy, commit, unpause, in the order they happened
+	volLabels map[string]map[string]string // volume -> labels it was created with
 }
 
 func newEngine(units ...provider.Unit) *engine {
@@ -115,13 +116,20 @@ func (e *engine) VolumeExists(_ context.Context, name string) (bool, error) {
 	return ok, nil
 }
 
-func (e *engine) CreateVolume(_ context.Context, name string, _ map[string]string) error {
+func (e *engine) CreateVolume(_ context.Context, name string, labels map[string]string) error {
 	e.volumes[name] = 0
+
+	if e.volLabels == nil {
+		e.volLabels = map[string]map[string]string{}
+	}
+
+	e.volLabels[name] = labels
 	return nil
 }
 
 func (e *engine) RemoveVolume(_ context.Context, name string) error {
 	delete(e.volumes, name)
+	delete(e.volLabels, name)
 	return nil
 }
 
