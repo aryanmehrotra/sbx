@@ -59,7 +59,7 @@ func TestGCNeverOffersWhatAForkStillUses(t *testing.T) {
 // removes it.
 func TestGCNamesAVolumeOnlySnapshot(t *testing.T) {
 	f := &fakeCollector{items: []provider.Artifact{
-		{Kind: "volume", Name: "sbx-snapvol-cut-db", Snapshot: true, NoImage: true, Age: time.Hour},
+		{Kind: "volume", Name: "sbx-snapvol-cut-db", Snapshot: true, NoImage: true, SnapshotName: "cut", Age: time.Hour},
 	}}
 
 	var out strings.Builder

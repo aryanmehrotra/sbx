@@ -129,3 +129,31 @@ func TestImageLabelOfAnUnlabelledImage(t *testing.T) {
 		t.Fatalf("ImageLabel of a labelled image = %q, %v; want legacy", got, err)
 	}
 }
+
+// A snapshot volume's label is read back, and an unlabelled one (made before snapshot volumes
+// carried one) answers "" rather than an error, so gc falls back to `docker volume rm`.
+func TestVolumeLabelOnDocker(t *testing.T) {
+	d := dockerOrSkip(t)
+	ctx := context.Background()
+
+	labelled := fmt.Sprintf("sbx-snapvol-vollabel-test-%d-web-ui", os.Getpid())
+	bare := labelled + "-bare"
+
+	t.Cleanup(func() { _, _ = d.docker("volume", "rm", "-f", labelled, bare) })
+
+	if err := d.CreateVolume(ctx, labelled, map[string]string{SnapshotNameLabel: "vollabel-test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.docker("volume", "create", bare); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := d.VolumeLabel(ctx, labelled, SnapshotNameLabel); err != nil || got != "vollabel-test" {
+		t.Errorf("labelled volume: %q, %v; want vollabel-test", got, err)
+	}
+
+	if got, err := d.VolumeLabel(ctx, bare, SnapshotNameLabel); err != nil || got != "" {
+		t.Errorf("unlabelled volume: %q, %v; want \"\", nil", got, err)
+	}
+}

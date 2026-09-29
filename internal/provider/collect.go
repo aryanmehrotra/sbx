@@ -79,6 +79,14 @@ func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {
 	// Only from a complete image listing: without one every snapshot volume would look imageless.
 	if !noImages {
 		markNoImage(out, meta)
+
+		// Whose it is comes from the volume's own label; its name cannot say once a service
+		// name has a dash. Unlabelled leaves SnapshotName empty, and gc says `docker volume rm`.
+		for i := range out {
+			if out[i].NoImage {
+				out[i].SnapshotName, _ = d.VolumeLabel(ctx, out[i].Name, SnapshotNameLabel)
+			}
+		}
 	}
 
 	if noImages {
@@ -506,3 +514,19 @@ func (d *dockerProvider) inspectSplit(args ...string) (stdout, stderr string, er
 
 	return o.String(), e.String(), err
 }
+
+// VolumeLabel implements VolumeLabeler. The labels as JSON, for the reason usage gives: a volume
+// created with none has null labels, and a template that indexes them is not to be trusted.
+func (d *dockerProvider) VolumeLabel(_ context.Context, volume, key string) (string, error) {
+	out, err := d.docker("volume", "inspect", "--format", "{{json .Labels}}", volume)
+	if err != nil {
+		return "", err
+	}
+
+	var labels map[string]string
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &labels) // null or unparseable: no labels
+
+	return labels[key], nil
+}
+
+var _ VolumeLabeler = (*dockerProvider)(nil)
