@@ -24,6 +24,9 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 - `egress_allow`, `egress_policy` and `egress: "allow"` carry only ports 80 and 443; other ports get 403. Write `"host:port"` in `egress_allow` to allow another port.
 - `sbx with <name>` refuses a name that already exists, instead of reusing that sandbox and then deleting it and its volumes. Use `sbx env` or `sbx exec` against an existing sandbox.
+- `sbx snapshot <sandbox> <name>` refuses a name that already exists instead of overwriting and merging into it. Use `--replace` to remove the old snapshot whole and take a fresh one.
+- `cap_add: ["ALL"]` is refused; it granted every capability. List the ones the workload needs.
+- `$${` in an `env` value is a literal `${`. v0.15 expanded `$${X}` to `$` followed by the value.
 
 ## Added
 
@@ -32,6 +35,9 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx env` prints `<SERVICE>_HOST` and `<SERVICE>_PORT` for services no export names, such as ones added with `sbx add`.
 - `sbx list` shows a service paused by `on_idle: "freeze"` as `frozen`; `--json` adds a `state` field.
 - `sbx pack --version vX.Y.Z` pins the release the packed image installs; a source build needs it.
+- `sbx list` shows each service's isolation tier: an ISOLATION column, and `isolation` in `--json`.
+- `sbx create` warns when a new sandbox starts on a data volume an earlier sandbox of the same name left behind.
+- `sbx init --from-devcontainer` translates `${localEnv:X}` and `${containerWorkspaceFolder}`, escapes every other `${`, and lists what it could not evaluate.
 
 ## Changed
 
@@ -41,8 +47,14 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx exec` passes piped stdin to the command and exits with its status.
 - `sbx snapshot` saves a service without a `volume` as its image only, instead of failing.
 - `sbx checkpoint` is refused up front on a local macOS engine, where a checkpoint could be taken but never resumed.
-- `sbx validate` refuses an unknown `cap_add` name, a `CAP_`-prefixed one, a `${VAR:-x}` or other non-plain `${...}` in `env`, and `cpu`, `memory` or `gpus` values no provider accepts.
-- `sbx serve --osb-addr` on a source build compiles the sandbox agent at startup, so the first create does not time out.
+- `sbx validate` refuses an unknown or blank `cap_add` name, a `${VAR:-x}` or other non-plain `${...}` in `env` (every one in the file at once), and `cpu`, `memory` or `gpus` values no provider accepts. A `CAP_` prefix is accepted, as docker does.
+- `sbx serve --osb-addr` on a source build compiles the sandbox agent at startup, so the first create does not time out, and warns at start when the agent cannot be found.
+- `sbx ready`, `sbx wake` and `sbx create` check that each service's workload answers at the port `sbx serve` forwards to, not only the daemon's port.
+- `sbx sleep` stops frozen services too, and stops services in parallel, dependents before what they `depends_on`.
+- `sbx create` stops with an error naming the holding pid if the slot or sandbox lock stays held for 10 minutes; it used to go ahead unlocked after 90 s. An API create in that case is `Failed` with `slot_lock_timeout`.
+- `sbx with` refuses a name another `sbx create`, `add` or `with` is making, and its teardown removes only the containers it created.
+- `sbx install` exits non-zero when a name you gave cannot be installed, `--dry-run` included.
+- Upgrade `sbx serve` together with sandboxes this version creates: an older daemon cannot read a new egress filter's activity.
 
 ## Fixed
 
@@ -71,3 +83,22 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - A refused `sbx serve --osb-addr` no longer writes `~/.sbx/osb/key`.
 - `sandbox_create` in `sbx mcp` suggests raising `ready_timeout_seconds` only when the wait timed out.
 - `sbx doctor` says an isolation runtime is registered, not available, and notes Kata is unverified on nested hosts.
+- Security: a docker network created after a sandbox's egress filter started is refused too; `sbx serve` pushes the engine's gateways to every container filter each discovery pass.
+- The egress filter's activity endpoint needs its control token; a sandbox could read it.
+- A 403 for a port the filter does not carry no longer suggests a grant for an address no policy opens.
+- Two `sbx with` of one name no longer share a sandbox and remove it under each other.
+- `sbx with` removes its sandbox on Ctrl-C or SIGTERM, passes the signal to the command, and exits 130 or 143.
+- Concurrent `sbx create`s no longer wait on each other's health checks or land on one slot.
+- A `docker run` that fails no longer leaves a `Created` container; a new sandbox whose ports were taken retries once on the next slot.
+- A rebuild while asleep runs the new container's checks and `init` instead of calling it asleep.
+- A failed mount check lists the services kept and those not attempted.
+- `sbx with --keep` says the sandbox was kept; `sbx add` refuses a duplicate service before any `--health` warning.
+- `sbx snapshot --rm` and `--replace` refuse, removing nothing, while a fork still runs from the snapshot.
+- `sbx gc --snapshots` no longer offers a snapshot any sandbox runs from; `--force` never removes one.
+- `sbx prewarm` also pulls the helpers a spec needs (`alpine:3` for snapshot and fork, the egress filter's images when a service is filtered) and lists each image once.
+- A service with a short `idle` sleeps on time when another is slow to stop, and a connection during a stop can no longer leave it running while the daemon believes it asleep. The `slept` event reports the idle time that triggered it.
+- `sbx env` warns on stderr when a derived `<SERVICE>_PORT` is taken by an export or shared by two services, and gives a shared name to neither.
+- A tier mismatch on `sbx add` names `SBX_ISOLATION` when that asked for it, and an unknown sandbox always lists the ones that exist.
+- `sbx logs -f` says so when the followed service goes to sleep.
+- `sbx install checkpoint` on macOS gives the real reason, a restore needs a Linux host.
+- `sbx pack` on a source build suggests the release the build is based on.
