@@ -444,7 +444,9 @@ func (d *daemon) run(ctx context.Context) {
 				reap.Reset(c)
 			}
 		case <-reap.C:
-			d.reap(ctx)
+			// Not waited on: a stop can take docker's whole grace period, and this loop is the
+			// clock every other unit's sleep and every discovery tick run on. See reapAsync.
+			d.reapAsync(ctx)
 		}
 	}
 }
@@ -799,8 +801,25 @@ func legsOf(p provider.Provider, u provider.Unit) []leg {
 	return legs
 }
 
-// reap sleeps every unit that has been quiet for longer than the idle window.
-func (d *daemon) reap(ctx context.Context) {
+// reap sleeps every unit that has been quiet for longer than the idle window, and returns once
+// those sleeps have finished. The daemon's own loop uses reapAsync and does not wait.
+func (d *daemon) reap(ctx context.Context) { d.reapAsync(ctx).Wait() }
+
+// reapAsync decides which units are due and starts their sleeps, each on its own goroutine, and
+// returns without waiting for any of them.
+//
+// Deciding stays on the caller's goroutine, in step with discovery; only the stop moves off it.
+// A stop is not quick: docker waits out a 10s grace for a workload that ignores SIGTERM (a
+// busybox `sh -c` loop does), and run inline it held this loop - the reaper's clock and the
+// discovery tick - for all ten. A service with "idle": "3s" then slept 14s after its last byte,
+// three runs out of three, and every other due service waited behind it.
+//
+// A unit already being stopped is skipped rather than stopped twice: its sleep holds the wake
+// lock for the whole stop, so a second one would only queue behind it and then find the unit
+// asleep.
+func (d *daemon) reapAsync(ctx context.Context) *sync.WaitGroup {
+	var wg sync.WaitGroup
+
 	d.mu.Lock()
 	units := make([]*unit, 0, len(d.units))
 
@@ -829,7 +848,11 @@ func (d *daemon) reap(ctx context.Context) {
 	needed := make(map[string]bool, len(units))
 
 	for _, u := range units {
-		if !u.isAwake() {
+		// Mid-stop counts as awake here. sleep() marks a unit asleep the moment it starts, and
+		// the stop can take ten seconds; a dependent shutting down gracefully may still be
+		// flushing to its database, so the database waits for the stop to finish - the
+		// top-down order the inline reaper got for free by blocking.
+		if !u.isAwake() && !u.stopping.Load() {
 			continue
 		}
 
@@ -856,8 +879,21 @@ func (d *daemon) reap(ctx context.Context) {
 			continue
 		}
 
-		u.sleep(ctx, d.provider, window)
+		if !u.stopping.CompareAndSwap(false, true) {
+			continue // already on its way down
+		}
+
+		wg.Add(1)
+
+		go func(u *unit, window time.Duration) {
+			defer wg.Done()
+			defer u.stopping.Store(false)
+
+			u.sleep(ctx, d.provider, window)
+		}(u, window)
 	}
+
+	return &wg
 }
 
 // parseFront reads --front: "5432", "5432,6379", "db=5432,cache=6379", or "db=10.0.4.7:3306".

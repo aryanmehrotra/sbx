@@ -71,6 +71,11 @@ type unit struct {
 	// pinned is keepAwake set at run time, by the OpenSandbox warm pool - see pin.go.
 	pinned atomic.Bool
 
+	// stopping is true while the reaper's sleep of this unit is in flight, from the decision to
+	// the stop returning. It keeps a second tick from starting another, and keeps this unit's
+	// dependencies up until it is actually down - see reapAsync.
+	stopping atomic.Bool
+
 	// served records that this unit has been seen serving at least once.
 	//
 	// Until then it is not eligible to sleep, because "idle" is meaningless before a
