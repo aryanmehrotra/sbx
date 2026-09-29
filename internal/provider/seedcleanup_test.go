@@ -33,7 +33,7 @@ func seedDocker(t *testing.T, fail string) (log string) {
 	return log
 }
 
-func calls(t *testing.T, log string) string {
+func dockerCalls(t *testing.T, log string) string {
 	t.Helper()
 
 	b, err := os.ReadFile(log)
@@ -75,7 +75,7 @@ func TestAFailedSeedLeavesNoVolumeItCreated(t *testing.T) {
 				t.Fatal("the seed succeeded though docker failed")
 			}
 
-			got := calls(t, log)
+			got := dockerCalls(t, log)
 			if strings.Contains(got, "volume create sbx-execd-x") && !strings.Contains(got, "volume rm sbx-execd-x") {
 				t.Fatalf("the volume this seed created was left behind:\n%s", got)
 			}
@@ -101,7 +101,7 @@ func TestAFailedSeedKeepsAVolumeThatAlreadyExisted(t *testing.T) {
 		t.Fatal("the seed succeeded though the pull failed")
 	}
 
-	if got := calls(t, log); strings.Contains(got, "volume rm") {
+	if got := dockerCalls(t, log); strings.Contains(got, "volume rm") {
 		t.Fatalf("a volume that existed before the seed was removed:\n%s", got)
 	}
 }
