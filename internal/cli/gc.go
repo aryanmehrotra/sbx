@@ -90,13 +90,32 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 		return nil
 	}
 
+	var noImage []string
+
 	for _, a := range sweep {
 		what := a.Kind
 		if a.Snapshot {
 			what += ", snapshot"
 		}
 
-		fmt.Fprintf(w, "  %-40s %-18s %s\n", a.Name, what, age(a.Age))
+		if a.NoImage {
+			what += ", no image"
+			noImage = append(noImage, a.Name)
+		}
+
+		fmt.Fprintf(w, "  %-40s %-26s %s\n", a.Name, what, age(a.Age))
+	}
+
+	// Named, because a volume with no image reads as half of a snapshot that is still there, and
+	// it is not: `sbx snapshot` was killed mid-copy, before any image. The name is read up to the
+	// last dash, which is right unless the service name has a dash in it.
+	for _, v := range noImage {
+		name := strings.TrimPrefix(v, "sbx-snapvol-")
+		if i := strings.LastIndex(name, "-"); i > 0 {
+			name = name[:i]
+		}
+
+		fmt.Fprintf(w, "  %s has no image: an interrupted snapshot left it. sbx snapshot --rm %s removes it.\n", v, name)
 	}
 
 	if !force {

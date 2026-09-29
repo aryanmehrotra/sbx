@@ -585,6 +585,10 @@ type Artifact struct {
 	// containers are created from a snapshot's images, so the snapshot is not garbage while
 	// the fork exists, whatever became of the sandbox it was first taken from.
 	InUse bool
+
+	// NoImage marks a snapshot volume no snapshot image claims: what `sbx snapshot` leaves when
+	// it is killed mid-copy, since it copies every volume before it commits any image.
+	NoImage bool
 }
 
 // Collector finds and removes what sandboxes leave behind.
@@ -1042,3 +1046,10 @@ type HelperNeeds struct{ Volumes, Egress bool }
 
 // Helper is one helper image and what it is for, in words a CI log reader understands.
 type Helper struct{ Image, For string }
+
+// VolumeLister lists volumes whose names begin with prefix. Optional beside NamedVolumes: a
+// snapshot interrupted before its images were committed exists only as volumes, and removing
+// it by name needs to find them without an image to start from.
+type VolumeLister interface {
+	Volumes(ctx context.Context, prefix string) ([]string, error)
+}

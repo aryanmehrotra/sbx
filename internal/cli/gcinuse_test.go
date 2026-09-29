@@ -54,3 +54,20 @@ func TestGCNeverOffersWhatAForkStillUses(t *testing.T) {
 		t.Errorf("reclaimed %v; output:\n%s", f.reclaimed, out.String())
 	}
 }
+
+// A snapshot volume with no image is named as an interrupted snapshot's, with the command that
+// removes it.
+func TestGCNamesAVolumeOnlySnapshot(t *testing.T) {
+	f := &fakeCollector{items: []provider.Artifact{
+		{Kind: "volume", Name: "sbx-snapvol-cut-db", Snapshot: true, NoImage: true, Age: time.Hour},
+	}}
+
+	var out strings.Builder
+	if err := gcWith(context.Background(), f, &out, 0, false, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(out.String(), "no image") || !strings.Contains(out.String(), "sbx snapshot --rm cut") {
+		t.Errorf("the leftover is not named as one:\n%s", out.String())
+	}
+}

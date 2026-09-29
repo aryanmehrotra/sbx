@@ -101,3 +101,27 @@ func TestParseUsage(t *testing.T) {
 		t.Errorf("users of bbb = %v", got)
 	}
 }
+
+// A snapshot volume no listed image claims is what `kill -9` of `sbx snapshot` mid-copy leaves.
+// gc names it, so the leftover reads as one instead of as half of some snapshot.
+func TestMarkNoImage(t *testing.T) {
+	arts := []Artifact{
+		{Kind: "image", Name: "sbx-snap-gold-db:latest", Snapshot: true},
+		{Kind: "image", Name: "sbx-snap-old-web:latest", Snapshot: true}, // unlabelled: pairs by name
+		{Kind: "volume", Name: "sbx-snapvol-gold-data", Snapshot: true},  // gold-db's, by label
+		{Kind: "volume", Name: "sbx-snapvol-old-web", Snapshot: true},
+		{Kind: "volume", Name: "sbx-snapvol-cut-db", Snapshot: true}, // no image at all
+		{Kind: "volume", Name: "sbx-gone-db-data"},                   // not a snapshot's
+	}
+
+	markNoImage(arts, map[string]imageMeta{
+		"sbx-snap-gold-db:latest": {ID: "a", Snapshot: "gold", Volume: "sbx-snapvol-gold-data"},
+		"sbx-snap-old-web:latest": {ID: "b"},
+	})
+
+	for _, a := range arts {
+		if want := a.Name == "sbx-snapvol-cut-db"; a.NoImage != want {
+			t.Errorf("%s: NoImage = %v, want %v", a.Name, a.NoImage, want)
+		}
+	}
+}

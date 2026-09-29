@@ -70,7 +70,13 @@ func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {
 		}
 	}
 
-	markInUse(out, d.imageMetas(names), u)
+	meta := d.imageMetas(names)
+	markInUse(out, meta, u)
+
+	// Only from a complete image listing: without one every snapshot volume would look imageless.
+	if !noImages {
+		markNoImage(out, meta)
+	}
 
 	if noImages {
 		for i := range out {
@@ -436,4 +442,50 @@ func configLabels(config string) map[string]string {
 	}
 
 	return c.Labels
+}
+
+// Volumes implements VolumeLister. docker's name filter matches anywhere in the name, so the
+// prefix is applied here as well.
+func (d *dockerProvider) Volumes(_ context.Context, prefix string) ([]string, error) {
+	out, err := d.docker("volume", "ls", "--format", "{{.Name}}", "--filter", "name="+prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+
+	for _, n := range lines(out) {
+		if strings.HasPrefix(n, prefix) {
+			names = append(names, n)
+		}
+	}
+
+	return names, nil
+}
+
+var _ VolumeLister = (*dockerProvider)(nil)
+
+// markNoImage sets NoImage on each snapshot volume that no listed snapshot image claims, by label
+// or by the conventional sbx-snapvol-<x> beside sbx-snap-<x>.
+func markNoImage(arts []Artifact, meta map[string]imageMeta) {
+	claimed := map[string]bool{}
+
+	for _, a := range arts {
+		if a.Kind != "image" {
+			continue
+		}
+
+		claimed["sbx-snapvol-"+strings.TrimSuffix(strings.TrimPrefix(a.Name, "sbx-snap-"), ":latest")] = true
+
+		if v := meta[a.Name].Volume; v != "" && v != "none" {
+			claimed[v] = true
+		}
+	}
+
+	for i := range arts {
+		a := &arts[i]
+		if a.Kind == "volume" && a.Snapshot && strings.HasPrefix(a.Name, "sbx-snapvol-") && !claimed[a.Name] {
+			a.NoImage = true
+		}
+	}
 }
