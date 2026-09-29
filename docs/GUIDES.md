@@ -24,6 +24,10 @@ specs; [examples/](../examples/) explains each. To add a service mid-task:
 `sbx with` creates a sandbox, waits until it answers, runs the command, then removes it, even on
 failure. It exits with the command's status. `--keep` leaves the sandbox for inspection.
 
+It takes only a name that is not in use, because it removes the sandbox afterwards. Against an
+existing sandbox, use `eval "$(sbx env <sandbox>)"` instead. A create that fails is removed too,
+and `--timeout` bounds each wait for a service to serve.
+
 ```sh
 sbx with test-db --template postgres -- go test ./...
 ```

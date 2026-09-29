@@ -62,7 +62,17 @@ clears the stale record. If it is alive, you already have one; pass `--only PREF
   Start the daemon and use the sandbox in one step, or install the unit from [`deploy/`](../deploy/).
 - Jobs on one runner share the daemon. They get different ports, but `sbx rm` in one job can
   remove another's sandbox. Name sandboxes after branch and job.
-- `sbx with` removes its sandbox even on failure, which keeps a runner clean.
+- `sbx with` removes its sandbox even on failure, including a create that fails partway, which
+  keeps a runner clean.
+
+### `sbx with` says the sandbox "already exists"
+
+`sbx with` removes the sandbox it ran against, so it refuses a name that is in use and changes
+nothing. Pick an unused name, or run against the existing sandbox without removing it:
+`eval "$(sbx env <sandbox>)" && <command>`, or `sbx exec <sandbox> <service> <command>`.
+
+Up to v0.15.1, `sbx with` reused an existing sandbox and then removed it with its volumes, and a
+create that failed partway was left behind. Fixed after v0.15.1.
 
 ## Create
 
@@ -73,12 +83,22 @@ The service started but its `health` command never passed.
   Check with `docker run --rm --entrypoint sh <image> -c 'command -v pg_isready curl wget'`.
 - Otherwise the workload is not coming up. Read `sbx logs <sandbox> <service> --tail 50`, which
   does not wake anything.
+- If it ends with "its container is not running: state exited", the workload exited. Its logs
+  say why.
+- If it says "the runtime could not be asked", docker was not answering, not the service. See
+  ["docker did not answer in time"](#docker-did-not-answer-in-time).
+- `sbx with --timeout` sets this wait. `sbx create` and `sbx add` wait two minutes.
 
 ### The service's config file is a directory inside the container
 
 The runtime could not reach the host path in `files`, so docker created an empty directory. A
 VM-backed docker (colima, Docker Desktop) shares `$HOME` but usually not `/var/folders` on macOS.
 Move the file under your home directory. sbx checks for this after create and says so.
+
+The check removes that service's container, because every start would mount the same wrong path,
+and keeps the rest of the sandbox. Fix the path and re-run the same `sbx create` to finish it. A
+backend that cannot remove one service stops it instead; then `sbx rm` the sandbox and create it
+again.
 
 Up to v0.15.0 that check also fired, wrongly, when `sbx create` was re-run over a sandbox that
 was asleep: it could not look inside a stopped container and reported the file as a directory.
@@ -100,6 +120,14 @@ is skipped, so `list` and `rm` cannot see it. Find it with
 `docker rm -f <name>`.
 
 ## Wake
+
+### `sbx ready` or `sbx wake` says a service "is not running"
+
+The container exited, or never started. The message gives the runtime's state and exit code.
+Read `sbx logs <sandbox> <service> --tail 50` for the reason.
+
+Up to v0.15.1, `sbx ready` could report such a service as serving when it had no health check or
+docker was slow to answer. Fixed after v0.15.1.
 
 ### The first query after an idle period fails, but the next one works
 

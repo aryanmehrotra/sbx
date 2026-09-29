@@ -934,6 +934,13 @@ type ExitReporter interface {
 	ExitOf(ctx context.Context, ref string) (ExitState, error)
 }
 
+// UnitRemover removes one service's workload and its anonymous volumes, leaving the rest of the
+// sandbox and its named data volumes. Create uses it to take out a container whose mount check
+// failed: the mount is fixed at creation, so that container can only ever serve the wrong path.
+type UnitRemover interface {
+	RemoveUnit(ctx context.Context, ref string) error
+}
+
 // ExitState is a stopped workload's last state, as the runtime recorded it.
 type ExitState struct {
 	Status    string // the runtime's word: "exited", "created", "dead", ...

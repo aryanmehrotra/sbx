@@ -32,7 +32,7 @@ Commands marked (B) below also take these.
 | command | purpose | flags |
 |---|---|---|
 | `sbx create <sandbox>` | Make a sandbox. Services start asleep. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
-| `sbx with <sandbox> -- <cmd>` | Create, wait until ready, run `cmd` with the env, then remove. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` |
+| `sbx with <sandbox> -- <cmd>` | Create a new sandbox, wait until ready, run `cmd` with the env, then remove it, also when create fails. Refuses a name already in use. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` (each wait for a service) |
 | `sbx env <sandbox>` | Print the services' addresses as shell exports. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
 | `sbx list` | Every sandbox, its services, state and address. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
@@ -49,7 +49,7 @@ Commands marked (B) below also take these.
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
 | `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`) |
-| `sbx ready <sandbox>` | Block until every service really answers. For CI. (B) | `--timeout 90s` |
+| `sbx ready <sandbox>` | Block until every service really answers and is running. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
 | `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. (B) | none |
 | `sbx egress <sandbox> [service]` | Read or change a running sandbox's network policy. (B) | `--allow H`, `--deny H`, `--remove H` (all repeatable), `--default allow\|deny`, `--reset`, `--show`, `--json` |

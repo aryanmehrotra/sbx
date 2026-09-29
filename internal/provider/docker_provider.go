@@ -664,7 +664,12 @@ func (d *dockerProvider) Healthy(ctx context.Context, ref string) (bool, bool) {
 // about 150ms, and the command is the one the spec declared - so this is faster without
 // being a different question.
 func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
-	cmd, ok := d.api.healthCommand(ctx, ref)
+	cmd, ok, err := d.api.healthCommand(ctx, ref)
+	if err != nil {
+		// Could not ask, which is not the same as nothing to ask: see healthCommand.
+		return false, true
+	}
+
 	if !ok {
 		return false, false
 	}
@@ -1220,6 +1225,15 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	return nil
+}
+
+// RemoveUnit removes one container the way Remove removes each of a sandbox's: -f because it
+// may be running, -v for its anonymous volumes (see Remove). The sandbox's named volume for the
+// service is left, since it is where the service's data lives and a re-create mounts it again.
+func (d *dockerProvider) RemoveUnit(_ context.Context, ref string) error {
+	_, err := d.docker("rm", "-f", "-v", ref)
+
+	return err
 }
 
 // slotPortsFree reports whether both halves of a slot can be bound: the backing ports docker
