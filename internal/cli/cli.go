@@ -773,6 +773,10 @@ func detectShell() string {
 	return "posix"
 }
 
+// envWarnings is where envVars reports variable names it could not hand out. stderr, never
+// stdout: `eval "$(sbx env)"` and `--shell json` parse stdout, and a note there breaks them.
+var envWarnings io.Writer = os.Stderr
+
 // envVars resolves a sandbox's exports into ordered KEY,VALUE pairs. Env formats them for a
 // shell; With injects them into a child process. One resolver, so a scoped run and an `eval`
 // see exactly the same variables.
@@ -839,6 +843,7 @@ func envVars(ctx context.Context, p provider.Provider, path, sandbox string) ([]
 // <SERVICE>_HOST and <SERVICE>_PORT for its first port - asleep or not, since connecting wakes
 // it. A derived name never replaces one already set: the spec author's export is the contract,
 // and a service called "database" must not move DATABASE_PORT.
+// Two services deriving the same name get neither, and every name withheld is warned about.
 func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provider.Endpoint, have [][2]string) [][2]string {
 	taken := map[string]bool{}
 	for _, kv := range have {
@@ -854,7 +859,16 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 	sorted := slices.Clone(units)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Service < sorted[j].Service })
 
-	var out [][2]string
+	type candidate struct {
+		service string
+		ep      provider.Endpoint
+	}
+
+	// Grouped by the name each would take before any is handed out, because a collision has
+	// to be seen whole: taking them in order gave the name to whichever service sorted first.
+	byName := map[string][]candidate{}
+
+	var names []string
 
 	for _, u := range sorted {
 		if exported[u.Service] {
@@ -875,14 +889,58 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 		}
 
 		base := envName(u.Service)
-		host, port := base+"_HOST", base+"_PORT"
-
-		if taken[host] || taken[port] {
-			continue
+		if len(byName[base]) > 0 && byName[base][len(byName[base])-1].service == u.Service {
+			continue // one service listed twice is not a collision with itself
 		}
 
-		taken[host], taken[port] = true, true
-		out = append(out, [2]string{host, ep.Host}, [2]string{port, strconv.Itoa(ep.Port)})
+		if byName[base] == nil {
+			names = append(names, base)
+		}
+
+		byName[base] = append(byName[base], candidate{u.Service, ep})
+	}
+
+	var out [][2]string
+
+	// Every case that hands a name to nobody says so, on stderr (see envWarnings). Silence was
+	// the bug: the service had no variables, and the first sign was a client dialling another.
+	warn := func(format string, args ...any) {
+		fmt.Fprintf(envWarnings, "sbx: warning: "+format+"\n", args...)
+	}
+
+	for _, base := range names {
+		cs := byName[base]
+		host, port := base+"_HOST", base+"_PORT"
+
+		switch {
+		case taken[host] || taken[port]:
+			// An export always wins: it is what the spec author wrote down, and a service
+			// called "database" must not move DATABASE_PORT.
+			held := port
+			if !taken[port] {
+				held = host
+			}
+
+			for _, c := range cs {
+				warn("service %q gets no %s: an export already has that name. Give it an "+
+					"`exports` entry of its own in sandbox.json, or rename the service", c.service, held)
+			}
+
+		case len(cs) > 1:
+			// None of them gets it. Handing it to one means the name points at the wrong
+			// service for anyone who meant another, and nothing would say which.
+			quoted := make([]string, len(cs))
+			for i, c := range cs {
+				quoted[i] = fmt.Sprintf("%q", c.service)
+			}
+
+			warn("services %s all map to %s and %s, so none of them gets those. Give each an "+
+				"`exports` entry in sandbox.json, or rename one", strings.Join(quoted, " and "), host, port)
+
+		default:
+			taken[host], taken[port] = true, true
+			out = append(out, [2]string{host, cs[0].ep.Host}, [2]string{port, strconv.Itoa(cs[0].ep.Port)})
+		}
 	}
 
 	return out
