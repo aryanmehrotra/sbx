@@ -406,6 +406,10 @@ func (r *Remote) ExecTTY(context.Context, string, []string) error {
 	return r.readOnly("a terminal into a service")
 }
 
+func (r *Remote) ExecStream(context.Context, string, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return -1, r.readOnly("running a command in a service")
+}
+
 func (r *Remote) Copy(context.Context, string, string, string) error {
 	return r.readOnly("copying a file")
 }

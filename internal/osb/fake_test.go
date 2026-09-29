@@ -157,6 +157,10 @@ func (f *fakeDocker) SeedFile(context.Context, string, string, string, string) e
 func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) error    { return nil }
 func (f *fakeDocker) HostVolumes()                                                   {}
 
+func (f *fakeDocker) ExecStream(context.Context, string, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+
 func (f *fakeDocker) Pull(_ context.Context, image string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

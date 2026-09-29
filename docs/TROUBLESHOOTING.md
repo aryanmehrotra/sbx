@@ -223,6 +223,18 @@ If the message says "the 3 sleeps in a row it has not" or "the re-key that would
 unsealed failed too", the VM was stopped instead. Its next wake is a cold boot with the disk kept.
 Check `sbx doctor` for memory and swap, keep fewer sandboxes awake, or lower `memory` per microVM.
 
+### `sbx exec` on a microVM: "cannot pass stdin"
+
+The in-VM agent has no way to signal end of input, so a command reading piped stdin would never
+exit. sbx refuses before running anything. Copy the input in and redirect inside the VM:
+
+```sh
+sbx cp my-branch app ./input.sql :/tmp/input.sql
+sbx exec my-branch app sh -c 'psql -U app < /tmp/input.sql'
+```
+
+Empty stdin (`</dev/null`, a closed pipe) is fine, and `sbx exec -t` types into a command.
+
 ### `sbx serve --provider firecracker --osb-addr` on a Mac will not start
 
 On an M3+ Mac or Windows the API runs in the helper VM and is fronted here. The front says which

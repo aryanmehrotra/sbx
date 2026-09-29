@@ -113,6 +113,9 @@ func (*transitionRecorder) CopyVolume(context.Context, string, string) error { r
 func (*transitionRecorder) VolumeFor(string, string) string { return "" }
 
 func (*transitionRecorder) ExecTTY(context.Context, string, []string) error { return nil }
+func (*transitionRecorder) ExecStream(context.Context, string, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
 func (*transitionRecorder) Logs(context.Context, string, int, bool, io.Writer) error {
 	return nil
 }

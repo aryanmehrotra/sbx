@@ -209,7 +209,8 @@ different program: `"entrypoint": ["python", "-m"], "args": ["http.server", "800
 
 Keeps a secret out of a committed file. Works in `env` values only, with no defaults
 (`${VAR:-x}`) or nesting. A bare `$NAME` is left alone. An unset variable is an error before
-anything is created, listing every missing name.
+anything is created, listing every missing name. Only commands that start a service need it:
+`sbx env` prints ports without it.
 
 ### Which spec a sandbox uses
 

@@ -231,6 +231,24 @@ func (r *Remote) ExecTTY(ctx context.Context, ref string, argv []string) error {
 		Cmd{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
 }
 
+// ExecStream is ExecTTY's stream without a terminal: stdio travels on the call's own, and the
+// in-VM sbx exits with the command's status, which stream turns back into an *ExitError.
+func (r *Remote) ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	err := r.stream(ctx, "execstream", request{Ref: ref, Argv: argv}, false,
+		Cmd{Stdin: stdin, Stdout: stdout, Stderr: stderr})
+
+	var ee *provider.ExitError
+	if errors.As(err, &ee) {
+		return ee.Code, nil
+	}
+
+	if err != nil {
+		return -1, err
+	}
+
+	return 0, nil
+}
+
 func (r *Remote) Logs(ctx context.Context, ref string, lines int, follow bool, w io.Writer) error {
 	return r.stream(ctx, "logs", request{Ref: ref, Lines: lines, Follow: follow}, false,
 		Cmd{Stdout: w, Stderr: os.Stderr})
@@ -370,6 +388,14 @@ func Call(ctx context.Context, p provider.Provider, args []string, stdin io.Read
 		return p.Logs(ctx, req.Ref, req.Lines, req.Follow, stdout)
 	case "exectty":
 		return p.ExecTTY(ctx, req.Ref, req.Argv)
+	case "execstream":
+		// The status leaves as an *ExitError, which `sbx fc call` turns into its own exit code.
+		code, err := p.ExecStream(ctx, req.Ref, req.Argv, stdin, stdout, stderr)
+		if err == nil && code != 0 {
+			err = &provider.ExitError{Code: code}
+		}
+
+		return err
 	default:
 		return fmt.Errorf("sbx fc call: unknown method %q", args[0])
 	}

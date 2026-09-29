@@ -1033,6 +1033,39 @@ func isTerminal(f *os.File) bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
+// ExecStream is `docker exec`, with -i only when there is stdin to give it: without -i docker
+// never reads ours, which is how `echo hi | sbx exec b svc cat` used to print nothing. Never
+// -t - a terminal is ExecTTY's job, and -t merges stderr into stdout.
+func (d *dockerProvider) ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	args := []string{"exec"}
+	if stdin != nil {
+		args = append(args, "-i")
+	}
+
+	cmd := exec.CommandContext(ctx, "docker", append(append(args, ref), argv...)...)
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+d.endpoint.String())
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+
+	return exitStatus(cmd.Run())
+}
+
+// exitStatus separates "the command ran and exited N" from "it could not be run". docker exec
+// and kubectl exec both exit with the workload's own status, so an *exec.ExitError here is the
+// workload's answer. One with no status (-1: killed by a signal, usually our cancelled ctx) is
+// not, and stays an error.
+func exitStatus(err error) (int, error) {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() >= 0 {
+		return ee.ExitCode(), nil
+	}
+
+	if err != nil {
+		return -1, err
+	}
+
+	return 0, nil
+}
+
 func (d *dockerProvider) Exec(_ context.Context, ref string, argv []string) (string, error) {
 	return d.docker(append([]string{"exec", ref}, argv...)...)
 }

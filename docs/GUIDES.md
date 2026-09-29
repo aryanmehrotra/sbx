@@ -15,6 +15,7 @@ PGPASSWORD=app psql -U app -d app -c 'select 1'   # this connection wakes it
 Ports are assigned per sandbox, so read them from `sbx env`. `sbx templates` lists the built-in
 specs; [examples/](../examples/) explains each. To add a service mid-task:
 `sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'`.
+`sbx env` then prints `CACHE_HOST` and `CACHE_PORT` for it.
 
 `--template browser` gives a headless Chrome that Playwright and Puppeteer drive over CDP at
 `$CDP_HOST:$CDP_PORT` ([examples/browser](../examples/browser/)).
@@ -140,8 +141,9 @@ and do not connect to a shared local database.
 There is no start and no stop. **Connecting is what wakes a service** - psql, a driver, a test
 runner, curl - and idleness puts it back to sleep, using 0 B of RAM. Never hardcode a port: read
 it from `sbx env`, which is the only place the real numbers exist. The variable names come from
-the spec's `exports` (the postgres template gives `DATABASE_HOST` and `DATABASE_PORT`), so run
-`sbx env <task>` and read them rather than assuming.
+the spec's `exports` (the postgres template gives `DATABASE_HOST` and `DATABASE_PORT`); a
+service you `sbx add` gets `<SERVICE>_HOST` and `<SERVICE>_PORT`. Run `sbx env <task>` and read
+them rather than assuming.
 
     sbx add <task> cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'
     sbx exec <task> postgres psql -U app -d app -c 'select 1'
