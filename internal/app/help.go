@@ -79,9 +79,11 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"on a failing test, or on an interrupt. The Testcontainers shape: the fixture lives\n" +
 			"exactly as long as the command and cleans up even when the command is killed, which a\n" +
 			"create/env/rm script does not guarantee. The command's own exit status is sbx's.\n" +
-			"It refuses a sandbox name already in use, since it removes the sandbox afterwards;\n" +
-			"a create that fails is removed too. `--timeout` bounds each wait for a service.\n" +
-			"`--keep` leaves the sandbox for inspection after a failure.",
+			"SIGINT and SIGTERM are passed on to the command, then the sandbox is removed and sbx\n" +
+			"exits 130 or 143. It refuses a sandbox name already in use, or one another sbx is\n" +
+			"creating, since it removes the sandbox afterwards - and it removes only what it made.\n" +
+			"A create that fails is removed too. `--timeout` bounds each wait for a service.\n" +
+			"`--keep` leaves the sandbox for inspection and says how to remove it.",
 		"sbx with test-db --template postgres -- go test ./...",
 	},
 	"add": {

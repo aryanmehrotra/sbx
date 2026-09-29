@@ -532,7 +532,14 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cli.With(context.Background(), p, path, positional[0], *optional, iso, *timeout, *keep, cmd)
+		// Signals become a cancelled context rather than the default kill: SIGTERM from a CI
+		// runner or a Ctrl-C used to end sbx on the spot and leave the sandbox behind, which is
+		// the one leak `sbx with` exists to prevent. With them caught, the command is sent the
+		// same signal, the sandbox is removed, and the exit status is still 128+signal.
+		ctx, stop := cli.SignalContext(context.Background())
+		defer stop()
+
+		return cli.With(ctx, p, path, positional[0], *optional, iso, *timeout, *keep, cmd)
 
 	case "checkpoint":
 		fs := newFlagSet("checkpoint")
@@ -1110,13 +1117,8 @@ func runAdd(args []string) error {
 		}
 	}
 
-	if *health == "" {
-		fmt.Fprintln(os.Stderr,
-			"sbx: warning: no --health given, so waking this service can only wait for its\n"+
-				"     published port, which docker answers before the server does. The first\n"+
-				"     query after a wake may hit a socket that is about to close.")
-	}
-
+	// The no --health warning is cli.Add's to print, after it has refused a duplicate name: printed
+	// here, it came before the refusal, as advice about a service that was never going to exist.
 	p, iso, err := resolve(*kind, *socket, *ns, *isolation)
 	if err != nil {
 		return err
