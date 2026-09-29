@@ -196,6 +196,9 @@ creating or changing the same sandbox (its name lock). `ps -p N -o pid,etime,com
 it is doing. If it is not an sbx, remove the lock file the error names and re-run. A lock whose
 holder has exited, or whose pid now belongs to another process, is cleared on its own; `sbx gc`
 lists such leftovers and `sbx gc --force` removes them.
+A lock file written by an older sbx holds only a pid, with no start time; if that pid now
+belongs to an unrelated live process, the name stays blocked and `sbx gc` does not list the lock
+as stale. Delete it by hand: `rm ~/.sbx/locks/<sandbox>.lock`.
 
 Up to v0.15.1 the slot wait gave up after 90 seconds and went ahead without the lock, so creates
 queued behind a slow health check could take one slot and fail on its ports. Fixed after v0.15.1.
