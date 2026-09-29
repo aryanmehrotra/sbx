@@ -96,6 +96,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx with --keep` says the sandbox was kept; `sbx add` refuses a duplicate service before any `--health` warning.
 - `sbx snapshot --rm` and `--replace` refuse, removing nothing, while a fork still runs from the snapshot.
 - `sbx gc --snapshots` no longer offers a snapshot any sandbox runs from; `--force` never removes one.
+- `sbx snapshot` pauses the sandbox's running services for the copy and commit, then thaws them (also on failure and Ctrl-C), so a database rewriting its files, such as ClickHouse merging parts, is saved at one instant instead of failing with "can't stat" or tearing.
 - `sbx prewarm` also pulls the helpers a spec needs (`alpine:3` for snapshot and fork, the egress filter's images when a service is filtered) and lists each image once.
 - A service with a short `idle` sleeps on time when another is slow to stop, and a connection during a stop can no longer leave it running while the daemon believes it asleep. The `slept` event reports the idle time that triggered it.
 - `sbx env` warns on stderr when a derived `<SERVICE>_PORT` is taken by an export or shared by two services, and gives a shared name to neither.
