@@ -25,7 +25,19 @@ import (
 
 // ── create ───────────────────────────────────────────────────────────────────
 
+// defaultHealthTimeout is how long create waits for each service's health check when the
+// caller gave no budget of its own. `sbx create` and `sbx add` have no --timeout flag; `sbx with`
+// does, and passes it through createWithin.
+const defaultHealthTimeout = 120 * time.Second
+
 func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation) error {
+	return createWithin(ctx, p, path, sandbox, withOptional, iso, defaultHealthTimeout)
+}
+
+// createWithin is Create with the health-wait budget made explicit. It exists because `sbx with`
+// takes a --timeout, and a create that waited its own fixed two minutes inside that budget made
+// `sbx with --timeout 20s` wait 2m against a service that never answered.
+func createWithin(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, healthTimeout time.Duration) error {
 	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
 	}
@@ -113,7 +125,7 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		// and eventually disagreeing about what the spec said.
 		svc.HealthInterval = sp.ProbeInterval(svc).String()
 
-		if err := createOne(ctx, p, sandbox, slot, start, name, svc, specDir, iso); err != nil {
+		if err := createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout); err != nil {
 			return err
 		}
 
@@ -213,6 +225,12 @@ func waitReachable(eps []provider.Endpoint, timeout time.Duration) bool {
 func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, start int,
 	name string, svc spec.Service, specDir string, iso provider.Isolation,
 ) error {
+	return createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, defaultHealthTimeout)
+}
+
+func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, slot, start int,
+	name string, svc spec.Service, specDir string, iso provider.Isolation, healthTimeout time.Duration,
+) error {
 	eps := p.Endpoints(sandbox, name, slot, start, svc.Ports)
 
 	// Read before Create, not after: whether this create made the service is what matters, and
@@ -242,11 +260,11 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 	}
 
 	if err := checkMounts(ctx, p, ref, name, svc, specDir); err != nil {
-		return err
+		return fmt.Errorf("%w\n%s", err, discardBrokenMount(ctx, p, sandbox, ref))
 	}
 
 	if svc.Health != "" {
-		if err := waitHealthy(ctx, p, ref, svc.Health, 120*time.Second); err != nil {
+		if err := waitHealthy(ctx, p, ref, svc.Health, healthTimeout); err != nil {
 			return fmt.Errorf("service %q: %w", name, err)
 		}
 	}
@@ -263,6 +281,36 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 	fmt.Printf("  %-12s ✓ %s\n", name, joinEndpoints(eps))
 
 	return nil
+}
+
+// discardBrokenMount takes the container whose mount check failed out of service, and says how.
+//
+// A mount is fixed when the container is created, so this container is broken by construction:
+// every start mounts the same wrong path. It used to be left up and awake after the error,
+// serving with the broken mount, and a re-run after fixing the path found it "already exists" and
+// kept it. The rest of the sandbox is deliberately kept - re-running create is how a half-built
+// sandbox is finished, and rolling everything back would throw away services that are fine.
+//
+// A backend that cannot remove one service's workload stops it instead. That keeps it from
+// serving, but a re-run leaves a stopped service as it is, so the message says to remove the
+// sandbox rather than to re-run.
+func discardBrokenMount(ctx context.Context, p provider.Provider, sandbox, ref string) string {
+	if r, ok := p.(provider.UnitRemover); ok {
+		if err := r.RemoveUnit(ctx, ref); err == nil {
+			return fmt.Sprintf("     Its container was removed (removed %s): every start would mount the same wrong path.\n"+
+				"     The rest of the sandbox is kept. Fix the path, then re-run the same sbx create %s to finish it.",
+				ref, sandbox)
+		}
+	}
+
+	if err := p.Stop(ctx, ref); err != nil {
+		return fmt.Sprintf("     Its container %s could not be removed or stopped (%v), so it may still be serving with\n"+
+			"     the broken mount. Fix the path, then: sbx rm %s, and create it again.", ref, err, sandbox)
+	}
+
+	return fmt.Sprintf("     Its container was stopped (stopped %s) so it does not serve with the broken mount. This\n"+
+		"     backend cannot remove one service, so fix the path, then: sbx rm %s, and create it again.",
+		ref, sandbox)
 }
 
 // checkMounts asserts that every declared file arrived as a file.
@@ -402,6 +450,10 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 	// reason was in the log the whole time and it took a `docker logs` to find.
 	last := lastLines(ctx, p, ref, 5)
 
+	if why := runtimeState(ctx, p, ref); why != "" {
+		last += "\n     " + why
+	}
+
 	if command != "" {
 		if out, err := p.Exec(ctx, ref, []string{"sh", "-c", command}); err != nil {
 			return fmt.Errorf("%s never became ready within %s - the health command %q still "+
@@ -410,6 +462,31 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 	}
 
 	return fmt.Errorf("%s never became ready within %s%s", ref, timeout, last)
+}
+
+// runtimeState is the runtime's own account of a workload that never served, as one clause for
+// an error, or "" when it is running or the backend cannot say.
+//
+// Probe answers only serving or not, so a wait that timed out cannot tell "the check kept
+// failing" from "the container exited" or "the engine never answered" - and those send the
+// reader to three different places. The last one matters most: an engine stalled during a Kata
+// start fails every inspect, and "never became ready" alone blames the workload.
+func runtimeState(ctx context.Context, p provider.Provider, ref string) string {
+	er, ok := p.(provider.ExitReporter)
+	if !ok {
+		return ""
+	}
+
+	st, err := er.ExitOf(ctx, ref)
+	if err != nil {
+		return "the runtime could not be asked about it: " + err.Error()
+	}
+
+	if st.Status == "running" {
+		return ""
+	}
+
+	return "its container is not running: " + st.String()
 }
 
 // lastLines is what the workload printed, formatted for the end of an error, or "" if it said
@@ -803,6 +880,8 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 
 	var unverifiable []string
 
+	deadline := time.Now().Add(timeout)
+
 	for _, u := range units {
 		// Locally, connecting is the wake signal and the daemon owns the port. Elsewhere
 		// there is no daemon in front, so ask the provider directly. Both are "make this
@@ -833,6 +912,24 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 		}
 
 		fmt.Printf("  %-24s serving\n", u.Service)
+	}
+
+	// A service with no health check has nothing to wait on, and one whose engine could not be
+	// asked used to look the same - so this printed "serving" for a container that had exited.
+	// Whatever the checks said, a workload that is not running is not serving.
+	//
+	// A service with a health check that passed was running when it passed. One without has only
+	// its state to go on, and a container that exits on startup is "running" for the moment after
+	// its start - which is when this first looks. So it has to stay running for a settle window,
+	// the same two seconds the daemon gives an unverified wake before calling it awake. Found
+	// live: redis with a bad flag and no health check passed a single look.
+	settle := time.Duration(0)
+	if len(unverifiable) > 0 {
+		settle = unverifiedSettle
+	}
+
+	if err := waitRunning(ctx, p, sandbox, deadline, settle); err != nil {
+		return err
 	}
 
 	if len(unverifiable) > 0 {
@@ -871,6 +968,68 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 	fmt.Printf("sandbox %q is serving\n", sandbox)
 
 	return nil
+}
+
+// unverifiedSettle is how long a service with no health check must stay running before ready
+// believes it. The daemon waits the same before marking such a wake awake (proxy.go).
+const unverifiedSettle = 2 * time.Second
+
+// waitRunning blocks until every unit of the sandbox has been running for a continuous settle
+// window, and names each one that is not when the deadline passes. It always looks at least
+// once, so a deadline the health waits used up still gets an answer rather than a pass.
+//
+// It polls because the wake it follows is asynchronous: a knock returns when the daemon accepts,
+// not when the container is up. And it wants a window, not a look or two, because a container
+// that exits on startup is running for a moment after every start - and with a daemon in front
+// it is started again and again, so two looks a settle apart can both land on one. Measured
+// live: one `sbx ready` in three passed that way before this polled through the window.
+func waitRunning(ctx context.Context, p provider.Provider, sandbox string, deadline time.Time, settle time.Duration) error {
+	var upSince time.Time // when every unit was first seen running in this unbroken stretch
+
+	for {
+		units, err := p.List(ctx, sandbox)
+		if err != nil {
+			return err
+		}
+
+		var down []provider.Unit
+
+		for _, u := range units {
+			if !u.Running {
+				down = append(down, u)
+			}
+		}
+
+		if len(down) == 0 {
+			if upSince.IsZero() {
+				upSince = time.Now()
+			}
+
+			if time.Since(upSince) >= settle {
+				return nil
+			}
+		} else {
+			upSince = time.Time{}
+
+			if !time.Now().Before(deadline) {
+				var b strings.Builder
+
+				for _, u := range down {
+					fmt.Fprintf(&b, "\n     %s is not running", u.Service)
+
+					if why := runtimeState(ctx, p, u.Ref); why != "" {
+						b.WriteString("\n       " + why)
+					}
+
+					fmt.Fprintf(&b, "\n       see why: sbx logs %s %s", sandbox, u.Service)
+				}
+
+				return fmt.Errorf("sandbox %q is not serving:%s", sandbox, b.String())
+			}
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Sleep parks a sandbox now: it stops every running service, dropping each to 0 B of memory

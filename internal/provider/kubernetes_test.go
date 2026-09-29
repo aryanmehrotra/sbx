@@ -78,7 +78,7 @@ func TestReadinessCacheIsInvalidatedWhenTheDeploymentIsRecreated(t *testing.T) {
 	k.ready["sbx-b-redis"] = readyEntry{command: "redis-cli ping", at: time.Now()}
 	k.mu.Unlock()
 
-	if cmd, ok := k.cachedReady("sbx-b-redis"); !ok || cmd != "redis-cli ping" {
+	if cmd, ok, _ := k.cachedReady("sbx-b-redis"); !ok || cmd != "redis-cli ping" {
 		t.Fatalf("cachedReady = (%q, %v), want the cached command", cmd, ok)
 	}
 
@@ -102,7 +102,7 @@ func TestAnAbsentReadinessCommandIsRemembered(t *testing.T) {
 	k.ready["sbx-b-web"] = readyEntry{command: "", at: time.Now()}
 	k.mu.Unlock()
 
-	if _, ok := k.cachedReady("sbx-b-web"); ok {
+	if _, ok, _ := k.cachedReady("sbx-b-web"); ok {
 		t.Error("an empty readiness command was reported as declared")
 	}
 }
@@ -123,7 +123,7 @@ func TestTheReadinessCacheExpires(t *testing.T) {
 	// Stale, so it must go back to kubectl rather than answering from the map. There is no
 	// cluster here, so that lookup fails - and failing is the correct observable: what must
 	// not happen is the stale command being returned.
-	if cmd, ok := k.cachedReady("sbx-b-redis"); ok && cmd == "old-command" {
+	if cmd, ok, _ := k.cachedReady("sbx-b-redis"); ok && cmd == "old-command" {
 		t.Error("an expired entry was served - a recreated deployment would be probed with " +
 			"the command it used to declare")
 	}

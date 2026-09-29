@@ -22,6 +22,7 @@ type existingStub struct {
 	execErr error
 	execs   int
 	probes  int
+	stopped []string
 }
 
 func (s *existingStub) Probe(context.Context, string) (bool, bool) {
@@ -119,4 +120,12 @@ func TestAFreshServiceThatListsAsAsleepStillGetsItsHealthAndInit(t *testing.T) {
 	if stub.probes == 0 || stub.execs == 0 {
 		t.Errorf("a fresh service got %d health probe(s) and %d exec(s), want its health check and its init step", stub.probes, stub.execs)
 	}
+}
+
+// Stop records rather than panicking through the nil Provider: a failed mount check stops the
+// container on a backend that cannot remove one on its own.
+func (s *existingStub) Stop(_ context.Context, ref string) error {
+	s.stopped = append(s.stopped, ref)
+
+	return nil
 }
