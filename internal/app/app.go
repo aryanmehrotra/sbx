@@ -438,8 +438,13 @@ func dispatch(cmd string, args []string) error {
 		// `sbx snapshot rm golden` already means "snapshot the sandbox rm as golden". Reading
 		// it as a delete instead would destroy the snapshot its author meant to make.
 		remove := fs.Bool("rm", false, "delete the named snapshot's images and volumes instead")
+		replace := fs.Bool("replace", false, "remove the snapshot of that name entirely, then take a fresh one")
 		kind, socket, ns, isolation := backendFlags(fs)
 		positional := parsePositional(fs, args)
+
+		if *remove && *replace {
+			return fmt.Errorf("sbx snapshot takes --rm or --replace, not both: --rm <name> deletes, --replace <sandbox> <name> re-takes")
+		}
 
 		if *remove && len(positional) != 1 {
 			return fmt.Errorf("sbx snapshot --rm takes one snapshot name: sbx snapshot --rm <name>")
@@ -458,7 +463,12 @@ func dispatch(cmd string, args []string) error {
 			return cli.RemoveSnapshot(context.Background(), p, positional[0])
 		}
 
-		if _, err := cli.Snapshot(context.Background(), p, positional[0], positional[1]); err != nil {
+		take := cli.Snapshot
+		if *replace {
+			take = cli.ReplaceSnapshot
+		}
+
+		if _, err := take(context.Background(), p, positional[0], positional[1]); err != nil {
 			return err
 		}
 
@@ -899,6 +909,12 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
+		// The volume-copy helper comes with every template (they declare volumes) and with a spec
+		// only when one of its services declares a `volume`: that is the only thing snapshot and
+		// fork copy, so a volume-less spec never runs it and a CI cache should not carry it.
+		// Named images mean exactly those.
+		helpers := len(named) == 0
+
 		images := TemplateImages()
 
 		if *specPath != "" {
@@ -916,13 +932,15 @@ func dispatch(cmd string, args []string) error {
 			}
 
 			sort.Strings(images)
+
+			helpers = copiesVolumes(s)
 		}
 
 		if len(named) > 0 {
 			images = named
 		}
 
-		return cli.Prewarm(context.Background(), p, os.Stdout, images)
+		return cli.Prewarm(context.Background(), p, os.Stdout, images, helpers)
 
 	case "ui", "dash", "dashboard":
 		fs := newFlagSet("ui")

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,6 +89,21 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 	}
 
 	vols, _ := p.(provider.NamedVolumes)
+
+	// A name is taken once. Without this, a second snapshot under a name committed over the
+	// first one's images and added its own beside them: snapshot "mix" of pg+redis, taken again
+	// from a sandbox whose one service is r, became mix-pg, mix-redis and mix-r, and every fork
+	// of it failed on a spec with no service r. Taken again from the same sandbox it replaced
+	// the images silently, under forks that still meant the old state. Replacing is a separate,
+	// explicit act (ReplaceSnapshot) that removes the old snapshot whole first.
+	taken, err := existingSnapshot(ctx, snap, vols, name, services(units))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := taken.refusal(name, sandbox); err != nil {
+		return nil, err
+	}
 
 	// Everything this call writes, so a failure can take it back. A snapshot that fails part
 	// way used to leave its first images and volumes behind under a message saying nothing
@@ -198,11 +214,293 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 	return refs, nil
 }
 
+func services(units []provider.Unit) []string {
+	out := make([]string, 0, len(units))
+	for _, u := range units {
+		out = append(out, u.Service)
+	}
+
+	return out
+}
+
+// takenName is what already exists under a snapshot name: own is this snapshot's (its images,
+// the volumes that go with them, and a volume at a name this snapshot would write), foreign is
+// an image at a name this snapshot would write that belongs to a different snapshot.
+type takenName struct {
+	ownImages, ownVolumes []string
+	foreign               []string // "image (whose)"
+}
+
+func (t takenName) empty() bool {
+	return len(t.ownImages) == 0 && len(t.ownVolumes) == 0 && len(t.foreign) == 0
+}
+
+// refusal is the error for taking a snapshot under a name that is not free, or nil.
+func (t takenName) refusal(name, sandbox string) error {
+	if err := t.foreignRefusal(name); err != nil {
+		return err
+	}
+
+	if t.empty() {
+		return nil
+	}
+
+	return fmt.Errorf("snapshot %q already exists (%s). Taking it again would overwrite it under "+
+		"every fork made from it, so nothing was changed.\n"+
+		"     delete it:   sbx snapshot --rm %s\n"+
+		"     replace it:  sbx snapshot --replace %s %s\n"+
+		"     or pick another name",
+		name, strings.Join(append(append([]string{}, t.ownImages...), t.ownVolumes...), ", "), name, sandbox, name)
+}
+
+// foreignRefusal is the part --replace cannot fix: removing a snapshot by its name never
+// touches another snapshot's images, so replacing would still overwrite them.
+func (t takenName) foreignRefusal(name string) error {
+	if len(t.foreign) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("the name %q would overwrite %s, and that is not this snapshot's to "+
+		"replace; nothing was changed. Pick another name", name, strings.Join(t.foreign, ", "))
+}
+
+// existingSnapshot finds what already exists under name, for a snapshot of these services.
+//
+// Three shapes, all found the hard way to be "the name is taken": this snapshot's own images
+// (labelled, or unlabelled and unambiguous - what SnapshotsOf would resolve, and so what a fork
+// would start from); a snapshot volume at a name this one would copy into, which an interrupted
+// sweep leaves without its image; and an image at a name this one would commit to that belongs
+// to another snapshot - "qa" of a service "s1-db" and "qa-s1" of "db" are one image name.
+func existingSnapshot(ctx context.Context, snap provider.Snapshotter, vols provider.NamedVolumes,
+	name string, svcs []string,
+) (takenName, error) {
+	var t takenName
+
+	refs, _, err := snapshotRefs(ctx, snap, name, true)
+	if err != nil {
+		return t, err
+	}
+
+	for _, r := range refs {
+		t.ownImages = append(t.ownImages, r.Image)
+	}
+
+	slices.Sort(t.ownImages) // docker lists in no stable order, and the refusal names them
+
+	images, err := snap.Images(ctx, "sbx-snap-"+name+"-")
+	if err != nil {
+		return t, err
+	}
+
+	labeler, _ := snap.(provider.ImageLabeler)
+
+	for _, svc := range svcs {
+		img := snapshotImage(name, svc)
+		if !slices.Contains(images, img) || slices.Contains(t.ownImages, img) {
+			continue
+		}
+
+		// Not among refs, so either labelled as another snapshot's or unlabelled with a dash
+		// in the service part, which may be another snapshot's. Neither is ours to overwrite.
+		owner := ""
+		if labeler != nil {
+			owner, _ = labeler.ImageLabel(ctx, img, labelSnapshotName)
+			owner = strings.TrimSpace(strings.ReplaceAll(owner, "<no value>", ""))
+		}
+
+		if owner != "" {
+			t.foreign = append(t.foreign, fmt.Sprintf("%s (snapshot %q's)", img, owner))
+		} else {
+			t.foreign = append(t.foreign, fmt.Sprintf("%s (unlabelled, it may be another "+
+				"snapshot's; if it is not, docker rmi %s)", img, img))
+		}
+	}
+
+	if vols == nil {
+		return t, nil
+	}
+
+	var candidates []string
+	for _, r := range refs {
+		candidates = append(candidates, r.Volume, snapshotVolume(name, r.Service))
+	}
+
+	for _, svc := range svcs {
+		candidates = append(candidates, snapshotVolume(name, svc))
+	}
+
+	for _, v := range compactVolumes(candidates...) {
+		ok, err := vols.VolumeExists(ctx, v)
+		if err != nil {
+			return t, err
+		}
+
+		if ok {
+			t.ownVolumes = append(t.ownVolumes, v)
+		}
+	}
+
+	return t, nil
+}
+
+// ReplaceSnapshot removes the snapshot called name entirely, then takes a fresh one of sandbox
+// under it. It is never a merge: nothing of the old snapshot survives into the new one.
+//
+// Everything that can refuse is asked before anything is removed - the sandbox exists, the
+// name is not another snapshot's, no fork still runs from the old one - because the removal
+// cannot be taken back. What remains is a snapshot that fails after the old one is gone, and
+// that error says so.
+func ReplaceSnapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([]SnapshotRef, error) {
+	if err := ValidateName("sandbox", sandbox); err != nil {
+		return nil, err
+	}
+
+	if err := ValidateSnapshotName(name); err != nil {
+		return nil, err
+	}
+
+	snap, err := provider.SnapshotterFor(p)
+	if err != nil {
+		return nil, err
+	}
+
+	units, err := p.List(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(units) == 0 {
+		return nil, UnknownSandbox(ctx, p, sandbox)
+	}
+
+	vols, _ := p.(provider.NamedVolumes)
+
+	taken, err := existingSnapshot(ctx, snap, vols, name, services(units))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := taken.foreignRefusal(name); err != nil {
+		return nil, err
+	}
+
+	if !taken.empty() {
+		err := removeSnapshotParts(ctx, p, snap, vols, name, taken.ownImages, taken.ownVolumes,
+			fmt.Sprintf("replacing snapshot %q", name))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	refs, err := Snapshot(ctx, p, sandbox, name)
+	if err != nil && !taken.empty() {
+		return nil, fmt.Errorf("%w\n\nthe old snapshot %q was removed before this failed, so "+
+			"nothing is saved under that name now: sbx snapshot %s %s", err, name, sandbox, name)
+	}
+
+	return refs, err
+}
+
+// removeSnapshotParts removes a snapshot's images and volumes, refusing the whole removal while
+// any of them is still in use. docker refuses an image a container was created from, but only
+// that image: asking it one at a time removed the parts no fork happened to use and left a
+// snapshot with some of its services, which a later fork starts half of from fresh volumes.
+func removeSnapshotParts(ctx context.Context, p provider.Provider, snap provider.Snapshotter,
+	vols provider.NamedVolumes, name string, images, volumes []string,
+	announce string,
+) error {
+	if uf, ok := p.(provider.UsageFinder); ok {
+		used, err := uf.InUse(ctx, images, volumes)
+		if err != nil {
+			return fmt.Errorf("could not tell whether a sandbox still uses snapshot %q, so "+
+				"nothing was removed: %w", name, err)
+		}
+
+		if err := inUseRefusal(name, used); err != nil {
+			return err
+		}
+	}
+
+	// Only once nothing can refuse, so the line is never followed by "nothing was removed".
+	if announce != "" {
+		fmt.Println(announce)
+	}
+
+	var failed []string
+
+	for _, img := range images {
+		if err := snap.RemoveImage(ctx, img); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", img, err))
+			continue
+		}
+
+		fmt.Printf("  removed %s\n", img)
+	}
+
+	for _, v := range volumes {
+		if vols == nil {
+			break
+		}
+
+		if err := vols.RemoveVolume(ctx, v); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", v, err))
+			continue
+		}
+
+		fmt.Printf("  removed %s\n", v)
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("snapshot %q was only partly removed - a fork still using an image "+
+			"keeps it; remove the fork (sbx rm) and run this again:\n  %s", name, strings.Join(failed, "\n  "))
+	}
+
+	return nil
+}
+
+// inUseRefusal names who still uses a snapshot and the command that frees it, or is nil.
+func inUseRefusal(name string, used map[string][]string) error {
+	if len(used) == 0 {
+		return nil
+	}
+
+	var (
+		parts []string
+		users []string
+	)
+
+	for _, what := range slices.Sorted(maps.Keys(used)) {
+		parts = append(parts, what+" by "+strings.Join(used[what], ", "))
+
+		for _, u := range used[what] {
+			if !slices.Contains(users, u) {
+				users = append(users, u)
+			}
+		}
+	}
+
+	slices.Sort(users)
+
+	var fixes []string
+
+	for _, u := range users {
+		if c, ok := strings.CutPrefix(u, "container "); ok {
+			fixes = append(fixes, "docker rm "+c)
+		} else {
+			fixes = append(fixes, "sbx rm "+u)
+		}
+	}
+
+	return fmt.Errorf("snapshot %q is still in use (%s), so nothing was removed. A fork runs "+
+		"from its snapshot's images; remove it first and run this again:\n     %s",
+		name, strings.Join(parts, "; "), strings.Join(fixes, "\n     "))
+}
+
 // Image labels a snapshot writes. noVolume is recorded rather than an absent label, because an
 // absent label is what every snapshot taken before these existed looks like.
 const (
-	labelSnapshotName   = "sbx.snapshot.name"
-	labelSnapshotVolume = "sbx.snapshot.volume"
+	labelSnapshotName   = provider.SnapshotNameLabel
+	labelSnapshotVolume = provider.SnapshotVolumeLabel
 	noVolume            = "none"
 )
 
@@ -343,15 +641,10 @@ func RemoveSnapshot(ctx context.Context, p provider.Provider, name string) error
 
 	vols, _ := p.(provider.NamedVolumes)
 
-	var failed []string
+	var images, volumes []string
 
 	for _, r := range refs {
-		if err := snap.RemoveImage(ctx, r.Image); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", r.Image, err))
-			continue
-		}
-
-		fmt.Printf("  removed %s\n", r.Image)
+		images = append(images, r.Image)
 
 		// The conventional name too, not only the labelled one: a snapshot of an empty volume
 		// is labelled "none" but a copy from an earlier snapshot of the same name may remain.
@@ -360,22 +653,14 @@ func RemoveSnapshot(ctx context.Context, p provider.Provider, name string) error
 				break
 			}
 
-			if ok, _ := vols.VolumeExists(ctx, v); !ok {
-				continue
+			if ok, _ := vols.VolumeExists(ctx, v); ok && !slices.Contains(volumes, v) {
+				volumes = append(volumes, v)
 			}
-
-			if err := vols.RemoveVolume(ctx, v); err != nil {
-				failed = append(failed, fmt.Sprintf("%s: %v", v, err))
-				continue
-			}
-
-			fmt.Printf("  removed %s\n", v)
 		}
 	}
 
-	if len(failed) > 0 {
-		return fmt.Errorf("snapshot %q was only partly removed - a fork still using an image "+
-			"keeps it; remove the fork (sbx rm) and run this again:\n  %s", name, strings.Join(failed, "\n  "))
+	if err := removeSnapshotParts(ctx, p, snap, vols, name, images, volumes, ""); err != nil {
+		return err
 	}
 
 	fmt.Printf("snapshot %q removed\n", name)

@@ -209,6 +209,28 @@ the message says nothing was changed. Snapshot only sandboxes whose services all
 Fixed after v0.15.1: such a service is saved as its image alone, and a snapshot that fails removes
 what it wrote.
 
+### `sbx fork` says "the spec has no service" for a snapshot that forked before
+
+Up to v0.15.1, `sbx snapshot <sandbox> <name>` under a name that already existed wrote over it and
+kept the old images beside the new ones. Taken from a sandbox with other services, the snapshot
+became a mix of both, and a fork failed on the service its spec lacks. `docker images 'sbx-snap-<name>-*'`
+shows the mix. Delete it with `sbx snapshot --rm <name>` and take it again. Fixed after v0.15.1:
+a taken name is refused, and `sbx snapshot --replace <sandbox> <name>` removes the old snapshot whole first.
+
+### `sbx gc --snapshots` lists a snapshot a fork still uses
+
+Up to v0.15.1, gc offered every snapshot image, including the ones a fork's containers run from,
+and `--force` deleted what docker let go and failed on the rest. Do not run `--force` while a fork
+exists; `docker ps -a --format '{{.Names}} {{.Image}}'` shows which containers run from a
+`sbx-snap-*` image. Fixed after v0.15.1: gc skips a snapshot any container uses, its images and
+volumes alike, and prints how many it skipped.
+
+### The first `sbx fork` after `sbx prewarm` is still slow
+
+Up to v0.15.1 on docker, prewarm did not pull `alpine:3`, which snapshot and fork copy volumes
+with, so the first fork pulled it. Run `docker pull alpine:3` in the same step. Fixed after
+v0.15.1: prewarm pulls it too, unless you name images or the spec declares no `volume`.
+
 ### `sbx create` again keeps running the old build
 
 Up to v0.15.1, re-running `sbx create` after editing a `build` context built the new image

@@ -1020,6 +1020,15 @@ func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, err
 	return names, nil
 }
 
+// VolumeCopyImage is the throwaway image CopyVolume runs `cp -a` in. It is a helper no spec
+// names, so `sbx prewarm` fetches it through HelperImages, and a fork does not pull it cold.
+const VolumeCopyImage = "alpine:3"
+
+// HelperImages implements HelperImager.
+func (d *dockerProvider) HelperImages() []string { return []string{VolumeCopyImage} }
+
+var _ HelperImager = (*dockerProvider)(nil)
+
 // CopyVolume copies volume to volume through a throwaway container.
 //
 // `cp -a` inside a small image is docker's own recipe for this and it is the right one:
@@ -1067,7 +1076,7 @@ echo "SBXCOUNT $(find /from -mindepth 1 | wc -l) $(find /to -mindepth 1 | wc -l)
 	out, err := d.docker("run", "--rm",
 		"-v", src+":/from:ro",
 		"-v", dst+":/to",
-		"alpine:3", "sh", "-c", script)
+		VolumeCopyImage, "sh", "-c", script)
 	if err != nil {
 		return fmt.Errorf("copying volume %s to %s: %w: %s", src, dst, err, lastLines(out, 8))
 	}
