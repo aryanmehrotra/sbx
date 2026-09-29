@@ -105,8 +105,8 @@ func TestSleepOnAnAlreadyAsleepSandboxIsANoOp(t *testing.T) {
 
 // A frozen service (on_idle: freeze, or a paused container) is not running, but it is holding
 // every byte of its memory. `sbx sleep` used to skip it and say "already asleep" - the one state
-// where sleeping is the whole point. It is thawed first so the stop is an ordinary one rather
-// than a signal queued behind the freezer until the grace period runs out.
+// where sleeping is the whole point. It is thawed first: a microVM's sleep asks the frozen guest
+// to seal, which it cannot answer.
 func TestSleepStopsAFrozenService(t *testing.T) {
 	s := &sleeper{units: []provider.Unit{
 		{Sandbox: "x", Service: "db", Ref: "sbx-x-db", Paused: true},

@@ -1244,9 +1244,12 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 // sleepOne stops one service, thawing it first if it is frozen, and journals the outcome.
 //
 // A frozen service is not running, and `sbx sleep` used to skip it as "already asleep" - while
-// it held every byte of its memory, the one state where sleeping is the whole point. It is
-// thawed first because a stop signal sent to a frozen process is only queued: docker waits out
-// the whole grace period and then kills it.
+// it held every byte of its memory, the one state where sleeping is the whole point.
+//
+// It is thawed first. Docker does not need that (measured: `docker stop` on a paused redis
+// returned at once, exit 0), but a microVM does: its sleep asks the guest to seal before the
+// snapshot, and a frozen guest cannot answer. Thawing is one cheap call, and it makes the stop
+// that follows the ordinary one on every backend.
 func sleepOne(ctx context.Context, p provider.Provider, sandbox string, u provider.Unit) error {
 	fail := func(err error) error {
 		journalEvent(sandbox, u.Service, "sleepFailed", 0, err, "could not sleep: `sbx sleep`")
