@@ -36,7 +36,7 @@ func TestGCNeverOffersWhatAForkStillUses(t *testing.T) {
 			}
 		}
 
-		if !strings.Contains(out.String(), "2 in use") {
+		if !strings.Contains(out.String(), "1 image and 1 volume in use") {
 			t.Errorf("force=%v: the output does not say 2 were skipped for being in use:\n%s", force, out.String())
 		}
 	}
@@ -50,7 +50,7 @@ func TestGCNeverOffersWhatAForkStillUses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(f.reclaimed) != 0 || !strings.Contains(out.String(), "2 in use") {
+	if len(f.reclaimed) != 0 || !strings.Contains(out.String(), "1 image and 1 volume in use") {
 		t.Errorf("reclaimed %v; output:\n%s", f.reclaimed, out.String())
 	}
 }

@@ -32,7 +32,7 @@ func TestGCSummaryCountsEachSkipReasonSeparately(t *testing.T) {
 		t.Errorf("no --older-than, so nothing was skipped for age, but the summary says so:\n%s", got)
 	}
 
-	if !strings.Contains(got, "3 snapshots skipped") {
+	if !strings.Contains(got, "3 images of snapshots skipped") {
 		t.Errorf("the snapshot count is missing or wrong:\n%s", got)
 	}
 
@@ -49,7 +49,7 @@ func TestGCSummaryCountsEachSkipReasonSeparately(t *testing.T) {
 
 	got = out.String()
 
-	if !strings.Contains(got, "3 snapshots skipped") || !strings.Contains(got, "2 newer than 24h0m0s skipped") {
+	if !strings.Contains(got, "3 images of snapshots skipped") || !strings.Contains(got, "2 newer than 24h0m0s skipped") {
 		t.Errorf("want separate counts for snapshots (3) and age (2):\n%s", got)
 	}
 
@@ -67,7 +67,29 @@ func TestGCSummaryCountsEachSkipReasonSeparately(t *testing.T) {
 
 	got = out.String()
 
-	if !strings.Contains(got, "1 snapshot skipped") || !strings.Contains(got, "1 newer than 24h0m0s skipped") {
+	if !strings.Contains(got, "1 image of snapshots skipped") || !strings.Contains(got, "1 newer than 24h0m0s skipped") {
 		t.Errorf("nothing reclaimable: want both counts:\n%s", got)
+	}
+}
+
+// "29 snapshots skipped" counted a snapshot's images and volumes together, so one pg+redis
+// snapshot read as four snapshots. The summary says what it counted: images and volumes.
+func TestGCSummaryCountsImagesAndVolumesNotSnapshots(t *testing.T) {
+	items := []provider.Artifact{
+		{Kind: "image", Name: "sbx-snap-a-pg:latest", Snapshot: true, Age: time.Hour},
+		{Kind: "image", Name: "sbx-snap-a-redis:latest", Snapshot: true, Age: time.Hour},
+		{Kind: "volume", Name: "sbx-snapvol-a-pg", Snapshot: true, Age: time.Hour},
+		{Kind: "volume", Name: "sbx-snapvol-a-redis", Snapshot: true, Age: time.Hour},
+		{Kind: "volume", Name: "sbx-snapvol-b-db", Snapshot: true, Age: time.Hour},
+	}
+
+	var out strings.Builder
+	if err := gcWith(context.Background(), &fakeCollector{items: items}, &out, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := out.String(); !strings.Contains(got, "2 images and 3 volumes of snapshots skipped") ||
+		strings.Contains(got, "5 snapshots") {
+		t.Errorf("want the skipped snapshot artifacts counted by kind:\n%s", got)
 	}
 }
