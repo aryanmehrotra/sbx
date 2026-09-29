@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -64,7 +65,8 @@ func TestInUseSeesAStoppedContainer(t *testing.T) {
 }
 
 // An image with no labels at all (alpine:3, or a snapshot from before labels) still has to be
-// read: `index .Config.Labels` failed the whole inspect on one, and the image looked absent.
+// read: a template reading .Id beside `index .Config.Labels` fails the whole inspect on one
+// (docker 29.5.2), and the image looked absent.
 func TestImageMetasReadsAnImageWithNoLabels(t *testing.T) {
 	d := dockerOrSkip(t)
 
@@ -74,5 +76,56 @@ func TestImageMetasReadsAnImageWithNoLabels(t *testing.T) {
 
 	if m := d.imageMetas([]string{VolumeCopyImage}); m[VolumeCopyImage].ID == "" {
 		t.Fatalf("imageMetas(%s) = %v, want its ID", VolumeCopyImage, m)
+	}
+}
+
+// A snapshot image made before snapshots were labelled has no labels, and SnapshotsOf and
+// RemoveSnapshot fall back to its name only if ImageLabel answers "" rather than an error.
+// ImageLabel's template indexes the labels and reads nothing else, which docker 29.5.2 answers
+// with "" on such an image (a template that also reads .Id is the one that fails; see
+// imageMetas). This pins that, so a change to the template that breaks it goes red here.
+func TestImageLabelOfAnUnlabelledImage(t *testing.T) {
+	d := dockerOrSkip(t)
+	ctx := context.Background()
+
+	img := fmt.Sprintf("sbx-snap-legacy-test-%d-x:latest", os.Getpid())
+	src := fmt.Sprintf("sbx-legacy-test-%d", os.Getpid())
+
+	if _, err := d.docker("create", "--name", src, VolumeCopyImage, "true"); err != nil {
+		t.Skipf("cannot create from %s: %v", VolumeCopyImage, err)
+	}
+
+	_, err := d.docker("commit", src, img) // no --change: no labels, as before labels existed
+	_, _ = d.docker("rm", "-f", src)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _, _ = d.docker("rmi", img) })
+
+	got, err := d.ImageLabel(ctx, img, SnapshotNameLabel)
+	if err != nil || got != "" {
+		t.Fatalf("ImageLabel of an unlabelled image = %q, %v; want \"\", nil", got, err)
+	}
+
+	// And a labelled one still reads.
+	lab := strings.Replace(img, "-x:latest", "-y:latest", 1)
+
+	if _, err := d.docker("create", "--name", src, VolumeCopyImage, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = d.docker("commit", "--change", "LABEL "+SnapshotNameLabel+"=legacy", src, lab)
+	_, _ = d.docker("rm", "-f", src)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _, _ = d.docker("rmi", lab) })
+
+	if got, err := d.ImageLabel(ctx, lab, SnapshotNameLabel); err != nil || got != "legacy" {
+		t.Fatalf("ImageLabel of a labelled image = %q, %v; want legacy", got, err)
 	}
 }
