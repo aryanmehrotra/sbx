@@ -202,8 +202,8 @@ to finish removed it under the other.
 
 Pid files rather than `flock`: it is what the slot lock already was, it builds on all eight
 platforms, and the pid is what the error prints. The file carries the holder's start time too
-(`internal/procid`), so a pid recycled to another process is stale; the daemon registry and
-snapshot's pause marks use the same record. Where the platform cannot tell a start time (the
+(`internal/procid`), so a pid recycled to another process is stale; the daemon registry,
+snapshot's pause marks and the helper-VM lock (`sbx fc`) use the same record. Where the platform cannot tell a start time (the
 BSDs, Windows) it is the pid alone. One machine only, as before.
 The OpenSandbox API takes the same error-returning lock: a create whose wait runs out is
 `Failed` with reason `slot_lock_timeout` and places no container.
