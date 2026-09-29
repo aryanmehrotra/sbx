@@ -13,15 +13,15 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-func captureEnvWarnings(t *testing.T) *bytes.Buffer {
+func captureStderr(t *testing.T) *bytes.Buffer {
 	t.Helper()
 
 	var buf bytes.Buffer
 
-	old := envWarnings
-	envWarnings = &buf
+	old := stderr
+	stderr = &buf
 
-	t.Cleanup(func() { envWarnings = old })
+	t.Cleanup(func() { stderr = old })
 
 	return &buf
 }
@@ -34,7 +34,7 @@ const exportsYAtX = `{
 
 // The export wins - it is the spec author's contract - and y is named as having lost it.
 func TestEnvWarnsWhenAnExportHoldsAServicesDerivedName(t *testing.T) {
-	warned := captureEnvWarnings(t)
+	warned := captureStderr(t)
 
 	p := &envFake{units: []provider.Unit{
 		{Sandbox: "sb", Service: "x", Ref: "r1", Slot: 1, Client: []provider.Endpoint{{Host: "127.0.0.1", Port: 20010}}},
@@ -60,7 +60,7 @@ func TestEnvWarnsWhenAnExportHoldsAServicesDerivedName(t *testing.T) {
 // Neither gets the name: whichever sorted first used to take it, so MY_CACHE_PORT pointed at one
 // of two services depending on spelling, with nothing to say which.
 func TestEnvGivesACollidingNameToNeitherService(t *testing.T) {
-	warned := captureEnvWarnings(t)
+	warned := captureStderr(t)
 
 	p := &envFake{units: []provider.Unit{
 		{Sandbox: "sb", Service: "x", Ref: "r1", Slot: 1, Client: []provider.Endpoint{{Host: "127.0.0.1", Port: 20010}}},
@@ -89,7 +89,7 @@ func TestEnvGivesACollidingNameToNeitherService(t *testing.T) {
 
 // No collision, no warning: stderr noise on every `eval "$(sbx env)"` would be ignored in a week.
 func TestEnvIsQuietWithoutACollision(t *testing.T) {
-	warned := captureEnvWarnings(t)
+	warned := captureStderr(t)
 	t.Setenv("SBX_FX3_TEST_UNSET_SECRET", "x")
 
 	p := &envFake{units: []provider.Unit{

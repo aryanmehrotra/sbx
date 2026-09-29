@@ -773,9 +773,10 @@ func detectShell() string {
 	return "posix"
 }
 
-// envWarnings is where envVars reports variable names it could not hand out. stderr, never
-// stdout: `eval "$(sbx env)"` and `--shell json` parse stdout, and a note there breaks them.
-var envWarnings io.Writer = os.Stderr
+// stderr is where a command's notes go - a variable name `sbx env` could not hand out, a followed
+// service that went to sleep - so a test can read them. Never stdout: `eval "$(sbx env)"` and
+// `--shell json` parse stdout, and a note there breaks them.
+var stderr io.Writer = os.Stderr
 
 // envVars resolves a sandbox's exports into ordered KEY,VALUE pairs. Env formats them for a
 // shell; With injects them into a child process. One resolver, so a scoped run and an `eval`
@@ -902,10 +903,10 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 
 	var out [][2]string
 
-	// Every case that hands a name to nobody says so, on stderr (see envWarnings). Silence was
+	// Every case that hands a name to nobody says so, on stderr (see the stderr var). Silence was
 	// the bug: the service had no variables, and the first sign was a client dialling another.
 	warn := func(format string, args ...any) {
-		fmt.Fprintf(envWarnings, "sbx: warning: "+format+"\n", args...)
+		fmt.Fprintf(stderr, "sbx: warning: "+format+"\n", args...)
 	}
 
 	for _, base := range names {
@@ -1534,7 +1535,19 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 		}
 		defer w.Flush()
 
-		return p.Logs(ctx, ref, lines, follow, w)
+		if err := p.Logs(ctx, ref, lines, follow, w); err != nil {
+			return err
+		}
+
+		w.Flush()
+
+		for _, u := range units {
+			if u.Ref == ref {
+				followEnded(ctx, p, sandbox, u, follow)
+			}
+		}
+
+		return nil
 	}
 
 	width := 0
@@ -1573,7 +1586,12 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", u.Service, err))
 				mu.Unlock()
+
+				return
 			}
+
+			w.Flush()
+			followEnded(ctx, p, sandbox, u, follow)
 		}(u)
 	}
 
@@ -1829,4 +1847,38 @@ func sharedAllowList(sp *spec.Spec, withOptional bool) []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// followEnded says why `sbx logs -f` stopped following a service, when the reason is sleep.
+//
+// `docker logs --follow` ends when the container stops, and on a sandbox that sleeps that is
+// routine: the idle timer fires and the command exits 0 with no word, which reads as the log
+// ending or sbx failing. Following on across the next wake was the alternative, and it was not
+// taken: the reattach can only start at the tail, so the first lines after a wake - the ones a
+// startup failure is in - would be dropped silently, which is worse than stopping and saying so.
+// u is the service as it was when the command started.
+func followEnded(ctx context.Context, p provider.Provider, sandbox string, u provider.Unit, follow bool) {
+	if !follow || ctx.Err() != nil {
+		return // not following, or interrupted: it ended because it was asked to
+	}
+
+	now, err := p.List(ctx, sandbox)
+	if err != nil {
+		return
+	}
+
+	again := fmt.Sprintf("It wakes on the next connection; run `sbx logs -f %s %s` again then.", sandbox, u.Service)
+
+	for _, n := range now {
+		if n.Service != u.Service || n.Running {
+			continue
+		}
+
+		if u.Running {
+			fmt.Fprintf(stderr, "sbx: %s went to sleep, so there is nothing more to follow. %s\n", u.Service, again)
+		} else {
+			fmt.Fprintf(stderr, "sbx: %s is asleep, so there is nothing to follow - the lines above are "+
+				"from before it slept. %s\n", u.Service, again)
+		}
+	}
 }

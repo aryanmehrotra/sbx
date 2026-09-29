@@ -46,7 +46,7 @@ names are the command, and its own flags stay its own.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything. (B) | `--tail N` (default 100), `-f` |
+| `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything; `-f` stops, and says so, when the service goes to sleep. (B) | `--tail N` (default 100), `-f` |
 | `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. Piped stdin reaches it; sbx exits with its status. (B) | `-t` attaches a terminal |
 | `sbx cp <sandbox> <service> <src> <dst>` | Copy a file in or out. Prefix the in-service path with `:`. (B) | none |
 | `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` or `SBX_ISOLATION` is refused, naming which one asked. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
