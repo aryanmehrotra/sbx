@@ -251,6 +251,14 @@ seconds for a cold browser. Raise the connect timeout:
 
 A connection pool must also survive a server-side close, because sleeping closes connections.
 
+### After `sbx sleep`, a service wakes but its `depends_on` service stays stopped
+
+In v0.16.0-rc2, the first connection after `sbx sleep` woke the service you dialled but not the
+services it `depends_on`. The daemon still believed those awake, and nothing dials them to prove
+otherwise. The dependent then failed on `no such host` until the next discovery tick and a new
+connection. Fixed after v0.16.0-rc2: when a service has to start, the daemon asks the runtime whether
+its dependencies are running and starts the ones that are not.
+
 ### Wakes are slower than the numbers in BENCHMARKS.md
 
 - No `health` command adds a flat 2 s per wake. Add one ([SPEC.md](SPEC.md#health-is-close-to-required)).
