@@ -1020,7 +1020,7 @@ func dispatch(cmd string, args []string) error {
 		ctx := context.Background()
 
 		if units, err := p.List(ctx, positional[0]); err == nil && len(units) == 0 {
-			return cli.UnknownSandbox(ctx, p, positional[0])
+			return cli.RemoveMissing(ctx, p, positional[0]) // clears a leftover origin record, if any
 		}
 
 		if err := cli.Remove(ctx, p, positional[0]); err != nil {
