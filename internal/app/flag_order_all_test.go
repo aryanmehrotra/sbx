@@ -76,7 +76,12 @@ func TestNameCommandsWithoutProviderFlags(t *testing.T) {
 	}
 
 	out := filepath.Join(dir, "out")
-	for _, args := range [][]string{{"--spec", spec, "--out", out, "zz"}, {"zz", "--spec", spec, "--out", out}} {
+	// --version pins a release: a source build refuses to pack without one, before it looks at the
+	// service, and the test binary is a source build.
+	for _, args := range [][]string{
+		{"--spec", spec, "--version", "v0.15.1", "--out", out, "zz"},
+		{"zz", "--spec", spec, "--out", out, "--version", "v0.15.1"},
+	} {
 		// A service the spec lacks is refused by name - so the name was read, and so was --spec.
 		if err := dispatch("pack", args); err == nil || !strings.Contains(err.Error(), `no service "zz"`) {
 			t.Errorf("sbx pack %s: got %v, want the unknown service named", strings.Join(args, " "), err)
