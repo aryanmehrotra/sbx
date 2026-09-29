@@ -64,7 +64,7 @@ names are the command, and its own flags stay its own.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. A failed snapshot removes what it wrote. Refuses a name that is taken; `--replace` removes that snapshot whole, then takes a fresh one. (B) | `--replace` |
+| `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. Running services are paused for the copy and thawed after, so a database is saved at one instant. A failed or interrupted snapshot removes what it wrote. Refuses a name that is taken; `--replace` removes that snapshot whole, then takes a fresh one. (B) | `--replace` |
 | `sbx snapshot --rm <name>` | Delete one snapshot's images and volumes. Refuses, removing nothing, while a fork still runs from it. (B) | none |
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
 | `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |

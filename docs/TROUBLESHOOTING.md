@@ -250,10 +250,17 @@ none. Set `egress_allow` (its calls out count as activity), a longer `idle`, or 
 
 ### A fork is missing the write I just made
 
-`sbx snapshot` does not stop the service, so it takes a crash-consistent copy. Under heavy load
-the last write before the snapshot can be missing. If the snapshot must be exact, stop writing
-first, or run `docker stop sbx-<sandbox>-<service>` before `sbx snapshot`. The usual seed,
+`sbx snapshot` pauses the service rather than stopping it, so it takes a crash-consistent copy.
+A write the service still held in memory when it was paused is not in it. If the snapshot must
+be exact, stop writing first, or run `sbx sleep <sandbox>` before `sbx snapshot`. The usual seed,
 snapshot, fork flow has nothing writing at snapshot time.
+
+### `sbx snapshot` fails: "can't stat ... No such file or directory" or "the copy was incomplete"
+
+Up to v0.15.1, snapshot copied a running service's volume while it wrote. A database that
+rewrites its files in the background, such as ClickHouse merging parts, removed files mid-copy,
+and snapshot failed and removed what it wrote. Run `sbx sleep <sandbox>` first, then snapshot
+it. Fixed after v0.15.1: snapshot pauses running services for the copy and thaws them after.
 
 ### `sbx snapshot` fails: "the source is empty or does not exist"
 

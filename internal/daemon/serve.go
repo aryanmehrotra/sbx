@@ -26,6 +26,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/snapshotpause"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 	"strings"
 )
@@ -636,6 +637,14 @@ func (d *daemon) correctAwake(f provider.Unit) {
 		return
 	}
 
+	// `sbx snapshot` pauses running services for the length of its copy and marks each pause
+	// (internal/snapshotpause). That pause is not a freeze: the snapshot thaws it itself, and a
+	// unit recorded frozen and asleep here would be a running container the daemon never
+	// sleeps again. Left exactly as it is; the next tick after the thaw finds it running.
+	if f.Paused && snapshotpause.Held(f.Ref) {
+		return
+	}
+
 	d.mu.Lock()
 	u := d.units[f.Ref]
 	d.mu.Unlock()
@@ -914,6 +923,12 @@ func (d *daemon) reapAsync(ctx context.Context) *sync.WaitGroup {
 		}
 
 		if needed[u.sandbox+"\x00"+u.service] {
+			continue
+		}
+
+		// Mid-snapshot: stopping or freezing it under the copy would leave the belief wrong
+		// again once the snapshot thaws it. Its idle clock keeps running; the next tick decides.
+		if snapshotpause.Held(u.ref) {
 			continue
 		}
 
