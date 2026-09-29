@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,5 +184,80 @@ func TestADiscoveryPassPushesTheEnginesDoors(t *testing.T) {
 
 	if !doors.Refuse(netip.MustParseAddr("172.31.0.1")) {
 		t.Fatal("a discovery pass did not push the engine's doors to the container filter")
+	}
+}
+
+// End to end, in process: traffic through a real filter moves its /last, the scraper reads it
+// behind the token and stamps the sandbox's unit; a tick with no traffic stamps nothing; and a
+// scraper holding the wrong token stamps nothing, so the token is what the idle signal rides on.
+func TestFilterTrafficKeepsTheUnitAwakeThroughTheTokenGatedScrape(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	host := strings.TrimPrefix(upstream.URL, "http://")
+
+	f := egress.New([]string{"127.0.0.1", host})
+
+	var last atomic.Int64
+	f.OnActivity = func() { last.Store(time.Now().UnixNano()) }
+
+	proxy := httptest.NewServer(f)
+	defer proxy.Close()
+
+	for _, token := range []string{"tok", "wrong"} {
+		ctl := httptest.NewServer(&egress.Control{Filter: f, Token: "tok", Last: last.Load})
+		defer ctl.Close()
+
+		addr := strings.TrimPrefix(ctl.URL, "http://")
+		fp := &filterProvider{f: provider.EgressFilter{
+			Sandbox: "osb-1", Gateway: "172.30.0.1", Services: []string{"sandbox"},
+			Declared: declared(), Control: addr, Token: token,
+		}}
+
+		d := New(fp, time.Minute, time.Minute, time.Second)
+		d.egressDir = t.TempDir()
+
+		u := newUnit("osb-1", "sandbox", "ref", "i", "sandbox", nil, true)
+		u.egressGateway = "172.30.0.1"
+		u.lastByte.Store(1)
+		d.units["ref"] = u
+
+		found := []provider.Unit{{Sandbox: "osb-1", Service: "sandbox", EgressGateway: "172.30.0.1", EgressStat: addr}}
+
+		pu, _ := url.Parse(proxy.URL)
+		resp, err := (&http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}).Get(upstream.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("the filter did not carry the request: %d", resp.StatusCode)
+		}
+
+		d.scrapeEgress(context.Background(), found)
+		stamped := u.lastByte.Load()
+
+		if token == "wrong" {
+			if stamped != 1 {
+				t.Fatal("a scraper without the filter's token stamped the unit")
+			}
+
+			continue
+		}
+
+		if stamped == 1 {
+			t.Fatal("traffic through the filter did not stamp the unit through the scrape")
+		}
+
+		// No traffic since: the reading has not moved, so the next tick must not stamp.
+		u.lastByte.Store(1)
+		d.scrapeEgress(context.Background(), found)
+
+		if u.lastByte.Load() != 1 {
+			t.Fatal("a tick with no traffic stamped the unit: nothing filtered would ever sleep")
+		}
 	}
 }

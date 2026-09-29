@@ -269,7 +269,8 @@ A sandbox's `egress` field is enforced by a component, `internal/egress`.
   services find through `/etc/hosts`. It refuses the engine's gateways, the default bridge and the
   host behind the VM (`egress.Doors`), whatever the policy says. The daemon lists the engine's
   gateways on every discovery pass and pushes them to each container filter (`PUT /refuse`), so a
-  network created later is refused too.
+  network created later is refused too. The filter also refuses its own interface addresses, so
+  `CONNECT sbx-egress:443` is not dialled back into itself.
 - Every filter carries ports 80 and 443. On docker, `egress_allow` entries written as `host:port`
   add that port; firecracker refuses them. `egress:
   "allow"` uses the same proxy with an open default, so it carries HTTP and HTTPS only.

@@ -36,6 +36,10 @@ import (
 //   - the /24 (or /64) around what HostDoorNames resolve to here. The whole prefix, not the one
 //     address, because it is the VM's link to the host: on colima 192.168.5.2 is the Mac and
 //     192.168.5.15 the VM itself, and on Docker Desktop 192.168.65.0/24 is the same arrangement.
+//   - every address on the filter's own interfaces, read again on each Refresh: the address, not
+//     its subnet, which the sandbox's services share. `CONNECT sbx-egress:443` made the filter
+//     dial itself (502, connection refused at its own bridge address), and its control port
+//     listens on those same addresses.
 //   - Pushed: what the daemon sends over the control endpoint (PUT /refuse) on every discovery
 //     tick - the engine's gateways and default bridge subnet as they are NOW.
 //
@@ -57,6 +61,9 @@ type Doors struct {
 
 	// Routes returns the contents of /proc/net/route, or is nil to read it.
 	Routes func() (string, error)
+
+	// Interfaces returns the filter's own interface addresses, or is nil for net.InterfaceAddrs.
+	Interfaces func() ([]net.Addr, error)
 
 	set    atomic.Pointer[[]netip.Prefix]
 	pushed atomic.Pointer[[]netip.Prefix]
@@ -129,6 +136,25 @@ func (d *Doors) Refresh(ctx context.Context) {
 	if table, err := routes(); err == nil {
 		for _, gw := range RouteGateways(table) {
 			set = append(set, netip.PrefixFrom(gw, gw.BitLen()))
+		}
+	}
+
+	ifaces := d.Interfaces
+	if ifaces == nil {
+		ifaces = net.InterfaceAddrs
+	}
+
+	if addrs, err := ifaces(); err == nil {
+		for _, a := range addrs {
+			n, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				ip = ip.Unmap()
+				set = append(set, netip.PrefixFrom(ip, ip.BitLen()))
+			}
 		}
 	}
 
