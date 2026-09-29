@@ -128,11 +128,15 @@ to fail only at create, reach the container as written, or grant more than a spe
 - `cap_add "ALL" grants every capability, and sbx has no privileged option` - list the
   capabilities the workload needs, like `["SYS_PTRACE", "NET_ADMIN"]`.
 - `cap_add has a blank entry` - remove the `""`, or fix the template that produced it.
-- `env ... uses "${X:-y}", which sbx does not expand` - only plain `${NAME}` is substituted;
-  compute a default in your shell and reference it as `${NAME}`.
+- `env values use ${...} forms sbx does not expand: a.PW uses "${X:-y}"` - only plain `${NAME}`
+  is substituted; compute a default in your shell and reference it as `${NAME}`. For a value
+  that really contains `${`, write `$${`.
 - `memory "lots" is not a size`, `cpu "-1" is not a number of cores`, `gpus "..." is not ...` -
   use `"512m"`, `"0.5"`, `"all"` or `"device=0"`.
 - `services depend on each other in a cycle: a → b → a` - remove one `depends_on` edge.
+
+`$${NAME}` also changed meaning in v0.16.0: it is now the literal text `${NAME}`, where v0.15
+expanded it to a `$` followed by the value. Put the `$` in the variable's value if you need it.
 
 ### Two `sbx create` at the same moment fail on a port conflict
 
