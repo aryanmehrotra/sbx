@@ -171,7 +171,7 @@ JSON output an agent can parse. Every refusal also names the field or flag behin
 
 | command | gives |
 |---|---|
-| `sbx list --json` | every sandbox and service, with `awake`, `state`, `addresses`, `ref` |
+| `sbx list --json` | every sandbox and service, with `awake`, `state`, `isolation`, `addresses`, `ref` |
 | `sbx env <sandbox> --shell json` | the addresses as an object |
 | `sbx doctor --json` | capabilities; each missing one says what it costs |
 | `sbx history [sandbox] --json` | newline-delimited wakes, sleeps and changes |

@@ -38,7 +38,7 @@ names are the command, and its own flags stay its own.
 | `sbx create <sandbox>` | Make a sandbox. Services start asleep. Run again, it recreates only a service whose image changed (an edited `build` context), keeping its volume. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
 | `sbx with <sandbox> -- <cmd>` | Create a new sandbox, wait until ready, run `cmd` with the env, then remove it, also when create fails. Refuses a name already in use. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` (each wait for a service) |
 | `sbx env <sandbox>` | Print the services' addresses as shell exports: each `exports` name, and `<SERVICE>_HOST`/`_PORT` for a service no export names. Needs no `${VAR}` set. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
-| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it) and address. `--json` adds `state`; `awake` is false for a frozen service. (B) | `--json` |
+| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it), isolation tier and address. `--json` adds `state` and `isolation`; `awake` is false for a frozen service. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
 | `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. (B) | none |
 

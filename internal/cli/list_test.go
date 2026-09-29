@@ -71,3 +71,44 @@ func TestListJSONOfAnEmptyFleetIsAnEmptyArray(t *testing.T) {
 		t.Errorf("an empty fleet printed %q, want []", got)
 	}
 }
+
+// The isolation tier each service runs under, which containers carry on sbx.isolation. A
+// sandbox created with --isolation gvisor listed exactly like a runc one, so the only way to
+// check a tier was `docker inspect`. A docker unit with no label predates it and was created as
+// a container, which is what it reads as.
+func TestListShowsIsolation(t *testing.T) {
+	units := []provider.Unit{
+		{Sandbox: "a", Service: "old", Ref: "sbx-a-old"},
+		{Sandbox: "a", Service: "web", Ref: "sbx-a-web", Isolation: provider.IsolationGVisor},
+	}
+
+	var buf bytes.Buffer
+	if err := listJSON(&buf, units, "docker"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []struct {
+		Service   string `json:"service"`
+		Isolation string `json:"isolation"`
+	}
+
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 2 || got[0].Isolation != "container" || got[1].Isolation != "gvisor" {
+		t.Errorf("isolation in --json = %+v, want old=container (unlabelled) and web=gvisor", got)
+	}
+
+	var table bytes.Buffer
+	listTable(&table, units, "docker")
+
+	lines := strings.Split(strings.TrimSpace(table.String()), "\n")
+	if !strings.Contains(lines[0], "ISOLATION") {
+		t.Errorf("the table has no ISOLATION column:\n%s", table.String())
+	}
+
+	if !strings.Contains(lines[1], "container") || !strings.Contains(lines[2], "gvisor") {
+		t.Errorf("the table does not show each service's tier:\n%s", table.String())
+	}
+}
