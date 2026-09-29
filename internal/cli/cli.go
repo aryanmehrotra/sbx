@@ -1547,6 +1547,11 @@ func WakePort(ctx context.Context, p provider.Provider, sandbox, service string)
 		return 0, err
 	}
 
+	// A mistyped sandbox is the likelier mistake, and "no service in sandbox" blamed the service.
+	if len(units) == 0 {
+		return 0, UnknownSandbox(ctx, p, sandbox)
+	}
+
 	for _, u := range units {
 		if u.Service != service {
 			continue
