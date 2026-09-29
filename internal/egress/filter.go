@@ -209,6 +209,20 @@ func refuse(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusBadGateway)
 }
 
+// setupTimeout bounds resolving and dialling a destination once that no longer follows the
+// client's connection (see detach). The dialer's own 10s covers one address; this covers the
+// lookup and every address together.
+const setupTimeout = 30 * time.Second
+
+// detach is the context upstream work runs under: the request's values, not its cancellation.
+//
+// net/http cancels a request's context as soon as its background read sees EOF from the client.
+// A client that shuts its write side after sending is finished, not gone - busybox wget, the
+// wget in every alpine image, does exactly that - and on r.Context() every lookup it caused was
+// cancelled before it answered, so the filter refused an allowed destination with 502. A client
+// that really has gone is still found out: the write back to it fails.
+func detach(r *http.Request) context.Context { return context.WithoutCancel(r.Context()) }
+
 // tunnel handles CONNECT: check the destination, and only then open the upstream socket and
 // splice.
 func (f *Filter) tunnel(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +231,9 @@ func (f *Filter) tunnel(w http.ResponseWriter, r *http.Request) {
 		host, port = r.Host, "443"
 	}
 
-	upstream, err := f.dial(r.Context(), host, port)
+	ctx, cancel := context.WithTimeout(detach(r), setupTimeout)
+	upstream, err := f.dial(ctx, host, port)
+	cancel()
 	if err != nil {
 		refuse(w, err)
 		return
@@ -260,13 +276,20 @@ func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 
 	// Checked per request, not only at dial: the transport pools connections, and one opened
 	// under an older, looser policy must not carry a request the current policy refuses.
-	if _, err := f.admit(r.Context(), host); err != nil {
+	admitCtx, cancel := context.WithTimeout(detach(r), setupTimeout)
+	_, err := f.admit(admitCtx, host)
+	cancel()
+
+	if err != nil {
 		refuse(w, err)
 		return
 	}
 
 	f.note()
 
+	// Detached but not bounded: a model API can take minutes before its first header byte, and
+	// the transport bounds its own dial and TLS handshake.
+	r = r.WithContext(detach(r))
 	r.RequestURI = ""
 
 	resp, err := f.roundTripper().RoundTrip(r)
