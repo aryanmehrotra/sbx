@@ -122,10 +122,12 @@ the mount was fine. Fixed after v0.15.0: an asleep service is left as it is, and
 ### A spec that validated before is refused at load
 
 From v0.16.0 `sbx validate` and every command that reads a spec refuse, at load, values that used
-to fail only at create or reach the container as written:
+to fail only at create, reach the container as written, or grant more than a spec should:
 
 - `cap_add "NOT_A_CAP" is not a Linux capability` - use a name from `man 7 capabilities`.
-- `cap_add "CAP_SYS_PTRACE": write it without the CAP_ prefix` - write `"SYS_PTRACE"`.
+- `cap_add "ALL" grants every capability, and sbx has no privileged option` - list the
+  capabilities the workload needs, like `["SYS_PTRACE", "NET_ADMIN"]`.
+- `cap_add has a blank entry` - remove the `""`, or fix the template that produced it.
 - `env ... uses "${X:-y}", which sbx does not expand` - only plain `${NAME}` is substituted;
   compute a default in your shell and reference it as `${NAME}`.
 - `memory "lots" is not a size`, `cpu "-1" is not a number of cores`, `gpus "..." is not ...` -

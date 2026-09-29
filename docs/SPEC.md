@@ -51,7 +51,7 @@ For tasks built on these fields (seeding, CI, agents, microVMs), see [GUIDES.md]
 | `egress_policy` | object | | OpenSandbox network policy. Changeable live with `sbx egress` |
 | `cpu` | string | unlimited | Cores: `"0.5"`, `"2"` |
 | `memory` | string | unlimited | Cap: `"512m"`, `"2g"` |
-| `cap_add` | string list | | Capabilities without `CAP_`: `["SYS_PTRACE"]`. Docker only |
+| `cap_add` | string list | | Capabilities by name: `["SYS_PTRACE"]`. Not `ALL`. Docker only |
 | `gpus` | string | none | Passed to the runtime: `"all"`, `"1"`, `"device=0"` |
 
 Use only one of `egress`, `egress_allow` and `egress_policy`. A spec naming two is refused.
@@ -226,9 +226,10 @@ a `gpus` value docker would refuse. Each provider still checks its own spelling 
 
 ### `cap_add`
 
-Name only what the workload needs. sbx has no `privileged` option. Names are checked at load
-against the kernel's list, so `sbx validate` catches a typo. Write `SYS_PTRACE`, not
-`CAP_SYS_PTRACE`. Docker's default seccomp profile still applies, so CRIU (a process-checkpoint
+Name only what the workload needs. sbx has no `privileged` option, so `ALL` is refused: list the
+capabilities instead. Names are checked at load against the kernel's list, so `sbx validate`
+catches a typo or a blank entry. Case and a `CAP_` prefix do not matter: `SYS_PTRACE` and
+`CAP_SYS_PTRACE` are the same. Docker's default seccomp profile still applies, so CRIU (a process-checkpoint
 tool) fails inside a sandbox; run `sbx checkpoint` on the host instead. Kubernetes refuses
 `cap_add` because Pod Security admission decides capabilities there.
 
