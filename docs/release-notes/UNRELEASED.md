@@ -30,6 +30,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Added
 
+- `sbx gc` lists lock files whose holder is gone, and `--force` removes them.
 - `sbx snapshot --rm <name>` deletes one snapshot's images and volumes, and refuses while a fork still uses it.
 - An `egress_allow` entry written as `host:port` allows exactly that port for that host and its subdomains.
 - `sbx env` prints `<SERVICE>_HOST` and `<SERVICE>_PORT` for services no export names, such as ones added with `sbx add`.
@@ -54,8 +55,9 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx sleep` stops frozen services too, and stops services in parallel, dependents before what they `depends_on`.
 - `sbx create` stops with an error naming the holding pid if the slot or sandbox lock stays held for 10 minutes; it used to go ahead unlocked after 90 s. An API create in that case is `Failed` with `slot_lock_timeout`.
 - `sbx with` refuses a name another `sbx create`, `add` or `with` is making, and its teardown removes only the containers it created.
+- `sbx create` and `sbx add` on a name a running `sbx with` owns are refused at once instead of joining a sandbox that command will remove.
 - `sbx install` exits non-zero when a name you gave cannot be installed, `--dry-run` included.
-- Upgrade `sbx serve` together with sandboxes this version creates: an older daemon cannot read a new egress filter's activity.
+- Restart `sbx serve` after upgrading, and do not run two sbx versions at once: an older daemon cannot read a new egress filter's activity or snapshot pause marks, and lock files now store the holder's start time, which an older sbx cannot read.
 
 ## Fixed
 
@@ -98,6 +100,10 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - A rebuild while asleep runs the new container's checks and `init` instead of calling it asleep.
 - A failed mount check lists the services kept and those not attempted.
 - `sbx with --keep` says the sandbox was kept; `sbx add` refuses a duplicate service before any `--health` warning.
+- A lock, daemon record or snapshot pause mark whose pid was reused by another process no longer blocks a name or claims a daemon.
+- `sbx env` and `sbx ready` find the spec of a sandbox whose create failed after making containers.
+- Re-creating a sandbox from a different spec refuses a service a port its own old service holds, naming both, instead of failing in docker.
+- `sbx with` no longer suggests `sbx rm` for a sandbox it already removed.
 - `sbx snapshot --rm` and `--replace` refuse, removing nothing, while a fork still runs from the snapshot.
 - `sbx gc --snapshots` no longer offers a snapshot any sandbox runs from; `--force` never removes one.
 - `sbx snapshot` pauses the sandbox's running services for the copy and commit, then thaws them (also on failure and Ctrl-C), so a database rewriting its files, such as ClickHouse merging parts, is saved at one instant instead of failing with "can't stat" or tearing.
