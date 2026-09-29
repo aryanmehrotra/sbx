@@ -1028,8 +1028,17 @@ func orUnknown(s string) string {
 }
 
 // HelperImager names images a backend runs on its own, which no spec mentions: on docker, the
-// small image snapshot and fork copy a volume through. Optional beside Puller, so prewarm can
-// fetch them with everything else instead of leaving the first fork to pull one.
+// small image snapshot and fork copy a volume through, and the two the egress filter is built
+// from. Optional beside Puller, so prewarm can fetch them with everything else instead of
+// leaving the first fork, or the first filtered create, to pull one. Only the helpers needs
+// asks for are returned: a CI cache should not carry an image its specs never run.
 type HelperImager interface {
-	HelperImages() []string
+	HelperImages(needs HelperNeeds) []Helper
 }
+
+// HelperNeeds says which helpers are wanted: Volumes for snapshot and fork (a service with a
+// `volume`), Egress for a filtered service.
+type HelperNeeds struct{ Volumes, Egress bool }
+
+// Helper is one helper image and what it is for, in words a CI log reader understands.
+type Helper struct{ Image, For string }

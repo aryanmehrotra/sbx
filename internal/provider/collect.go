@@ -221,9 +221,11 @@ func (d *dockerProvider) usage() (unitUsage, error) {
 		return unitUsage{}, nil
 	}
 
-	// The labels as JSON, not `index .Config.Labels`: docker's templates run over decoded
-	// JSON, where an object with no labels has no Labels key and indexing it fails the whole
-	// inspect - found against alpine:3, whose config carries none.
+	// The labels as JSON, not `index .Config.Labels`. Measured on docker 29.5.2 (client) against
+	// alpine:3, whose config has no Labels key: a template that indexes the labels AND reads
+	// another field (`{{.Id}}...{{index .Config.Labels "k"}}`) fails the whole inspect with "map
+	// has no entry for key Labels", while one that only indexes the labels prints "". This
+	// format reads several fields, so it takes the JSON, which works either way.
 	format := "{{.Name}}\t{{.Image}}\t{{range .Mounts}}{{.Name}} {{end}}\t{{json .Config}}"
 
 	args := append([]string{"inspect", "--type", "container", "--format", format}, lines(ids)...)
@@ -298,7 +300,7 @@ func (d *dockerProvider) imageMetas(names []string) map[string]imageMeta {
 		return out
 	}
 
-	// JSON for the same reason as in usage: an image with no labels has no Labels key, and an
+	// JSON for the same reason as in usage (this reads .Id too), and an
 	// image made before snapshots were labelled is exactly the one this must still read.
 	format := "{{.Id}}\t{{json .Config}}"
 

@@ -78,7 +78,7 @@ names are the command, and its own flags stay its own.
 | `sbx history [sandbox]` | Commands that changed something, and every wake and sleep. Reads a file. | `--limit N` (default 50, 0 = all), `--commands`, `--events`, `--json` |
 | `sbx templates` | The built-in specs and when their images were pinned. | none |
 | `sbx validate [sandbox.json]` | Check a spec, create nothing. | `--spec`, `--template` |
-| `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. On docker it also pulls `alpine:3`, which snapshot and fork copy volumes with, unless you name images or the `--spec` has no `volume`. (B) | `--spec FILE` |
+| `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. On docker it also pulls the helpers the specs would run: `alpine:3` (snapshot and fork copy volumes with it) if a service declares `volume`, and the egress filter's `golang:1.26-alpine` and `alpine:3.20` if a service is filtered. Named images get no helpers. (B) | `--spec FILE` |
 | `sbx features` | List preview features and whether each is on. | none |
 | `sbx version` | Print the version. Also `--version`, `-v`. | none |
 | `sbx help` | Top-level help. Also `--help`, `-h`. | none |
