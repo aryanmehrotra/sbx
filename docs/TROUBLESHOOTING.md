@@ -428,6 +428,9 @@ build compiles the agent from its checkout, or asks you to set `SBX_EXECD_BINARY
 
 The compile starts with `sbx serve --osb-addr`, so the first create does not wait inside its
 ready timeout. The log says `building the sandbox agent` and then `built the sandbox agent ... in`.
+If there is nothing to build from, the start log has a WARN, `the OpenSandbox API cannot find the
+sandbox agent`, with the reason. Set `SBX_EXECD_BINARY` or `SBX_SOURCE_DIR`, or run a release
+build, then restart `sbx serve`.
 
 ## Remote deployments
 
