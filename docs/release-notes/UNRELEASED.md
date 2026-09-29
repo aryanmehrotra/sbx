@@ -87,6 +87,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx doctor` says an isolation runtime is registered, not available, and notes Kata is unverified on nested hosts.
 - Security: a docker network created after a sandbox's egress filter started is refused too; `sbx serve` pushes the engine's gateways to every container filter each discovery pass.
 - The egress filter's activity endpoint needs its control token; a sandbox could read it.
+- The egress filter refuses its own addresses, so `CONNECT sbx-egress:443` from a sandbox is refused instead of dialled back into the filter.
 - A 403 for a port the filter does not carry no longer suggests a grant for an address no policy opens.
 - Two `sbx with` of one name no longer share a sandbox and remove it under each other.
 - `sbx with` removes its sandbox on Ctrl-C or SIGTERM, passes the signal to the command, and exits 130 or 143.
