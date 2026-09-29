@@ -207,9 +207,9 @@ different program: `"entrypoint": ["python", "-m"], "args": ["http.server", "800
 { "env": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" } }
 ```
 
-Keeps a secret out of a committed file. Works in `env` values only, with no defaults
-(`${VAR:-x}`) or nesting. A bare `$NAME` is left alone. An unset variable is an error before
-anything is created, listing every missing name.
+Keeps a secret out of a committed file. Works in `env` values only. Any other `${...}` form, such
+as a default (`${VAR:-x}`) or nesting, is refused at load. A bare `$NAME` is left alone. An unset
+variable is an error before anything is created, listing every missing name.
 
 ### Which spec a sandbox uses
 

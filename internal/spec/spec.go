@@ -660,6 +660,13 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		if err := svc.validate(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+
+		// Here rather than in validate, which the OpenSandbox API also runs: env there is
+		// literal by contract - sbx does not expand it - so a caller's `${X:-y}` is a value, not
+		// a mistake. Only a spec file promises `${NAME}` substitution.
+		if err := checkEnvSyntax(name, svc.Env); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 
 	// The sandbox-wide default gets the same check as a service's own, or a typo there is one

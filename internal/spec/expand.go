@@ -88,3 +88,52 @@ func (s *Spec) expandEnv(lookup func(string) (string, bool)) error {
 // osLookup is expandEnv's default source, separated so tests do not have to mutate the
 // process environment to exercise the interesting cases.
 func osLookup(name string) (string, bool) { return os.LookupEnv(name) }
+
+// A reference that starts exactly where a `${` does. Anchored, so each `${` in a value is judged
+// on its own rather than by whether some other part of the value happens to match.
+var envRefAt = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
+
+// checkEnvSyntax refuses a `${` in an env value that is not the plain ${NAME} form.
+//
+// Without it `${X:-y}` matched neither envRef nor any refusal and reached the container as
+// the literal string "${X:-y}" - the looks-like-success failure the comment at the top of this
+// file exists to prevent. It is syntax, so it is checked at load whether or not expansion runs.
+// A bare `$` is still left alone: passwords contain dollars, and only `${` claims this syntax.
+func checkEnvSyntax(name string, env map[string]string) error {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		val := env[key]
+
+		for i := 0; i < len(val); {
+			at := strings.Index(val[i:], "${")
+			if at < 0 {
+				break
+			}
+
+			at += i
+
+			if m := envRefAt.FindString(val[at:]); m != "" {
+				i = at + len(m)
+				continue
+			}
+
+			// Quote the reference, not the whole value: the text around it may be a secret.
+			ref := val[at:]
+			if end := strings.IndexByte(ref, '}'); end >= 0 {
+				ref = ref[:end+1]
+			}
+
+			return fmt.Errorf("service %q: env %s.%s uses %q, which sbx does not expand - only "+
+				"the plain ${NAME} form works, with no defaults or nesting; compute the value "+
+				"in your shell and reference it as ${NAME}", name, name, key, ref)
+		}
+	}
+
+	return nil
+}
