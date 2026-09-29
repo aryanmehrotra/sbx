@@ -27,5 +27,3 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 ## Changed
 
 ## Fixed
-
-- `sbx create` re-run over an asleep sandbox no longer reports a `files` entry as "did not mount as a file".
