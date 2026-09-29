@@ -155,7 +155,7 @@ func TestCreateWarnsOnCollisionsInTheSpec(t *testing.T) {
 	var err error
 
 	_ = captureOutput(t, func() {
-		err = Create(context.Background(), newRaceStub(), writeSpec(t, collidingSpec), "c", false, provider.IsolationContainer)
+		err = Create(context.Background(), newRaceStub(), writeSpec(t, collidingSpec), "c", false, provider.IsolationContainer, nil)
 	})
 	if err != nil {
 		t.Fatalf("a collision is a warning, not a refusal: %v", err)
