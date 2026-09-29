@@ -6,6 +6,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -18,12 +19,16 @@ import (
 type followStub struct {
 	provider.Provider
 	lists int
+
+	// stillUp is how many lists after the first still report it running: docker ends the log
+	// stream as the process exits, a moment before it reports the container stopped.
+	stillUp int
 }
 
 func (f *followStub) List(_ context.Context, sandbox string) ([]provider.Unit, error) {
 	f.lists++
 
-	return []provider.Unit{{Sandbox: sandbox, Service: "redis", Ref: "sbx-x-redis", Running: f.lists == 1}}, nil
+	return []provider.Unit{{Sandbox: sandbox, Service: "redis", Ref: "sbx-x-redis", Running: f.lists <= 1+f.stillUp}}, nil
 }
 
 func (f *followStub) Logs(_ context.Context, _ string, _ int, _ bool, w io.Writer) error {
@@ -33,11 +38,17 @@ func (f *followStub) Logs(_ context.Context, _ string, _ int, _ bool, w io.Write
 }
 
 func TestLogsFollowSaysWhenTheServiceWentToSleep(t *testing.T) {
-	for _, service := range []string{"redis", ""} { // one service, and all of them
-		t.Run("service="+service, func(t *testing.T) {
+	for _, c := range []struct {
+		service string
+		stillUp int
+	}{
+		{"redis", 0}, {"", 0}, // one service, and all of them
+		{"redis", 3}, // docker still says running when the stream ends (seen live)
+	} {
+		t.Run(fmt.Sprintf("service=%s,stillUp=%d", c.service, c.stillUp), func(t *testing.T) {
 			out := captureStderr(t)
 
-			if err := Logs(context.Background(), &followStub{}, "x", service, 10, true); err != nil {
+			if err := Logs(context.Background(), &followStub{stillUp: c.stillUp}, "x", c.service, 10, true); err != nil {
 				t.Fatal(err)
 			}
 

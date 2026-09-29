@@ -1876,23 +1876,41 @@ func followEnded(ctx context.Context, p provider.Provider, sandbox string, u pro
 		return // not following, or interrupted: it ended because it was asked to
 	}
 
-	now, err := p.List(ctx, sandbox)
-	if err != nil {
-		return
+	// Polled briefly: docker ends the log stream as the process exits, a moment before it reports
+	// the container stopped, and a single look found it still "running" when this was run live.
+	// Still running after that, the stream ended for some other reason and there is no note.
+	for deadline := time.Now().Add(followSettle); ; time.Sleep(100 * time.Millisecond) {
+		now, err := p.List(ctx, sandbox)
+		if err != nil {
+			return
+		}
+
+		found, stopped := false, false
+
+		for _, n := range now {
+			if n.Service == u.Service {
+				found, stopped = true, !n.Running
+			}
+		}
+
+		if stopped {
+			break
+		}
+
+		if !found || !time.Now().Before(deadline) {
+			return // removed, or still up: not a sleep
+		}
 	}
 
 	again := fmt.Sprintf("It wakes on the next connection; run `sbx logs -f %s %s` again then.", sandbox, u.Service)
 
-	for _, n := range now {
-		if n.Service != u.Service || n.Running {
-			continue
-		}
-
-		if u.Running {
-			fmt.Fprintf(stderr, "sbx: %s went to sleep, so there is nothing more to follow. %s\n", u.Service, again)
-		} else {
-			fmt.Fprintf(stderr, "sbx: %s is asleep, so there is nothing to follow - the lines above are "+
-				"from before it slept. %s\n", u.Service, again)
-		}
+	if u.Running {
+		fmt.Fprintf(stderr, "sbx: %s went to sleep, so there is nothing more to follow. %s\n", u.Service, again)
+	} else {
+		fmt.Fprintf(stderr, "sbx: %s is asleep, so there is nothing to follow - the lines above are "+
+			"from before it slept. %s\n", u.Service, again)
 	}
 }
+
+// followSettle is how long followEnded waits for the runtime to report a stopped container.
+const followSettle = 3 * time.Second
