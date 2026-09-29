@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,8 @@ type raceStub struct {
 	allocs  int
 	removed []string // sandboxes Remove()d
 	unitsRm []string // refs RemoveUnit()d
+
+	unservable provider.Endpoint // when set, created services are local and answer on this dead address
 
 	createErr   func(service string, slot int) error // a `docker run` that fails after making the container
 	execErr     func(ref string, argv []string) error
@@ -112,6 +115,12 @@ func (s *raceStub) Create(_ context.Context, sandbox string, slot, _ int, servic
 		Sandbox: sandbox, Service: service, Slot: slot, Ref: "sbx-" + sandbox + "-" + service,
 		Instance: fmt.Sprintf("i%d", s.seq), Running: true,
 	})
+
+	if s.unservable.Port != 0 {
+		u := &s.units[sandbox][len(s.units[sandbox])-1]
+		u.Client = []provider.Endpoint{{Host: "127.0.0.1", Port: 1}}
+		u.Upstream = []provider.Endpoint{s.unservable}
+	}
 
 	if s.createErr != nil {
 		return s.createErr(service, slot)
@@ -367,7 +376,7 @@ func TestTwoCreatesForOneNameAreSerialised(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			if err := Create(context.Background(), p, path, "twice", false, provider.IsolationContainer); err != nil {
+			if err := Create(context.Background(), p, path, "twice", false, provider.IsolationContainer, nil); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -456,7 +465,7 @@ func TestSlotLockIsFreeDuringTheHealthWait(t *testing.T) {
 		return true, true
 	}
 
-	if err := Create(context.Background(), p, redisSpec(t), "slow", false, provider.IsolationContainer); err != nil {
+	if err := Create(context.Background(), p, redisSpec(t), "slow", false, provider.IsolationContainer, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -482,7 +491,7 @@ func TestCreateStopsWhenTheSlotLockWaitRunsOut(t *testing.T) {
 
 	p := newRaceStub()
 
-	err := Create(context.Background(), p, redisSpec(t), "blocked", false, provider.IsolationContainer)
+	err := Create(context.Background(), p, redisSpec(t), "blocked", false, provider.IsolationContainer, nil)
 	if err == nil {
 		t.Fatal("create went ahead without the slot lock")
 	}
@@ -553,7 +562,7 @@ func TestAFailedRunIsRemovedAndRetriedOnTheNextSlot(t *testing.T) {
 	var err error
 
 	out := captureOutput(t, func() {
-		err = Create(context.Background(), p, redisSpec(t), "raced", false, provider.IsolationContainer)
+		err = Create(context.Background(), p, redisSpec(t), "raced", false, provider.IsolationContainer, nil)
 	})
 	if err != nil {
 		t.Fatalf("the retry on the next slot failed: %v\n%s", err, out)
@@ -583,7 +592,7 @@ func TestAFailedRunWithNoOtherSlotSaysToRerun(t *testing.T) {
 	var err error
 
 	_ = captureOutput(t, func() {
-		err = Create(context.Background(), p, redisSpec(t), "raced", false, provider.IsolationContainer)
+		err = Create(context.Background(), p, redisSpec(t), "raced", false, provider.IsolationContainer, nil)
 	})
 	if err == nil {
 		t.Fatal("a failed run reported success")
@@ -609,7 +618,7 @@ func TestAFailedRunOnlyRemovesAContainerThisCreateMade(t *testing.T) {
 	var err error
 
 	_ = captureOutput(t, func() {
-		err = Create(context.Background(), p, redisSpec(t), "bad", false, provider.IsolationContainer)
+		err = Create(context.Background(), p, redisSpec(t), "bad", false, provider.IsolationContainer, nil)
 	})
 	if err == nil || p.has("bad") {
 		t.Fatalf("want the failure and no leftover: err=%v units=%v", err, p.units["bad"])
@@ -621,7 +630,7 @@ func TestAFailedRunOnlyRemovesAContainerThisCreateMade(t *testing.T) {
 	p.createErr = func(string, int) error { return errors.New("transient") }
 
 	_ = captureOutput(t, func() {
-		_ = Create(context.Background(), p, redisSpec(t), "keep", false, provider.IsolationContainer)
+		_ = Create(context.Background(), p, redisSpec(t), "keep", false, provider.IsolationContainer, nil)
 	})
 
 	if !p.has("keep") {
@@ -705,7 +714,7 @@ func TestAFailedMountSaysWhatWasKeptRemovedAndNotAttempted(t *testing.T) {
 		return nil
 	}
 
-	err := Create(context.Background(), p, path, "three", false, provider.IsolationContainer)
+	err := Create(context.Background(), p, path, "three", false, provider.IsolationContainer, nil)
 	if err == nil {
 		t.Fatal("a broken mount was reported as created")
 	}
@@ -723,7 +732,7 @@ func TestAFailedMountSaysWhatWasKeptRemovedAndNotAttempted(t *testing.T) {
 	p2 := newRaceStub()
 	p2.execErr = func(string, []string) error { return errors.New("exit status 1") }
 
-	err = Create(context.Background(), p2, single, "one", false, provider.IsolationContainer)
+	err = Create(context.Background(), p2, single, "one", false, provider.IsolationContainer, nil)
 	if err == nil {
 		t.Fatal("a broken mount was reported as created")
 	}
@@ -749,7 +758,7 @@ func TestANewSandboxWarnsWhenItAdoptsALeftoverVolume(t *testing.T) {
 	var err error
 
 	out := captureOutput(t, func() {
-		err = Create(context.Background(), p, path, "old", false, provider.IsolationContainer)
+		err = Create(context.Background(), p, path, "old", false, provider.IsolationContainer, nil)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -763,7 +772,7 @@ func TestANewSandboxWarnsWhenItAdoptsALeftoverVolume(t *testing.T) {
 
 	// Its own volume on a re-run is not a leftover.
 	out = captureOutput(t, func() {
-		err = Create(context.Background(), p, path, "old", false, provider.IsolationContainer)
+		err = Create(context.Background(), p, path, "old", false, provider.IsolationContainer, nil)
 	})
 	if err != nil || strings.Contains(out, "already existed") {
 		t.Errorf("a re-run over the sandbox's own volume warned: %v\n%s", err, out)
@@ -814,4 +823,19 @@ func TestAddRefusesADuplicateBeforeWarning(t *testing.T) {
 	if strings.Contains(out, "health") {
 		t.Errorf("warned about --health for a service it refused to add:\n%s", out)
 	}
+}
+
+// GuestDialer: with unservable set, every created service answers on no port - the shape of a
+// workload whose health check passes inside the container but which nothing outside can reach.
+func (s *raceStub) GuestDialer(string, string, int) (provider.DialFunc, bool) {
+	if s.unservable.Port == 0 {
+		return nil, false
+	}
+
+	addr := s.unservable.String()
+
+	return func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", addr)
+	}, true
 }

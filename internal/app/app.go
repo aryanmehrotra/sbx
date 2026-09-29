@@ -327,13 +327,14 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		if err := cli.Create(context.Background(), p, path, positional[0], *optional, iso); err != nil {
-			return err
-		}
+		// Remembered as soon as the first container exists, not after a create that succeeded: one
+		// that fails later (a service that never serves, a broken mount on the second of three)
+		// still leaves a sandbox, and `sbx env` or `sbx ready` on it from another directory then
+		// found no spec - or, beside a different sandbox.json, the wrong one. sbx rm forgets it.
+		name := positional[0]
 
-		cli.Remember(positional[0], *tmpl, *spec)
-
-		return nil
+		return cli.Create(context.Background(), p, path, name, *optional, iso,
+			func() { cli.Remember(name, *tmpl, *spec) })
 
 	case "env":
 		fs := newFlagSet("env")

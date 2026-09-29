@@ -805,7 +805,10 @@ func Fork(ctx context.Context, p provider.Provider, specPath, snapshot, sandbox 
 		return err
 	}
 
-	if err := Create(ctx, p, forked, sandbox, withOptional, iso); err != nil {
+	// volumesRestored: the volumes it finds were just filled from the snapshot, which is the point
+	// of a fork, not the leftover a new sandbox is warned about.
+	if err := createLocked(ctx, p, forked, sandbox, withOptional, iso,
+		createOpts{healthTimeout: defaultHealthTimeout, volumesRestored: true}); err != nil {
 		return err
 	}
 

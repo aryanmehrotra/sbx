@@ -33,7 +33,16 @@ import (
 // does, and passes it through createWithin.
 const defaultHealthTimeout = 120 * time.Second
 
-func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation) error {
+// Create makes the sandbox, or finishes one that is partly made. placed, if set, runs once as soon as
+// the sandbox's first container exists - before health waits and init - so what the caller records
+// about the sandbox (its spec, for `sbx env` from another directory) is there even when the create
+// then fails: a failure after that point leaves a sandbox to address, inspect and remove.
+func Create(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, placed func()) error {
+	return createLocked(ctx, p, path, sandbox, withOptional, iso, createOpts{healthTimeout: defaultHealthTimeout, placed: placed})
+}
+
+// createLocked is Create with its options: the name lock, then createWithin.
+func createLocked(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, o createOpts) error {
 	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
 	}
@@ -47,14 +56,29 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 	}
 	defer release()
 
-	return createWithin(ctx, p, path, sandbox, withOptional, iso, defaultHealthTimeout)
+	return createWithin(ctx, p, path, sandbox, withOptional, iso, o)
+}
+
+// createOpts are createWithin's knobs beyond the spec.
+type createOpts struct {
+	// healthTimeout bounds each service's health wait; `sbx with --timeout` sets it.
+	healthTimeout time.Duration
+
+	// placed runs once when the first container exists (see Create).
+	placed func()
+
+	// volumesRestored is a fork: its data volumes were filled from a snapshot just before the
+	// create, on purpose, so finding them already there is not a leftover to warn about.
+	volumesRestored bool
 }
 
 // createWithin is Create with the health-wait budget made explicit, for a caller that already
 // holds the sandbox's name lock. The budget exists because `sbx with` takes a --timeout, and a
 // create that waited its own fixed two minutes inside that budget made `sbx with --timeout 20s`
 // wait 2m against a service that never answered.
-func createWithin(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, healthTimeout time.Duration) error {
+func createWithin(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, o createOpts) error {
+	healthTimeout, placed := o.healthTimeout, o.placed
+
 	if err := ValidateName("sandbox", sandbox); err != nil {
 		return err
 	}
@@ -87,6 +111,18 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 	releaseSlot := func() {}
 
 	defer func() { releaseSlot() }()
+
+	// Run as each service's container comes to exist: the slot lock goes at the first, and the
+	// caller's placed hook runs once.
+	var placedOnce sync.Once
+
+	onPlaced := func() {
+		releaseSlot()
+
+		if placed != nil {
+			placedOnce.Do(placed)
+		}
+	}
 
 	fmt.Printf("sandbox %q  provider %s  isolation %s\n", sandbox, p.Name(), iso)
 
@@ -172,14 +208,14 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 			}
 		}
 
-		if fresh && svc.Volume != "" {
+		if fresh && svc.Volume != "" && !o.volumesRestored {
 			warnLeftoverVolume(ctx, p, sandbox, name)
 		}
 
 		// releaseSlot runs as soon as this service's container exists: from then on the slot
 		// belongs to something every other AllocSlot can see, so the health wait and init - which
 		// can take minutes - no longer hold every other create on the machine.
-		err := createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout, releaseSlot)
+		err := createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout, onPlaced)
 
 		// The slot was probed free while this held the lock, so a clash on a new sandbox's first
 		// container is something outside the lock - another engine's daemon, an OpenSandbox
@@ -191,7 +227,7 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 					name, slot, next)
 
 				slot = next
-				err = createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout, releaseSlot)
+				err = createOneWithin(ctx, p, sandbox, slot, start, name, svc, specDir, iso, healthTimeout, onPlaced)
 			} else {
 				err = fmt.Errorf("%w\n     Something outside sbx took slot %d's ports while this create claimed them. "+
 					"Re-run the same sbx create %s", err, slot, sandbox)
@@ -208,8 +244,8 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 
 	// Healthy inside the container is not serving from outside it: ask what sbx ready asks before
 	// saying "ready". Thirty seconds covers a process still binding its port after its health check.
-	if err := checkCreatedWorkloads(ctx, p, sandbox, done, time.Now().Add(30*time.Second)); err != nil {
-		return fmt.Errorf("%w\n     The sandbox was created; `sbx rm %s` removes it", err, sandbox)
+	if err := checkCreatedWorkloads(ctx, p, sandbox, done, time.Now().Add(createServeWait)); err != nil {
+		return &notServingError{err: err, sandbox: sandbox}
 	}
 
 	fmt.Println()
@@ -278,6 +314,29 @@ func readiness(sandbox string, eps []provider.Endpoint) string {
 		"It looks for new sandboxes on its --refresh interval; give it one, or restart it."
 }
 
+// createServeWait is how long create gives the services it made to answer from outside their
+// containers. A variable so tests need not wait it out.
+var createServeWait = 30 * time.Second
+
+// notServingError is a create whose services were made but do not serve. The sandbox exists,
+// so the error says how to remove it - unless `sbx with` already has, which it then says instead:
+// advice to `sbx rm` a sandbox that is gone sends the reader after something that is not there.
+type notServingError struct {
+	err     error
+	sandbox string
+	removed bool
+}
+
+func (e *notServingError) Error() string {
+	if e.removed {
+		return fmt.Sprintf("%v\n     sbx with removed the sandbox.", e.err)
+	}
+
+	return fmt.Sprintf("%v\n     The sandbox was created; `sbx rm %s` removes it", e.err, e.sandbox)
+}
+
+func (e *notServingError) Unwrap() error { return e.err }
+
 // pickupWait is how long create waits for a running daemon to bind a new sandbox's ports.
 var pickupWait = 30 * time.Second
 
@@ -318,6 +377,10 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 	// made a moment ago lists as not running too - and it still needs its health wait and init.
 	prior, lookupErr := unitFor(ctx, p, sandbox, name)
 	existed := lookupErr == nil
+
+	if err := portHeldBySibling(ctx, p, sandbox, name, eps); err != nil {
+		return err
+	}
 
 	if err := p.Create(ctx, sandbox, slot, start, name, svc, eps, specDir, iso); err != nil {
 		return fmt.Errorf("service %q: %w%s", name, err, discardFailedRun(ctx, p, sandbox, name, prior, existed))
@@ -404,6 +467,42 @@ func discardBrokenMount(ctx context.Context, p provider.Provider, sandbox, ref s
 	return fmt.Sprintf("     Its container was stopped (stopped %s) so it does not serve with the broken mount. This\n"+
 		"     backend cannot remove one service, so fix the path, then: sbx rm %s, and create it again.",
 		ref, sandbox)
+}
+
+// portHeldBySibling refuses a service a port another service of the same sandbox already holds.
+//
+// A service's port is its slot plus its ordinal in the spec, so re-running create on an existing
+// sandbox with a DIFFERENT spec - services renamed, reordered, one dropped - can give a new
+// service the ordinal an old one still holds. Docker then failed at `docker run` with "port is
+// already allocated", which reads like a race with another sandbox; the clash is inside this
+// one, and only removing the old service or keeping the names resolves it.
+func portHeldBySibling(ctx context.Context, p provider.Provider, sandbox, service string, eps []provider.Endpoint) error {
+	units, err := p.List(ctx, sandbox)
+	if err != nil {
+		return nil // the create meets the same listing error, with better context
+	}
+
+	for _, u := range units {
+		if u.Service == service {
+			continue
+		}
+
+		// By whole address, not port: in a cluster every service is its own name on its own
+		// container port, and two services on 5432 there are two addresses.
+		held := map[provider.Endpoint]bool{}
+		for _, e := range u.Client {
+			held[e] = true
+		}
+
+		for _, e := range eps {
+			if held[e] {
+				return fmt.Errorf("service %q would take %d, held by this sandbox's %s from its earlier spec - "+
+					"sbx rm %s first, or keep the service names", service, e.Port, u.Service, sandbox)
+			}
+		}
+	}
+
+	return nil
 }
 
 // discardFailedRun removes the container a failed Create left behind, and returns what to add to

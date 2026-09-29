@@ -110,6 +110,12 @@ Up to v0.15.1, two `sbx with` of one name started together shared one sandbox, a
 finish removed it while the other still ran. Fixed after v0.15.1: the second is refused, and a
 teardown removes only the containers its own run made.
 
+### `sbx create` or `sbx add` says "is an ephemeral sandbox of `sbx with`"
+
+A running `sbx with` owns that name and removes the sandbox when its command ends. Use another
+name. Before this was refused, a create during the command reported the sandbox ready moments
+before `sbx with` deleted it.
+
 ### `sbx with` left its sandbox after Ctrl-C or SIGTERM
 
 Up to v0.15.1, SIGINT or SIGTERM ended `sbx with` at once, with status 130 or 143, and left the
@@ -184,10 +190,25 @@ with `sbx rm <sandbox>`.
 
 For 10 minutes another create has either been making its first container (the slot lock) or
 creating or changing the same sandbox (its name lock). `ps -p N -o pid,etime,command` shows what
-it is doing. If it is not an sbx, remove the lock file the error names and re-run.
+it is doing. If it is not an sbx, remove the lock file the error names and re-run. A lock whose
+holder has exited, or whose pid now belongs to another process, is cleared on its own; `sbx gc`
+lists such leftovers and `sbx gc --force` removes them.
 
 Up to v0.15.1 the slot wait gave up after 90 seconds and went ahead without the lock, so creates
 queued behind a slow health check could take one slot and fail on its ports. Fixed after v0.15.1.
+
+### `sbx env` says there is no sandbox.json after a create that failed
+
+Up to v0.15.1 a create recorded its spec only when it succeeded, so one that failed after
+making containers left `sbx env <sandbox>` and `sbx ready <sandbox>` from another directory
+with no spec, or the wrong one. Pass `--spec` with the path. Fixed after v0.15.1: the spec is
+recorded as soon as the first container exists.
+
+### `sbx create` says a service "would take" a port "held by this sandbox's" other service
+
+The sandbox was created from a different spec, and one of its old services still holds the port
+this spec gives a new service. Run `sbx rm <sandbox>` and create it again, or keep the old
+service names in the spec.
 
 ### `sbx create` warns that a volume "already existed before this create"
 

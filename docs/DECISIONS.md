@@ -194,12 +194,17 @@ up together and two sandboxes were listed on one slot.
 
 A sandbox name has a lock of the same kind (`~/.sbx/locks/<name>.lock`). `sbx create` and
 `sbx add` hold it from reading what the sandbox has to making what it lacks; `sbx with` takes it
-without waiting, refuses a name someone holds, and records the containers it made so its
-teardown removes only those. Two `sbx with` of one name used to share a sandbox, and the first
+without waiting, refuses a name someone holds, holds it until its teardown is done, and records
+the containers it made so the teardown removes only those. A create or add of a name a live
+`sbx with` holds is refused at once rather than queued behind a command that ends by deleting
+the sandbox. Two `sbx with` of one name used to share a sandbox, and the first
 to finish removed it under the other.
 
 Pid files rather than `flock`: it is what the slot lock already was, it builds on all eight
-platforms, and the pid is what the error prints. One machine only, as before.
+platforms, and the pid is what the error prints. The file carries the holder's start time too
+(`internal/procid`), so a pid recycled to another process is stale; the daemon registry and
+snapshot's pause marks use the same record. Where the platform cannot tell a start time (the
+BSDs, Windows) it is the pid alone. One machine only, as before.
 The OpenSandbox API takes the same error-returning lock: a create whose wait runs out is
 `Failed` with reason `slot_lock_timeout` and places no container.
 
