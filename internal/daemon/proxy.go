@@ -71,6 +71,11 @@ type unit struct {
 	// pinned is keepAwake set at run time, by the OpenSandbox warm pool - see pin.go.
 	pinned atomic.Bool
 
+	// stopping is true while the reaper's sleep of this unit is in flight, from the decision to
+	// the stop returning. It keeps a second tick from starting another, and keeps this unit's
+	// dependencies up until it is actually down - see reapAsync.
+	stopping atomic.Bool
+
 	// served records that this unit has been seen serving at least once.
 	//
 	// Until then it is not eligible to sleep, because "idle" is meaningless before a
@@ -681,9 +686,18 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 	u.waking.Lock()
 	defer u.waking.Unlock()
 
-	if u.idleFor() < idle {
+	// The idle time that justified this sleep, read once, here, and the only one reported.
+	//
+	// It used to be re-read for the log line after Stop returned, and a stop can take ten
+	// seconds - long enough for a client to arrive, stamp the unit and queue behind this lock
+	// to wake it. The record then said "slept - idle for 2s" (1967ms) of a service whose window
+	// is 3s: a sleep the policy never allowed, reported as one it did.
+	idleFor := u.idleFor()
+	if idleFor < idle {
 		return
 	}
+
+	decided := time.Now()
 
 	u.mu.Lock()
 	for c := range u.live {
@@ -715,7 +729,7 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 
 			u.setFrozen(true)
 			logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "froze",
-				u.idleFor().Milliseconds(), "froze - idle for %s", u.idleFor().Round(time.Second))
+				idleFor.Milliseconds(), "froze - idle for %s", idleFor.Round(time.Second))
 
 			return
 		}
@@ -733,8 +747,12 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 
 		return
 	}
+	// The stop's own duration is said separately, because it is the part of "how late did this
+	// sleep" that the reaper does not control: docker's grace period for a workload that
+	// ignores SIGTERM is ten seconds of it.
 	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",
-		u.idleFor().Milliseconds(), "slept - idle for %s", u.idleFor().Round(time.Second))
+		idleFor.Milliseconds(), "slept - idle for %s (stop took %s)",
+		idleFor.Round(time.Second), time.Since(decided).Round(10*time.Millisecond))
 }
 
 func (u *unit) track(c net.Conn) {
