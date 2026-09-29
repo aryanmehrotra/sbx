@@ -119,3 +119,6 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx install checkpoint` on macOS gives the real reason, a restore needs a Linux host.
 - `sbx pack` on a source build suggests the release the build is based on.
 - A `sbx serve` without `--only` leaves the sandboxes a running `--only` daemon covers to that daemon, and takes them back within one `--refresh` after it stops; both used to bind the same ports.
+- Ctrl-C or SIGTERM during `sbx create` stops it cleanly: it says which services it kept and how to finish or remove the sandbox, releases its locks, and exits 130 or 143.
+- `sbx rm` also removes the sandbox's name lock when its holder is no longer running, so a killed create's lock no longer waits for `sbx gc`.
+- `sbx rm` of a sandbox a running `sbx with` owns is refused and names that command's pid, as `sbx create` and `sbx add` already were; it used to remove the sandbox from under the command.
