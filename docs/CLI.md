@@ -17,6 +17,10 @@ Commands marked (B) below also take these.
 
 ## Commands
 
+Flags go before, between or after the names: `sbx logs -f b svc` and `sbx logs b svc -f` are the
+same. Everything after a bare `--` is a name. For `sbx exec` and `sbx add`, the words after the
+names are the command, and its own flags stay its own.
+
 ### Start here
 
 | command | purpose | flags |
@@ -33,7 +37,7 @@ Commands marked (B) below also take these.
 |---|---|---|
 | `sbx create <sandbox>` | Make a sandbox. Services start asleep. Run again, it recreates only a service whose image changed (an edited `build` context), keeping its volume. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
 | `sbx with <sandbox> -- <cmd>` | Create a new sandbox, wait until ready, run `cmd` with the env, then remove it, also when create fails. Refuses a name already in use. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` (each wait for a service) |
-| `sbx env <sandbox>` | Print the services' addresses as shell exports. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
+| `sbx env <sandbox>` | Print the services' addresses as shell exports: each `exports` name, and `<SERVICE>_HOST`/`_PORT` for a service no export names. Needs no `${VAR}` set. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
 | `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it) and address. `--json` adds `state`; `awake` is false for a frozen service. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
 | `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. (B) | none |
@@ -43,7 +47,7 @@ Commands marked (B) below also take these.
 | command | purpose | flags |
 |---|---|---|
 | `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything. (B) | `--tail N` (default 100), `-f` |
-| `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. (B) | `-t` attaches a terminal |
+| `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. Piped stdin reaches it; sbx exits with its status. (B) | `-t` attaches a terminal |
 | `sbx cp <sandbox> <service> <src> <dst>` | Copy a file in or out. Prefix the in-service path with `:`. (B) | none |
 | `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` is refused. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
@@ -156,6 +160,17 @@ small Linux VM that sbx starts. There the API key is always on, and only these f
 | `SBX_NO_UPDATE_CHECK` | unset | Any value: turn off the update check (see below) |
 
 `sbx env` also prints `SBX_SANDBOX` and `SBX_PROVIDER` for your shell. sbx does not read them.
+
+A service no export names, such as one from `sbx add`, gets `<SERVICE>_HOST` and
+`<SERVICE>_PORT` for its first port. The name is upper-cased, with anything but a letter or
+digit turned into `_`: `sbx add b my-cache ...` prints `MY_CACHE_PORT`. An export of the same
+name wins.
+
+`sbx exec` without `-t` passes stdin on when it is a pipe or a file, and exits with the
+command's own status: `pg_dump | sbx exec b postgres psql -U app` works, and so does a CI
+step gating on `sbx exec b app ./check`. In a `while read` loop, give it `</dev/null` so it
+does not read the loop's input. The firecracker provider refuses stdin that holds data,
+because its in-VM agent cannot signal end of input: copy the file in with `sbx cp` instead.
 
 ### Remote (connect, pack, front)
 

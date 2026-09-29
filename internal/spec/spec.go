@@ -602,8 +602,18 @@ const (
 // than loading a sandbox.json - the OpenSandbox API does - and want the same refusals.
 func (s Service) Validate(name string) error { return s.validate(name) }
 
-// LoadSpec reads and validates a sandbox.json.
-func LoadSpec(path string) (*Spec, error) {
+// LoadSpec reads and validates a sandbox.json, and resolves ${VAR} in its env values - the
+// loader for anything that starts a workload, which must refuse an unset variable before
+// anything is created.
+func LoadSpec(path string) (*Spec, error) { return loadSpec(path, true) }
+
+// LoadSpecUnexpanded is LoadSpec for a command that only reads addressing - `sbx env`, the
+// ordinals `sbx add` avoids. Those need no secret, and the shell asking for a port is often
+// not the one holding it (a second terminal, a CI step after create), so ${VAR} is left as
+// written instead of being required. Validation is identical.
+func LoadSpecUnexpanded(path string) (*Spec, error) { return loadSpec(path, false) }
+
+func loadSpec(path string, expand bool) (*Spec, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		// A missing spec is the first thing anybody hits on a real repo, and `open
@@ -620,7 +630,7 @@ func LoadSpec(path string) (*Spec, error) {
 		return nil, err
 	}
 
-	return ParseSpec(raw, path)
+	return parseSpec(raw, path, expand)
 }
 
 // ServiceName is what a service may be called: the container-name rule, because that is what
@@ -628,7 +638,9 @@ func LoadSpec(path string) (*Spec, error) {
 // they are the same rule, asserted equal by a test.
 var ServiceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
-func ParseSpec(raw []byte, path string) (*Spec, error) {
+func ParseSpec(raw []byte, path string) (*Spec, error) { return parseSpec(raw, path, true) }
+
+func parseSpec(raw []byte, path string, expand bool) (*Spec, error) {
 	var s Spec
 	// DisallowUnknownFields: a typo in a spec should be a startup error, not a setting
 	// that silently did nothing for a week.
@@ -694,8 +706,10 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	if err := s.expandEnv(osLookup); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if expand {
+		if err := s.expandEnv(osLookup); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 
 	for env, ref := range s.Exports {

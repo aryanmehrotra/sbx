@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
@@ -676,7 +678,9 @@ func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, imag
 func freeIndex(specPath string, units []provider.Unit, n int) (int, error) {
 	used := map[int]bool{}
 
-	if sp, err := spec.LoadSpec(specPath); err == nil {
+	// Unexpanded: only the layout is read here, and an unset secret made this whole lookup
+	// fail - silently, so the reserved ordinals were ignored.
+	if sp, err := spec.LoadSpecUnexpanded(specPath); err == nil {
 		layout, err := sp.Assign()
 		if err != nil {
 			return 0, err
@@ -778,7 +782,8 @@ func envVars(ctx context.Context, p provider.Provider, path, sandbox string) ([]
 		return nil, UnknownSandbox(ctx, p, sandbox)
 	}
 
-	sp, err := spec.LoadSpec(path)
+	// Unexpanded: printing ports needs no secret. Create already refused an unset one.
+	sp, err := spec.LoadSpecUnexpanded(path)
 	if err != nil {
 		return nil, err
 	}
@@ -818,7 +823,80 @@ func envVars(ctx context.Context, p provider.Provider, path, sandbox string) ([]
 		vars = append(vars, [2]string{env, strconv.Itoa(ep.Port)})
 	}
 
-	return vars, nil
+	return append(vars, unexportedVars(sp, units, index, vars)...), nil
+}
+
+// unexportedVars addresses every service no export names: one added with `sbx add`, which is
+// not in sandbox.json and so cannot have an export, or a spec service nobody exported. Without
+// this the only way to find its port was `sbx list` and a copy-paste. Each gets
+// <SERVICE>_HOST and <SERVICE>_PORT for its first port - asleep or not, since connecting wakes
+// it. A derived name never replaces one already set: the spec author's export is the contract,
+// and a service called "database" must not move DATABASE_PORT.
+func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provider.Endpoint, have [][2]string) [][2]string {
+	taken := map[string]bool{}
+	for _, kv := range have {
+		taken[kv[0]] = true
+	}
+
+	exported := map[string]bool{}
+	for _, ref := range sp.Exports {
+		svc, _, _ := strings.Cut(ref, ":")
+		exported[svc] = true
+	}
+
+	sorted := slices.Clone(units)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Service < sorted[j].Service })
+
+	var out [][2]string
+
+	for _, u := range sorted {
+		if exported[u.Service] {
+			continue
+		}
+
+		ep, ok := provider.Endpoint{}, false
+		if svc, inSpec := sp.Services[u.Service]; inSpec && len(svc.Ports) > 0 {
+			ep, ok = index[fmt.Sprintf("%s:%d", u.Service, svc.Ports[0])]
+		}
+
+		if !ok && len(u.Client) > 0 {
+			ep, ok = u.Client[0], true
+		}
+
+		if !ok {
+			continue // no ports: nothing to connect to
+		}
+
+		base := envName(u.Service)
+		host, port := base+"_HOST", base+"_PORT"
+
+		if taken[host] || taken[port] {
+			continue
+		}
+
+		taken[host], taken[port] = true, true
+		out = append(out, [2]string{host, ep.Host}, [2]string{port, strconv.Itoa(ep.Port)})
+	}
+
+	return out
+}
+
+// envName turns a service name into a variable name: upper case, anything not a letter or digit
+// becomes _, and a leading digit gets a _ in front, because no shell accepts a variable that
+// starts with one.
+func envName(service string) string {
+	b := []byte(strings.ToUpper(service))
+	for i, c := range b {
+		if (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			b[i] = '_'
+		}
+	}
+
+	if len(b) > 0 && b[0] >= '0' && b[0] <= '9' {
+		return "_" + string(b)
+	}
+
+	return string(b)
 }
 
 func Env(ctx context.Context, p provider.Provider, path, sandbox, shell string) error {
@@ -1058,9 +1136,12 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 		// stale for a moment, and is corrected the way it always is: the next connection dials
 		// a stopped container, the belief is revoked, and it is woken again.
 		if err := p.Stop(ctx, u.Ref); err != nil {
+			journalEvent(sandbox, u.Service, "sleepFailed", 0, err, "could not sleep: `sbx sleep`")
+
 			return fmt.Errorf("%s: %w", u.Ref, err)
 		}
 
+		journalEvent(sandbox, u.Service, "slept", 0, nil, "slept by `sbx sleep`")
 		fmt.Printf("  %-24s slept\n", u.Service)
 		slept++
 	}
@@ -1136,7 +1217,28 @@ func sleepingRef(_ context.Context, units []provider.Unit, sandbox, service stri
 		sandbox, service, strings.Join(have, ", "))
 }
 
-func serviceRef(ctx context.Context, p provider.Provider, sandbox, service string) (string, error) {
+// journalEvent records something the CLI did to a sandbox as an event, the shape the daemon
+// writes for its own wakes and sleeps, so `sbx history` shows every one whoever caused it.
+//
+// history.Append directly, not logs.Default.ActorEvent as the dashboard does: that also prints
+// a log line on stdout, and on `sbx exec` stdout is the command's output - a JSON line in the
+// middle of `sbx exec b pg pg_dump > dump.sql` would corrupt the dump.
+func journalEvent(sandbox, service, event string, took time.Duration, err error, msg string) {
+	r := history.Record{
+		Kind: "event", Sandbox: sandbox, Service: service, Event: event,
+		DurationMs: took.Milliseconds(), Actor: logs.ActorCLI, Message: msg,
+	}
+
+	if err != nil {
+		r.Failed, r.Error = true, err.Error()
+	}
+
+	history.Append(r)
+}
+
+// serviceRef finds a service and wakes it if it is asleep. by names the command for the
+// journal: a wake caused by `sbx exec` is a person's, and is recorded as theirs.
+func serviceRef(ctx context.Context, p provider.Provider, sandbox, service, by string) (string, error) {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return "", err
@@ -1151,13 +1253,20 @@ func serviceRef(ctx context.Context, p provider.Provider, sandbox, service strin
 			// Wake it first: exec against a stopped container fails with a message about
 			// the container, not about the sandbox being asleep, which reads like a bug.
 			if !u.Running {
-				if err := p.Start(ctx, u.Ref); err != nil {
+				began := time.Now()
+
+				err := p.Start(ctx, u.Ref)
+				if err == nil {
+					err = waitHealthy(ctx, p, u.Ref, "", 90*time.Second)
+				}
+
+				if err != nil {
+					journalEvent(sandbox, service, "wakeFailed", time.Since(began), err, "could not wake for `sbx "+by+"`")
+
 					return "", err
 				}
 
-				if err := waitHealthy(ctx, p, u.Ref, "", 90*time.Second); err != nil {
-					return "", err
-				}
+				journalEvent(sandbox, service, "woke", time.Since(began), nil, "woken by `sbx "+by+"`")
 			}
 
 			return u.Ref, nil
@@ -1173,11 +1282,16 @@ func serviceRef(ctx context.Context, p provider.Provider, sandbox, service strin
 		sandbox, service, strings.Join(names, ", "))
 }
 
-// Exec runs a command inside a service. With tty it hands the terminal over instead of
-// capturing output, which is what makes `sbx exec -t my-branch postgres psql` a usable
-// shell rather than a command that appears to hang with no prompt.
+// Exec runs a command inside a service with this process's stdio attached, and returns its
+// exit status as a *ChildExit so `sbx exec` exits with it: `sbx exec b app ./check` in CI gates
+// on ./check, not on sbx. With tty it hands the terminal over instead, which is what makes
+// `sbx exec -t my-branch postgres psql` a usable shell.
+//
+// Stdin is passed on when it is a pipe or a file, not when it is a terminal: without -t there
+// is no echo or line editing, so a terminal feeding a command reads as a hang, and -t is how
+// to type into one. /dev/null is a character device too, and giving none is the same thing.
 func Exec(ctx context.Context, p provider.Provider, sandbox, service string, argv []string, tty bool) error {
-	ref, err := serviceRef(ctx, p, sandbox, service)
+	ref, err := serviceRef(ctx, p, sandbox, service, "exec")
 	if err != nil {
 		return err
 	}
@@ -1186,12 +1300,27 @@ func Exec(ctx context.Context, p provider.Provider, sandbox, service string, arg
 		return p.ExecTTY(ctx, ref, argv)
 	}
 
-	out, err := p.Exec(ctx, ref, argv)
-	if out != "" {
-		fmt.Println(out)
+	var stdin io.Reader
+	if !isCharDevice(os.Stdin) {
+		stdin = os.Stdin
 	}
 
-	return err
+	code, err := p.ExecStream(ctx, ref, argv, stdin, os.Stdout, os.Stderr)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		return &ChildExit{Code: code}
+	}
+
+	return nil
+}
+
+func isCharDevice(f *os.File) bool {
+	info, err := f.Stat()
+
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 // cmdLogs shows one service, or the whole sandbox at once.
@@ -1279,7 +1408,7 @@ func Copy(ctx context.Context, p provider.Provider, sandbox, service, src, dst s
 		return fmt.Errorf("exactly one of src and dst must be inside the sandbox, written as \":path\"")
 	}
 
-	ref, err := serviceRef(ctx, p, sandbox, service)
+	ref, err := serviceRef(ctx, p, sandbox, service, "cp")
 	if err != nil {
 		return err
 	}

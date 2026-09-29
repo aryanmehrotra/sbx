@@ -590,6 +590,22 @@ func (k *kubeProvider) ExecTTY(ctx context.Context, ref string, argv []string) e
 	return cmd.Run()
 }
 
+// ExecStream is `kubectl exec`, which exits with the workload's own status, and passes -i only
+// when there is stdin: kubectl without -i never reads ours.
+func (k *kubeProvider) ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	args := []string{"-n", k.namespace, "exec"}
+	if stdin != nil {
+		args = append(args, "-i")
+	}
+
+	args = append(append(args, "deployment/"+ref, "--"), argv...)
+
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+
+	return exitStatus(cmd.Run())
+}
+
 func (k *kubeProvider) Exec(_ context.Context, ref string, argv []string) (string, error) {
 	return k.kc("", append([]string{"exec", "deployment/" + ref, "--"}, argv...)...)
 }

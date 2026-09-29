@@ -235,6 +235,17 @@ type Provider interface {
 	// echo and no job control.
 	ExecTTY(ctx context.Context, ref string, argv []string) error
 
+	// ExecStream runs argv with the caller's streams attached and returns the command's own
+	// exit status. It is what `sbx exec` without -t uses: `pg_dump | sbx exec b pg psql` has
+	// to reach psql's stdin, and `sbx exec b app ./check` has to exit with ./check's status,
+	// and Exec does neither - it captures output for sbx's own use (health, init, mounts)
+	// and turns every failure into an error.
+	//
+	// err is for a command that could not be run or whose status never arrived; a command
+	// that ran and failed is (its status, nil). A nil stdin means the command gets none. A
+	// provider that cannot carry stdin says so in err rather than dropping it.
+	ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+
 	// Logs writes a service's output to w, optionally following it.
 	//
 	// A writer rather than a string because following has no end: a sandbox is a set of

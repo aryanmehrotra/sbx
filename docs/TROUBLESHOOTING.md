@@ -296,6 +296,18 @@ If the message says "the 3 sleeps in a row it has not" or "the re-key that would
 unsealed failed too", the VM was stopped instead. Its next wake is a cold boot with the disk kept.
 Check `sbx doctor` for memory and swap, keep fewer sandboxes awake, or lower `memory` per microVM.
 
+### `sbx exec` on a microVM: "cannot pass stdin"
+
+The in-VM agent has no way to signal end of input, so a command reading piped stdin would never
+exit. sbx refuses before running anything. Copy the input in and redirect inside the VM:
+
+```sh
+sbx cp my-branch app ./input.sql :/tmp/input.sql
+sbx exec my-branch app sh -c 'psql -U app < /tmp/input.sql'
+```
+
+Empty stdin (`</dev/null`, a closed pipe) is fine, and `sbx exec -t` types into a command.
+
 ### `sbx serve --provider firecracker --osb-addr` on a Mac will not start
 
 On an M3+ Mac or Windows the API runs in the helper VM and is fronted here. The front says which
@@ -363,7 +375,7 @@ The platform's health check is not the tunnel. Work down this list:
 | "the handshake was answered by something that is not this endpoint" | something else answers the URL; `curl -sS https://<url>/healthz` answers only if sbx is there |
 | "active" but nothing answers | the container died at start; read its logs. Pin the sbx version as `sbx pack` does |
 | "... is http, so SBX_CONNECT_TOKEN would cross the network in the clear" | use `https://`, or `SBX_CONNECT_INSECURE=1` on a trusted network |
-| "... came after a flag, where it would have been ignored" | put flags last; the message prints the working line |
+| "... came after a flag, where it would have been ignored" | up to v0.15.1: put flags last. Fixed after v0.15.1: flags go anywhere |
 | "db and replica both want 127.0.0.1:5432" | `--port-offset replica=1000` |
 | "cannot open 127.0.0.1:<port>" | your local `sbx serve` owns that port; `--port-offset 1000` |
 | "the sandbox behind this port was recreated" | restart `sbx connect` |

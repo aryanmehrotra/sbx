@@ -27,7 +27,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 	},
 	"env": {
 		"sbx env <sandbox> [--shell posix|fish|powershell|cmd|json]",
-		"Print the addresses of a sandbox's services, ready to eval into your shell.\n" +
+		"Print the addresses of a sandbox's services, ready to eval into your shell: each\n" +
+			"export, and <SERVICE>_HOST/_PORT for a service no export names (one from sbx add).\n" +
 			"--shell json is for anything that parses rather than sources.",
 		`eval "$(sbx env feature-x)"`,
 	},
@@ -172,7 +173,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 	},
 	"exec": {
 		"sbx exec [-t] <sandbox> <service> <command>...",
-		"Run a command inside a service. -t attaches a terminal, for a shell or a REPL.",
+		"Run a command inside a service. Piped stdin reaches it, and sbx exits with its status.\n" +
+			"-t attaches a terminal, for a shell or a REPL.",
 		"sbx exec main postgres psql -U app -d app",
 	},
 	"logs": {

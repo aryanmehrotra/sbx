@@ -240,7 +240,11 @@ func TestAShellStaysRefusedOverConnect(t *testing.T) {
 	for name, err := range map[string]error{
 		"Exec":    execErr,
 		"ExecTTY": r.ExecTTY(ctx, "ref", []string{"sh"}),
-		"Copy":    r.Copy(ctx, "ref", ":/a", "/b"),
+		"ExecStream": func() error {
+			_, err := r.ExecStream(ctx, "ref", []string{"ls"}, nil, io.Discard, io.Discard)
+			return err
+		}(),
+		"Copy": r.Copy(ctx, "ref", ":/a", "/b"),
 	} {
 		if err == nil {
 			t.Errorf("%s was accepted over a connect endpoint", name)
