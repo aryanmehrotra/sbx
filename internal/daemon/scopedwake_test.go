@@ -64,7 +64,10 @@ func (e *oneService) Start(context.Context, string) error {
 			e.accepted++
 			e.mu.Unlock()
 
-			_ = c.Close()
+			// Held until the client hangs up, as a real server waiting for its client does.
+			// Closing at once is what a workload nobody can reach looks like, and `sbx wake`
+			// refuses to call that serving.
+			go func() { _, _ = io.Copy(io.Discard, c); _ = c.Close() }()
 		}
 	}()
 
