@@ -84,7 +84,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - A `depends_on` cycle is reported at load as the loop itself, with the file name.
 - `sbx validate` and every command that expands a spec report unsupported `${...}` forms and unset variables together in one error.
 - A bare `PORT` export no longer sets `PORT_HOST`.
-- `sbx gc` reports snapshots and too-new artifacts as separate counts.
+- `sbx gc` reports skipped snapshot images and volumes by kind, and too-new artifacts as a separate count.
 - An API create on a source build no longer asks docker for an unpublished image, and a failed placement leaves no empty `sbx-execd-*` volume.
 - A refused `sbx serve --osb-addr` no longer writes `~/.sbx/osb/key`.
 - `sandbox_create` in `sbx mcp` suggests raising `ready_timeout_seconds` only when the wait timed out.
@@ -108,8 +108,9 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx with` no longer suggests `sbx rm` for a sandbox it already removed.
 - `sbx snapshot --rm` and `--replace` refuse, removing nothing, while a fork still runs from the snapshot.
 - `sbx gc --snapshots` no longer offers a snapshot any sandbox runs from; `--force` never removes one.
+- `sbx snapshot --rm` also removes a snapshot that exists only as volumes, which is what an interrupted snapshot leaves; `sbx gc --snapshots` lists such volumes as "no image".
 - `sbx snapshot` pauses the sandbox's running services for the copy and commit, then thaws them (also on failure and Ctrl-C), so a database rewriting its files, such as ClickHouse merging parts, is saved at one instant instead of failing with "can't stat" or tearing.
-- `sbx prewarm` also pulls the helpers a spec needs (`alpine:3` for snapshot and fork, the egress filter's images when a service is filtered) and lists each image once.
+- `sbx prewarm` also pulls the helpers a spec needs (`alpine:3` for snapshot and fork, the egress filter's images when a service is filtered) and lists each image once, even one named twice on the command line.
 - A service with a short `idle` sleeps on time when another is slow to stop, and a connection during a stop can no longer leave it running while the daemon believes it asleep. The `slept` event reports the idle time that triggered it.
 - `sbx env` warns on stderr when a derived `<SERVICE>_PORT` is taken by an export or shared by two services, and gives a shared name to neither.
 - `sbx add` warns when the service it adds takes a `<SERVICE>_PORT` name another service or an export already has, and `sbx validate` and `sbx create` warn about such collisions in the spec itself; none of them refuses.
