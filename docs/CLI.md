@@ -34,7 +34,7 @@ Commands marked (B) below also take these.
 | `sbx create <sandbox>` | Make a sandbox. Services start asleep. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
 | `sbx with <sandbox> -- <cmd>` | Create, wait until ready, run `cmd` with the env, then remove. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` |
 | `sbx env <sandbox>` | Print the services' addresses as shell exports. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
-| `sbx list` | Every sandbox, its services, state and address. (B) | `--json` |
+| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it) and address. `--json` adds `state`; `awake` is false for a frozen service. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
 | `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. (B) | none |
 
