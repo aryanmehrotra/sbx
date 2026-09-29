@@ -77,6 +77,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx selftest` registers as an `--only` daemon for its own sandbox while it runs, so `sbx serve` leaves it alone instead of logging "address already in use".
 - A service's own `idle` window is honoured within a third of it, not at the daemon's 30 s cadence.
 - `sbx history` records sleeps from `sbx sleep` and wakes caused by `sbx exec` and `sbx cp`.
+- After `sbx sleep`, the first connection to a service starts the services it `depends_on` as well; they stayed stopped until the next discovery tick and a new connection.
 - `sbx env` no longer needs `${VAR}` secrets set, and `sbx add` keeps clear of the spec's reserved ordinals when one is unset.
 - A `depends_on` cycle is reported at load as the loop itself, with the file name.
 - `sbx validate` and every command that expands a spec report unsupported `${...}` forms and unset variables together in one error.
