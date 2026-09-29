@@ -321,8 +321,8 @@ Limits:
 - Loopback and link-local addresses, including cloud metadata at `169.254.0.0/16`, are refused unless a rule names them.
 - On colima and Docker Desktop, the machine behind the filter is refused whatever a rule says: every
   docker network's gateway, the default bridge, and what `host.docker.internal`,
-  `host.lima.internal` and `gateway.docker.internal` resolve to (the whole `/24`). A service
-  cannot reach the VM or your Mac through the proxy.
+  `host.lima.internal` and `gateway.docker.internal` resolve to (the whole `/24`), and the filter's own
+  addresses, `sbx-egress` included. A service cannot reach the VM or your Mac through the proxy.
 - A docker network created after a filter started is refused from the next discovery pass of
   `sbx serve` (`--refresh`, 15 s by default), which pushes the engine's gateways to every
   filter. While no `sbx serve` runs, and on a remote docker, a network created later is not

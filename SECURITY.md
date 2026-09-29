@@ -44,7 +44,7 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   sbx's egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. Where
   the filter is a container (colima, Docker Desktop, rootless or remote docker) it refuses, whatever
   the policy says, every docker network's gateway, the default bridge's subnet, its own routes'
-  gateways, and the `/24` around what `host.docker.internal`, `host.lima.internal` and
+  gateways, its own interface addresses, and the `/24` around what `host.docker.internal`, `host.lima.internal` and
   `gateway.docker.internal` resolve to. That closes the VM and, through it, your Mac's loopback.
   A docker network created after the filter started is refused once `sbx serve` has run a
   discovery pass (every `--refresh`, 15 s by default): the daemon lists the engine's gateways and

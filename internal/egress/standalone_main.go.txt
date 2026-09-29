@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"net"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -29,6 +30,10 @@ func main() {
 		state  = flag.String("state", "/var/lib/sbx-egress/policy.json", "where a live policy is kept across restarts")
 		listen = flag.String("listen", ":20999", "proxy address")
 		stat   = flag.String("stat", ":20998", "address serving the last-activity timestamp and the control endpoint")
+
+		// Only for a test that runs this program on the machine its upstream listens on, where
+		// every upstream is one of this process's own addresses. sbx never passes it.
+		dialSelf = flag.Bool("test-dial-self", false, "do not refuse this process's own interface addresses (tests only)")
 	)
 
 	flag.Parse()
@@ -84,6 +89,9 @@ func main() {
 	}
 
 	doors := &Doors{Static: static}
+	if *dialSelf {
+		doors.Interfaces = func() ([]net.Addr, error) { return nil, nil }
+	}
 
 	// What the daemon last pushed (Control's /refuse), so a restart does not reopen a network
 	// created since this container was: until the daemon's next tick it would otherwise be a door.

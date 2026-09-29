@@ -128,6 +128,7 @@ func TestTheCompiledFilterRefusesWhatItIsToldToRefuse(t *testing.T) {
 		"-token", "t0ken",
 		"-state", t.TempDir()+"/policy.json",
 		"-listen", "127.0.0.1:"+proxyPort,
+		"-test-dial-self",
 		"-stat", "127.0.0.1:"+statPort)
 
 	if err := cmd.Start(); err != nil {
