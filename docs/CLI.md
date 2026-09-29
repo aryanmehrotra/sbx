@@ -38,7 +38,7 @@ names are the command, and its own flags stay its own.
 | `sbx create <sandbox>` | Make a sandbox. Services start asleep. Run again, it recreates only a service whose image changed (an edited `build` context), keeping its volume. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
 | `sbx with <sandbox> -- <cmd>` | Create a new sandbox, wait until ready, run `cmd` with the env, then remove it, also when create fails. Refuses a name already in use. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` (each wait for a service) |
 | `sbx env <sandbox>` | Print the services' addresses as shell exports: each `exports` name, and `<SERVICE>_HOST`/`_PORT` for a service no export names. Needs no `${VAR}` set. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
-| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it) and address. `--json` adds `state`; `awake` is false for a frozen service. (B) | `--json` |
+| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it), isolation tier and address. `--json` adds `state` and `isolation`; `awake` is false for a frozen service. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
 | `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. (B) | none |
 
@@ -46,16 +46,16 @@ names are the command, and its own flags stay its own.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything. (B) | `--tail N` (default 100), `-f` |
+| `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything; `-f` stops, and says so, when the service goes to sleep. (B) | `--tail N` (default 100), `-f` |
 | `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. Piped stdin reaches it; sbx exits with its status. (B) | `-t` attaches a terminal |
 | `sbx cp <sandbox> <service> <src> <dst>` | Copy a file in or out. Prefix the in-service path with `:`. (B) | none |
-| `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` is refused. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
+| `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` or `SBX_ISOLATION` is refused, naming which one asked. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
 | `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |
-| `sbx ready <sandbox>` | Block until every service really answers and is running. For CI. (B) | `--timeout 90s` |
+| `sbx ready <sandbox>` | Block until every service is running and its workload answers at the port `sbx serve` forwards to. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
-| `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. (B) | none |
+| `sbx sleep <sandbox>` | Stop every service now, frozen ones included, and drop to 0 B. Dependents stop before what they `depends_on`; the rest stop together. (B) | none |
 | `sbx egress <sandbox> [service]` | Read or change a running sandbox's network policy. (B) | `--allow H`, `--deny H`, `--remove H` (all repeatable), `--default allow\|deny`, `--reset`, `--show`, `--json` |
 | `sbx mcp` | MCP server (tools an AI app can call) on stdio, with OpenSandbox's 19 tools. Needs `sbx serve --osb-addr`. [Setup](GUIDES.md#mcp). | `--url` (see [env](#opensandbox-api-and-mcp)), `--key` |
 | `sbx ssh <sandbox> [service]` | Reach a service with an editor over ssh. Gated: `SBX_FEATURES=ssh`. (B) | `--user` (default `root`), `--folder` (default `/work`), `--template`, `--spec` |
@@ -164,7 +164,9 @@ small Linux VM that sbx starts. There the API key is always on, and only these f
 A service no export names, such as one from `sbx add`, gets `<SERVICE>_HOST` and
 `<SERVICE>_PORT` for its first port. The name is upper-cased, with anything but a letter or
 digit turned into `_`: `sbx add b my-cache ...` prints `MY_CACHE_PORT`. An export of the same
-name wins.
+name wins. Two services that map to one name, such as `my.cache` and `my-cache`, get neither.
+Either case prints a warning on stderr naming the services. A service in `sandbox.json` can take
+an `exports` entry; one from `sbx add` cannot, so add it again under another name.
 
 `sbx exec` without `-t` passes stdin on when it is a pipe or a file, and exits with the
 command's own status: `pg_dump | sbx exec b postgres psql -U app` works, and so does a CI

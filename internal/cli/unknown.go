@@ -31,16 +31,14 @@ func UnknownSandbox(ctx context.Context, p provider.Provider, sandbox string) er
 			"     create it:  sbx create %s --template postgres     (sbx templates lists them)",
 			sandbox, sandbox)
 
-	case len(others) <= 8:
+	default:
+		// Every name, however many. Past eight this used to say "There are N others - `sbx
+		// list` names them" instead, so one typo read two ways on two machines, and on the busy
+		// one - where a typo is likeliest - it sent the reader to run a command for a list this
+		// function already had. A line of names is cheap; a round trip is not.
 		return fmt.Errorf("no sandbox %q. These exist: %s\n"+
 			"     create it:  sbx create %s --template postgres",
 			sandbox, strings.Join(others, ", "), sandbox)
-
-	default:
-		// Past a handful the list stops being a hint and starts being output to scroll
-		// through, which is what `sbx list` is for.
-		return fmt.Errorf("no sandbox %q. There are %d others - `sbx list` names them",
-			sandbox, len(others))
 	}
 }
 

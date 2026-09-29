@@ -17,7 +17,10 @@ import (
 // Units without the label predate it and were created as containers, which is what they are
 // read as. A provider that records no tier at all (firecracker, kubernetes) is left to apply
 // the requested one as it always did.
-func AddIsolation(providerName string, units []provider.Unit, requested provider.Isolation, explicit bool,
+//
+// source is what asked for requested: "" when nothing did (the flag's default), otherwise
+// "--isolation" or "SBX_ISOLATION", which the refusal names.
+func AddIsolation(providerName string, units []provider.Unit, requested provider.Isolation, source string,
 ) (provider.Isolation, error) {
 	var tier provider.Isolation
 
@@ -36,15 +39,23 @@ func AddIsolation(providerName string, units []provider.Unit, requested provider
 		tier = provider.IsolationContainer
 	}
 
-	if !explicit {
+	if source == "" {
 		return tier, nil
 	}
 
 	if requested != tier {
-		return "", fmt.Errorf("--isolation %s does not match the sandbox, whose services run with "+
-			"isolation %s: a sandbox has one tier. Drop --isolation to add this service as %s, or "+
+		// Named after whatever asked. SBX_ISOLATION exported in a shell profile reads as a flag
+		// nobody typed if the refusal says "--isolation", and the reader goes looking for it on a
+		// command line that does not have it.
+		asked, drop := "--isolation "+string(requested), "Drop --isolation"
+		if source == "SBX_ISOLATION" {
+			asked, drop = "SBX_ISOLATION="+string(requested), "Unset SBX_ISOLATION"
+		}
+
+		return "", fmt.Errorf("%s does not match the sandbox, whose services run with "+
+			"isolation %s: a sandbox has one tier. %s to add this service as %s, or "+
 			"recreate the sandbox with --isolation %s (sbx rm, then sbx create --isolation %s)",
-			requested, tier, tier, requested, requested)
+			asked, tier, drop, tier, requested, requested)
 	}
 
 	return tier, nil

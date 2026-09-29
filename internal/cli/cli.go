@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -772,6 +773,11 @@ func detectShell() string {
 	return "posix"
 }
 
+// stderr is where a command's notes go - a variable name `sbx env` could not hand out, a followed
+// service that went to sleep - so a test can read them. Never stdout: `eval "$(sbx env)"` and
+// `--shell json` parse stdout, and a note there breaks them.
+var stderr io.Writer = os.Stderr
+
 // envVars resolves a sandbox's exports into ordered KEY,VALUE pairs. Env formats them for a
 // shell; With injects them into a child process. One resolver, so a scoped run and an `eval`
 // see exactly the same variables.
@@ -838,6 +844,7 @@ func envVars(ctx context.Context, p provider.Provider, path, sandbox string) ([]
 // <SERVICE>_HOST and <SERVICE>_PORT for its first port - asleep or not, since connecting wakes
 // it. A derived name never replaces one already set: the spec author's export is the contract,
 // and a service called "database" must not move DATABASE_PORT.
+// Two services deriving the same name get neither, and every name withheld is warned about.
 func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provider.Endpoint, have [][2]string) [][2]string {
 	taken := map[string]bool{}
 	for _, kv := range have {
@@ -853,7 +860,16 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 	sorted := slices.Clone(units)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Service < sorted[j].Service })
 
-	var out [][2]string
+	type candidate struct {
+		service string
+		ep      provider.Endpoint
+	}
+
+	// Grouped by the name each would take before any is handed out, because a collision has
+	// to be seen whole: taking them in order gave the name to whichever service sorted first.
+	byName := map[string][]candidate{}
+
+	var names []string
 
 	for _, u := range sorted {
 		if exported[u.Service] {
@@ -874,14 +890,69 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 		}
 
 		base := envName(u.Service)
-		host, port := base+"_HOST", base+"_PORT"
-
-		if taken[host] || taken[port] {
-			continue
+		if len(byName[base]) > 0 && byName[base][len(byName[base])-1].service == u.Service {
+			continue // one service listed twice is not a collision with itself
 		}
 
-		taken[host], taken[port] = true, true
-		out = append(out, [2]string{host, ep.Host}, [2]string{port, strconv.Itoa(ep.Port)})
+		if byName[base] == nil {
+			names = append(names, base)
+		}
+
+		byName[base] = append(byName[base], candidate{u.Service, ep})
+	}
+
+	var out [][2]string
+
+	// Every case that hands a name to nobody says so, on stderr (see the stderr var). Silence was
+	// the bug: the service had no variables, and the first sign was a client dialling another.
+	warn := func(format string, args ...any) {
+		fmt.Fprintf(stderr, "sbx: warning: "+format+"\n", args...)
+	}
+
+	// What to do about it depends on where the service came from. An export can only name a
+	// service in sandbox.json - one pointing anywhere else fails `sbx env` outright - so a
+	// service from `sbx add` can only be added again under another name.
+	fix := func(service string) string {
+		if _, inSpec := sp.Services[service]; inSpec {
+			return fmt.Sprintf("give %q an `exports` entry in sandbox.json", service)
+		}
+
+		return fmt.Sprintf("%q came from `sbx add`, which no export can name: add it again under another name", service)
+	}
+
+	for _, base := range names {
+		cs := byName[base]
+		host, port := base+"_HOST", base+"_PORT"
+
+		switch {
+		case taken[host] || taken[port]:
+			// An export always wins: it is what the spec author wrote down, and a service
+			// called "database" must not move DATABASE_PORT.
+			held := port
+			if !taken[port] {
+				held = host
+			}
+
+			for _, c := range cs {
+				warn("service %q gets no %s: an export already has that name. To address it, %s",
+					c.service, held, fix(c.service))
+			}
+
+		case len(cs) > 1:
+			// None of them gets it. Handing it to one means the name points at the wrong
+			// service for anyone who meant another, and nothing would say which.
+			quoted, fixes := make([]string, len(cs)), make([]string, len(cs))
+			for i, c := range cs {
+				quoted[i], fixes[i] = fmt.Sprintf("%q", c.service), fix(c.service)
+			}
+
+			warn("services %s map to the same %s and %s, so none of them gets those. To address them, %s",
+				strings.Join(quoted, " and "), host, port, strings.Join(fixes, "; "))
+
+		default:
+			taken[host], taken[port] = true, true
+			out = append(out, [2]string{host, cs[0].ep.Host}, [2]string{port, strconv.Itoa(cs[0].ep.Port)})
+		}
 	}
 
 	return out
@@ -1016,6 +1087,12 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 		return err
 	}
 
+	// Running and healthy is still not serving. The health check runs INSIDE the container, so it
+	// passes on a workload no host connection can reach - see waitWorkloads.
+	if err := waitWorkloads(ctx, sandbox, workloadDials(p, units), deadline); err != nil {
+		return err
+	}
+
 	if len(unverifiable) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"sbx: warning: %s declare no health check, so nothing here checked whether they\n"+
@@ -1133,23 +1210,35 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 
 	slept := 0
 
-	for _, u := range units {
-		if !u.Running {
-			continue
+	// Layer by layer, each layer in parallel. One at a time, every stop waited out docker's
+	// 10 s grace in turn: four alpine services took 30 s, and the 14-service zopnight stack
+	// could take over two minutes to do something that is meant to be instant.
+	for _, layer := range sleepLayers(units) {
+		var (
+			wg   sync.WaitGroup
+			errs = make([]error, len(layer))
+		)
+
+		for i, u := range layer {
+			wg.Go(func() { errs[i] = sleepOne(ctx, p, sandbox, u) })
 		}
 
-		// The same call the dashboard's `s` makes. Locally the daemon's cached "awake" goes
-		// stale for a moment, and is corrected the way it always is: the next connection dials
-		// a stopped container, the belief is revoked, and it is woken again.
-		if err := p.Stop(ctx, u.Ref); err != nil {
-			journalEvent(sandbox, u.Service, "sleepFailed", 0, err, "could not sleep: `sbx sleep`")
+		wg.Wait()
 
-			return fmt.Errorf("%s: %w", u.Ref, err)
+		// Printed after the layer, in its order, so the output does not depend on which
+		// container happened to exit first.
+		for i, u := range layer {
+			if errs[i] == nil {
+				fmt.Printf("  %-24s slept\n", u.Service)
+				slept++
+			}
 		}
 
-		journalEvent(sandbox, u.Service, "slept", 0, nil, "slept by `sbx sleep`")
-		fmt.Printf("  %-24s slept\n", u.Service)
-		slept++
+		// A failed layer ends it: the next one is what this one depends on, and stopping a
+		// database under an app that would not stop is the order this exists to avoid.
+		if err := errors.Join(errs...); err != nil {
+			return err
+		}
 	}
 
 	if slept == 0 {
@@ -1161,6 +1250,105 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 	fmt.Printf("sandbox %q asleep - %d service(s) at 0 B\n", sandbox, slept)
 
 	return nil
+}
+
+// sleepOne stops one service, thawing it first if it is frozen, and journals the outcome.
+//
+// A frozen service is not running, and `sbx sleep` used to skip it as "already asleep" - while
+// it held every byte of its memory, the one state where sleeping is the whole point.
+//
+// It is thawed first. Docker does not need that (measured: `docker stop` on a paused redis
+// returned at once, exit 0), but a microVM does: its sleep asks the guest to seal before the
+// snapshot, and a frozen guest cannot answer. Thawing is one cheap call, and it makes the stop
+// that follows the ordinary one on every backend.
+func sleepOne(ctx context.Context, p provider.Provider, sandbox string, u provider.Unit) error {
+	fail := func(err error) error {
+		journalEvent(sandbox, u.Service, "sleepFailed", 0, err, "could not sleep: `sbx sleep`")
+
+		return fmt.Errorf("%s: %w", u.Ref, err)
+	}
+
+	if u.Paused {
+		if pa, ok := p.(provider.Pauser); ok {
+			if err := pa.Unpause(ctx, u.Ref); err != nil {
+				return fail(err)
+			}
+		}
+	}
+
+	// The same call the dashboard's `s` makes. Locally the daemon's cached "awake" goes stale
+	// for a moment, and is corrected the way it always is: the next connection dials a stopped
+	// container, the belief is revoked, and it is woken again.
+	if err := p.Stop(ctx, u.Ref); err != nil {
+		return fail(err)
+	}
+
+	journalEvent(sandbox, u.Service, "slept", 0, nil, "slept by `sbx sleep`")
+
+	return nil
+}
+
+// sleepLayers orders the units that hold memory (running or frozen) for stopping: each layer
+// can stop in parallel, and every service is in a layer before anything it depends_on. It is
+// the reverse of the order a wake walks, for the reverse reason - an app is never left running
+// against a database that has already gone.
+//
+// Depths are taken over every unit, asleep ones included, so a dependent that is already asleep
+// still orders the rest the same way. A cycle (the spec refuses one; a hand-labelled container
+// could carry one) ends in the last layer rather than being dropped: stopped out of order beats
+// left running.
+func sleepLayers(units []provider.Unit) [][]provider.Unit {
+	dependents := map[string][]string{} // service -> services that depend on it
+	for _, u := range units {
+		for _, d := range u.DependsOn {
+			dependents[d] = append(dependents[d], u.Service)
+		}
+	}
+
+	depth := map[string]int{}
+	visiting := map[string]bool{}
+
+	var depthOf func(s string) int
+	depthOf = func(s string) int {
+		if d, ok := depth[s]; ok {
+			return d
+		}
+
+		if visiting[s] {
+			return len(units) // a cycle: last
+		}
+
+		visiting[s] = true
+
+		d := 0
+		for _, dep := range dependents[s] {
+			d = max(d, depthOf(dep)+1)
+		}
+
+		visiting[s] = false
+		depth[s] = d
+
+		return d
+	}
+
+	byDepth := map[int][]provider.Unit{}
+
+	for _, u := range units {
+		if u.Running || u.Paused {
+			d := depthOf(u.Service)
+			byDepth[d] = append(byDepth[d], u)
+		}
+	}
+
+	var layers [][]provider.Unit
+
+	for _, d := range slices.Sorted(maps.Keys(byDepth)) {
+		layer := byDepth[d]
+		sort.SliceStable(layer, func(i, j int) bool { return layer[i].Service < layer[j].Service })
+		layers = append(layers, layer)
+	}
+
+	return layers
 }
 
 // hostVar is the companion variable for a declared port export.
@@ -1361,7 +1549,19 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 		}
 		defer w.Flush()
 
-		return p.Logs(ctx, ref, lines, follow, w)
+		if err := p.Logs(ctx, ref, lines, follow, w); err != nil {
+			return err
+		}
+
+		w.Flush()
+
+		for _, u := range units {
+			if u.Ref == ref {
+				followEnded(ctx, p, sandbox, u, follow)
+			}
+		}
+
+		return nil
 	}
 
 	width := 0
@@ -1400,7 +1600,12 @@ func Logs(ctx context.Context, p provider.Provider, sandbox, service string, lin
 				mu.Lock()
 				errs = append(errs, fmt.Errorf("%s: %w", u.Service, err))
 				mu.Unlock()
+
+				return
 			}
+
+			w.Flush()
+			followEnded(ctx, p, sandbox, u, follow)
 		}(u)
 	}
 
@@ -1430,6 +1635,11 @@ func WakePort(ctx context.Context, p provider.Provider, sandbox, service string)
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return 0, err
+	}
+
+	// A mistyped sandbox is the likelier mistake, and "no service in sandbox" blamed the service.
+	if len(units) == 0 {
+		return 0, UnknownSandbox(ctx, p, sandbox)
 	}
 
 	for _, u := range units {
@@ -1478,11 +1688,7 @@ func List(ctx context.Context, p provider.Provider, asJSON bool) error {
 		return units[i].Service < units[j].Service
 	})
 
-	fmt.Printf("%-20s %-14s %-9s %s\n", "SANDBOX", "SERVICE", "STATE", "ADDRESS")
-
-	for _, u := range units {
-		fmt.Printf("%-20s %-14s %-9s %s\n", u.Sandbox, u.Service, unitState(u), joinEndpoints(u.Client))
-	}
+	listTable(os.Stdout, units, p.Name())
 
 	// The ADDRESS column is a promise only the daemon can keep.
 	//
@@ -1530,6 +1736,7 @@ func listJSON(w io.Writer, units []provider.Unit, backend string) error {
 		Service   string   `json:"service"`
 		Awake     bool     `json:"awake"`
 		State     string   `json:"state"`
+		Isolation string   `json:"isolation"`
 		Addresses []string `json:"addresses"`
 		Ref       string   `json:"ref"`
 		Provider  string   `json:"provider"`
@@ -1552,7 +1759,7 @@ func listJSON(w io.Writer, units []provider.Unit, backend string) error {
 		}
 
 		out = append(out, entry{
-			Sandbox: u.Sandbox, Service: u.Service, Awake: u.Running, State: unitState(u),
+			Sandbox: u.Sandbox, Service: u.Service, Awake: u.Running, State: unitState(u), Isolation: unitIsolation(u, backend),
 			Addresses: addrs, Ref: u.Ref, Provider: backend,
 		})
 	}
@@ -1655,3 +1862,55 @@ func sharedAllowList(sp *spec.Spec, withOptional bool) []string {
 
 	return out
 }
+
+// followEnded says why `sbx logs -f` stopped following a service, when the reason is sleep.
+//
+// `docker logs --follow` ends when the container stops, and on a sandbox that sleeps that is
+// routine: the idle timer fires and the command exits 0 with no word, which reads as the log
+// ending or sbx failing. Following on across the next wake was the alternative, and it was not
+// taken: the reattach can only start at the tail, so the first lines after a wake - the ones a
+// startup failure is in - would be dropped silently, which is worse than stopping and saying so.
+// u is the service as it was when the command started.
+func followEnded(ctx context.Context, p provider.Provider, sandbox string, u provider.Unit, follow bool) {
+	if !follow || ctx.Err() != nil {
+		return // not following, or interrupted: it ended because it was asked to
+	}
+
+	// Polled briefly: docker ends the log stream as the process exits, a moment before it reports
+	// the container stopped, and a single look found it still "running" when this was run live.
+	// Still running after that, the stream ended for some other reason and there is no note.
+	for deadline := time.Now().Add(followSettle); ; time.Sleep(100 * time.Millisecond) {
+		now, err := p.List(ctx, sandbox)
+		if err != nil {
+			return
+		}
+
+		found, stopped := false, false
+
+		for _, n := range now {
+			if n.Service == u.Service {
+				found, stopped = true, !n.Running
+			}
+		}
+
+		if stopped {
+			break
+		}
+
+		if !found || !time.Now().Before(deadline) {
+			return // removed, or still up: not a sleep
+		}
+	}
+
+	again := fmt.Sprintf("It wakes on the next connection; run `sbx logs -f %s %s` again then.", sandbox, u.Service)
+
+	if u.Running {
+		fmt.Fprintf(stderr, "sbx: %s went to sleep, so there is nothing more to follow. %s\n", u.Service, again)
+	} else {
+		fmt.Fprintf(stderr, "sbx: %s is asleep, so there is nothing to follow - the lines above are "+
+			"from before it slept. %s\n", u.Service, again)
+	}
+}
+
+// followSettle is how long followEnded waits for the runtime to report a stopped container.
+const followSettle = 3 * time.Second
