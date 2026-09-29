@@ -165,8 +165,10 @@ A service no export names, such as one from `sbx add`, gets `<SERVICE>_HOST` and
 `<SERVICE>_PORT` for its first port. The name is upper-cased, with anything but a letter or
 digit turned into `_`: `sbx add b my-cache ...` prints `MY_CACHE_PORT`. An export of the same
 name wins. Two services that map to one name, such as `my.cache` and `my-cache`, get neither.
-Either case prints a warning on stderr naming the services. A service in `sandbox.json` can take
-an `exports` entry; one from `sbx add` cannot, so add it again under another name.
+Either case prints a warning on stderr naming the services: from `sbx env`, from the `sbx add`
+that causes it, and from `sbx validate` and `sbx create` when the spec alone shows it. None of
+them refuses. A service in `sandbox.json` can take an `exports` entry; one from `sbx add` cannot,
+so add it again under another name.
 
 `sbx exec` without `-t` passes stdin on when it is a pipe or a file, and exits with the
 command's own status: `pg_dump | sbx exec b postgres psql -U app` works, and so does a CI

@@ -64,6 +64,9 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 		return err
 	}
 
+	// Names the spec withholds from `sbx env`, said before anything is made. See specEnvCollisions.
+	warnEnvCollisions(specEnvCollisions(sp))
+
 	layout, err := sp.Assign()
 	if err != nil {
 		return err
@@ -891,6 +894,16 @@ func Add(ctx context.Context, p provider.Provider, specPath, sandbox, name, imag
 				"     query after a wake may hit a socket that is about to close.")
 	}
 
+	// Said now rather than at the next `sbx env`: the add is what withholds the name, and a
+	// MY_CACHE_PORT that worked a moment ago otherwise just vanishes from it. A warning - the
+	// service works, one name is withheld. No sandbox.json here still has units to collide with.
+	envSpec, err := spec.LoadSpecUnexpanded(specPath)
+	if err != nil {
+		envSpec = &spec.Spec{}
+	}
+
+	warnEnvCollisions(addEnvCollisions(envSpec, units, name))
+
 	start, err := freeIndex(specPath, units, len(containerPorts))
 	if err != nil {
 		return fmt.Errorf("sandbox %q: %w", sandbox, err)
@@ -1075,109 +1088,8 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 		taken[kv[0]] = true
 	}
 
-	exported := map[string]bool{}
-	for _, ref := range sp.Exports {
-		svc, _, _ := strings.Cut(ref, ":")
-		exported[svc] = true
-	}
-
-	sorted := slices.Clone(units)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Service < sorted[j].Service })
-
-	type candidate struct {
-		service string
-		ep      provider.Endpoint
-	}
-
-	// Grouped by the name each would take before any is handed out, because a collision has
-	// to be seen whole: taking them in order gave the name to whichever service sorted first.
-	byName := map[string][]candidate{}
-
-	var names []string
-
-	for _, u := range sorted {
-		if exported[u.Service] {
-			continue
-		}
-
-		ep, ok := provider.Endpoint{}, false
-		if svc, inSpec := sp.Services[u.Service]; inSpec && len(svc.Ports) > 0 {
-			ep, ok = index[fmt.Sprintf("%s:%d", u.Service, svc.Ports[0])]
-		}
-
-		if !ok && len(u.Client) > 0 {
-			ep, ok = u.Client[0], true
-		}
-
-		if !ok {
-			continue // no ports: nothing to connect to
-		}
-
-		base := envName(u.Service)
-		if len(byName[base]) > 0 && byName[base][len(byName[base])-1].service == u.Service {
-			continue // one service listed twice is not a collision with itself
-		}
-
-		if byName[base] == nil {
-			names = append(names, base)
-		}
-
-		byName[base] = append(byName[base], candidate{u.Service, ep})
-	}
-
-	var out [][2]string
-
-	// Every case that hands a name to nobody says so, on stderr (see the stderr var). Silence was
-	// the bug: the service had no variables, and the first sign was a client dialling another.
-	warn := func(format string, args ...any) {
-		fmt.Fprintf(stderr, "sbx: warning: "+format+"\n", args...)
-	}
-
-	// What to do about it depends on where the service came from. An export can only name a
-	// service in sandbox.json - one pointing anywhere else fails `sbx env` outright - so a
-	// service from `sbx add` can only be added again under another name.
-	fix := func(service string) string {
-		if _, inSpec := sp.Services[service]; inSpec {
-			return fmt.Sprintf("give %q an `exports` entry in sandbox.json", service)
-		}
-
-		return fmt.Sprintf("%q came from `sbx add`, which no export can name: add it again under another name", service)
-	}
-
-	for _, base := range names {
-		cs := byName[base]
-		host, port := base+"_HOST", base+"_PORT"
-
-		switch {
-		case taken[host] || taken[port]:
-			// An export always wins: it is what the spec author wrote down, and a service
-			// called "database" must not move DATABASE_PORT.
-			held := port
-			if !taken[port] {
-				held = host
-			}
-
-			for _, c := range cs {
-				warn("service %q gets no %s: an export already has that name. To address it, %s",
-					c.service, held, fix(c.service))
-			}
-
-		case len(cs) > 1:
-			// None of them gets it. Handing it to one means the name points at the wrong
-			// service for anyone who meant another, and nothing would say which.
-			quoted, fixes := make([]string, len(cs)), make([]string, len(cs))
-			for i, c := range cs {
-				quoted[i], fixes[i] = fmt.Sprintf("%q", c.service), fix(c.service)
-			}
-
-			warn("services %s map to the same %s and %s, so none of them gets those. To address them, %s",
-				strings.Join(quoted, " and "), host, port, strings.Join(fixes, "; "))
-
-		default:
-			taken[host], taken[port] = true, true
-			out = append(out, [2]string{host, cs[0].ep.Host}, [2]string{port, strconv.Itoa(cs[0].ep.Port)})
-		}
-	}
+	out, cols := deriveEnvNames(sp, unitCandidates(sp, units, index), taken)
+	warnEnvCollisions(cols)
 
 	return out
 }

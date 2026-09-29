@@ -78,6 +78,10 @@ func Validate(w io.Writer, path string) error {
 		}
 	}
 
+	// On stderr, not w: a collision withholds a name but breaks nothing, and a linter reading
+	// stdout should see the same "valid." it always did.
+	warnEnvCollisions(specEnvCollisions(sp))
+
 	fmt.Fprintf(w, "\nvalid. Nothing was created - this only reads the file.\n")
 
 	return nil
