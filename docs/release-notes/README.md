@@ -4,6 +4,7 @@ What changed in each sbx release, what it means for you, and how to upgrade. New
 
 | Version | Date | Headline |
 |---|---|---|
+| [v0.15.1](v0.15.1.md) | 2026-09-29 | `sbx create` over an asleep sandbox no longer fails on `files` |
 | [v0.15.0](v0.15.0.md) | 2026-09-29 | `sbx install` adds what `sbx doctor` says is missing |
 | [v0.14.0](v0.14.0.md) | 2026-09-27 | Hardened microVMs: per-VM network namespace, file-size limits, no per-VM image copy |
 | [v0.13.2](v0.13.2.md) | 2026-09-27 | OpenSandbox SDK pools and e2e tests now pass against sbx |

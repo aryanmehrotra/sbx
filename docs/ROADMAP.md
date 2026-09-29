@@ -1,6 +1,6 @@
 # Roadmap
 
-What sbx builds next and what it will not build, as of v0.15.0 (2026-09-29). What already shipped
+What sbx builds next and what it will not build, as of v0.15.1 (2026-09-29). What already shipped
 is in the [release notes](release-notes/README.md).
 
 An item gets on this list if it makes the wake path faster, work on more workloads, or run behind
