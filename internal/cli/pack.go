@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -232,7 +233,31 @@ func packPin(build, pin string) (string, error) {
 
 	return "", fmt.Errorf("this sbx is a source build (%q), not a release, so there is no "+
 		"published version for the packed image to install. Name the release to pin: "+
-		"`sbx pack --version v0.15.1` (the list is at https://github.com/aryanmehrotra/sbx/releases)", build)
+		"`sbx pack --version %s` (the list is at https://github.com/aryanmehrotra/sbx/releases)",
+		build, baseRelease(build))
+}
+
+// A source build's version names the release it came from: git describe stamps the last tag as
+// v0.15.1-dev+ffd872d or v0.15.1-3-gffd872d, and a release candidate is v0.16.0-rc.1.
+var baseReleaseRE = regexp.MustCompile(`^(v?\d+\.\d+\.\d+)-(dev\b|rc\b|rc\d|rc\.|\d+-g[0-9a-f]+$)`)
+
+// baseRelease is the release to suggest pinning for a non-release build: the one its version is
+// based on, or the placeholder vX.Y.Z when the version names none ("dev", an unstamped build).
+//
+// It used to be a literal v0.15.1 in the message, which told every later source build to pack an
+// older sbx than itself. A build knows no release but its own version string - asking GitHub
+// for the latest would put a network call in an error message - so that is what it reads.
+func baseRelease(build string) string {
+	m := baseReleaseRE.FindStringSubmatch(build)
+	if m == nil {
+		return "vX.Y.Z"
+	}
+
+	if !strings.HasPrefix(m[1], "v") {
+		return "v" + m[1]
+	}
+
+	return m[1]
 }
 
 // pinNote is the comment above the install line. Read by whoever opens the generated Dockerfile
