@@ -12,6 +12,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Install is doctor's other half. Doctor reports what is missing and never changes the host;
@@ -130,6 +132,10 @@ type Host struct {
 	DaemonJSON      []byte // /etc/docker/daemon.json as it is now; nil when there is none
 	DaemonJSONErr   error  // reading it failed for a reason other than its absence
 
+	// CheckpointErr is provider.CheckpointHostOK: why this machine's engine can never restore a
+	// memory checkpoint (a local macOS VM), or nil.
+	CheckpointErr error
+
 	// NoCandidate reports a package the manager's configured sources do not have, so the plan
 	// skips it rather than failing the whole transaction on it. nil when that cannot be asked.
 	NoCandidate func(pkg string) bool
@@ -142,7 +148,7 @@ func ReadHost() Host {
 	_, kvmErr := os.Stat("/dev/kvm")
 
 	h := Host{PM: pm, HasPM: ok, EUID: os.Geteuid(), HasSudo: sudoErr == nil, Arch: runtime.GOARCH,
-		DaemonElsewhere: daemonElsewhere(), KVM: kvmErr == nil}
+		DaemonElsewhere: daemonElsewhere(), KVM: kvmErr == nil, CheckpointErr: provider.CheckpointHostOK()}
 
 	if ok && pm.Name == "apt-get" {
 		h.NoCandidate = aptNoCandidate
@@ -164,6 +170,7 @@ type InstallPlan struct {
 	Packages []string   // deduplicated, in the order first needed
 	For      []string   // the names this plan installs
 	Skipped  []string   // one line each: a name that is present already, or cannot be done here
+	Refused  []string   // the names asked for on the command line that cannot be done here
 	Notes    []string   // what running it will do beyond installing, such as restarting dockerd
 	Commands [][]string // exactly what runs, sudo included
 }
@@ -188,6 +195,16 @@ func PlanInstall(want []string, missing map[string]bool, h Host) (InstallPlan, e
 	var (
 		chosen []runtimeRecipe
 		skip   = func(format string, a ...any) { plan.Skipped = append(plan.Skipped, fmt.Sprintf(format, a...)) }
+		// refuse is a skip that means "cannot be done here", as opposed to "already here". When
+		// the name was asked for, it also fails the command (Refused), so a script that ran
+		// `sbx install checkpoint` does not carry on as though it had worked.
+		refuse = func(n, format string, a ...any) {
+			skip(format, a...)
+
+			if named {
+				plan.Refused = append(plan.Refused, n)
+			}
+		}
 	)
 
 	for _, n := range want {
@@ -206,7 +223,7 @@ func PlanInstall(want []string, missing map[string]bool, h Host) (InstallPlan, e
 			continue
 		case isRuntime:
 			if why := r.refuse(h); why != "" {
-				skip("%s: %s", n, why)
+				refuse(n, "%s: %s", n, why)
 
 				continue
 			}
@@ -218,11 +235,11 @@ func PlanInstall(want []string, missing map[string]bool, h Host) (InstallPlan, e
 
 		switch {
 		case len(byManager) > 0 && !h.HasPM:
-			skip("%s: no package manager this knows (%s) is on PATH; see its own install instructions", n, managerNames())
+			refuse(n, "%s: no package manager this knows (%s) is on PATH; see its own install instructions", n, managerNames())
 
 			continue
 		case len(byManager) > 0 && !ok:
-			skip("%s: %s has no package for it; see its own install instructions", n, h.PM.Name)
+			refuse(n, "%s: %s has no package for it; see its own install instructions", n, h.PM.Name)
 
 			continue
 		}
@@ -233,7 +250,7 @@ func PlanInstall(want []string, missing map[string]bool, h Host) (InstallPlan, e
 				why += "; " + r.noPackage
 			}
 
-			skip("%s", why)
+			refuse(n, "%s", why)
 
 			continue
 		}
@@ -320,7 +337,12 @@ func PrintPlan(w io.Writer, p InstallPlan) {
 	}
 
 	if p.Empty() {
-		fmt.Fprintln(w, "nothing to install")
+		// Not after a refusal of what was asked for: "nothing to install" reads as "already
+		// done", and the command's error says what it is instead.
+		if len(p.Refused) == 0 {
+			fmt.Fprintln(w, "nothing to install")
+		}
+
 		return
 	}
 
@@ -368,10 +390,22 @@ func Install(ctx context.Context, opts InstallOptions, in io.Reader, out io.Writ
 		return err
 	}
 
+	return runInstallPlan(ctx, opts, plan, in, out, interactive)
+}
+
+// runInstallPlan is Install after planning, separated so a test can hand it any plan.
+func runInstallPlan(ctx context.Context, opts InstallOptions, plan InstallPlan, in io.Reader, out io.Writer, interactive bool) error {
 	PrintPlan(out, plan)
 
+	// Whatever else runs, a name asked for and refused makes the exit status non-zero - also on
+	// --dry-run, whose job is to say whether the real run would work.
+	var refused error
+	if len(plan.Refused) > 0 {
+		refused = fmt.Errorf("cannot install %s here; the lines above say why", strings.Join(plan.Refused, ", "))
+	}
+
 	if plan.Empty() || opts.DryRun {
-		return nil
+		return refused
 	}
 
 	if !opts.Yes {
@@ -400,7 +434,11 @@ func Install(ctx context.Context, opts InstallOptions, in io.Reader, out io.Writ
 
 	fmt.Fprintln(out)
 
-	return PrintReport(out, Doctor(ctx), false)
+	if err := PrintReport(out, Doctor(ctx), false); err != nil {
+		return err
+	}
+
+	return refused
 }
 
 // aptNoCandidate asks apt whether pkg can be installed from the sources it has.

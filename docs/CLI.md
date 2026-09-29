@@ -26,7 +26,7 @@ names are the command, and its own flags stay its own.
 | command | purpose | flags |
 |---|---|---|
 | `sbx doctor` | What this machine can and cannot do. Run it first | `--json` |
-| `sbx install [NAME...]` | Install what `sbx doctor` reports missing: tools from the package manager, and gVisor, Kata or checkpoint registered with this machine's dockerd. Shows each command, then asks | `--yes`, `--dry-run` |
+| `sbx install [NAME...]` | Install what `sbx doctor` reports missing: tools from the package manager, and gVisor, Kata or checkpoint registered with this machine's dockerd. Shows each command, then asks. Exits non-zero if a named item cannot be installed here | `--yes`, `--dry-run` |
 | `sbx init` | Write a `sandbox.json` interactively. Piped or with `--template`, prints it to stdout | `--template NAME` (default `postgres`), `--yes`, `--from-devcontainer PATH` (gated: `devcontainer`) |
 | `sbx serve` | The daemon, one per machine. See [sbx serve](#sbx-serve) | see below |
 | `sbx selftest` | Create, sleep, wake and check a sandbox on this machine. Touches no other sandbox. (B) | `--keep` |
