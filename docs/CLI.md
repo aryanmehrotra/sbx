@@ -118,7 +118,7 @@ The daemon. It owns the ports `sbx env` prints, wakes a sandbox on connect and s
 | `--idle` | `5m` | Sleep a service after this long with no bytes |
 | `--ready` | `90s` | Give up waking a service after this long |
 | `--refresh` | `15s` | How often to look for new or removed sandboxes |
-| `--only PREFIX` | `$SBX_ONLY`, else all | Manage only sandboxes matching this prefix or glob. Repeatable or comma-separated |
+| `--only PREFIX` | `$SBX_ONLY`, else all | Manage only sandboxes matching this prefix or glob. Repeatable or comma-separated. An unscoped daemon leaves these to it while it runs |
 | `--connect-addr ADDR` | `$SBX_CONNECT_ADDR`, else off | Serve the `sbx connect` endpoint here. Needs `SBX_CONNECT_TOKEN` |
 | `--front SPEC` | `$SBX_FRONT`, else off | Carry non-sandbox ports: `5432`, `db=5432,cache=6379`, `db=10.0.4.7:3306` |
 | `--behind-proxy` | off | A proxy in front terminates TLS, so a non-loopback address is allowed |

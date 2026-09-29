@@ -166,6 +166,10 @@ type daemon struct {
 	// servesOSB is set when this daemon serves --osb-addr. An unscoped daemon without it leaves
 	// containers the API created (label sbx.osb) to the daemon that does - see scope.go.
 	servesOSB bool
+
+	// deferred is the sandboxes this unscoped daemon leaves to a live --only daemon, by that
+	// daemon's pid, under mu. Only so the hand-over is logged once each way - see noteDeferred.
+	deferred map[string]int
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -469,13 +473,17 @@ func (d *daemon) discover(ctx context.Context) {
 	}
 
 	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
-	// filters, correctAwake - ever holds a unit outside --only, or an API sandbox this daemon
-	// does not own, to act on.
-	if len(d.scope) > 0 || !d.servesOSB {
+	// filters, correctAwake - ever holds a unit outside --only, an API sandbox this daemon
+	// does not own, or a sandbox a live --only daemon covers, to act on.
+	//
+	// The scoped daemons are read once per pass, not per unit: a pass sees one registry.
+	claims := d.scopedClaims()
+
+	if len(d.scope) > 0 || !d.servesOSB || len(claims) > 0 {
 		in := found[:0:0]
 
 		for _, f := range found {
-			if d.adopts(f) {
+			if d.adoptsGiven(f, claims) {
 				in = append(in, f)
 			}
 		}

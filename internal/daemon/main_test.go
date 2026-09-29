@@ -11,5 +11,8 @@ import (
 func TestMain(m *testing.M) {
 	warmAgent = func(string) {}
 
+	// Tests that are about the registry put scopedDaemons back themselves - see useRegistry.
+	scopedRegistry = func() []Presence { return nil }
+
 	os.Exit(m.Run())
 }
