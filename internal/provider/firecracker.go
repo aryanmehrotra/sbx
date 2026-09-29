@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/agentbin"
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
@@ -559,6 +560,11 @@ func unsupported(svc spec.Service) error {
 	add(len(svc.CapAdd) > 0, "cap_add", "the workload is root in its own kernel; there is no capability set to widen")
 	add(svc.Egress != "" && svc.Egress != spec.EgressDeny && svc.Egress != spec.EgressAllow, "egress",
 		"a VM bridge has no NAT: its egress is deny, or the filter (allow, egress_allow, egress_policy)")
+	// A port on an egress_allow entry is a grant on docker. A microVM's filter is built from the
+	// declared policy alone, which has no port, so the grant would be dropped - the silent kind of
+	// refusal a port that "does nothing" is.
+	add(len(egress.PortGrantsFromAllowList(svc.EgressAllow)) > 0, "egress_allow host:port",
+		"a microVM's egress filter carries ports 80 and 443 only; list the host without a port")
 
 	if len(why) == 0 {
 		return nil

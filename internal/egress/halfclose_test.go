@@ -62,7 +62,7 @@ func TestEgressPlainHTTPSurvivesClientHalfClose(t *testing.T) {
 
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
 
-	f := New([]string{"upstream.test", "127.0.0.1"})
+	f := New([]string{"upstream.test:" + port, "127.0.0.1"})
 	f.Resolve = slowLoopback
 
 	proxy := httptest.NewServer(f)
@@ -102,7 +102,7 @@ func TestEgressConnectSurvivesClientHalfClose(t *testing.T) {
 
 	_, port, _ := net.SplitHostPort(echo.Addr().String())
 
-	f := New([]string{"upstream.test", "127.0.0.1"})
+	f := New([]string{"upstream.test:" + port, "127.0.0.1"})
 	f.Resolve = slowLoopback
 
 	proxy := httptest.NewServer(f)

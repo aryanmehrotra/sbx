@@ -264,8 +264,12 @@ A sandbox's `egress` field is enforced by a component, `internal/egress`.
   clients at it. A refused destination gets 403, and no socket is opened to it.
 - On native Linux docker and on firecracker it runs inside `sbx serve`. Where the gateway is inside
   an engine's VM (Docker Desktop, colima), it runs as a container on the bridge
-  (`internal/provider/egress_container.go`).
-- `egress: "allow"` uses the same proxy with an open default, so it carries HTTP and HTTPS only.
+  (`internal/provider/egress_container.go`), at the last address of the bridge's subnet, which
+  services find through `/etc/hosts`. It refuses the engine's gateways, the default bridge and the
+  host behind the VM (`egress.Doors`), whatever the policy says.
+- Every filter carries ports 80 and 443. On docker, `egress_allow` entries written as `host:port`
+  add that port; firecracker refuses them. `egress:
+  "allow"` uses the same proxy with an open default, so it carries HTTP and HTTPS only.
 - `sbx egress` swaps the policy in place without cutting open tunnels.
 - A permitted request counts as activity, so an agent that only calls an API stays awake.
 - A microVM's filter refuses private ranges and host subnets unless `--vm-egress-allow` names

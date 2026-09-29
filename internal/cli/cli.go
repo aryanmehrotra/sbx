@@ -74,10 +74,16 @@ func Create(ctx context.Context, p provider.Provider, path, sandbox string, with
 		}
 	}
 
+	shared := sharedAllowList(sp, withOptional)
+
 	skipped := map[string]bool{}
 
 	for _, name := range order {
 		svc := sp.Services[name]
+
+		if len(svc.EgressAllow) > 0 {
+			svc.EgressAllow = shared
+		}
 
 		if svc.Optional && !withOptional {
 			fmt.Printf("  %-12s skipped (optional)\n", name)
@@ -1324,6 +1330,36 @@ func unserved(units []provider.Unit) []string {
 			out = append(out, u.Sandbox)
 		}
 	}
+
+	return out
+}
+
+// sharedAllowList is the allow-list the sandbox's one egress filter enforces: the union of every
+// created service's egress_allow, sorted, which is what separate lists have always meant
+// (spec.checkEgressFilters). Each allow-list service is handed it whole.
+//
+// The filter container is ensured by each service's create with that service's declaration, so
+// with lists of their own the second service replaced the filter with its list and the first lost
+// its hosts - and since a re-run create now re-checks the filter, it would do so on every run.
+func sharedAllowList(sp *spec.Spec, withOptional bool) []string {
+	seen := map[string]bool{}
+
+	var out []string
+
+	for _, svc := range sp.Services {
+		if svc.Optional && !withOptional {
+			continue
+		}
+
+		for _, a := range svc.EgressAllow {
+			if a = strings.TrimSpace(a); a != "" && !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+
+	sort.Strings(out)
 
 	return out
 }

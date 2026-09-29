@@ -18,6 +18,9 @@ var (
 	//go:embed control.go
 	controlSource string
 
+	//go:embed doors.go
+	doorsSource string
+
 	//go:embed standalone_main.go.txt
 	mainSource string
 )
@@ -58,6 +61,7 @@ ENTRYPOINT ["/filter"]
 
 	for name, src := range map[string]string{
 		"filter.go": filterSource, "policy.go": policySource, "control.go": controlSource,
+		"doors.go": doorsSource,
 	} {
 		body := strings.Replace(src, "package egress\n", "package main\n", 1)
 		if !strings.HasPrefix(body, "package main\n") {

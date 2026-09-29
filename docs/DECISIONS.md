@@ -609,6 +609,49 @@ denied range. And it refuses its own loopback and link-local unless a rule names
 enforces inside the sandbox's namespace, where `127.0.0.1` is the sandbox; sbx's filter is on the
 host or beside the box, where `127.0.0.1` is somebody's docker socket.
 
+### The container filter refuses the machines behind it, and carries two ports
+
+**Status:** current, 2026-09-29. Corrects the entry above in two places: "no raw TCP" was not
+enforced, and the container filter's loopback was not the only thing behind it.
+
+Measured on colima before this change, from inside a sandbox under `egress: "allow"`:
+`CONNECT host.lima.internal:<port>` reached a listener bound only to the Mac's `127.0.0.1`, as did
+`192.168.5.2` and `host.docker.internal`; `CONNECT 172.17.0.1:22` answered with the VM's
+`SSH-2.0-OpenSSH_9.6p1`; `CONNECT 1.1.1.1:53` answered 200. The workload has no route to any of
+them. The filter gave it one.
+
+**Ports: 80 and 443, plus what `egress_allow` names.** A proxy that tunnels a `CONNECT` to any port
+is a TCP relay, and the promise was HTTP and HTTPS. An `egress_allow` entry written as `host:port`
+always parsed and its port was dropped; it is now the one way to add a port, for that host only,
+matched on the name the client wrote so a name's grant does not open its addresses to other names.
+`egress_policy` stays OpenSandbox's shape, which has no port, so it gets 80 and 443.
+
+**The machines behind a container filter are refused like the host is behind a hosted one.** The
+filter gets a `Refuse` set, which no rule opens: every docker network's gateway and the default
+bridge's subnet (named by the provider at start), its own routes' gateways, and the `/24` around
+what `host.docker.internal`, `host.lima.internal` and `gateway.docker.internal` resolve to. The
+`/24` rather than the address because it is the VM's link to the host: on colima `.2` is the Mac,
+`.3` its DNS and `.15` the VM.
+
+**Rejected: refuse every private range, as the microVM filter does.** It would break a
+default-allow container sandbox that reaches a LAN or VPN host through the proxy, which SPEC.md
+allows, and would need the operator switch the microVM filter has for widening it. The
+engine's own addresses are what the report showed, and they are closed.
+
+**Rejected: a network of the filter's own for its route out.** It would keep the filter off the
+default bridge and its neighbours, at the cost of a second bridge per filtered sandbox, and
+docker's address pools hold about thirty. The default bridge's subnet is refused instead.
+
+**Rejected: refusing `--isolation gvisor` with `egress_allow`.** gVisor does not use docker's DNS
+on a user-defined network, so the filter's alias never resolved. The filter now sits at the last
+address of the sandbox's subnet (docker allocates from the bottom, and `--ip` reserves it), and
+each service gets it through `--add-host`. A fixed address survives the filter being replaced, so
+the hosts entry, written once, stays true.
+
+What it does not cover: a docker network created after the filter started. Its gateway is on the
+VM and is not in the list until the filter is recreated; with ports limited to 80 and 443 that is
+the VM's own web ports on that address, if it serves any.
+
 
 ---
 
