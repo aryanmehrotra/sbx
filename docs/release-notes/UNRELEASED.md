@@ -58,6 +58,9 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx create` and `sbx add` on a name a running `sbx with` owns are refused at once instead of joining a sandbox that command will remove.
 - `sbx install` exits non-zero when a name you gave cannot be installed, `--dry-run` included.
 - Restart `sbx serve` after upgrading, and do not run two sbx versions at once: an older daemon cannot read a new egress filter's activity or snapshot pause marks, and lock files now store the holder's start time, which an older sbx cannot read.
+- `sbx gc` also lists origin records (`~/.sbx/origins`) with no sandbox or snapshot of their name, and removes them with `--force`.
+- When nothing listens on a declared port, the readiness error names the ports the workload does listen on.
+- The daemon checks idle services every second, so a service sleeps within about a second of its `idle` window whatever its length; it used to check every third of the shortest window.
 
 ## Fixed
 
@@ -122,3 +125,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - Ctrl-C or SIGTERM during `sbx create` stops it cleanly: it says which services it kept and how to finish or remove the sandbox, releases its locks, and exits 130 or 143.
 - `sbx rm` also removes the sandbox's name lock when its holder is no longer running, so a killed create's lock no longer waits for `sbx gc`.
 - `sbx rm` of a sandbox a running `sbx with` owns is refused and names that command's pid, as `sbx create` and `sbx add` already were; it used to remove the sandbox from under the command.
+- `sbx create`, `sbx ready` and `sbx wake` check a scratch or distroless image (no `cat`) from inside its network namespace on docker, so a listener that accepts and closes without a byte is no longer refused.
+- `sbx create` no longer prints ✓ for a service whose container exited; it names the service with its exit state.
+- `sbx rm <name>` clears the origin record and stale name lock a failed create left behind for a sandbox that no longer exists, and says so.
+- `cap_add` validation names every refused entry in one error instead of stopping at the first.
