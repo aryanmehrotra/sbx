@@ -55,7 +55,7 @@ names are the command, and its own flags stay its own.
 | `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |
 | `sbx ready <sandbox>` | Block until every service is running and its workload answers at the port `sbx serve` forwards to. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
-| `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. (B) | none |
+| `sbx sleep <sandbox>` | Stop every service now, frozen ones included, and drop to 0 B. Dependents stop before what they `depends_on`; the rest stop together. (B) | none |
 | `sbx egress <sandbox> [service]` | Read or change a running sandbox's network policy. (B) | `--allow H`, `--deny H`, `--remove H` (all repeatable), `--default allow\|deny`, `--reset`, `--show`, `--json` |
 | `sbx mcp` | MCP server (tools an AI app can call) on stdio, with OpenSandbox's 19 tools. Needs `sbx serve --osb-addr`. [Setup](GUIDES.md#mcp). | `--url` (see [env](#opensandbox-api-and-mcp)), `--key` |
 | `sbx ssh <sandbox> [service]` | Reach a service with an editor over ssh. Gated: `SBX_FEATURES=ssh`. (B) | `--user` (default `root`), `--folder` (default `/work`), `--template`, `--spec` |

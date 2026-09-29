@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1139,23 +1140,35 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 
 	slept := 0
 
-	for _, u := range units {
-		if !u.Running {
-			continue
+	// Layer by layer, each layer in parallel. One at a time, every stop waited out docker's
+	// 10 s grace in turn: four alpine services took 30 s, and the 14-service zopnight stack
+	// could take over two minutes to do something that is meant to be instant.
+	for _, layer := range sleepLayers(units) {
+		var (
+			wg   sync.WaitGroup
+			errs = make([]error, len(layer))
+		)
+
+		for i, u := range layer {
+			wg.Go(func() { errs[i] = sleepOne(ctx, p, sandbox, u) })
 		}
 
-		// The same call the dashboard's `s` makes. Locally the daemon's cached "awake" goes
-		// stale for a moment, and is corrected the way it always is: the next connection dials
-		// a stopped container, the belief is revoked, and it is woken again.
-		if err := p.Stop(ctx, u.Ref); err != nil {
-			journalEvent(sandbox, u.Service, "sleepFailed", 0, err, "could not sleep: `sbx sleep`")
+		wg.Wait()
 
-			return fmt.Errorf("%s: %w", u.Ref, err)
+		// Printed after the layer, in its order, so the output does not depend on which
+		// container happened to exit first.
+		for i, u := range layer {
+			if errs[i] == nil {
+				fmt.Printf("  %-24s slept\n", u.Service)
+				slept++
+			}
 		}
 
-		journalEvent(sandbox, u.Service, "slept", 0, nil, "slept by `sbx sleep`")
-		fmt.Printf("  %-24s slept\n", u.Service)
-		slept++
+		// A failed layer ends it: the next one is what this one depends on, and stopping a
+		// database under an app that would not stop is the order this exists to avoid.
+		if err := errors.Join(errs...); err != nil {
+			return err
+		}
 	}
 
 	if slept == 0 {
@@ -1167,6 +1180,102 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 	fmt.Printf("sandbox %q asleep - %d service(s) at 0 B\n", sandbox, slept)
 
 	return nil
+}
+
+// sleepOne stops one service, thawing it first if it is frozen, and journals the outcome.
+//
+// A frozen service is not running, and `sbx sleep` used to skip it as "already asleep" - while
+// it held every byte of its memory, the one state where sleeping is the whole point. It is
+// thawed first because a stop signal sent to a frozen process is only queued: docker waits out
+// the whole grace period and then kills it.
+func sleepOne(ctx context.Context, p provider.Provider, sandbox string, u provider.Unit) error {
+	fail := func(err error) error {
+		journalEvent(sandbox, u.Service, "sleepFailed", 0, err, "could not sleep: `sbx sleep`")
+
+		return fmt.Errorf("%s: %w", u.Ref, err)
+	}
+
+	if u.Paused {
+		if pa, ok := p.(provider.Pauser); ok {
+			if err := pa.Unpause(ctx, u.Ref); err != nil {
+				return fail(err)
+			}
+		}
+	}
+
+	// The same call the dashboard's `s` makes. Locally the daemon's cached "awake" goes stale
+	// for a moment, and is corrected the way it always is: the next connection dials a stopped
+	// container, the belief is revoked, and it is woken again.
+	if err := p.Stop(ctx, u.Ref); err != nil {
+		return fail(err)
+	}
+
+	journalEvent(sandbox, u.Service, "slept", 0, nil, "slept by `sbx sleep`")
+
+	return nil
+}
+
+// sleepLayers orders the units that hold memory (running or frozen) for stopping: each layer
+// can stop in parallel, and every service is in a layer before anything it depends_on. It is
+// the reverse of the order a wake walks, for the reverse reason - an app is never left running
+// against a database that has already gone.
+//
+// Depths are taken over every unit, asleep ones included, so a dependent that is already asleep
+// still orders the rest the same way. A cycle (the spec refuses one; a hand-labelled container
+// could carry one) ends in the last layer rather than being dropped: stopped out of order beats
+// left running.
+func sleepLayers(units []provider.Unit) [][]provider.Unit {
+	dependents := map[string][]string{} // service -> services that depend on it
+	for _, u := range units {
+		for _, d := range u.DependsOn {
+			dependents[d] = append(dependents[d], u.Service)
+		}
+	}
+
+	depth := map[string]int{}
+	visiting := map[string]bool{}
+
+	var depthOf func(s string) int
+	depthOf = func(s string) int {
+		if d, ok := depth[s]; ok {
+			return d
+		}
+
+		if visiting[s] {
+			return len(units) // a cycle: last
+		}
+
+		visiting[s] = true
+
+		d := 0
+		for _, dep := range dependents[s] {
+			d = max(d, depthOf(dep)+1)
+		}
+
+		visiting[s] = false
+		depth[s] = d
+
+		return d
+	}
+
+	byDepth := map[int][]provider.Unit{}
+
+	for _, u := range units {
+		if u.Running || u.Paused {
+			d := depthOf(u.Service)
+			byDepth[d] = append(byDepth[d], u)
+		}
+	}
+
+	var layers [][]provider.Unit
+
+	for _, d := range slices.Sorted(maps.Keys(byDepth)) {
+		layer := byDepth[d]
+		sort.SliceStable(layer, func(i, j int) bool { return layer[i].Service < layer[j].Service })
+		layers = append(layers, layer)
+	}
+
+	return layers
 }
 
 // hostVar is the companion variable for a declared port export.
