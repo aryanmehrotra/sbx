@@ -156,6 +156,16 @@ Read `sbx logs <sandbox> <service> --tail 50` for the reason.
 Up to v0.15.1, `sbx ready` could report such a service as serving when it had no health check or
 docker was slow to answer. Fixed after v0.15.1.
 
+### `sbx ready` says "the workload behind it does not answer"
+
+`sbx serve` accepts, but the port it forwards to either refuses or accepts and closes at once. A
+connecting client sees the same thing as `Server closed the connection`. The usual cause is a
+runtime whose guest has no network, seen with Kata inside a nested colima VM. Check with
+`sbx logs <sandbox> <service>`, and try `--isolation container` to rule out the runtime.
+
+Up to v0.15.1, `sbx ready` and `sbx wake` checked only the daemon's port and reported such a
+service as serving. Fixed after v0.15.1.
+
 ### The first query after an idle period fails, but the next one works
 
 Your client's connect timeout is shorter than the wake. Typical wakes are in

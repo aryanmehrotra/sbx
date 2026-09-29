@@ -1016,6 +1016,12 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 		return err
 	}
 
+	// Running and healthy is still not serving. The health check runs INSIDE the container, so it
+	// passes on a workload no host connection can reach - see waitWorkloads.
+	if err := waitWorkloads(ctx, sandbox, workloadDials(p, units), deadline); err != nil {
+		return err
+	}
+
 	if len(unverifiable) > 0 {
 		fmt.Fprintf(os.Stderr,
 			"sbx: warning: %s declare no health check, so nothing here checked whether they\n"+
