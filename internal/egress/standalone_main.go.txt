@@ -25,6 +25,7 @@ func main() {
 		allow  = flag.String("allow", "", "comma-separated hosts this sandbox may reach (egress_allow)")
 		policy = flag.String("policy", "", "the network policy to start with, as JSON; wins over -allow")
 		ports  = flag.String("ports", "", "comma-separated host:port grants beyond 80 and 443 (egress_allow entries with a port)")
+		names  = flag.String("names", "", "comma-separated further names this filter answers to (its container name), refused like its addresses")
 		refuse = flag.String("refuse", "", "comma-separated addresses and CIDRs never dialled, whatever the policy: the docker engine's gateways and the default bridge")
 		token  = flag.String("token", os.Getenv("SBX_EGRESS_TOKEN"), "secret the control endpoint requires")
 		state  = flag.String("state", "/var/lib/sbx-egress/policy.json", "where a live policy is kept across restarts")
@@ -89,6 +90,20 @@ func main() {
 	}
 
 	doors := &Doors{Static: static}
+
+	// The names this filter answers to, besides its addresses: the alias services reach it by,
+	// localhost, and its hostname (docker sets the container ID). A request naming one is a
+	// request to the filter itself, which no policy or port grant opens.
+	f.SelfNames = []string{"sbx-egress", "localhost"}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		f.SelfNames = append(f.SelfNames, h)
+	}
+
+	for _, n := range strings.Split(*names, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			f.SelfNames = append(f.SelfNames, n)
+		}
+	}
 	if *dialSelf {
 		doors.Interfaces = func() ([]net.Addr, error) { return nil, nil }
 	}

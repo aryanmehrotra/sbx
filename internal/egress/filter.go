@@ -64,6 +64,13 @@ type Filter struct {
 	// which today is only a test.
 	Refuse func(netip.Addr) bool
 
+	// SelfNames are the names this filter itself answers to - the alias services reach it by, its
+	// hostname, its container name. Its own addresses are always refused (Doors), so a request to
+	// one of these is a request to a door, and is answered as one by name: on a port the filter
+	// does not carry without a lookup, and on one it does without trusting whatever the resolver
+	// says. Nil outside the container filter.
+	SelfNames []string
+
 	pol atomic.Pointer[compiled]
 
 	// ports are the ports this filter carries beyond DefaultPorts (80 and 443), each for one
@@ -192,6 +199,10 @@ const closedOff = " - the machine the egress filter runs on, or one behind it, w
 func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 	c := f.pol.Load()
 
+	if f.isSelfName(host) {
+		return nil, &errDenied{why: host + closedOff, door: true}
+	}
+
 	if a, err := netip.ParseAddr(host); err == nil {
 		if f.refused(a) {
 			return nil, &errDenied{why: host + closedOff, door: true}
@@ -265,7 +276,7 @@ func (f *Filter) check(ctx context.Context, host, port string) ([]netip.Addr, er
 	switch _, lerr := netip.ParseAddr(host); {
 	case lerr == nil:
 		_, err = f.admit(ctx, host) // a literal: no lookup
-	case isDoorName(host):
+	case f.isDoorName(host):
 		err = &errDenied{why: host + closedOff, door: true}
 	case !f.pol.Load().allowsName(host):
 		err = &errDenied{why: host}
@@ -283,11 +294,28 @@ func (f *Filter) check(ctx context.Context, host, port string) ([]netip.Addr, er
 	return nil, perr
 }
 
-// isDoorName reports one of HostDoorNames, which name the machine behind a container filter.
-func isDoorName(host string) bool {
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
+// isDoorName reports a name that is a door whatever it resolves to: one of HostDoorNames, which
+// name the machine behind a container filter, or one of the filter's own names.
+func (f *Filter) isDoorName(host string) bool {
+	return slices.Contains(HostDoorNames, canonicalName(host)) || f.isSelfName(host)
+}
 
-	return slices.Contains(HostDoorNames, host)
+// isSelfName reports one of SelfNames.
+func (f *Filter) isSelfName(host string) bool {
+	host = canonicalName(host)
+
+	for _, n := range f.SelfNames {
+		if n = canonicalName(n); n != "" && n == host {
+			return true
+		}
+	}
+
+	return false
+}
+
+// canonicalName is a hostname as names compare: lower case, no trailing dot.
+func canonicalName(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
 // dial opens a connection to host:port, admitted and at a checked address.
