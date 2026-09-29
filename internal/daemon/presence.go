@@ -16,13 +16,19 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/procid"
 )
 
 // Presence is what a running daemon writes about itself.
 type Presence struct {
-	PID      int       `json:"pid"`
+	PID int `json:"pid"`
+
+	// Start is the process's start time (internal/procid), so a record whose pid was recycled
+	// to an unrelated process reads as no daemon. 0 in a record written before it was kept.
+	Start int64 `json:"start,omitempty"`
+
 	Since    time.Time `json:"since"`
 	Provider string    `json:"provider"`
 
@@ -56,7 +62,7 @@ func MarkRunning(providerName string) func() {
 		return func() {}
 	}
 
-	body, err := json.Marshal(Presence{PID: os.Getpid(), Since: time.Now(), Provider: providerName})
+	body, err := json.Marshal(Presence{PID: os.Getpid(), Start: procid.Self().Start, Since: time.Now(), Provider: providerName})
 	if err != nil {
 		return func() {}
 	}
@@ -78,8 +84,8 @@ func MarkRunning(providerName string) func() {
 // Running reports the daemon on this machine, if there is one.
 //
 // A stale file - written by a daemon that was killed rather than stopped - is the common
-// case on a laptop, so the pid is verified rather than trusted. Signal 0 is the portable
-// "does this process exist" question and delivers nothing.
+// case on a laptop, so the pid is verified rather than trusted - with its start time, so a pid
+// recycled to another process since is not mistaken for the daemon (internal/procid).
 func Running() (Presence, bool) {
 	path, err := presencePath()
 	if err != nil {
@@ -96,12 +102,7 @@ func Running() (Presence, bool) {
 		return Presence{}, false
 	}
 
-	proc, err := os.FindProcess(p.PID)
-	if err != nil {
-		return Presence{}, false
-	}
-
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !(procid.Record{PID: p.PID, Start: p.Start}).Alive() {
 		// Gone. Clear it so the next reader does not have to work this out again.
 		_ = os.Remove(path)
 
@@ -133,7 +134,7 @@ func Announce(providerName string, scope Scope) func() {
 		return func() {}
 	}
 
-	body, err := json.Marshal(Presence{PID: os.Getpid(), Since: time.Now(), Provider: providerName, Scope: scope})
+	body, err := json.Marshal(Presence{PID: os.Getpid(), Start: procid.Self().Start, Since: time.Now(), Provider: providerName, Scope: scope})
 	if err != nil {
 		return func() {}
 	}
@@ -197,7 +198,7 @@ func scopedDaemons() []Presence {
 			continue
 		}
 
-		if !alive(p.PID) {
+		if !(procid.Record{PID: p.PID, Start: p.Start}).Alive() {
 			_ = os.Remove(path)
 			continue
 		}
@@ -206,13 +207,4 @@ func scopedDaemons() []Presence {
 	}
 
 	return out
-}
-
-func alive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	return proc.Signal(syscall.Signal(0)) == nil
 }

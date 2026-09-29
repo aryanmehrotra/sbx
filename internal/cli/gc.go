@@ -36,7 +36,11 @@ func GC(ctx context.Context, p provider.Provider, w io.Writer, olderThan time.Du
 		return err
 	}
 
-	return gcWith(ctx, col, w, olderThan, force, withSnapshots)
+	if err := gcWith(ctx, col, w, olderThan, force, withSnapshots); err != nil {
+		return err
+	}
+
+	return gcLocks(w, force)
 }
 
 // gcWith is the part worth testing, separated from finding the collector so the rules can

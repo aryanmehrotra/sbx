@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/procid"
 )
 
 // holdAs writes a lock file owned by pid, as another live sbx process would leave it.
@@ -221,5 +223,112 @@ func TestReleasingTwiceDoesNotFreeTheNextHolder(t *testing.T) {
 	path, _ := Path()
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("a second release of the first holder removed the second's lock: %v", err)
+	}
+}
+
+// A lock file naming a pid that is alive but is not the process that wrote it - the holder died
+// and the pid was recycled - blocked the name: `sbx with` refused it and `sbx create` waited ten
+// minutes, with nothing holding it. The record carries the holder's start time, and a mismatch
+// is stale.
+func TestALockNamingARecycledPidIsStale(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	parent := os.Getppid()
+
+	start, ok := procid.StartOf(parent)
+	if !ok {
+		t.Skip("no process start times on this platform; locks are pid-only here")
+	}
+
+	path, _ := NamePath("recycled")
+	holdAs(t, path, 0)
+
+	if err := os.WriteFile(path, []byte(procid.Record{PID: parent, Start: start + 1}.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := TryName("recycled")
+	if err != nil {
+		t.Fatalf("a lock naming a recycled pid blocked the name: %v", err)
+	}
+	r()
+
+	// And the real holder's record, same pid and start, still holds.
+	if err := os.WriteFile(path, []byte(procid.Record{PID: parent, Start: start}.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if r, err := TryName("recycled"); err == nil {
+		r()
+		t.Fatal("a live holder's lock was taken")
+	}
+}
+
+// A name a live `sbx with` owns is refused at once, not waited for: the sandbox under it is
+// removed when that command ends, so waiting ten minutes to then use it is never what anyone
+// wants.
+func TestANameAWithOwnsIsRefusedAtOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	release, err := ClaimEphemeral("fx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	began := time.Now()
+
+	r, err := AcquireName(context.Background(), "fx", nil)
+	if err == nil {
+		r()
+		t.Fatal("a create took a name a live sbx with owns")
+	}
+
+	if time.Since(began) > 2*time.Second {
+		t.Errorf("waited %s for a name a with owns; it must refuse at once", time.Since(began))
+	}
+
+	var he *HeldError
+	if !errors.As(err, &he) || !he.Ephemeral || he.Holder != os.Getpid() {
+		t.Fatalf("want an ephemeral HeldError naming pid %d, got %v", os.Getpid(), err)
+	}
+}
+
+// Stale locks were cleared only when their own name was next used. `sbx gc` lists and removes
+// them; a live holder's is left.
+func TestStaleLocksAreListedAndRemoved(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dead := 1<<22 + 12345
+
+	a, _ := NamePath("gone-a")
+	b, _ := Path()
+	live, _ := NamePath("live")
+
+	holdAs(t, a, dead)
+	holdAs(t, b, dead)
+	holdAs(t, live, os.Getppid())
+
+	stale, err := Stale()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(stale) != 2 {
+		t.Fatalf("Stale() = %v, want the two dead holders' locks", stale)
+	}
+
+	if err := RemoveStale(stale); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{a, b} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("stale lock %s was not removed", p)
+		}
+	}
+
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("a live holder's lock was removed: %v", err)
 	}
 }

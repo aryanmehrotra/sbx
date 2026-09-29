@@ -69,7 +69,7 @@ names are the command, and its own flags stay its own.
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
 | `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |
 | `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
-| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
+| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left, and lock files whose holder is gone. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 
 ### Finding out
 

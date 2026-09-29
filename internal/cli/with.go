@@ -114,15 +114,17 @@ func With(ctx context.Context, p provider.Provider, path, sandbox string, withOp
 		return err
 	}
 
-	// The name lock, taken before the existence check and held to the end of the create, so the
-	// check stays true until this run's containers exist. Without it two `sbx with qa-cc` both
-	// found the name unused, the second reused the first's containers ("already exists"), and
-	// whichever finished first removed the sandbox under the other. Not waited for: if anyone
-	// holds it, the name is being made by someone else, which this would refuse anyway.
-	release, err := slotlock.TryName(sandbox)
+	// The name lock, taken before the existence check and held until this run has removed what it
+	// made. Without it two `sbx with qa-cc` both found the name unused, the second reused the
+	// first's containers ("already exists"), and whichever finished first removed the sandbox
+	// under the other. Held for the whole run, not just the create: released after the create, an
+	// `sbx create X` during the command reused the ephemeral sandbox and printed "ready" for
+	// something this run was about to delete. The lock says it is a `with`'s, so create and add
+	// refuse it at once. Not waited for here: if anyone holds it, the name is someone else's.
+	release, err := slotlock.ClaimEphemeral(sandbox)
 	if err != nil {
 		return fmt.Errorf("sandbox %q is being created or changed by another sbx right now, and sbx with\n"+
-			"     only takes a name nobody is using. Pick another name. (%w)", sandbox, err)
+			"     only takes a name nobody is using. Pick another name.\n     %w", sandbox, err)
 	}
 	defer release()
 
@@ -150,12 +152,10 @@ func With(ctx context.Context, p provider.Provider, path, sandbox string, withOp
 
 	err = runScoped(
 		func() error {
-			defer release()
+			err := createWithin(ctx, p, path, sandbox, withOptional, iso, createOpts{healthTimeout: timeout})
 
-			err := createWithin(ctx, p, path, sandbox, withOptional, iso, timeout)
-
-			// Still under the name lock, and the name was empty when it was taken: everything
-			// there now is this run's, including what a failed create left.
+			// Under the name lock, and the name was empty when it was taken: everything there
+			// now is this run's, including what a failed create left.
 			owned = ownedUnits(p, sandbox)
 
 			return err
@@ -167,14 +167,6 @@ func With(ctx context.Context, p provider.Provider, path, sandbox string, withOp
 			bg, cancel := context.WithTimeout(context.Background(), teardownBudget)
 			defer cancel()
 
-			// Under the name lock again, so a create or add that starts now does not interleave
-			// with deciding what to remove.
-			unlock, err := lockName(bg, sandbox)
-			if err != nil {
-				return fmt.Errorf("%w - remove it by hand: sbx rm %s", err, sandbox)
-			}
-			defer unlock()
-
 			if owned == nil {
 				return fmt.Errorf("could not list what this run created, so nothing was removed - remove it by hand: sbx rm %s", sandbox)
 			}
@@ -183,6 +175,15 @@ func With(ctx context.Context, p provider.Provider, path, sandbox string, withOp
 		},
 		keep,
 	)
+
+	// A create whose services never served says how to remove the sandbox, which is right for
+	// `sbx create` and wrong here once the teardown has removed it.
+	var ns *notServingError
+	if !keep && errors.As(err, &ns) {
+		if us, lerr := p.List(context.Background(), sandbox); lerr == nil && len(us) == 0 {
+			ns.removed = true
+		}
+	}
 
 	if keep {
 		if us, lerr := p.List(context.Background(), sandbox); lerr == nil && len(us) > 0 {
