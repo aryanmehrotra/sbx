@@ -79,6 +79,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx history` records sleeps from `sbx sleep` and wakes caused by `sbx exec` and `sbx cp`.
 - `sbx env` no longer needs `${VAR}` secrets set, and `sbx add` keeps clear of the spec's reserved ordinals when one is unset.
 - A `depends_on` cycle is reported at load as the loop itself, with the file name.
+- `sbx validate` and every command that expands a spec report unsupported `${...}` forms and unset variables together in one error.
 - A bare `PORT` export no longer sets `PORT_HOST`.
 - `sbx gc` reports snapshots and too-new artifacts as separate counts.
 - An API create on a source build no longer asks docker for an unpublished image, and a failed placement leaves no empty `sbx-execd-*` volume.
