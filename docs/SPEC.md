@@ -224,10 +224,11 @@ many sandboxes on one laptop.
 
 ### `cap_add`
 
-Name only what the workload needs. sbx has no `privileged` option. Docker's default seccomp
-profile still applies, so CRIU (a process-checkpoint tool) fails inside a sandbox; run
-`sbx checkpoint` on the host instead. Kubernetes refuses `cap_add` because Pod Security admission
-decides capabilities there.
+Name only what the workload needs. sbx has no `privileged` option. Names are checked at load
+against the kernel's list, so `sbx validate` catches a typo. Write `SYS_PTRACE`, not
+`CAP_SYS_PTRACE`. Docker's default seccomp profile still applies, so CRIU (a process-checkpoint
+tool) fails inside a sandbox; run `sbx checkpoint` on the host instead. Kubernetes refuses
+`cap_add` because Pod Security admission decides capabilities there.
 
 ### `idle` keeps a sandbox awake while it works
 

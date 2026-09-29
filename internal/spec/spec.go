@@ -290,8 +290,8 @@ type Service struct {
 	// the machine it is on. A spec asking for CHECKPOINT_RESTORE says what it needs and gets
 	// only that, and a reviewer reading the committed file can see the difference.
 	//
-	// Not validated against a list of known names. Docker rejects an unknown capability at
-	// create with a better message than this could paraphrase, and the set differs by kernel.
+	// Checked against the kernel's list at load (checkCapAdd): docker would refuse an unknown
+	// name too, but only at create, after the pull, and `sbx validate` would have passed it.
 	CapAdd []string `json:"cap_add,omitempty"`
 
 	// Entrypoint replaces the image's ENTRYPOINT: the first element is the program, the rest its
@@ -397,6 +397,10 @@ func (s Service) validate(name string) error {
 	}
 
 	if err := s.validatePolicy(name); err != nil {
+		return err
+	}
+
+	if err := checkCapAdd(name, s.CapAdd); err != nil {
 		return err
 	}
 
