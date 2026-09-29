@@ -925,7 +925,7 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		if len(named) > 0 {
-			images = named
+			images = uniqueImages(named)
 			needs = provider.HelperNeeds{}
 		}
 

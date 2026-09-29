@@ -248,3 +248,17 @@ func specImages(s *spec.Spec) []string {
 
 	return slices.Compact(images)
 }
+
+// uniqueImages keeps named images in the order given, each once: an image named twice is one
+// pull, and listing it twice made "N already present" count it twice.
+func uniqueImages(images []string) []string {
+	out := make([]string, 0, len(images))
+
+	for _, img := range images {
+		if !slices.Contains(out, img) {
+			out = append(out, img)
+		}
+	}
+
+	return out
+}
