@@ -51,6 +51,13 @@ Almost always, no `sbx serve` is running, and the daemon owns those ports. Check
   ports; `lsof -nP -iTCP -sTCP:LISTEN | grep sbx` shows the old ones. Restart `sbx serve`.
   Fixed after v0.15.1: the daemon notices the new container and serves its ports.
 
+### Other sandboxes went to sleep during `sbx selftest`
+
+Up to v0.15.1, the daemon `sbx selftest` runs in-process adopted every sandbox on the engine,
+not just its own. It fought `sbx serve` for their ports ("address already in use" in its log) and
+slept them after 3 s idle. They wake on the next connection. If a port stays refused, restart
+`sbx serve`. Fixed after v0.15.1: selftest touches only its own `selftest-<pid>` sandbox.
+
 ### `sbx serve` says it is already running
 
 An unscoped daemon already owns this machine's sandbox ports. If its pid is gone, the next start

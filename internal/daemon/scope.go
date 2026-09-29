@@ -178,3 +178,22 @@ func outOfScope(what string, s Scope) string {
 	return fmt.Sprintf("%s is outside this daemon's --only %s, so it will not act on it - use the "+
 		"daemon that owns it, or the local CLI", what, s)
 }
+
+// SetScope fences a daemon built with New, as --only does. Selftest uses it so the daemon it runs
+// in-process beside the machine's own `sbx serve` touches its own sandbox and nothing else.
+func (d *daemon) SetScope(s Scope) { d.scope = s }
+
+// Exact is a scope of one sandbox name and nothing else.
+//
+// A bare pattern is a prefix (see Scope), so scoping to "selftest-42" would also take in
+// "selftest-421" - another selftest run, which this daemon would then front and sleep. Bracketing
+// the first character makes the pattern a glob, and a glob matches the whole name only. A sandbox
+// name starts with a letter or digit and holds no glob characters (cli.ValidateName), so nothing
+// else needs escaping.
+func Exact(name string) Scope {
+	if name == "" {
+		return Scope{"/"} // a prefix no sandbox name can start with: an empty name matches nothing
+	}
+
+	return Scope{"[" + name[:1] + "]" + name[1:]}
+}
