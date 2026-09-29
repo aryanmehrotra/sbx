@@ -160,7 +160,8 @@ to fail only at create, reach the container as written, or grant more than a spe
 - `cap_add has a blank entry` - remove the `""`, or fix the template that produced it.
 - `env values use ${...} forms sbx does not expand: a.PW uses "${X:-y}"` - only plain `${NAME}`
   is substituted; compute a default in your shell and reference it as `${NAME}`. For a value
-  that really contains `${`, write `$${`.
+  that really contains `${`, write `$${`. Unset variables are listed in the same error, after
+  `; and these environment variables are referenced but not set`.
 - `memory "lots" is not a size`, `cpu "-1" is not a number of cores`, `gpus "..." is not ...` -
   use `"512m"`, `"0.5"`, `"all"` or `"device=0"`.
 - `services depend on each other in a cycle: a → b → a` - remove one `depends_on` edge.

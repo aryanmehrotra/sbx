@@ -92,13 +92,23 @@ func scanEnv(val string, sub func(name, ref string) string, bad func(ref string)
 // run once per load: its output can contain a literal `${` from a `$${`, which a second pass
 // would read as a reference.
 func (s *Spec) expandEnv(lookup func(string) (string, bool)) error {
+	return s.resolveEnv(lookup, true)
+}
+
+// unsetEnv is expandEnv without the writes: which referenced variables are not set, for a load
+// that is already failing on syntax and must not stop at that (checkEnvSyntax's caller).
+func (s *Spec) unsetEnv(lookup func(string) (string, bool)) error {
+	return s.resolveEnv(lookup, false)
+}
+
+func (s *Spec) resolveEnv(lookup func(string) (string, bool), write bool) error {
 	missing := map[string][]string{}
 
 	for _, name := range s.Names() {
 		svc := s.Services[name]
 
 		for key, val := range svc.Env {
-			svc.Env[key] = scanEnv(val, func(varName, ref string) string {
+			out := scanEnv(val, func(varName, ref string) string {
 				got, ok := lookup(varName)
 				if !ok {
 					missing[varName] = append(missing[varName], name+"."+key)
@@ -108,6 +118,10 @@ func (s *Spec) expandEnv(lookup func(string) (string, bool)) error {
 
 				return got
 			}, func(string) {})
+
+			if write {
+				svc.Env[key] = out
+			}
 		}
 
 		s.Services[name] = svc

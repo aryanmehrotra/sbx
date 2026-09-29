@@ -690,6 +690,15 @@ func parseSpec(raw []byte, path string, expand bool) (*Spec, error) {
 	// spec file promises `${NAME}` substitution. After the loop, so every bad form in every
 	// service is reported at once.
 	if err := s.checkEnvSyntax(); err != nil {
+		// Unset variables too, in the same error: returning here alone meant a spec with a bad
+		// form and an unset variable reported the second only on the run after the first was
+		// fixed. Only when this load expands - `sbx env` never reads them, so it does not ask.
+		if expand {
+			if unset := s.unsetEnv(osLookup); unset != nil {
+				err = fmt.Errorf("%w; and %w", err, unset)
+			}
+		}
+
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
