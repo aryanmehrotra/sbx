@@ -88,3 +88,33 @@ func TestThePackedSbxKnowsItsVersion(t *testing.T) {
 		t.Errorf("the pin is unexplained:\n%s", df)
 	}
 }
+
+// The refusal suggested `--version v0.15.1` whatever the build was, so a v0.16 source build was
+// told to pack an older sbx than itself. The suggestion is the release the build is based on, or
+// a placeholder and the releases page when nothing names one.
+func TestPackSuggestsTheReleaseTheBuildIsBasedOn(t *testing.T) {
+	for build, want := range map[string]string{
+		"v0.16.0-dev+abc1234": "--version v0.16.0",
+		"v0.16.0-dev":         "--version v0.16.0",
+		"v1.2.3-rc.1":         "--version v1.2.3",
+		"v1.2.3-rc1":          "--version v1.2.3",
+		"v0.16.0-3-gffd872d":  "--version v0.16.0",
+		"dev":                 "--version vX.Y.Z",
+		"":                    "--version vX.Y.Z",
+		"v0.16.0-beta":        "--version vX.Y.Z",
+	} {
+		_, err := packWith(t, build, "")
+		if err == nil {
+			t.Errorf("build %q: packed with no release to pin", build)
+			continue
+		}
+
+		if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "github.com/aryanmehrotra/sbx/releases") {
+			t.Errorf("build %q: refusal %q does not suggest %q and link the releases", build, err, want)
+		}
+
+		if build != "" && !strings.Contains(build, "0.15.1") && strings.Contains(err.Error(), "v0.15.1") {
+			t.Errorf("build %q: refusal still suggests a hard-coded v0.15.1: %v", build, err)
+		}
+	}
+}

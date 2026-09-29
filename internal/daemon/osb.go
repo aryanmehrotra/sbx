@@ -127,10 +127,23 @@ func splitPaths(s string) []string {
 //
 // runtime.GOARCH is the engine's architecture on the setups this is for (colima or Docker Desktop
 // on the same Mac). A sandbox image of another architecture still builds its own on first use.
-var warmAgent = func(version string) {
+var warmAgent = func(version string) { warmAgentWith(version, agentbin.Locate) }
+
+// warmAgentWith is warmAgent with the search passed in, so a test can make it fail on any host
+// (on linux, Locate finds this very binary and never fails).
+//
+// A failure is logged once, here, at WARN. It used to be dropped, so a daemon serving the API
+// where the agent could not be built said nothing at start, and the first sign was every API
+// create failing later with the same reason buried in the response.
+func warmAgentWith(version string, locate func(context.Context, string, string) (agentbin.Source, error)) {
 	if agentbin.Release(version) {
 		return
 	}
 
-	_, _ = agentbin.Locate(context.Background(), runtime.GOARCH, version)
+	if _, err := locate(context.Background(), runtime.GOARCH, version); err != nil {
+		logs.Default.Warn("", "", "the OpenSandbox API cannot find the sandbox agent, so every "+
+			"create through it will fail until this is fixed: %v. Set SBX_EXECD_BINARY to a "+
+			"linux sbx binary, or SBX_SOURCE_DIR to an sbx checkout with go on PATH, or run a "+
+			"release build, then restart sbx serve", err)
+	}
 }

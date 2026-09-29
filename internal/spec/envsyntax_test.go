@@ -1,6 +1,8 @@
 package spec
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -62,3 +64,62 @@ func TestEnvSyntaxIsNotAppliedToTheAPIsLiteralEnv(t *testing.T) {
 		t.Errorf("Validate refused a literal API env value: %v", err)
 	}
 }
+
+// `$${` is the way to write a literal `${` (compose's spelling): a password or a template string
+// containing `${HOME}` has to be expressible, and it must reach the container as written rather
+// than be expanded or refused.
+func TestEnvDollarDollarBraceIsALiteral(t *testing.T) {
+	t.Setenv("HOME", "/should/not/appear")
+	t.Setenv("X", "x")
+
+	for in, want := range map[string]string{
+		`$${HOME}`:          `${HOME}`,
+		`$${X:-y}`:          `${X:-y}`,
+		`pre-$${HOME}-post`: `pre-${HOME}-post`,
+		`$${HOME}${X}`:      `${HOME}x`,
+		`$${`:               `${`,
+		`a$$b`:              `a$$b`,
+		`$$${X}`:            `$${X}`,
+	} {
+		dir := t.TempDir()
+		path := dir + "/sandbox.json"
+		body := envSpec(strconvQuote(in))
+
+		if err := writeFile(path, body); err != nil {
+			t.Fatal(err)
+		}
+
+		sp, err := LoadSpec(path)
+		if err != nil {
+			t.Errorf("env value %q was refused: %v", in, err)
+			continue
+		}
+
+		if got := sp.Services["a"].Env["PW"]; got != want {
+			t.Errorf("env value %q reached the container as %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Every bad form in the file at once, like unset variables: one per run is one failed
+// validate per mistake.
+func TestEnvSyntaxReportsEveryBadForm(t *testing.T) {
+	body := []byte(`{"version":1,"services":{
+		"a":{"image":"alpine","ports":[80],"env":{"P":"${X:-y}","Q":"${Y:?z} and ${Z-w}"}},
+		"b":{"image":"alpine","ports":[81],"env":{"R":"${}"}}}}`)
+
+	_, err := ParseSpec(body, "spec.json")
+	if err == nil {
+		t.Fatal("bad forms were accepted")
+	}
+
+	for _, want := range []string{`"${X:-y}"`, `"${Y:?z}"`, `"${Z-w}"`, `"${}"`, "a.P", "a.Q", "b.R", "$${"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+}
+
+func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+func writeFile(path string, body []byte) error { return os.WriteFile(path, body, 0o600) }

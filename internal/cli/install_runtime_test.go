@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // daemonJSONIn pulls the JSON the plan would write out of its heredoc.
@@ -200,5 +204,70 @@ func TestInstallSkipsAPackageTheSourcesLack(t *testing.T) {
 
 	if !strings.Contains(strings.Join(p.Skipped, "\n"), "ppa:criu/ppa") {
 		t.Errorf("the skip does not say where criu comes from: %v", p.Skipped)
+	}
+}
+
+// On a macOS engine the blocker is not where daemon.json lives: a checkpoint taken in that VM can
+// never be restored. Install has to give the reason doctor and `sbx checkpoint` give, not advice
+// that would send the reader into the VM's config for nothing.
+func TestInstallCheckpointOnAMacEngineGivesTheLinuxReason(t *testing.T) {
+	h := host(t, "apt-get", 0, false)
+	h.DaemonElsewhere = "the docker daemon runs inside colima's VM; register the runtime in that VM's docker config"
+	h.CheckpointErr = provider.ErrCheckpointNeedsLinux
+
+	p, err := PlanInstall([]string{"checkpoint"}, map[string]bool{"docker checkpoint": true}, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skipped := strings.Join(p.Skipped, "\n")
+	if !p.Empty() || !strings.Contains(skipped, "needs a Linux host") || strings.Contains(skipped, "register the runtime") {
+		t.Errorf("skipped %q, commands %v: want the Linux-host reason and not the VM-config advice", skipped, p.Commands)
+	}
+
+	if !slices.Equal(p.Refused, []string{"checkpoint"}) {
+		t.Errorf("refused = %v, want [checkpoint]", p.Refused)
+	}
+}
+
+// A name asked for and refused is a failure the exit status must carry - a script running
+// `sbx install checkpoint && sbx checkpoint ...` went on as if it had worked. Present already,
+// or refused only because nothing was named, is not.
+func TestInstallExitsNonZeroWhenANamedItemIsRefused(t *testing.T) {
+	h := host(t, "apt-get", 0, false)
+	h.CheckpointErr = provider.ErrCheckpointNeedsLinux
+
+	for _, tc := range []struct {
+		names   []string
+		missing map[string]bool
+		dryRun  bool
+		fail    bool
+	}{
+		{[]string{"checkpoint"}, map[string]bool{"docker checkpoint": true}, false, true},
+		{[]string{"checkpoint"}, map[string]bool{"docker checkpoint": true}, true, true},
+		{[]string{"checkpoint"}, map[string]bool{}, false, false},
+		{nil, map[string]bool{"docker checkpoint": true}, false, false},
+	} {
+		p, err := PlanInstall(tc.names, tc.missing, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out strings.Builder
+
+		err = runInstallPlan(context.Background(), InstallOptions{Names: tc.names, DryRun: tc.dryRun}, p,
+			strings.NewReader(""), &out, false)
+
+		if tc.fail && (err == nil || !strings.Contains(err.Error(), "checkpoint")) {
+			t.Errorf("%v dry-run=%v: err = %v, want a failure naming checkpoint", tc.names, tc.dryRun, err)
+		}
+
+		if !tc.fail && err != nil {
+			t.Errorf("%v missing=%v: err = %v, want success", tc.names, tc.missing, err)
+		}
+
+		if tc.fail && strings.Contains(out.String(), "nothing to install") {
+			t.Errorf("%v: said %q after refusing what was asked for", tc.names, out.String())
+		}
 	}
 }

@@ -680,16 +680,17 @@ func parseSpec(raw []byte, path string, expand bool) (*Spec, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 
-		// Here rather than in validate, which the OpenSandbox API also runs: env there is
-		// literal by contract - sbx does not expand it - so a caller's `${X:-y}` is a value, not
-		// a mistake. Only a spec file promises `${NAME}` substitution.
-		if err := checkEnvSyntax(name, svc.Env); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-
 		if err := checkLimits(name, svc); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+	}
+
+	// Here rather than in validate, which the OpenSandbox API also runs: env there is literal by
+	// contract - sbx does not expand it - so a caller's `${X:-y}` is a value, not a mistake. Only a
+	// spec file promises `${NAME}` substitution. After the loop, so every bad form in every
+	// service is reported at once.
+	if err := s.checkEnvSyntax(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
 	// The sandbox-wide default gets the same check as a service's own, or a typo there is one

@@ -4,7 +4,8 @@ Find what you see, then apply the fix. Point a stuck agent here too. Run `sbx do
 it reports a missing tool or runtime, `sbx install` installs it: `sbx install gvisor`,
 `sbx install checkpoint`, or no name for all it can. It shows each command and asks first;
 `--dry-run` only prints. On Docker Desktop or colima, the VM that runs docker owns its config, and
-`sbx install` says so instead.
+`sbx install` says so instead. Checkpoint needs a Linux host, so on a Mac it is refused with that
+reason. A name you asked for that cannot be installed makes `sbx install` exit non-zero.
 
 ## Install and doctor
 
@@ -122,15 +123,21 @@ the mount was fine. Fixed after v0.15.0: an asleep service is left as it is, and
 ### A spec that validated before is refused at load
 
 From v0.16.0 `sbx validate` and every command that reads a spec refuse, at load, values that used
-to fail only at create or reach the container as written:
+to fail only at create, reach the container as written, or grant more than a spec should:
 
 - `cap_add "NOT_A_CAP" is not a Linux capability` - use a name from `man 7 capabilities`.
-- `cap_add "CAP_SYS_PTRACE": write it without the CAP_ prefix` - write `"SYS_PTRACE"`.
-- `env ... uses "${X:-y}", which sbx does not expand` - only plain `${NAME}` is substituted;
-  compute a default in your shell and reference it as `${NAME}`.
+- `cap_add "ALL" grants every capability, and sbx has no privileged option` - list the
+  capabilities the workload needs, like `["SYS_PTRACE", "NET_ADMIN"]`.
+- `cap_add has a blank entry` - remove the `""`, or fix the template that produced it.
+- `env values use ${...} forms sbx does not expand: a.PW uses "${X:-y}"` - only plain `${NAME}`
+  is substituted; compute a default in your shell and reference it as `${NAME}`. For a value
+  that really contains `${`, write `$${`.
 - `memory "lots" is not a size`, `cpu "-1" is not a number of cores`, `gpus "..." is not ...` -
   use `"512m"`, `"0.5"`, `"all"` or `"device=0"`.
 - `services depend on each other in a cycle: a → b → a` - remove one `depends_on` edge.
+
+`$${NAME}` also changed meaning in v0.16.0: it is now the literal text `${NAME}`, where v0.15
+expanded it to a `$` followed by the value. Put the `$` in the variable's value if you need it.
 
 ### Two `sbx create` at the same moment fail on a port conflict
 
@@ -422,6 +429,9 @@ build compiles the agent from its checkout, or asks you to set `SBX_EXECD_BINARY
 
 The compile starts with `sbx serve --osb-addr`, so the first create does not wait inside its
 ready timeout. The log says `building the sandbox agent` and then `built the sandbox agent ... in`.
+If there is nothing to build from, the start log has a WARN, `the OpenSandbox API cannot find the
+sandbox agent`, with the reason. Set `SBX_EXECD_BINARY` or `SBX_SOURCE_DIR`, or run a release
+build, then restart `sbx serve`.
 
 ## Remote deployments
 

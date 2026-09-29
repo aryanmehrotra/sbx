@@ -52,6 +52,8 @@ type runtimeRecipe struct {
 	// and doctor's row cannot tell - it reads the daemon's flag, not whether CRIU works.
 	verify   string
 	needsKVM bool
+	// needsLinuxEngine: pointless on an engine that can never use it, whatever its config says.
+	needsLinuxEngine bool
 }
 
 var runtimes = map[string]runtimeRecipe{
@@ -93,6 +95,10 @@ var runtimes = map[string]runtimeRecipe{
 		key:      func(cfg map[string]any) bool { return cfg["experimental"] == true },
 		set:      func(cfg map[string]any, _ string) { cfg["experimental"] = true },
 		restart:  true,
+		// Before where daemon.json lives: on a Mac the VM's config is not the blocker - a
+		// checkpoint taken there can never be restored - so advice to edit it sent the reader
+		// into the VM for nothing. The same reason doctor and `sbx checkpoint` give.
+		needsLinuxEngine: true,
 		// Ubuntu dropped criu from its archive in 24.04; CRIU's own PPA carries it.
 		noPackage: "on Ubuntu add CRIU's PPA (sudo add-apt-repository ppa:criu/ppa) and run this again",
 		// Measured: in a VM whose kernel lacks the sock_diag modules, criu installs, doctor turns
@@ -105,6 +111,8 @@ var runtimes = map[string]runtimeRecipe{
 // refuse says why r cannot be installed on h, or "" when it can.
 func (r runtimeRecipe) refuse(h Host) string {
 	switch {
+	case r.needsLinuxEngine && h.CheckpointErr != nil:
+		return h.CheckpointErr.Error()
 	case h.DaemonElsewhere != "":
 		return h.DaemonElsewhere
 	case r.fetch != nil && gvisorSHA512[h.Arch] == "":

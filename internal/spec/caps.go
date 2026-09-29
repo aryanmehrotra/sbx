@@ -25,28 +25,37 @@ var linuxCapabilities = map[string]bool{
 	"PERFMON": true, "BPF": true, "CHECKPOINT_RESTORE": true,
 }
 
-// checkCapAdd refuses a cap_add entry docker would refuse at create.
+// checkCapAdd refuses a cap_add entry docker would refuse at create, and ALL.
 //
-// Case-insensitive, and "ALL" allowed, because docker accepts both and a spec that creates
-// today must keep loading. The CAP_ prefix is refused although docker would strip it: SPEC.md
-// has one spelling, and a committed file that mixes two is one a reviewer has to decode.
+// Case-insensitive, and the CAP_ prefix is stripped rather than refused, because docker accepts
+// both spellings and a spec written either way created on v0.15: refusing a spelling that works
+// breaks a committed file for the sake of a style preference. The docker provider passes the
+// name through as written, which docker normalizes the same way.
+//
+// ALL is refused although docker accepts it. It grants every capability (CapEff
+// 000001ffffffffff), which is the capability half of `privileged` - the option this project
+// deliberately does not have (see the CapAdd field). A spec that needs a lot should still say
+// what, so the reviewer of the committed file can see it.
+//
+// A blank entry is refused: it names nothing, so it is a typo or an empty template variable,
+// and the docker provider silently dropping it would hide which.
 func checkCapAdd(name string, caps []string) error {
 	for _, raw := range caps {
-		c := strings.ToUpper(strings.TrimSpace(raw))
+		c := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(raw)), "CAP_")
 
 		switch {
 		case c == "":
-			// The docker provider skips a blank entry, so it is harmless; refusing it now
-			// would break a spec that works.
+			return fmt.Errorf("service %q: cap_add has a blank entry - remove it, or name the "+
+				"capability, like \"SYS_PTRACE\"", name)
+		case c == "ALL":
+			return fmt.Errorf("service %q: cap_add %q grants every capability, and sbx has no "+
+				"privileged option - list the specific capabilities the workload needs, like "+
+				"[\"SYS_PTRACE\", \"NET_ADMIN\"] (`man 7 capabilities`)", name, raw)
+		case linuxCapabilities[c]:
 			continue
-		case c == "ALL" || linuxCapabilities[c]:
-			continue
-		case strings.HasPrefix(c, "CAP_") && linuxCapabilities[strings.TrimPrefix(c, "CAP_")]:
-			return fmt.Errorf("service %q: cap_add %q: write it without the CAP_ prefix, as %q",
-				name, raw, strings.TrimPrefix(c, "CAP_"))
 		default:
-			return fmt.Errorf("service %q: cap_add %q is not a Linux capability - use the name "+
-				"from `man 7 capabilities` without CAP_, like \"SYS_PTRACE\"", name, raw)
+			return fmt.Errorf("service %q: cap_add %q is not a Linux capability - use a name "+
+				"from `man 7 capabilities`, like \"SYS_PTRACE\"", name, raw)
 		}
 	}
 
