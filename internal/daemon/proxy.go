@@ -200,12 +200,15 @@ func (u *unit) touch() { u.lastByte.Store(time.Now().UnixNano()) }
 // member rather than its sum. Recursion walks the chain, and the visited set both dedupes a
 // diamond and stops a cycle: two services declaring each other is a spec written by hand, and
 // a daemon that hangs holding the connection open is a worse answer than starting both.
-func (u *unit) wakeDeps(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+//
+// verify makes each dependency confirm an "awake" belief with the provider rather than trust it -
+// see wake for when that is asked for.
+func (u *unit) wakeDeps(ctx context.Context, p provider.Provider, readyTimeout time.Duration, verify bool) error {
 	if len(u.dependsOn) == 0 || u.peers == nil {
 		return nil
 	}
 
-	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), newVisited(u.name))
+	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), newVisited(u.name), verify)
 }
 
 // visited is the set of units a single wake has already claimed, shared across the whole
@@ -254,7 +257,7 @@ func (v *visited) claim(name string) bool {
 //
 // A failure is returned but does not cancel the siblings: they are already starting, and
 // stopping halfway would leave the sandbox in a state nobody asked for.
-func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen *visited) error {
+func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen *visited, verify bool) error {
 	var (
 		mu    sync.Mutex
 		wg    sync.WaitGroup
@@ -282,7 +285,7 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 				deeper := d.peers(d.sandbox, d.dependsOn)
 				mu.Unlock()
 
-				if err := wakeAll(ctx, p, readyTimeout, deeper, seen); err != nil {
+				if err := wakeAll(ctx, p, readyTimeout, deeper, seen, verify); err != nil {
 					mu.Lock()
 					if first == nil {
 						first = err
@@ -293,7 +296,7 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 				}
 			}
 
-			if err := d.wakeSelf(ctx, p, readyTimeout); err != nil {
+			if err := d.wakeUnit(ctx, p, readyTimeout, verify); err != nil {
 				mu.Lock()
 				if first == nil {
 					first = err
@@ -510,15 +513,34 @@ func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
 //
 // Split from wakeSelf so that waking a dependency cannot recurse back through the dependency
 // walk: wakeAll calls wakeSelf directly, having already handled that unit's own chain.
+//
+// Its dependencies are asked to confirm their "awake" with the provider whenever this unit is not
+// itself awake - it is cold, or handle() has just revoked its belief after a failed dial.
+//
+// That is the moment a dependency's belief is suspect. `sbx sleep` stops every service through the
+// provider, behind the daemon's back, so every belief in the sandbox is stale at once. The dialled
+// unit's own is corrected by its failed dial; a dependency's never is, because nothing dials it.
+// Trusted, it returned at the fast path, and b came up with a stopped - reproduced 5 of 5 - until a
+// discovery tick and a NEW connection to b. Not asked on every connection, which is the obvious
+// fix: an awake unit's dependencies would then cost a provider call per connection, the same
+// shape as the 68 ms exec the fast path in wakeUnit exists to remove.
 func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
-	if err := u.wakeDeps(ctx, p, readyTimeout); err != nil {
+	if err := u.wakeDeps(ctx, p, readyTimeout, !u.isAwake()); err != nil {
 		return err
 	}
 
 	return u.wakeSelf(ctx, p, readyTimeout)
 }
 
+// wakeSelf wakes this unit alone, trusting its "awake" belief: the caller dials it next, and a
+// failed dial is what corrects that belief.
 func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+	return u.wakeUnit(ctx, p, readyTimeout, false)
+}
+
+// wakeUnit is wakeSelf, and with verify an "awake" belief is confirmed with the provider before
+// it is trusted - for a dependency, which nothing dials to correct it.
+func (u *unit) wakeUnit(ctx context.Context, p provider.Provider, readyTimeout time.Duration, verify bool) error {
 	// A unit the daemon woke and has not slept is awake, and the daemon is the only thing
 	// that sleeps one. Asking the workload again costs a `docker exec` - measured at 68 ms
 	// median per connection against 0.8 ms straight to docker - and it was being paid on
@@ -563,9 +585,15 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 		// It cannot hold anything awake that should sleep: the only callers are handle(),
 		// which has already touched for the byte it is about to relay, and a dependency walk,
 		// which is somebody genuinely needing this unit right now.
-		u.touch()
+		if !verify || u.confirmRunning(ctx, p) {
+			u.touch()
 
-		return nil
+			return nil
+		}
+
+		// Stopped behind the daemon's back. Start it like any sleeping unit, below.
+		u.setAwake(false)
+		logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; starting it for a dependent")
 	}
 
 	start := time.Now()
@@ -753,6 +781,24 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",
 		idleFor.Milliseconds(), "slept - idle for %s (stop took %s)",
 		idleFor.Round(time.Second), time.Since(decided).Round(10*time.Millisecond))
+}
+
+// confirmRunning asks the provider whether this unit's container is running. It answers true when
+// the provider cannot say, leaving the belief as it was: a start on a guess costs a probe loop on
+// every dependent's wake, and discovery's correctAwake still catches a real stop within a tick.
+func (u *unit) confirmRunning(ctx context.Context, p provider.Provider) bool {
+	units, err := p.List(ctx, u.sandbox)
+	if err != nil {
+		return true
+	}
+
+	for _, f := range units {
+		if f.Ref == u.ref {
+			return f.Running
+		}
+	}
+
+	return true
 }
 
 func (u *unit) track(c net.Conn) {
