@@ -48,6 +48,10 @@ type EgressControl struct {
 	// reports whether it found one. Nil outside a daemon.
 	apply func(gateway string, p egress.Policy) bool
 
+	// hook, when set, is called at named points inside a write or a Sync, so a test can run
+	// another writer exactly there. Nil outside tests.
+	hook func(point string)
+
 	mu sync.Mutex
 }
 
@@ -187,6 +191,8 @@ func (c *EgressControl) Sync(ctx context.Context, sandbox string) error {
 		return nil
 	}
 
+	c.at("sync-loaded")
+
 	f, err := c.locate(ctx, sandbox, "", false)
 	if err != nil {
 		return err
@@ -246,6 +252,8 @@ func (c *EgressControl) mutate(ctx context.Context, sandbox, service string,
 		if err != nil {
 			return egress.Status{}, err
 		}
+
+		c.at("pushed")
 
 		if err := c.save(f, p); err != nil {
 			return egress.Status{}, fmt.Errorf("the policy is in force but could not be saved, so "+
@@ -522,4 +530,10 @@ func (c *EgressControl) Handler(sandbox string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(st)
 	})
+}
+
+func (c *EgressControl) at(point string) {
+	if c.hook != nil {
+		c.hook(point)
+	}
 }
