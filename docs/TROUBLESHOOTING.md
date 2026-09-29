@@ -66,6 +66,10 @@ not just its own. It fought `sbx serve` for their ports ("address already in use
 slept them after 3 s idle. They wake on the next connection. If a port stays refused, restart
 `sbx serve`. Fixed after v0.15.1: selftest touches only its own `selftest-<pid>` sandbox.
 
+Up to v0.15.1, `sbx serve` itself also adopted `selftest-<pid>` and logged "address already in
+use" for it on every run. Fixed after v0.15.1: selftest registers as an `--only` daemon for its
+own sandbox while it runs, so `sbx serve` leaves it alone.
+
 ### "address already in use" beside an `--only` daemon
 
 Up to v0.15.1, the unscoped `sbx serve` also adopted sandboxes a running `--only` daemon

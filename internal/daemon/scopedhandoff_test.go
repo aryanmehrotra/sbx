@@ -163,3 +163,36 @@ func TestAScopedDaemonIgnoresTheRegistry(t *testing.T) {
 		t.Fatal("a scoped daemon deferred its own sandbox to the registry")
 	}
 }
+
+// selftest registers with Exact(selftest-<pid>), a bracket glob. Read back from the registry it
+// must still match the whole name only: the machine's daemon leaves selftest-42 to it, and keeps
+// fronting selftest-421, which is another selftest's.
+func TestAnExactScopeFromTheRegistryDefersOnlyThatSandbox(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	useRegistry(t)
+	register(t, home, os.Getppid(), Exact("selftest-42")...)
+
+	p := &listingProvider{units: []provider.Unit{
+		{Ref: "sbx-selftest-42-redis", Sandbox: "selftest-42", Service: "redis", Running: true,
+			Listen: []int{freePort(t)}, Upstream: []provider.Endpoint{{Host: "127.0.0.1", Port: 1}}},
+		{Ref: "sbx-selftest-421-redis", Sandbox: "selftest-421", Service: "redis", Running: true,
+			Listen: []int{freePort(t)}, Upstream: []provider.Endpoint{{Host: "127.0.0.1", Port: 1}}},
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := New(p, time.Hour, time.Second, time.Hour)
+	d.discover(ctx)
+
+	if adopted(d, "sbx-selftest-42-redis") {
+		t.Error("the machine's daemon adopted the sandbox a registered selftest covers exactly")
+	}
+
+	if !adopted(d, "sbx-selftest-421-redis") {
+		t.Error("an Exact scope for selftest-42 also hid selftest-421")
+	}
+}

@@ -60,6 +60,17 @@ func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, 
 	name := fmt.Sprintf("selftest-%d", os.Getpid())
 	sp := selftestSpec()
 
+	// Registered as a scoped daemon, with the in-process daemon's own exact scope, before the
+	// sandbox exists and until this returns - on a failure too.
+	//
+	// Unregistered, the machine's `sbx serve` could not tell this sandbox had a daemon: it
+	// adopted selftest-<pid> as well and logged "redis stopped serving :20040: bind: address
+	// already in use" on every run, and when it won the port, the sleep-to-zero step below was
+	// timing the wrong daemon. The machine's daemon leaves what a live scoped daemon covers to
+	// it, so registering first means it never adopts this sandbox at all. A selftest killed
+	// outright leaves a record for a dead pid, which the next reader deletes.
+	defer daemon.Announce(p.Name(), daemon.Exact(name))()
+
 	fmt.Printf("sbx selftest · provider %s · isolation %s · sandbox %q\n\n", p.Name(), iso, name)
 
 	var steps []step
