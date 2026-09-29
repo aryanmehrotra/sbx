@@ -181,17 +181,48 @@ snapshot, fork flow has nothing writing at snapshot time.
 
 ### `sbx snapshot` fails: "the source is empty or does not exist"
 
-On docker in v0.14.0, snapshot fails when any service in the sandbox has no `volume`. That
-includes the `web-stack` template's Redis and services added with `sbx add`. Snapshot only
-sandboxes whose services all declare a `volume`.
+Up to v0.15.1 on docker, snapshot fails when any service in the sandbox has no `volume`. That
+includes the `web-stack` template's Redis and services added with `sbx add`. The failed snapshot
+leaves an image `sbx-snap-<name>-<service>` and empty `sbx-snapvol-*` volumes behind, although
+the message says nothing was changed. Snapshot only sandboxes whose services all declare a
+`volume`, and delete the leftovers with `sbx snapshot --rm <name>` (or `sbx gc --snapshots --force`).
+Fixed after v0.15.1: such a service is saved as its image alone, and a snapshot that fails removes
+what it wrote.
+
+### `sbx create` again keeps running the old build
+
+Up to v0.15.1, re-running `sbx create` after editing a `build` context built the new image
+`sbx-build-<hash>`, found the container already there, and kept it on the old image while printing
+a check mark. `docker inspect --format '{{.Config.Image}}' sbx-<sandbox>-<service>` shows the old
+tag. Run `sbx rm` then `sbx create`, which loses the volume's data. Fixed after v0.15.1: create
+prints `<service> recreated (image changed)` and keeps the volume.
+
+### `sbx add` put a service on runc in a gVisor or Kata sandbox
+
+Up to v0.15.1, `sbx add` used `--isolation`'s default, `container`, whatever the sandbox was
+created with. Fixed after v0.15.1: an added service joins on the sandbox's own tier, and a
+different `--isolation` is refused. A sandbox created before then has no record of its tier and
+is read as `container`, so pass nothing to `sbx add` there, or recreate the sandbox.
 
 ### `sbx checkpoint` works but `sbx resume` fails
 
 You are on docker, whose checkpoint restore is unmaintained. Errors look like
 `bind-mount /proc/0/ns/net -> …: no such file or directory` or `content … already exists`, even
 though `criu check` passes. Use podman: set `DOCKER_HOST=unix:///run/podman/podman.sock` and sbx
-routes checkpoint and resume through it. macOS refuses checkpoint. `sbx snapshot` and `fork` work
-on any runtime.
+routes checkpoint and resume through it. `sbx snapshot` and `fork` work on any runtime.
+
+On macOS a local engine (a unix socket or a loopback port) runs in a VM, where a checkpoint can
+be taken but never restored, so `sbx checkpoint` refuses up front. A Linux daemon reached over
+`tcp://` is checked like any other. Up to v0.15.1 it only refused when docker reported
+experimental=false. Colima with experimental on took the checkpoint, froze the service, and
+failed at resume with the bind-mount error above. `sbx sleep` then `sbx wake` brings such a
+service back, cold.
+
+### `sbx resume` says a service was woken after the checkpoint
+
+The service is running, so its checkpoint describes a past it has moved on from. Run
+`sbx sleep <sandbox>`, then `sbx resume` again. Up to v0.15.1 on docker, resume reported
+"memory and processes intact" here without restoring anything.
 
 ## Networking and egress
 

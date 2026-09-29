@@ -438,17 +438,28 @@ func dispatch(cmd string, args []string) error {
 
 	case "snapshot":
 		fs := newFlagSet("snapshot")
+		// A flag rather than `sbx snapshot rm <name>`: "rm" is a legal sandbox name, and
+		// `sbx snapshot rm golden` already means "snapshot the sandbox rm as golden". Reading
+		// it as a delete instead would destroy the snapshot its author meant to make.
+		remove := fs.Bool("rm", false, "delete the named snapshot's images and volumes instead")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parseInterleaved(fs, args)
 
-		if len(positional) < 2 {
+		if *remove && len(positional) != 1 {
+			return fmt.Errorf("sbx snapshot --rm takes one snapshot name: sbx snapshot --rm <name>")
+		}
+
+		if !*remove && len(positional) < 2 {
 			return missing("snapshot", "arguments")
 		}
 
 		p, _, err := resolve(*kind, *socket, *ns, *isolation)
 		if err != nil {
 			return err
+		}
+
+		if *remove {
+			return cli.RemoveSnapshot(context.Background(), p, positional[0])
 		}
 
 		if _, err := cli.Snapshot(context.Background(), p, positional[0], positional[1]); err != nil {
@@ -1156,6 +1167,16 @@ func runAdd(args []string) error {
 	specPath, err := specFor(fs, sandbox, "", *spec)
 	if err != nil {
 		return err
+	}
+
+	// The sandbox's own tier unless one was asked for - by the flag or by SBX_ISOLATION, both of
+	// which say "I want this tier" - and a different one is refused. See cli.AddIsolation.
+	if units, err := p.List(context.Background(), sandbox); err == nil && len(units) > 0 {
+		explicit := wasSet(fs, "isolation") || os.Getenv("SBX_ISOLATION") != ""
+
+		if iso, err = cli.AddIsolation(p.Name(), units, iso, explicit); err != nil {
+			return err
+		}
 	}
 
 	return cli.Add(context.Background(), p, specPath, sandbox, service, *image, cps, *health, env, *volume, extra, iso)

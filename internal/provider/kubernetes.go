@@ -251,7 +251,26 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 	name := kubeName(sandbox, service)
 
 	if _, err := k.kc("", "get", "deployment", name); err == nil {
-		fmt.Printf("  %-12s already exists\n", service)
+		// The same rule as docker's Create: the declared image is the one difference a re-create
+		// acts on, because a `build` service's image is a hash of its context and stopping at
+		// "already exists" kept the old build under a success message. Patched in place rather
+		// than re-applied or deleted: the pod template changes and nothing else, so the
+		// deployment keeps its PersistentVolumeClaim and a scaled-to-zero one stays asleep.
+		running, err := k.kc("", "get", "deployment", name, "-o",
+			"jsonpath={.spec.template.spec.containers[0].image}")
+		if err != nil || running == svc.Image || svc.Image == "" {
+			fmt.Printf("  %-12s already exists\n", service)
+			return nil
+		}
+
+		if _, err := k.kc("", "set", "image", "deployment/"+name, "app="+svc.Image); err != nil {
+			return fmt.Errorf("service %q runs %s but its spec now says %s, and the deployment "+
+				"could not be patched: %w", service, running, svc.Image, err)
+		}
+
+		k.forgetReady(name)
+		fmt.Printf("  %-12s recreated (image changed)\n", service)
+
 		return nil
 	}
 
