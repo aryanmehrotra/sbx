@@ -34,6 +34,7 @@ amended entry carries a **Status:** line under its heading.
 | [sbx is a tool people run, not a service anyone offers](#sbx-is-a-tool-people-run-not-a-service-anyone-offers) | Scope, isolation and trust | v0.1.0 | current |
 | [Loopback is not a trust boundary on a VM-backed engine](#loopback-is-not-a-trust-boundary-on-a-vm-backed-engine) | Scope, isolation and trust | v0.10.0 | current |
 | [Isolation fails closed, and says why](#isolation-fails-closed-and-says-why) | Scope, isolation and trust | v0.1.0 | current |
+| [A sandbox has one isolation tier](#a-sandbox-has-one-isolation-tier) | Scope, isolation and trust | unreleased | current |
 | [Capabilities are negotiated, not stubbed - and sbx does not reach around a provider](#capabilities-are-negotiated-not-stubbed---and-sbx-does-not-reach-around-a-provider) | Scope, isolation and trust | v0.1.0 | current |
 | [Tunnels are shelled out, and the anonymous one is opt-in](#tunnels-are-shelled-out-and-the-anonymous-one-is-opt-in) | Scope, isolation and trust | v0.1.0 | current |
 | [A snapshot is the volume, not the container](#a-snapshot-is-the-volume-not-the-container) | Snapshots and checkpoints | v0.1.0 | current |
@@ -350,6 +351,36 @@ Asking for a runtime the machine lacks never silently downgrades you. Docker ref
 immediately. Kubernetes' own default is to refuse silently, taking two minutes to report the
 service "never became ready" when the real problem is a missing RuntimeClass — so sbx checks
 first and says so in one second, rather than letting that report stand in for a diagnosis.
+
+### A sandbox has one isolation tier
+
+`--isolation` is chosen when a sandbox is created, and nothing recorded it. `sbx add` takes the
+same flag with the same default, `container`, so adding a service to a gVisor sandbox ran it on
+runc beside services under runsc. Nothing warned, and `sbx list` showed nothing different. The
+sandbox kept its name and lost the property it was created for. Re-creating a service whose
+image changed had the same hole: a bare `sbx create` passes `container` too.
+
+Every docker container now carries its tier as the `sbx.isolation` label, and the sandbox's tier
+is the one its services were created with:
+
+- `sbx add` with no `--isolation` (and no `SBX_ISOLATION`) joins the sandbox's tier.
+- An explicit tier that differs is refused, naming both tiers and the recreate that gets the
+  other one. The flag and the variable both count as asking.
+- A service re-created because its image changed keeps its container's tier, not the command's.
+- A container without the label predates it and was created as `container`, so it reads as that.
+  A provider that records no tier (firecracker, kubernetes) is not checked.
+
+**Rejected: warn and carry on.** A warning is a line in a scrollback. The sandbox left behind is
+still mixed, and the next reader of `sbx list` has no way to find the service that is not.
+
+**Rejected: let the flag win per service.** It is expressible, but the services of a sandbox talk
+to each other on one bridge. One runc service there is the weakest member, and it is the
+sandbox's isolation, not the service's, that a user chose.
+
+**Rejected: read the runtime back from docker (`HostConfig.Runtime`).** It says `runsc` or
+`kata-runtime` on this engine, but the name is whatever the operator registered. Mapping it back
+to a tier would be a guess, and a label is how sbx already remembers everything else about a
+container.
 
 ### Capabilities are negotiated, not stubbed - and sbx does not reach around a provider
 
