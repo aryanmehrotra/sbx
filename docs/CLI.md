@@ -17,6 +17,10 @@ Commands marked (B) below also take these.
 
 ## Commands
 
+Flags go before, between or after the names: `sbx logs -f b svc` and `sbx logs b svc -f` are the
+same. Everything after a bare `--` is a name. For `sbx exec` and `sbx add`, the words after the
+names are the command, and its own flags stay its own.
+
 ### Start here
 
 | command | purpose | flags |

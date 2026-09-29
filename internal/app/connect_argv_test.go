@@ -13,27 +13,34 @@ import (
 	"testing"
 )
 
-func TestAURLAfterAFlagIsRefusedRatherThanDropped(t *testing.T) {
+// A URL after a flag is kept, not dropped and not refused. It used to vanish - one deployment
+// connected out of two - and was then refused with an argument-order lesson; now flags go
+// anywhere, as on every other command.
+func TestAURLAfterAFlagIsKept(t *testing.T) {
 	t.Setenv("SBX_CONNECT_TOKEN", "t")
 
+	// Nothing is listening on either, so this fails at the fleet fetch - after argv parsing,
+	// which is what is under test. Both addresses in the error prove both survived.
 	err := dispatch("connect", []string{
 		"db=http://127.0.0.1:1", "--port-offset", "1000", "cache=http://127.0.0.1:2",
 	})
 
+	assertTriedBoth(t, err)
+}
+
+// "could not reach", not merely the address: the old refusal also quoted both URLs, so
+// an address alone would pass against the code that dropped one.
+func assertTriedBoth(t *testing.T, err error) {
+	t.Helper()
+
 	if err == nil {
-		t.Fatal("a URL after a flag was accepted, which means it was silently dropped")
+		t.Fatal("two unreachable deployments connected")
 	}
 
-	// It has to name the one that would have been lost: "connect took your first URL" is not
-	// something anybody notices, and the port it did not open is left to whatever answers there.
-	if !strings.Contains(err.Error(), "cache=http://127.0.0.1:2") {
-		t.Errorf("error = %q, want it to name the deployment that was about to be ignored", err)
-	}
-
-	// And show the line that would have worked, since the fix is an argument order nobody can
-	// be expected to guess from "flags go last".
-	if !strings.Contains(err.Error(), "sbx connect db=http://127.0.0.1:1 cache=http://127.0.0.1:2") {
-		t.Errorf("error = %q, want it to show the corrected command", err)
+	for _, want := range []string{"could not reach http://127.0.0.1:1", "could not reach http://127.0.0.1:2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to have tried %s too", err, want)
+		}
 	}
 }
 
@@ -58,18 +65,11 @@ func TestEveryURLBeforeTheFlagsIsKept(t *testing.T) {
 	}
 }
 
-// A flag before any URL at all is the same mistake, and used to reach the generic usage text
-// rather than saying what was wrong with the line.
-func TestAFlagBeforeEveryURLSaysWhatIsWrong(t *testing.T) {
+// A flag before every URL is the way most commands are typed, and keeps them all.
+func TestAFlagBeforeEveryURLKeepsThemAll(t *testing.T) {
 	t.Setenv("SBX_CONNECT_TOKEN", "t")
 
-	err := dispatch("connect", []string{"--port-offset", "1000", "db=http://127.0.0.1:1"})
+	err := dispatch("connect", []string{"--port-offset", "1000", "db=http://127.0.0.1:1", "cache=http://127.0.0.1:2"})
 
-	if err == nil {
-		t.Fatal("a URL after a leading flag was accepted")
-	}
-
-	if !strings.Contains(err.Error(), "came after a flag") {
-		t.Errorf("error = %q, want the argument-order explanation", err)
-	}
+	assertTriedBoth(t, err)
 }

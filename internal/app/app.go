@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -311,8 +312,7 @@ func dispatch(cmd string, args []string) error {
 		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
 		optional := fs.Bool("optional", false, "include services marked optional")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -364,8 +364,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("ready")
 		timeout := fs.Duration("timeout", 90*time.Second, "give up after this long")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -390,8 +389,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("wake")
 		timeout := fs.Duration("timeout", 90*time.Second, "give up after this long")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -411,8 +409,7 @@ func dispatch(cmd string, args []string) error {
 	case "sleep":
 		fs := newFlagSet("sleep")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -438,8 +435,7 @@ func dispatch(cmd string, args []string) error {
 	case "snapshot":
 		fs := newFlagSet("snapshot")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("snapshot", "arguments")
@@ -464,8 +460,7 @@ func dispatch(cmd string, args []string) error {
 		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
 		optional := fs.Bool("optional", false, "include services marked optional")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("fork", "arguments")
@@ -509,8 +504,7 @@ func dispatch(cmd string, args []string) error {
 		keep := fs.Bool("keep", false, "leave the sandbox afterwards instead of removing it")
 		timeout := fs.Duration("timeout", 90*time.Second, "how long to wait for services to serve")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(head, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, head)
 
 		if len(positional) < 1 {
 			return missing("with", "sandbox name")
@@ -531,8 +525,7 @@ func dispatch(cmd string, args []string) error {
 	case "checkpoint":
 		fs := newFlagSet("checkpoint")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("checkpoint", "arguments")
@@ -548,8 +541,7 @@ func dispatch(cmd string, args []string) error {
 	case "resume":
 		fs := newFlagSet("resume")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("resume", "arguments")
@@ -598,14 +590,12 @@ func dispatch(cmd string, args []string) error {
 		kind, socket, ns, isolation := backendFlags(fs)
 		tty := fs.Bool("t", false, "attach a terminal - for a shell, psql, redis-cli")
 
-		// Parse first, then take positionals from what is left. flag stops at the first
-		// non-flag argument, so `sbx exec -t br pg psql -U app` gives sbx the -t and hands
-		// psql its own -U untouched - which is how docker and kubectl behave, and what
-		// anyone typing this expects. Splitting positionals first, as the other commands
-		// do, made a LEADING flag consume the sandbox name and print a usage error.
-		_ = fs.Parse(args)
+		// The two names wherever sbx's own flags are, and everything after them is the command,
+		// untouched: `sbx exec -t br pg psql -U app` gives sbx the -t and hands psql its own -U,
+		// which is how docker and kubectl behave. `sbx exec br -t pg psql` works as well now.
+		positional, argv := parseNames(fs, args, 2)
+		positional = append(positional, argv...)
 
-		positional := fs.Args()
 		if len(positional) < 3 {
 			return missing("exec", "arguments")
 		}
@@ -646,8 +636,7 @@ func dispatch(cmd string, args []string) error {
 	case "cp":
 		fs := newFlagSet("cp")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 4)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 4 {
 			return fmt.Errorf("usage: sbx cp <sandbox> <service> <src> <dst>   (prefix the inside path with :)")
@@ -664,8 +653,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("pack")
 		specPath := fs.String("spec", "sandbox.json", "the spec to pack")
 		out := fs.String("out", "sbx-pack", "directory to write the build contexts into")
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		service := ""
 		if len(positional) > 0 {
@@ -687,26 +675,11 @@ func dispatch(cmd string, args []string) error {
 			"add this to every local port, label=N for one deployment, or both (1000,replica=2000)")
 		only := multiFlag{}
 		fs.Var(&only, "sandbox", "only this sandbox; repeatable")
-		positional, rest := splitPositional(args, len(args))
-		_ = fs.Parse(rest)
-
-		// Go's flag package stops at the first non-flag argument, so a URL written after a flag
-		// is left behind in fs.Args() rather than parsed. Every other command here takes a fixed
-		// number of names and splits them off the front, which makes that impossible; this one
-		// takes as many as you give it, so `sbx connect db=… --port-offset 1000 cache=…` quietly
-		// connected db alone and said nothing about cache.
-		//
-		// Refused rather than ignored, because a port map with a hole in it is the failure this
-		// whole command is built to avoid: the missing port is left to whatever else answers on
-		// it - often this machine's own `sbx serve` - and the caller reaches a local sandbox
-		// believing it reached the remote one.
-		if fs.NArg() > 0 {
-			return fmt.Errorf("%s came after a flag, where it would have been ignored\n"+
-				"     flags go last, so that every deployment is seen:\n"+
-				"       sbx connect %s ...",
-				strings.Join(fs.Args(), ", "),
-				strings.Join(append(append([]string{}, positional...), fs.Args()...), " "))
-		}
+		// Every URL, wherever the flags are. Go's flag package stops at the first non-flag, so
+		// `sbx connect db=… --port-offset 1000 cache=…` once connected db alone and said nothing
+		// about cache - a port map with a hole in it, which leaves the missing port to whatever
+		// else answers there. That was refused; now the URL after the flag is simply kept.
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return fmt.Errorf("usage: sbx connect <url> [<url> ...] [--sandbox NAME] [--port-offset N]\n" +
@@ -745,8 +718,7 @@ func dispatch(cmd string, args []string) error {
 			"rewrite: the service is sent Host: 127.0.0.1:<port> | pass: it is sent the public hostname")
 
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return fmt.Errorf(
@@ -802,8 +774,7 @@ func dispatch(cmd string, args []string) error {
 		// in at all. Defaulted rather than guessed, and one flag away when the image differs.
 		user := fs.String("user", "root", "the ssh user the image accepts")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return fmt.Errorf("usage: sbx ssh <sandbox> [service] [--folder /work]")
@@ -883,8 +854,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("validate")
 		specFlag := fs.String("spec", defaultSpec, "path to sandbox.json")
 		tmpl := fs.String("template", "", "check a built-in template instead")
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		// A bare path is the shape a linter is invoked with: `sbx validate ./sandbox.json`.
 		path := *specFlag
@@ -903,9 +873,9 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("prewarm")
 		kind, socket, ns, isolation := backendFlags(fs)
 		specPath := fs.String("spec", "", "pull the images this spec needs instead of every template's")
-		_ = fs.Parse(args)
 
-		named := fs.Args()
+		// Image names wherever the flags are: `sbx prewarm redis:7 --provider x` used to drop the flag.
+		named := parsePositional(fs, args)
 		if len(named) > 0 && *specPath != "" {
 			return fmt.Errorf("prewarm takes --spec or image names, not both")
 		}
@@ -1004,8 +974,7 @@ func dispatch(cmd string, args []string) error {
 	case "rm":
 		fs := newFlagSet("rm")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -1079,12 +1048,6 @@ func dispatch(cmd string, args []string) error {
 
 // runAdd is the agent-facing path: put a service nobody declared into an existing sandbox.
 func runAdd(args []string) error {
-	// `sbx add <sandbox> <service> --image ...` reads the way a person would write it, but
-	// Go's flag package stops at the first non-flag argument, so the flags after the two
-	// names would be silently ignored - and the command would fail claiming --image was
-	// missing while it sat right there on the line. Split the leading names off first.
-	positional, rest := splitPositional(args, 2)
-
 	fs := newFlagSet("add")
 	image := fs.String("image", "", "container image (required)")
 	ports := fs.String("port", "", "comma-separated container ports (required)")
@@ -1093,7 +1056,11 @@ func runAdd(args []string) error {
 	envs := fs.String("env", "", "comma-separated KEY=VALUE pairs")
 	spec := fs.String("spec", defaultSpec, "path to sandbox.json, whose reservations are respected")
 	kind, socket, ns, isolation := backendFlags(fs)
-	_ = fs.Parse(rest)
+
+	// The two names wherever the flags are - `sbx add <sandbox> <service> --image ...` is how a
+	// person writes it, and Go's flag package alone stops at the first name, leaving --image
+	// unread. Whatever follows the names and their flags is the image's command, untouched.
+	positional, extra := parseNames(fs, args, 2)
 
 	if len(positional) < 2 {
 		return missing("add", "arguments")
@@ -1128,10 +1095,6 @@ func runAdd(args []string) error {
 			env[strings.TrimSpace(k)] = v
 		}
 	}
-
-	// Anything left over is passed to the image as its command, so an agent can add a
-	// service that needs arguments without sbx having to know what they mean.
-	extra := fs.Args()
 
 	if *health == "" {
 		fmt.Fprintln(os.Stderr,
@@ -1170,27 +1133,54 @@ func parseInterleaved(fs *flag.FlagSet, args []string) []string {
 	return positional
 }
 
-// parsePositional is parseInterleaved that also honours a bare --: everything after it is a
-// name, even one that starts with a dash. parseInterleaved alone would read the second word
-// after -- as a flag again, since each re-parse starts fresh.
+// parsePositional parses flags wherever they appear - before, between or after the names -
+// and returns every name. Everything after a bare -- is a name, even one starting with a dash.
 //
-// splitPositional, which most commands still use, takes only LEADING names, so a flag first
-// (`sbx logs -f sb svc`, the way `tail -f` and `docker logs -f` are typed) hid every name
-// behind it and printed a usage error.
+// Every command that takes names uses it. Taking only LEADING names, as commands once did, made
+// a flag first (`sbx logs -f sb svc`, the way `tail -f` and `docker logs -f` are typed) hide
+// every name behind it and print a usage error - or worse, silently drop the names after it.
 func parsePositional(fs *flag.FlagSet, args []string) []string {
-	head, tail := splitAtDoubleDash(args)
+	names, _ := parseNames(fs, args, -1)
 
-	return append(parseInterleaved(fs, head), tail...)
+	return names
 }
 
-// splitPositional peels up to n leading non-flag arguments off the front.
-func splitPositional(args []string, n int) (positional, rest []string) {
-	i := 0
-	for i < len(args) && i < n && !strings.HasPrefix(args[i], "-") {
-		i++
+// parseNames takes up to n names (n < 0: no limit) wherever the flags are, then parses the flags
+// that follow the last one and returns what is left untouched: the command of `sbx exec` or the
+// image arguments of `sbx add`, whose own flags (`psql -U app`) are not sbx's.
+//
+// The line is split at the first bare -- before any parsing, because each re-parse starts fresh
+// and would otherwise read the word after -- as a flag again. A -- that comes after the n names
+// is part of the command and is handed back with it.
+func parseNames(fs *flag.FlagSet, args []string, n int) (names, rest []string) {
+	head, tail := splitAtDoubleDash(args)
+
+	for {
+		_ = fs.Parse(head)
+		head = fs.Args()
+
+		if len(head) == 0 || len(names) == n {
+			break
+		}
+
+		names = append(names, head[0])
+		head = head[1:]
 	}
 
-	return args[:i], args[i:]
+	if tail == nil {
+		return names, head
+	}
+
+	if len(head) > 0 {
+		return names, slices.Concat(head, []string{"--"}, tail)
+	}
+
+	k := len(tail)
+	if n >= 0 {
+		k = min(k, n-len(names))
+	}
+
+	return append(names, tail[:k]...), tail[k:]
 }
 
 // splitAtDoubleDash returns the args before the first bare "--" and the command after it. A
@@ -1350,8 +1340,7 @@ func runEgress(args []string) error {
 	_ = fs.Bool("show", false, "print the policy in force (what no other flag does anyway)")
 	asJSON := fs.Bool("json", false, "print OpenSandbox's policy status, for something that parses")
 
-	positional, rest := splitPositional(args, 2)
-	_ = fs.Parse(rest)
+	positional := parsePositional(fs, args)
 
 	if len(positional) < 1 {
 		return missing("egress", "sandbox name")

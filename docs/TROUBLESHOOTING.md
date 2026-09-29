@@ -292,7 +292,7 @@ The platform's health check is not the tunnel. Work down this list:
 | "the handshake was answered by something that is not this endpoint" | something else answers the URL; `curl -sS https://<url>/healthz` answers only if sbx is there |
 | "active" but nothing answers | the container died at start; read its logs. Pin the sbx version as `sbx pack` does |
 | "... is http, so SBX_CONNECT_TOKEN would cross the network in the clear" | use `https://`, or `SBX_CONNECT_INSECURE=1` on a trusted network |
-| "... came after a flag, where it would have been ignored" | put flags last; the message prints the working line |
+| "... came after a flag, where it would have been ignored" | up to v0.15.1: put flags last. Fixed after v0.15.1: flags go anywhere |
 | "db and replica both want 127.0.0.1:5432" | `--port-offset replica=1000` |
 | "cannot open 127.0.0.1:<port>" | your local `sbx serve` owns that port; `--port-offset 1000` |
 | "the sandbox behind this port was recreated" | restart `sbx connect` |
