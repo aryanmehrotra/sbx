@@ -21,6 +21,7 @@ package spec
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -38,6 +39,11 @@ func (s *Spec) CreationOrder() ([]string, error) {
 		out      []string
 		done     = map[string]bool{}
 		visiting = map[string]bool{}
+
+		// The path from the current root to here, so a cycle can be reported as the loop
+		// itself. Wrapping the error once per frame on the way back out spliced the message
+		// into the middle of the path and dragged in services that only lead to the loop.
+		stack []string
 	)
 
 	// Depth-first, entered in alphabetical order, so the result is deterministic - the same
@@ -50,22 +56,26 @@ func (s *Spec) CreationOrder() ([]string, error) {
 		}
 
 		if visiting[name] {
-			return fmt.Errorf("services depend on each other in a cycle, at %q - "+
-				"nothing can be created first", name)
+			loop := append(slices.Clone(stack[slices.Index(stack, name):]), name)
+
+			return fmt.Errorf("services depend on each other in a cycle: %s - nothing can be "+
+				"created first; remove one depends_on edge", strings.Join(loop, " → "))
 		}
 
 		visiting[name] = true
+		stack = append(stack, name)
 
 		deps := append([]string(nil), s.Services[name].DependsOn...)
 		sort.Strings(deps)
 
 		for _, d := range deps {
 			if err := visit(d); err != nil {
-				return fmt.Errorf("%s → %w", name, err)
+				return err
 			}
 		}
 
 		visiting[name] = false
+		stack = stack[:len(stack)-1]
 		done[name] = true
 
 		out = append(out, name)

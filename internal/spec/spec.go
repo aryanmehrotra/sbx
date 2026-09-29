@@ -256,9 +256,9 @@ type Service struct {
 	// has no ceiling at all, and the failure is the machine rather than the sandbox - the
 	// limit that binds first, long before any wake latency does.
 	//
-	// Not validated here. Docker and Kubernetes each reject their own malformed values
-	// with a better message than this could paraphrase, and unlike `egress` a typo here
-	// fails loudly at create rather than silently leaving something open.
+	// Checked at load only for a shape no provider accepts (checkLimits): "lots" used to pass
+	// `sbx validate` and fail at create, after the pull. Which spelling each provider takes -
+	// docker's "512m", Kubernetes' "512Mi" - is still left to that provider.
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
 
@@ -270,7 +270,8 @@ type Service struct {
 	// Empty uses the daemon's global --idle.
 	Idle string `json:"idle,omitempty"`
 
-	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
+	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none. Load
+	// refuses a value docker's --gpus parser would (checkLimits).
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.
 	GPUs string `json:"gpus,omitempty"`
@@ -290,8 +291,8 @@ type Service struct {
 	// the machine it is on. A spec asking for CHECKPOINT_RESTORE says what it needs and gets
 	// only that, and a reviewer reading the committed file can see the difference.
 	//
-	// Not validated against a list of known names. Docker rejects an unknown capability at
-	// create with a better message than this could paraphrase, and the set differs by kernel.
+	// Checked against the kernel's list at load (checkCapAdd): docker would refuse an unknown
+	// name too, but only at create, after the pull, and `sbx validate` would have passed it.
 	CapAdd []string `json:"cap_add,omitempty"`
 
 	// Entrypoint replaces the image's ENTRYPOINT: the first element is the program, the rest its
@@ -397,6 +398,10 @@ func (s Service) validate(name string) error {
 	}
 
 	if err := s.validatePolicy(name); err != nil {
+		return err
+	}
+
+	if err := checkCapAdd(name, s.CapAdd); err != nil {
 		return err
 	}
 
@@ -656,6 +661,17 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		if err := svc.validate(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+
+		// Here rather than in validate, which the OpenSandbox API also runs: env there is
+		// literal by contract - sbx does not expand it - so a caller's `${X:-y}` is a value, not
+		// a mistake. Only a spec file promises `${NAME}` substitution.
+		if err := checkEnvSyntax(name, svc.Env); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+
+		if err := checkLimits(name, svc); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 
 	// The sandbox-wide default gets the same check as a service's own, or a typo there is one
@@ -665,6 +681,12 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 	}
 
 	if err := s.checkDependencies(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	// A cycle is a property of the file, so it is refused at load with the file's name like
+	// every other mistake in it - not later, by whichever command first asks for an order.
+	if _, err := s.CreationOrder(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 

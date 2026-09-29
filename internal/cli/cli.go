@@ -734,10 +734,11 @@ func envVars(ctx context.Context, p provider.Provider, path, sandbox string) ([]
 			return nil, fmt.Errorf("export %s: %s is not assigned an endpoint", env, sp.Exports[env])
 		}
 
-		vars = append(vars,
-			[2]string{hostVar(env), ep.Host},
-			[2]string{env, strconv.Itoa(ep.Port)},
-		)
+		if host, ok := hostVar(env); ok {
+			vars = append(vars, [2]string{host, ep.Host})
+		}
+
+		vars = append(vars, [2]string{env, strconv.Itoa(ep.Port)})
 	}
 
 	return vars, nil
@@ -923,18 +924,25 @@ func Sleep(ctx context.Context, p provider.Provider, sandbox string) error {
 // reads, and it is the difference between the README's `psql` example working and not: with
 // PGHOST and PGPORT set, `psql` with no arguments connects to the sandbox. The same shape
 // covers MYSQL_HOST/MYSQL_PORT and REDIS_HOST/REDIS_PORT without special-casing any of them.
-func hostVar(portVar string) string {
+//
+// A bare `PORT` has none, as SPEC.md says: there is no name to derive, and the fallthrough's
+// PORT_HOST is a variable nothing reads, set in every command `sbx env` wraps. "HOST" is not
+// used either: dev servers commonly read it as the address to bind, not a peer to dial.
+func hostVar(portVar string) (string, bool) {
+	if portVar == "PORT" {
+		return "", false
+	}
+
 	if base := strings.TrimSuffix(portVar, "_PORT"); base != portVar && base != "" {
-		return base + "_HOST"
+		return base + "_HOST", true
 	}
 
-	// PGPORT → PGHOST. Guarded on a non-empty base so a bare "PORT" export does not become
-	// "_HOST", which would be neither useful nor obviously wrong to whoever wrote it.
+	// PGPORT → PGHOST.
 	if base := strings.TrimSuffix(portVar, "PORT"); base != portVar && base != "" {
-		return base + "HOST"
+		return base + "HOST", true
 	}
 
-	return portVar + "_HOST"
+	return portVar + "_HOST", true
 }
 
 func isLocal(u provider.Unit) bool {

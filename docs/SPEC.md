@@ -207,9 +207,9 @@ different program: `"entrypoint": ["python", "-m"], "args": ["http.server", "800
 { "env": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" } }
 ```
 
-Keeps a secret out of a committed file. Works in `env` values only, with no defaults
-(`${VAR:-x}`) or nesting. A bare `$NAME` is left alone. An unset variable is an error before
-anything is created, listing every missing name.
+Keeps a secret out of a committed file. Works in `env` values only. Any other `${...}` form, such
+as a default (`${VAR:-x}`) or nesting, is refused at load. A bare `$NAME` is left alone. An unset
+variable is an error before anything is created, listing every missing name.
 
 ### Which spec a sandbox uses
 
@@ -220,14 +220,16 @@ sbx falls back to `./sandbox.json`.
 ### `cpu` and `memory`
 
 Docker gets `--cpus` and `--memory`. Kubernetes gets `resources.limits`. Set them when you run
-many sandboxes on one laptop.
+many sandboxes on one laptop. Load refuses a value no provider takes, like `"lots"` or `"-1"`, and
+a `gpus` value docker would refuse. Each provider still checks its own spelling at create.
 
 ### `cap_add`
 
-Name only what the workload needs. sbx has no `privileged` option. Docker's default seccomp
-profile still applies, so CRIU (a process-checkpoint tool) fails inside a sandbox; run
-`sbx checkpoint` on the host instead. Kubernetes refuses `cap_add` because Pod Security admission
-decides capabilities there.
+Name only what the workload needs. sbx has no `privileged` option. Names are checked at load
+against the kernel's list, so `sbx validate` catches a typo. Write `SYS_PTRACE`, not
+`CAP_SYS_PTRACE`. Docker's default seccomp profile still applies, so CRIU (a process-checkpoint
+tool) fails inside a sandbox; run `sbx checkpoint` on the host instead. Kubernetes refuses
+`cap_add` because Pod Security admission decides capabilities there.
 
 ### `idle` keeps a sandbox awake while it works
 
