@@ -231,8 +231,56 @@ func askInside(ctx context.Context, p provider.Provider, sandbox, service string
 		return insideAnswer{why: fmt.Sprintf("it listens on %d only on %s inside the container, which nothing "+
 			"outside it can connect to - bind 0.0.0.0 (or ::) instead", port, local)}
 	default:
-		return insideAnswer{why: fmt.Sprintf("nothing listens on %d inside the container", port)}
+		why := fmt.Sprintf("nothing listens on %d inside the container", port)
+
+		// The usual cause is a port number, not a process that is not running: say which.
+		if others := reachableListeners(tcp + "\n" + tcp6); len(others) > 0 {
+			why += fmt.Sprintf("; it listens on %s - declare that port in the spec, or make the "+
+				"workload listen on %d", joinPorts(others), port)
+		}
+
+		return insideAnswer{why: why}
 	}
+}
+
+// reachableListeners is every port something LISTENS on where outside the container can connect
+// (not a loopback bind), sorted, once each.
+func reachableListeners(tables string) []int {
+	var out []int
+
+	for _, line := range strings.Split(tables, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[3] != "0A" {
+			continue
+		}
+
+		addr, hexPort, ok := strings.Cut(f[1], ":")
+		if !ok {
+			continue
+		}
+
+		p, err := strconv.ParseUint(hexPort, 16, 16)
+		if ip := procIP(addr); err != nil || ip == nil || ip.IsLoopback() {
+			continue
+		}
+
+		if !slices.Contains(out, int(p)) {
+			out = append(out, int(p))
+		}
+	}
+
+	slices.Sort(out)
+
+	return out
+}
+
+func joinPorts(ports []int) string {
+	s := make([]string, len(ports))
+	for i, p := range ports {
+		s[i] = strconv.Itoa(p)
+	}
+
+	return strings.Join(s, ", ")
 }
 
 // noTool reports an exec that failed because the image has no such program: distroless, scratch.

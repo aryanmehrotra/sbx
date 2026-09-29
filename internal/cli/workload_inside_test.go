@@ -225,3 +225,43 @@ func TestCreatePassesAListenerThatAcceptsAndCloses(t *testing.T) {
 		t.Fatalf("create refused a listener that accepts and closes: %v", err)
 	}
 }
+
+// A service listening on the wrong port was reported as "nothing listens on 6379", which sends its
+// reader after a process that is not running when the fix is a port number. Say what it does
+// listen on - only where outside can reach it, since a loopback listener is not the answer either.
+func TestReadyNamesThePortsTheWorkloadDoesListenOn(t *testing.T) {
+	const (
+		// 0x2382 is 9090 on the wildcard; 0x1F90 is 8080 on 127.0.0.1 only; 0x0050 is 80 on :: .
+		tcpAny9090   = "   0: 00000000:2382 00000000:0000 0A 00000000:00000000 00:00000000 00000000   999        0 5 1 0 100 0 0 10 0\n"
+		tcpLocal8080 = "   1: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   999        0 6 1 0 100 0 0 10 0\n"
+		tcp6Any80    = "   0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000   999        0 7 1 0 100 0 0 10 0\n"
+	)
+
+	p := serving(t)
+	p.tcp = tcpHeader + tcpAny9090 + tcpLocal8080 + tcpEstab6379
+	p.tcp6 = tcpHeader + tcp6Any80
+
+	err := Ready(context.Background(), p, "x", 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("said serving with nothing on the declared port")
+	}
+
+	for _, want := range []string{"nothing listens on 6379 inside the container", "it listens on 80, 9090"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say %q: %v", want, err)
+		}
+	}
+
+	if strings.Contains(err.Error(), "8080") {
+		t.Errorf("a loopback-only listener was offered as where it listens: %v", err)
+	}
+
+	// Nothing listening anywhere reachable: no list, not an empty one.
+	p = serving(t)
+	p.tcp = tcpHeader + tcpEstab6379 + tcpLocal8080
+
+	err = Ready(context.Background(), p, "x", 500*time.Millisecond)
+	if err == nil || strings.Contains(err.Error(), "it listens on") {
+		t.Fatalf("with no reachable listener the error should not name any: %v", err)
+	}
+}
