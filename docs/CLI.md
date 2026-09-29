@@ -64,12 +64,12 @@ names are the command, and its own flags stay its own.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. A failed snapshot removes what it wrote. (B) | none |
-| `sbx snapshot --rm <name>` | Delete one snapshot's images and volumes. (B) | none |
+| `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. A failed snapshot removes what it wrote. Refuses a name that is taken; `--replace` removes that snapshot whole, then takes a fresh one. (B) | `--replace` |
+| `sbx snapshot --rm <name>` | Delete one snapshot's images and volumes. Refuses, removing nothing, while a fork still runs from it. (B) | none |
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
 | `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |
 | `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
-| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
+| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 
 ### Finding out
 
@@ -78,7 +78,7 @@ names are the command, and its own flags stay its own.
 | `sbx history [sandbox]` | Commands that changed something, and every wake and sleep. Reads a file. | `--limit N` (default 50, 0 = all), `--commands`, `--events`, `--json` |
 | `sbx templates` | The built-in specs and when their images were pinned. | none |
 | `sbx validate [sandbox.json]` | Check a spec, create nothing. | `--spec`, `--template` |
-| `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. (B) | `--spec FILE` |
+| `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. On docker it also pulls `alpine:3`, which snapshot and fork copy volumes with, unless you name images or the `--spec` has no `volume`. (B) | `--spec FILE` |
 | `sbx features` | List preview features and whether each is on. | none |
 | `sbx version` | Print the version. Also `--version`, `-v`. | none |
 | `sbx help` | Top-level help. Also `--help`, `-h`. | none |

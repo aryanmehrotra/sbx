@@ -100,10 +100,11 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx egress agent-1 --deny '*.pastebin.com' --deny 10.0.0.0/8 --default allow",
 	},
 	"snapshot": {
-		"sbx snapshot <sandbox> <name> | sbx snapshot --rm <name>",
+		"sbx snapshot [--replace] <sandbox> <name> | sbx snapshot --rm <name>",
 		"Save every service's filesystem under a name. Data only: processes start cold when\n" +
-			"a fork of it is woken. A failed snapshot removes what it wrote. --rm deletes one\n" +
-			"snapshot's images and volumes; sbx gc --snapshots --force deletes them all.",
+			"a fork of it is woken. A failed snapshot removes what it wrote. A name that is taken\n" +
+			"is refused; --replace removes that snapshot whole, then takes a fresh one. --rm deletes\n" +
+			"one snapshot's images and volumes; both refuse while a fork still runs from it.",
 		"sbx snapshot main golden",
 	},
 	"fork": {
@@ -133,7 +134,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 	"gc": {
 		"sbx gc [--older-than DURATION] [--snapshots] [--force]",
 		"Reclaim volumes and images that dead sandboxes left behind. Lists what it would\n" +
-			"remove and does nothing else unless you pass --force.",
+			"remove and does nothing else unless you pass --force. A snapshot a sandbox still\n" +
+			"runs from is never offered, with or without --force.",
 		"sbx gc --older-than 168h --force",
 	},
 	"doctor": {
@@ -157,6 +159,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx prewarm [--provider firecracker] [--spec sandbox.json | IMAGE...]",
 		"Pull the images now, so the first create is not a download. On firecracker it also\n" +
 			"builds each image's root filesystem, which for a large image is most of a first create.\n" +
+			"On docker it also pulls alpine:3, which snapshot and fork copy volumes with, unless\n" +
+			"you name images or the --spec declares no volume.\n" +
 			"Useful in a CI image or before a demo.",
 		"sbx prewarm --provider firecracker python:3.11-slim",
 	},
