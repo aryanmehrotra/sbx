@@ -300,7 +300,7 @@ func (h *harness) start(opts ...option) {
 		Execd: func(context.Context, string) (execdSource, error) {
 			return execdSource{Volume: "sbx-execd-test", File: "/dev/null"}, nil
 		},
-		LockSlots:    func() func() { return func() {} },
+		LockSlots:    func(context.Context) (func(), error) { return func() {}, nil },
 		Egress:       h.eg,
 		EgressStatus: fakeEgressStatus,
 	}

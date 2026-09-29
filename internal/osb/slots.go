@@ -45,7 +45,10 @@ func (s *Server) createPicked(ctx context.Context, id string, svc spec.Service, 
 
 	s.trace.mark(id, "containers listed")
 
-	unlock := s.lockSlots()
+	unlock, err := s.lockSlots(ctx)
+	if err != nil {
+		return slotLockErr(ctx, err)
+	}
 
 	s.slotMu.Lock()
 
@@ -105,4 +108,16 @@ func (s *Server) createPicked(ctx context.Context, id string, svc spec.Service, 
 	}
 
 	return nil
+}
+
+// slotLockErr is what a create returns when it could not take the slot lock. A wait cut short
+// because the create itself was cancelled (a DELETE, a shutdown) is errGone, the same as the
+// semaphore above; a wait that ran out is the *slotlock.HeldError, which provision reports as
+// slot_lock_timeout with the holder named.
+func slotLockErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return errGone
+	}
+
+	return err
 }

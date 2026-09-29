@@ -98,7 +98,7 @@ type Options struct {
 	Now       func() time.Time
 	Ping      func(ctx context.Context, hostport string) error
 	Execd     func(ctx context.Context, arch string) (execdSource, error)
-	LockSlots func() func()
+	LockSlots func(ctx context.Context) (func(), error)
 
 	// NewID mints sandbox ids; it must return osb-<12 hex>. A test sharing an engine with other
 	// API sandboxes uses it to give its own a prefix it can scope a daemon to.
@@ -163,7 +163,7 @@ type Server struct {
 	now       func() time.Time
 	ping      func(ctx context.Context, hostport string) error
 	execd     func(ctx context.Context, arch string) (execdSource, error)
-	lockSlots func() func()
+	lockSlots func(ctx context.Context) (func(), error)
 	newID     func() string
 
 	egress       EgressAPI
@@ -283,7 +283,9 @@ func New(o Options) (*Server, error) {
 	}
 
 	if s.lockSlots == nil {
-		s.lockSlots = slotlock.Lock
+		// The error-returning lock: a wait that runs out fails the create (slot_lock_timeout)
+		// rather than letting it choose a slot unlocked, which is the race the lock is for.
+		s.lockSlots = func(ctx context.Context) (func(), error) { return slotlock.Acquire(ctx, nil) }
 	}
 
 	s.egress, s.egressStatus = o.Egress, o.EgressStatus

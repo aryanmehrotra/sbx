@@ -452,6 +452,12 @@ state, exit code, `OOMKilled` and the start error. Exit 137 with no output is SI
 memory (host or `resourceLimits.memory`) or a `docker kill`. 143 is SIGTERM from outside. Raise
 `resourceLimits.memory` or free host memory. The daemon log and `sbx history <id>` show the same.
 
+### An API sandbox is `Failed` with `slot_lock_timeout`
+
+Another create on this machine held the slot lock for 10 minutes, so this one placed nothing
+rather than choose a slot without it. `status.message` names the holding pid; `ps -p <pid>` shows
+what it is doing. If it is not an sbx, remove the lock file the message names and create again.
+
 ### An API create on a source build fails with "invalid reference format"
 
 Up to v0.15.1, a build whose version is not a release tag (`v0.15.1-dev+ffd872d`) asked docker for

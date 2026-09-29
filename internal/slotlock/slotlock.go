@@ -132,18 +132,6 @@ func Acquire(ctx context.Context, onWait func(holder int)) (func(), error) {
 	return take(ctx, "the slot lock", path, err, slotLocal, SlotWait, onWait)
 }
 
-// Lock is Acquire for a caller that cannot take an error: when the wait runs out it goes
-// ahead without the lock. Only the daemon's OpenSandbox front uses it, and that also reserves
-// the slot in its own memory, so it is not the path the unlocked race was measured on.
-func Lock() func() {
-	release, err := Acquire(context.Background(), nil)
-	if err != nil {
-		return func() {}
-	}
-
-	return release
-}
-
 // AcquireName waits for sandbox's name lock.
 func AcquireName(ctx context.Context, sandbox string, onWait func(holder int)) (func(), error) {
 	path, err := NamePath(sandbox)
