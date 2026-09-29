@@ -329,6 +329,15 @@ type ImageLabeler interface {
 	ImageLabel(ctx context.Context, image, key string) (string, error)
 }
 
+// UsageFinder says which of the named images and volumes a unit, in any state, still uses:
+// the name maps to the sandboxes (or, unlabelled, the containers) using it, and a name nobody
+// uses is absent. Optional beside Snapshotter. Removing a snapshot asks it first, so a
+// snapshot a fork still runs from is refused whole instead of losing the parts the backend
+// happened to let go before refusing the rest.
+type UsageFinder interface {
+	InUse(ctx context.Context, images, volumes []string) (map[string][]string, error)
+}
+
 // SnapshotterFor returns the provider's snapshot support, or a refusal naming the backend.
 func SnapshotterFor(p Provider) (Snapshotter, error) {
 	s, ok := p.(Snapshotter)
@@ -571,6 +580,11 @@ type Artifact struct {
 	Sandbox  string        // the sandbox it belonged to, where that is knowable
 	Age      time.Duration // since it was created
 	Snapshot bool          // made deliberately, by name, and outliving its sandbox is the point
+
+	// InUse is set when a unit, in any state, still runs from it or mounts it: a fork's
+	// containers are created from a snapshot's images, so the snapshot is not garbage while
+	// the fork exists, whatever became of the sandbox it was first taken from.
+	InUse bool
 }
 
 // Collector finds and removes what sandboxes leave behind.

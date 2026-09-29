@@ -51,12 +51,22 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	var (
 		sweep     []provider.Artifact
 		snapshots int // skipped because snapshots are opt-in
+		inUse     int // skipped because a sandbox still runs from or mounts it
 		tooNew    int // skipped because of --older-than
 	)
 
 	for _, a := range items {
 		if a.Snapshot && !withSnapshots {
 			snapshots++
+			continue
+		}
+
+		// Before age, and regardless of --force: a fork is created from its snapshot's images,
+		// so they outlive the sandbox the snapshot was taken from. Listing them as reclaimable
+		// was wrong, and --force then deleted what docker let go and failed on the rest,
+		// leaving a snapshot with some of its services for the next fork to start from.
+		if a.InUse {
+			inUse++
 			continue
 		}
 
@@ -71,7 +81,7 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	if len(sweep) == 0 {
 		fmt.Fprint(w, "nothing to reclaim")
 
-		if why := skipped(snapshots, tooNew, olderThan); why != "" {
+		if why := skipped(snapshots, inUse, tooNew, olderThan); why != "" {
 			fmt.Fprintf(w, " (%s)", why)
 		}
 
@@ -92,7 +102,7 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	if !force {
 		fmt.Fprintf(w, "\n%d reclaimable, nothing deleted. Add --force to delete them.\n", len(sweep))
 
-		if why := skipped(snapshots, tooNew, olderThan); why != "" {
+		if why := skipped(snapshots, inUse, tooNew, olderThan); why != "" {
 			fmt.Fprintf(w, "Also %s.\n", why)
 		}
 
@@ -108,6 +118,12 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	}
 
 	fmt.Fprintf(w, "\nreclaimed %d of %d\n", len(sweep)-len(failed), len(sweep))
+
+	// Said on the deleting run too: the reader of a --force in a cron log is the one who most
+	// needs to know a snapshot was kept, and why.
+	if why := skipped(snapshots, inUse, tooNew, olderThan); why != "" {
+		fmt.Fprintf(w, "Also %s.\n", why)
+	}
 
 	if len(failed) > 0 {
 		return fmt.Errorf("could not reclaim: %s", strings.Join(failed, "; "))
@@ -132,7 +148,7 @@ func age(d time.Duration) string {
 // did not apply. It used to be one lumped number - "24 more were skipped for being newer than 0s,
 // or for being snapshots" - where, with no --older-than, the first reason was impossible and the
 // reader could not tell how many of the 24 a --snapshots run would add.
-func skipped(snapshots, tooNew int, olderThan time.Duration) string {
+func skipped(snapshots, inUse, tooNew int, olderThan time.Duration) string {
 	var parts []string
 
 	if snapshots > 0 {
@@ -142,6 +158,10 @@ func skipped(snapshots, tooNew int, olderThan time.Duration) string {
 		}
 
 		parts = append(parts, fmt.Sprintf("%d %s skipped (--snapshots includes them)", snapshots, noun))
+	}
+
+	if inUse > 0 {
+		parts = append(parts, fmt.Sprintf("%d in use by a sandbox skipped (sbx rm the sandbox that uses it first)", inUse))
 	}
 
 	if tooNew > 0 {
