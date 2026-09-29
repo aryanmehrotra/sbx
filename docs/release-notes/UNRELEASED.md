@@ -42,6 +42,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 ## Changed
 
 - Every command accepts flags before, between or after the names (`sbx logs -f b svc`), and a bare `--` makes the rest names.
+- `sbx list` has a new ISOLATION column before ADDRESS; a script reading the table by column position should use `sbx list --json`.
 - `sbx create` run again recreates a service whose image changed (an edited `build` context, or a new tag), keeping its volume; on kubernetes it patches the deployment's image.
 - `sbx add` puts the new service on the sandbox's own isolation tier; a different `--isolation` is refused.
 - `sbx exec` passes piped stdin to the command and exits with its status.
