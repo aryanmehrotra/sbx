@@ -289,6 +289,9 @@ an activator image of that version, which was never published and is not a valid
 an empty `sbx-execd-<version>` volume; remove it with `docker volume rm`. Fixed after v0.15.1: such a
 build compiles the agent from its checkout, or asks you to set `SBX_EXECD_BINARY`.
 
+The compile starts with `sbx serve --osb-addr`, so the first create does not wait inside its
+ready timeout. The log says `building the sandbox agent` and then `built the sandbox agent ... in`.
+
 ## Remote deployments
 
 ### `sbx connect` cannot reach a deployment the platform calls healthy

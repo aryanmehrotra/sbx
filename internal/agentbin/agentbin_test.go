@@ -48,14 +48,11 @@ func TestAReleaseNeverCompilesANearbyCheckout(t *testing.T) {
 		t.Skip("needs the checkout")
 	}
 
-	saved := crossCompile
-	t.Cleanup(func() { crossCompile = saved })
-
 	compiled := 0
-	crossCompile = func(context.Context, string, string, string, string) (string, error) {
+	stubCompile(t, func(context.Context, string, string, string, string) (string, error) {
 		compiled++
 		return "/built/sbx", nil
-	}
+	})
 
 	// The other architecture from this one: a linux build asked for its OWN arch returns itself
 	// (os.Executable) before any of this, which would pass without testing anything.

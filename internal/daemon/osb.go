@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/agentbin"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/osb"
 )
@@ -90,6 +93,8 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 
 	d.servesOSB = true
 
+	go warmAgent(logs.Version)
+
 	return api, ln, nil
 }
 
@@ -107,4 +112,25 @@ func splitPaths(s string) []string {
 	}
 
 	return out
+}
+
+// warmAgent starts building the linux sbx that API sandboxes run as their agent, so the first
+// create does not.
+//
+// A release finds a published image or its own binary and returns at once. A source build
+// cross-compiles, about 50s on a cold go cache in the report that found this; inside a create that
+// ran into sbx mcp's 30s ready timeout, and the sandbox was removed with nothing logged. The
+// server's own ready timeout already starts after placement (osb waitReady), so it was never the
+// one firing - the client's was, and no server-side timeout can extend that. Building here, when
+// the API starts, is the change that fixes it; agentbin shares the one build with the create that
+// arrives while it runs.
+//
+// runtime.GOARCH is the engine's architecture on the setups this is for (colima or Docker Desktop
+// on the same Mac). A sandbox image of another architecture still builds its own on first use.
+var warmAgent = func(version string) {
+	if agentbin.Release(version) {
+		return
+	}
+
+	_, _ = agentbin.Locate(context.Background(), runtime.GOARCH, version)
 }

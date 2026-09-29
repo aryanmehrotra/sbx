@@ -27,6 +27,10 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/logs"
 )
 
 const (
@@ -65,7 +69,7 @@ func Locate(ctx context.Context, arch, version string) (Source, error) {
 	// checksum the release carries. Dev builds, which have no published artifact, still compile.
 	if gobin, err := exec.LookPath("go"); err == nil && !Release(version) {
 		if src, ok := FindSource(); ok {
-			out, err := crossCompile(ctx, gobin, src, arch, version)
+			out, err := compileOnce(ctx, gobin, src, arch, version)
 			if err == nil {
 				return Source{File: out}, nil
 			}
@@ -178,4 +182,82 @@ func isModuleRoot(dir string) bool {
 	_, err = os.Stat(filepath.Join(dir, "main.go"))
 
 	return err == nil
+}
+
+// build is one cross-compile of the agent, shared by every caller that asks for the same one.
+type build struct {
+	done chan struct{}
+	out  string
+	err  error
+}
+
+var builds struct {
+	mu sync.Mutex
+	m  map[string]*build
+}
+
+// compileOnce is crossCompile at most once per process for a given checkout, architecture and
+// version - concurrent callers wait for the one in flight, later ones get its result.
+//
+// A source build's first OpenSandbox sandbox used to pay for this compile inside its create: 50s
+// on a cold go cache, measured on the report that found it, against a client ready timeout of
+// 30s (sbx mcp's default), so the first create failed and said nothing about why. The daemon now
+// starts the build when it starts serving the API, and the create that follows joins it here
+// rather than compiling a second time. A failure is not kept, so the next caller retries.
+//
+// Logged at INFO at both ends: it is the one step of an API create that can take a minute, and
+// the only one that happens once.
+func compileOnce(ctx context.Context, gobin, src, arch, version string) (string, error) {
+	key := src + "\x00" + arch + "\x00" + version
+
+	builds.mu.Lock()
+	if builds.m == nil {
+		builds.m = map[string]*build{}
+	}
+
+	if b, ok := builds.m[key]; ok {
+		builds.mu.Unlock()
+
+		select {
+		case <-b.done:
+			return b.out, b.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	b := &build{done: make(chan struct{})}
+	builds.m[key] = b
+	builds.mu.Unlock()
+
+	logs.Default.Info("", "", "building the sandbox agent (sbx for linux/%s) from %s, once for this "+
+		"daemon; the first API sandbox waits for it", arch, src)
+
+	began := time.Now()
+
+	// Not the caller's cancellation: the build serves every caller waiting on it.
+	b.out, b.err = crossCompile(context.WithoutCancel(ctx), gobin, src, arch, version)
+
+	if b.err != nil {
+		builds.mu.Lock()
+		delete(builds.m, key)
+		builds.mu.Unlock()
+
+		logs.Default.Warn("", "", "building the sandbox agent for linux/%s failed after %s: %v",
+			arch, time.Since(began).Round(time.Millisecond), b.err)
+	} else {
+		logs.Default.Info("", "", "built the sandbox agent for linux/%s in %s: %s",
+			arch, time.Since(began).Round(time.Millisecond), b.out)
+	}
+
+	close(b.done)
+
+	return b.out, b.err
+}
+
+// forgetBuilds drops every remembered build, for a test that swaps crossCompile.
+func forgetBuilds() {
+	builds.mu.Lock()
+	builds.m = nil
+	builds.mu.Unlock()
 }
