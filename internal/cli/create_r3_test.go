@@ -175,7 +175,7 @@ func TestAPartialCreateStillRecordsItsSpec(t *testing.T) {
 	placed := 0
 
 	err := Create(context.Background(), p, path, "half", false, provider.IsolationContainer,
-		func() { placed++; Remember("half", "", path) })
+		func() { placed++; Remember(nil, "half", "", path) })
 	if err == nil {
 		t.Fatal("the broken mount was reported as created")
 	}
@@ -195,7 +195,7 @@ func TestAPartialCreateStillRecordsItsSpec(t *testing.T) {
 
 	_ = captureOutput(t, func() {
 		_ = Create(context.Background(), p2, redisSpec(t), "none", false, provider.IsolationContainer,
-			func() { Remember("none", "", "x.json") })
+			func() { Remember(nil, "none", "", "x.json") })
 	})
 
 	if _, ok := Recall("none"); ok {

@@ -986,6 +986,13 @@ type ExitReporter interface {
 	ExitOf(ctx context.Context, ref string) (ExitState, error)
 }
 
+// Locator says where a provider points, for a machine that can reach several of its kind: a docker
+// endpoint, a kubectl context. Origin records carry it beside Name, so a record is only ever
+// cleared through the backend that owns it. "" where it cannot say.
+type Locator interface {
+	Where() string
+}
+
 // NetTabler reads a running unit's network tables - /proc/net/dev, tcp and tcp6 - from outside its
 // image: a throwaway helper that joins the unit's network namespace, so an image with no `cat`
 // (scratch, distroless) can still be asked whether it listens. Only meaningful where the

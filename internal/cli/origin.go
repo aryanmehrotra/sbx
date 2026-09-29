@@ -22,6 +22,8 @@ package cli
 
 import (
 	"encoding/json"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 	"os"
 	"path/filepath"
 )
@@ -30,6 +32,11 @@ import (
 type Origin struct {
 	Template string `json:"template,omitempty"`
 	Spec     string `json:"spec,omitempty"`
+
+	// Provider is which backend the sandbox lives on (originKey). Not a spec setting: it is what
+	// lets rm and gc clear a record only when asked through the backend that owns it. Empty on a
+	// record written before it existed.
+	Provider string `json:"provider,omitempty"`
 }
 
 func originPath(sandbox string) (string, error) {
@@ -45,17 +52,8 @@ func originPath(sandbox string) (string, error) {
 
 // Remember records what a sandbox was created from. Best-effort: a failure here must not
 // fail a create that otherwise worked.
-func Remember(sandbox, template, spec string) {
-	path, err := originPath(sandbox)
-	if err != nil {
-		return
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-
-	o := Origin{Template: template}
+func Remember(p provider.Provider, sandbox, template, spec string) {
+	o := Origin{Template: template, Provider: originKey(p)}
 
 	// Absolute, because `sbx env` is very often run from a different directory than the
 	// `sbx create` that preceded it - a relative path recorded here would resolve somewhere
@@ -67,6 +65,20 @@ func Remember(sandbox, template, spec string) {
 		}
 
 		o.Spec = abs
+	}
+
+	rememberAs(sandbox, o)
+}
+
+// rememberAs writes one record as it is, provider included.
+func rememberAs(sandbox string, o Origin) {
+	path, err := originPath(sandbox)
+	if err != nil {
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
 	}
 
 	body, err := json.Marshal(o)
@@ -133,5 +145,25 @@ func Inherit(from, to string) {
 		return
 	}
 
-	Remember(to, o.Template, o.Spec)
+	rememberAs(to, o)
+}
+
+// originKey names the backend a record belongs to: the provider's name (kubernetes carries its
+// namespace in it), and where it points when one machine can reach several of that kind - a
+// docker endpoint, a kubectl context (provider.Locator). Records are compared by it exactly, so a
+// spelling that differs keeps a record rather than removing another backend's.
+func originKey(p provider.Provider) string {
+	if p == nil {
+		return ""
+	}
+
+	key := p.Name()
+
+	if l, ok := p.(provider.Locator); ok {
+		if where := l.Where(); where != "" {
+			key += "@" + where
+		}
+	}
+
+	return key
 }

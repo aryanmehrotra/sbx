@@ -18,6 +18,9 @@ type snapStub struct {
 	images []string
 }
 
+func (s *snapStub) Name() string  { return "docker" }
+func (s *snapStub) Where() string { return "unix:///a.sock" }
+
 func (s *snapStub) List(context.Context, string) ([]provider.Unit, error) { return s.units, nil }
 
 func (s *snapStub) Images(_ context.Context, prefix string) ([]string, error) {
@@ -40,13 +43,18 @@ func (s *snapStub) RemoveVolume(context.Context, string) error              { re
 
 // origins writes a record for each name under a fresh HOME and returns their paths.
 func origins(t *testing.T, names ...string) map[string]string {
+	return originsOn(t, &snapStub{}, names...)
+}
+
+// originsOn is origins written through p, as create writes them.
+func originsOn(t *testing.T, p provider.Provider, names ...string) map[string]string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 
 	paths := map[string]string{}
 
 	for _, n := range names {
-		Remember(n, "postgres", "")
+		Remember(p, n, "postgres", "")
 
 		p, err := originPath(n)
 		if err != nil {
@@ -128,12 +136,12 @@ func TestGCListsAndRemovesOrphanOriginRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(out.String(), paths["gone"]) {
+	if !strings.Contains(out.String(), "    gone\n") {
 		t.Errorf("the orphan record is not listed:\n%s", out.String())
 	}
 
 	for _, keep := range []string{"asleep", "golden"} {
-		if strings.Contains(out.String(), paths[keep]) {
+		if strings.Contains(out.String(), "    "+keep+"\n") {
 			t.Errorf("%s's record was offered:\n%s", keep, out.String())
 		}
 	}

@@ -15,7 +15,7 @@ func withHome(t *testing.T) {
 func TestRemembersATemplate(t *testing.T) {
 	withHome(t)
 
-	Remember("branch-x", "postgres", "sandbox.json")
+	Remember(nil, "branch-x", "postgres", "sandbox.json")
 
 	o, ok := Recall("branch-x")
 	if !ok {
@@ -46,7 +46,7 @@ func TestASpecPathIsRecordedAbsolute(t *testing.T) {
 
 	// Recorded as a relative path, from that directory.
 	t.Chdir(dir)
-	Remember("branch-y", "", "sandbox.json")
+	Remember(nil, "branch-y", "", "sandbox.json")
 
 	o, ok := Recall("branch-y")
 	if !ok {
@@ -71,7 +71,7 @@ func TestAVanishedSpecIsNotRecalled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	Remember("branch-z", "", spec)
+	Remember(nil, "branch-z", "", spec)
 
 	if _, ok := Recall("branch-z"); !ok {
 		t.Fatal("not recalled while the spec still existed")
@@ -89,7 +89,7 @@ func TestAVanishedSpecIsNotRecalled(t *testing.T) {
 func TestForgetDropsIt(t *testing.T) {
 	withHome(t)
 
-	Remember("gone", "postgres", "")
+	Remember(nil, "gone", "postgres", "")
 
 	Forget("gone")
 
@@ -120,7 +120,7 @@ func TestRememberDoesNotFailOnAnUnwritableHome(t *testing.T) {
 
 	t.Setenv("HOME", file)
 
-	Remember("x", "postgres", "") // must not panic, and must not be reported as an error
+	Remember(nil, "x", "postgres", "") // must not panic, and must not be reported as an error
 
 	if _, ok := Recall("x"); ok {
 		t.Error("recalled something that could not have been written")
@@ -134,7 +134,7 @@ func TestRememberDoesNotFailOnAnUnwritableHome(t *testing.T) {
 func TestASnapshotInheritsItsSandboxsOrigin(t *testing.T) {
 	withHome(t)
 
-	Remember("main", "postgres", "")
+	Remember(nil, "main", "postgres", "")
 
 	Inherit("main", "golden") // sbx snapshot main golden
 

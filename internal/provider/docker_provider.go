@@ -1691,3 +1691,8 @@ var hostOS = runtime.GOOS
 
 // ErrEmptyVolume is CopyVolume refusing a source that is empty or absent.
 var ErrEmptyVolume = errors.New("the source volume is empty or does not exist")
+
+// Where implements Locator: the engine this provider talks to.
+func (d *dockerProvider) Where() string { return d.endpoint.String() }
+
+var _ Locator = (*dockerProvider)(nil)
