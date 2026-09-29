@@ -268,3 +268,27 @@ func TestCopyVolumeKeepsADestinationItDidNotCreate(t *testing.T) {
 		t.Fatalf("the pre-existing destination holds %d files after a refused copy, want 1", n)
 	}
 }
+
+// The port inside the container each backing port reaches, read from what docker publishes, so
+// a readiness check can ask the container itself whether anything listens there. A stopped
+// container publishes nothing, and says so with a 0 rather than a guess.
+func TestUnitOfReadsThePortInsideTheContainer(t *testing.T) {
+	c := container{ID: "x", Names: []string{"/sbx-a-b"}, State: "running", Labels: map[string]string{
+		labelSandbox: "a", labelService: "b", labelPorts: "20000:40000,20001:40001",
+	}, Ports: []containerPort{
+		{PrivatePort: 9000, PublicPort: 40001, Type: "tcp"},
+		{PrivatePort: 6379, PublicPort: 40000, Type: "tcp"},
+		{PrivatePort: 6379, PublicPort: 40000, Type: "tcp"}, // docker lists v4 and v6 bindings separately
+	}}
+
+	u, _ := unitOf(c)
+	if len(u.Private) != 2 || u.Private[0] != 6379 || u.Private[1] != 9000 {
+		t.Fatalf("Private = %v, want [6379 9000] in Upstream order", u.Private)
+	}
+
+	c.State, c.Ports = "exited", nil
+
+	if u, _ := unitOf(c); len(u.Private) != 2 || u.Private[0] != 0 || u.Private[1] != 0 {
+		t.Fatalf("a stopped container reported Private = %v, want [0 0]", u.Private)
+	}
+}

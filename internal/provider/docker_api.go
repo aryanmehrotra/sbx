@@ -133,6 +133,17 @@ type container struct {
 	Names  []string          `json:"Names"`
 	State  string            `json:"State"`
 	Labels map[string]string `json:"Labels"`
+
+	// Ports is what docker publishes for a running container: which port inside it each host
+	// port reaches. Empty for a stopped one.
+	Ports []containerPort `json:"Ports"`
+}
+
+// containerPort is one entry of /containers/json's Ports.
+type containerPort struct {
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort"`
+	Type        string `json:"Type"`
 }
 
 func (c container) name() string {

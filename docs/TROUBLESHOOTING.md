@@ -213,12 +213,25 @@ Read `sbx logs <sandbox> <service> --tail 50` for the reason.
 Up to v0.15.1, `sbx ready` could report such a service as serving when it had no health check or
 docker was slow to answer. Fixed after v0.15.1.
 
-### `sbx ready` says "the workload behind it does not answer"
+### `sbx ready`, `sbx wake` or `sbx create` says a service "is not serving"
 
-`sbx serve` accepts, but the port it forwards to either refuses or accepts and closes at once. A
-connecting client sees the same thing as `Server closed the connection`. The usual cause is a
-runtime whose guest has no network, seen with Kata inside a nested colima VM. Check with
-`sbx logs <sandbox> <service>`, and try `--isolation container` to rule out the runtime.
+sbx asks inside each container whether something listens on the declared port where outside can
+reach it, and whether the container has a network interface besides loopback. The message names
+the one that failed:
+
+- "nothing listens on 6379 inside the container": the process has not bound the port, or bound
+  another one. Read `sbx logs <sandbox> <service>`.
+- "listens on 6379 only on 127.0.0.1": the process serves only the container itself. Configure it
+  to bind `0.0.0.0` (redis: `--bind 0.0.0.0`).
+- "no network interface but loopback": the runtime gave the container no network, seen with Kata
+  inside a nested colima VM. Clients see `Server closed the connection`. Try `--isolation container`
+  to rule out the runtime.
+- "could not ask its container": the exec failed, for example because the container is paused.
+  sbx keeps asking until `--timeout` and never passes a service it could not ask.
+
+An image with no `cat` (distroless, scratch), and a microVM, cannot be asked this way. sbx dials
+the port from the host instead. That dial judges a listener that accepts and closes without
+sending a byte as not serving, by design: from outside it looks the same as nothing there.
 
 Up to v0.15.1, `sbx ready` and `sbx wake` checked only the daemon's port and reported such a
 service as serving. Fixed after v0.15.1.

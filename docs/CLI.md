@@ -53,7 +53,7 @@ names are the command, and its own flags stay its own.
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
 | `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |
-| `sbx ready <sandbox>` | Block until every service is running and its workload answers at the port `sbx serve` forwards to. For CI. (B) | `--timeout 90s` |
+| `sbx ready <sandbox>` | Block until every service is running and, checked inside its container, listens on its ports where outside can reach them. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
 | `sbx sleep <sandbox>` | Stop every service now, frozen ones included, and drop to 0 B. Dependents stop before what they `depends_on`; the rest stop together. (B) | none |
 | `sbx egress <sandbox> [service]` | Read or change a running sandbox's network policy. (B) | `--allow H`, `--deny H`, `--remove H` (all repeatable), `--default allow\|deny`, `--reset`, `--show`, `--json` |
