@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // templates are the built-in specs, embedded so that --template nginx works on a machine
@@ -179,4 +181,16 @@ func MaterializeTemplate(name string) (string, error) {
 	}
 
 	return filepath.Join(dir, "sandbox.json"), nil
+}
+
+// copiesVolumes reports whether snapshot or fork of a sandbox from s would copy a volume, and so
+// run the backend's volume-copy helper: only a service's own `volume` is copied.
+func copiesVolumes(s *spec.Spec) bool {
+	for _, svc := range s.Services {
+		if svc.Volume != "" {
+			return true
+		}
+	}
+
+	return false
 }

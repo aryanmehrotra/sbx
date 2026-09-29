@@ -899,6 +899,12 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
+		// The volume-copy helper comes with every template (they declare volumes) and with a spec
+		// only when one of its services declares a `volume`: that is the only thing snapshot and
+		// fork copy, so a volume-less spec never runs it and a CI cache should not carry it.
+		// Named images mean exactly those.
+		helpers := len(named) == 0
+
 		images := TemplateImages()
 
 		if *specPath != "" {
@@ -916,13 +922,15 @@ func dispatch(cmd string, args []string) error {
 			}
 
 			sort.Strings(images)
+
+			helpers = copiesVolumes(s)
 		}
 
 		if len(named) > 0 {
 			images = named
 		}
 
-		return cli.Prewarm(context.Background(), p, os.Stdout, images)
+		return cli.Prewarm(context.Background(), p, os.Stdout, images, helpers)
 
 	case "ui", "dash", "dashboard":
 		fs := newFlagSet("ui")

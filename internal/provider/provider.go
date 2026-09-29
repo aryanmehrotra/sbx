@@ -1012,3 +1012,10 @@ func orUnknown(s string) string {
 
 	return s
 }
+
+// HelperImager names images a backend runs on its own, which no spec mentions: on docker, the
+// small image snapshot and fork copy a volume through. Optional beside Puller, so prewarm can
+// fetch them with everything else instead of leaving the first fork to pull one.
+type HelperImager interface {
+	HelperImages() []string
+}
