@@ -26,6 +26,7 @@ type engine struct {
 	volumes   map[string]int               // volume -> entries in it
 	copyErr   map[string]error             // src -> error CopyVolume returns
 	commitErr map[string]error             // image -> error Commit returns
+	users     map[string][]string          // image or volume -> sandboxes using it (InUse)
 }
 
 func newEngine(units ...provider.Unit) *engine {

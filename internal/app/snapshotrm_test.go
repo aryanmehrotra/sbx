@@ -15,3 +15,12 @@ func TestSnapshotRmTakesOneName(t *testing.T) {
 		}
 	}
 }
+
+// --rm and --replace are opposite acts on one name; both at once is refused before a backend
+// is touched rather than guessing which was meant.
+func TestSnapshotRmAndReplaceAreExclusive(t *testing.T) {
+	err := dispatch("snapshot", []string{"--rm", "--replace", "sb", "snap"})
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Errorf("sbx snapshot --rm --replace = %v, want a refusal", err)
+	}
+}
