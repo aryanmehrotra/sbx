@@ -258,13 +258,12 @@ func (b *lockedBuffer) String() string {
 // buffer, so its JSON lines stop landing in the middle of selftest's step table. Selftest prints
 // the buffer only when a step fails, where the daemon's account is the evidence.
 //
-// restore is for tests. Selftest itself never calls it: the daemon's goroutines are still winding
-// down when it returns, and swapping the logger back under them would be a data race for no gain
-// in a process that is about to exit.
+// It swaps the logger's writer, under the logger's lock, rather than replacing logs.Default:
+// the daemon's goroutines read Default on every line, and reassigning it under them was a data
+// race - both here and when restore put it back while they were still winding down.
 func quietDaemonLog() (restore func(), buf *lockedBuffer) {
-	prev := logs.Default
 	buf = &lockedBuffer{}
-	logs.Default = logs.New(buf)
+	prev := logs.Default.SetOutput(buf)
 
-	return func() { logs.Default = prev }, buf
+	return func() { logs.Default.SetOutput(prev) }, buf
 }

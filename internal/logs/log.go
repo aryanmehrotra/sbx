@@ -256,6 +256,20 @@ func (l *Logger) SetLevel(lvl Level) Level {
 	return was
 }
 
+// SetOutput sends the logger's lines to w from now on and returns the writer it replaced, for
+// the same reason SetLevel returns the old level. Swapping the writer under the logger's own lock
+// is what makes this safe while goroutines are logging - reassigning Default instead raced every
+// one of them, which is how selftest's capture showed up under -race.
+func (l *Logger) SetOutput(w io.Writer) io.Writer {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	was := l.out
+	l.out, l.tty = w, isTerminal(w)
+
+	return was
+}
+
 // LevelSilent is above every real level, so nothing is printed at all. For the dashboard,
 // which draws on the terminal the logger would otherwise write to.
 const LevelSilent = LevelFatal + 1

@@ -21,6 +21,11 @@ type lister struct {
 func (l *lister) Name() string                                          { return "fake" }
 func (l *lister) List(context.Context, string) ([]provider.Unit, error) { return l.units, nil }
 
+// bound dials the fronted ports, and a connection to a unit wakes it: these make that wake a
+// harmless no-op on a unit that already reports serving.
+func (l *lister) Start(context.Context, string) error                    { return nil }
+func (l *lister) Probe(context.Context, string) (serving, declared bool) { return true, true }
+
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
 
@@ -33,15 +38,18 @@ func freeTCPPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// bound reports whether something accepts on the port. A dial, not a listen: probing by binding
+// the port itself could win it for a moment while the daemon under test was binding, and fail
+// the very bind the test is waiting on.
 func bound(port int) bool {
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	c, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 200*time.Millisecond)
 	if err != nil {
-		return true
+		return false
 	}
 
-	_ = ln.Close()
+	_ = c.Close()
 
-	return false
+	return true
 }
 
 // selftest runs a real daemon in-process beside the user's own `sbx serve`. Unscoped, its 1s
@@ -64,8 +72,17 @@ func TestSelftestDaemonAdoptsOnlyItsOwnSandbox(t *testing.T) {
 			Listen: []int{sibling}, Upstream: up},
 	}}
 
+	// Stop the daemon and wait for its listener to close before the test returns. Left running,
+	// its goroutines went on logging into the next test's logger swap - a data race under -race -
+	// and held a port a later run could be handed.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() {
+		cancel()
+
+		for deadline := time.Now().Add(3 * time.Second); bound(mine) && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 
 	d := selftestDaemon(p, "selftest-42")
 	d.Refresh(ctx)
