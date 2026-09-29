@@ -41,39 +41,3 @@ func TestPerServiceIdleSetsTheReapCadence(t *testing.T) {
 
 	t.Fatalf("a service with idle 1500ms was not slept within 8s under a 1h daemon window (calls: %s)", p.seen())
 }
-
-// The cadence is the shortest window in force: a keep-awake service and one that inherits the
-// daemon's window do not shorten it, and the floor still holds.
-func TestReapCadenceIsTheShortestWindowInForce(t *testing.T) {
-	d := New(nil, 5*time.Minute, time.Second, time.Hour)
-
-	if got := d.reapCadence(); got != 30*time.Second {
-		t.Fatalf("no units: cadence %s, want the daemon's own 30s", got)
-	}
-
-	add := func(ref, idle string) {
-		u := newUnit("fx", ref, ref, ref, ref, nil, true)
-		u.keepAwake, u.idle = idlePolicy(idle)
-		d.units[ref] = u
-	}
-
-	add("inherits", "")
-	add("never", "never")
-	add("zero", "0")
-
-	if got := d.reapCadence(); got != 30*time.Second {
-		t.Fatalf("inherit/never/0 units: cadence %s, want 30s", got)
-	}
-
-	add("thirty", "30s")
-
-	if got := d.reapCadence(); got != 10*time.Second {
-		t.Fatalf("with a 30s service: cadence %s, want 10s", got)
-	}
-
-	add("tiny", "100ms")
-
-	if got := d.reapCadence(); got != time.Second {
-		t.Fatalf("with a 100ms service: cadence %s, want the 1s floor", got)
-	}
-}

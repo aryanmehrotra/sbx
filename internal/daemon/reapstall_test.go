@@ -99,7 +99,7 @@ func TestASlowStopDoesNotDelayAnotherUnitsSleep(t *testing.T) {
 
 	lastByte := time.Now()
 
-	// Window 1s, cadence reapEvery(1s) = 1s: due by 2s after its last byte, plus scheduling slack.
+	// Window 1s, one reapTick (1s): due by 2s after its last byte, plus scheduling slack.
 	const promise = 2*time.Second + 500*time.Millisecond
 
 	deadline := time.Now().Add(6 * time.Second)

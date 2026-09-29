@@ -84,6 +84,11 @@ type unit struct {
 	// instead, a 39-second creation was put to sleep underneath the command creating it.
 	served bool
 
+	// healthAsked is when sleepable last asked the provider whether a never-served unit is healthy.
+	// The reaper ticks every second; the ask is an Engine API call, so it is made no more often
+	// than healthEvery of the unit's window - the rate the old reap cadence asked at. Guarded by mu.
+	healthAsked time.Time
+
 	// freezeOnIdle makes going idle a pause rather than a stop (spec on_idle: "freeze"). The
 	// sandbox keeps its memory and running processes and uses no CPU; the next connection thaws
 	// it in about 10 ms instead of starting it cold.
@@ -315,13 +320,25 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 //
 // The first time it is seen serving, the clock is restarted from that moment: a unit that
 // took two minutes to come up has not been idle for two minutes, it has been starting.
-func (u *unit) sleepable(ctx context.Context, p provider.Provider) bool {
+//
+// Until then each call asks the provider, at most once per every: the reaper ticks every second
+// and this is the one provider call a tick can make.
+func (u *unit) sleepable(ctx context.Context, p provider.Provider, every time.Duration) bool {
 	u.mu.Lock()
 	served := u.served
+
+	asked := !served && !u.healthAsked.IsZero() && time.Since(u.healthAsked) < every
+	if !served && !asked {
+		u.healthAsked = time.Now()
+	}
 	u.mu.Unlock()
 
 	if served {
 		return true
+	}
+
+	if asked {
+		return false // asked recently; the answer cannot have been yes, or served would be set
 	}
 
 	if serving, declared := p.Healthy(ctx, u.ref); !serving && declared {

@@ -429,15 +429,12 @@ func (d *daemon) run(ctx context.Context) {
 	discovery := time.NewTicker(d.refresh)
 	defer discovery.Stop()
 
-	// The reaper's cadence has to follow the shortest idle window in force, not ignore it.
-	// Fixed at 30s, a sandbox configured to sleep after 5s slept after 60 - two ticks, because
-	// the first one only established that it had ever been serving. Following --idle alone had
-	// the same flaw one level down: a service with its own "idle": "30s" under the default 5m
-	// slept after 59s. So the cadence is recomputed on every discovery tick, from the
-	// daemon's window and every per-service one - see reapCadence.
-	cadence := d.reapCadence()
-
-	reap := time.NewTicker(cadence)
+	// The reaper decides every reapTick, whatever the windows are, so a unit sleeps within about a
+	// second of its own window. It used to run every third of the shortest window in force (1s to
+	// 30s): fixed at 30s a 5s window slept after 60, and even following the windows a 30s one
+	// slept 37-40s after its last byte. A tick is decided in memory - see reapAsync and
+	// BenchmarkReapTick - so running it every second costs nothing a slower one saved.
+	reap := time.NewTicker(reapTick)
 	defer reap.Stop()
 
 	for {
@@ -446,11 +443,6 @@ func (d *daemon) run(ctx context.Context) {
 			return
 		case <-discovery.C:
 			d.discover(ctx)
-
-			if c := d.reapCadence(); c != cadence {
-				cadence = c
-				reap.Reset(c)
-			}
 		case <-reap.C:
 			// Not waited on: a stop can take docker's whole grace period, and this loop is the
 			// clock every other unit's sleep and every discovery tick run on. See reapAsync.
@@ -791,29 +783,15 @@ func replaced(cur *unit, f provider.Unit, legs []leg) bool {
 	return false
 }
 
-// reapCadence is how often the reaper runs: reapEvery of the shortest idle window any unit is
-// under. A unit with its own "idle" uses that; "never" and "0" units never sleep on idle, so
-// they do not count; everything else is on the daemon's --idle. The result is in [1s, 30s].
-//
-// The resolution this buys: a service sleeps between its window and its window plus a third of
-// it (plus one extra tick the first time, while the reaper learns it has ever served).
-func (d *daemon) reapCadence() time.Duration {
-	shortest := d.idle
+// reapTick is how often the reaper decides. A tick reads each unit's last-byte clock and asks the
+// provider nothing for a unit that has served; so a unit sleeps at most one tick after its window.
+const reapTick = time.Second
 
-	d.mu.Lock()
-	for _, u := range d.units {
-		if !u.keepAwake && u.idle > 0 && u.idle < shortest {
-			shortest = u.idle
-		}
-	}
-	d.mu.Unlock()
-
-	return reapEvery(shortest)
-}
-
-// reapEvery keeps the check frequent enough that the idle window is honoured and rare
-// enough that a hundred sleeping sandboxes are not polled constantly.
-func reapEvery(idle time.Duration) time.Duration {
+// healthEvery is how often the reaper asks the provider whether a unit that has never served is
+// healthy yet (sleepable): a third of its window, 1s to 30s - the cadence the whole reaper used to
+// run at, kept for the one per-unit call a tick can make, so a hundred containers stuck unhealthy
+// are not inspected every second.
+func healthEvery(idle time.Duration) time.Duration {
 	every := idle / 3
 
 	if every < time.Second {
@@ -926,18 +904,21 @@ func (d *daemon) reapAsync(ctx context.Context) *sync.WaitGroup {
 			continue
 		}
 
-		// Mid-snapshot: stopping or freezing it under the copy would leave the belief wrong
-		// again once the snapshot thaws it. Its idle clock keeps running; the next tick decides.
-		if snapshotpause.Held(u.ref) {
-			continue
-		}
-
 		window := d.idle
 		if u.idle > 0 {
 			window = u.idle
 		}
 
-		if !u.isAwake() || !u.sleepable(ctx, d.provider) || u.idleFor() < window {
+		// In memory for every unit, every tick: the provider is asked only by sleepable, only
+		// for a unit that has never served, and only every healthEvery(window).
+		if !u.isAwake() || !u.sleepable(ctx, d.provider, healthEvery(window)) || u.idleFor() < window {
+			continue
+		}
+
+		// Mid-snapshot: stopping or freezing it under the copy would leave the belief wrong
+		// again once the snapshot thaws it. Its idle clock keeps running; the next tick decides.
+		// Asked only of a unit that is due - it reads a file.
+		if snapshotpause.Held(u.ref) {
 			continue
 		}
 
