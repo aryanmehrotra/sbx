@@ -17,6 +17,13 @@ Your sandboxes survive, and the first connection after the runtime returns wakes
 starts or stops the runtime. If colima stopped on its own, `~/.colima/_lima/colima/ha.stderr.log`
 shows whether something ran `colima stop`.
 
+### `sbx doctor` lists kata, but a Kata sandbox has no network or will not restart
+
+The `isolation kata` row checks only that dockerd has `kata-runtime` registered. doctor never
+runs a Kata container. Kata boots a VM per container, which can fail on a nested or VM host.
+Create one sandbox with `--isolation kata` and connect to it before relying on it. Otherwise use
+`--isolation gvisor`, or the microVM provider if doctor's `microVM` row allows it.
+
 ### "docker did not answer in time"
 
 The runtime is up but too slow. On a loaded colima, listing seven containers took 1 minute 36
