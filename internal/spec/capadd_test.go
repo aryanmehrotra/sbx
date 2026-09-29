@@ -72,3 +72,22 @@ func TestCapAddRefusesABlankEntry(t *testing.T) {
 		}
 	}
 }
+
+// Every bad entry in one error, as env already does: reporting only the first meant one failed
+// validate per mistake, and ["NOT_A_CAP","ALSO_BAD",""] took three runs to find out.
+func TestCapAddNamesEveryBadEntryAtOnce(t *testing.T) {
+	_, err := ParseSpec(capSpec(`"NOT_A_CAP","SYS_PTRACE","ALSO_BAD","","ALL"`), "spec.json")
+	if err == nil {
+		t.Fatal("three bad entries were accepted")
+	}
+
+	for _, want := range []string{`"NOT_A_CAP"`, `"ALSO_BAD"`, "blank", "every capability", `service "a"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+
+	if strings.Contains(err.Error(), `"SYS_PTRACE" is not`) {
+		t.Errorf("error %q refuses the valid SYS_PTRACE", err)
+	}
+}
