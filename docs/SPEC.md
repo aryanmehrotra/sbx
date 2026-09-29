@@ -322,8 +322,9 @@ Limits:
 
 Run `sbx create` again after editing `egress_policy` or `egress_allow` and the filter is replaced
 with the new declaration. Live changes made with `sbx egress` are dropped then, because they were
-changes to the old declaration. Other edits to a service that already exists still need
-`sbx rm` first.
+changes to the old declaration. A filter built by an older sbx is replaced too, and there live
+changes are kept, since the declaration is the same. Other edits to a service that already exists
+still need `sbx rm` first.
 
 ### Change a running sandbox's policy
 

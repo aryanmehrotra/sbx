@@ -191,7 +191,8 @@ service name.
 the filter by DNS name.
 
 **Fix:** fixed after v0.15.0: the filter has a fixed address and services find it through
-`/etc/hosts`. Recreate the sandbox (`sbx rm`, then `sbx create`). Service names still do not
+`/etc/hosts`. Recreate the sandbox (`sbx rm`, then `sbx create`): the services need the hosts
+entry, which only a new container gets. Service names still do not
 resolve under gVisor.
 
 ### An edit to `egress_allow` or `egress_policy` did not take effect
@@ -217,7 +218,8 @@ context, so the lookup was cancelled before it answered.
 **Fix:** fixed after v0.15.0 - the filter now resolves and dials on a context detached from the
 client's read side, bounded at 30 s. On an older version, use a client that keeps its connection
 open (`curl`, or any language's HTTP library). The filter image is rebuilt from the new source
-on the next `sbx create` that needs it; an existing sandbox keeps its old filter until recreated.
+on the next `sbx create` that needs it. Run `sbx create` again over an existing sandbox and its
+filter is replaced with the new build, keeping live changes.
 
 ### `sbx egress` says there is no filter to change
 

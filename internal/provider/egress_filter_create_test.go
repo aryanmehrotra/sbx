@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,7 +113,12 @@ func TestCreateOverAnExistingSandboxReplacesAFilterWhoseDeclarationChanged(t *te
 // through it and every change made live with sbx egress.
 func TestCreateOverAnExistingSandboxKeepsAnUnchangedFilter(t *testing.T) {
 	withGitHub := `{"defaultAction":"deny","egress":[{"action":"allow","target":"new.example"},{"action":"allow","target":"*.new.example"},{"action":"allow","target":"github.com"},{"action":"allow","target":"*.github.com"}]}`
-	calls := colimaDocker(t, true, withGitHub+"\x1fgithub.com:22\x1f172.30.255.254")
+	tag, err := filterImageWant()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := colimaDocker(t, true, withGitHub+"\x1fgithub.com:22\x1f172.30.255.254\x1f"+tag)
 
 	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
 
@@ -247,4 +253,66 @@ func TestFirecrackerRefusesAnAllowEntryWithAPort(t *testing.T) {
 	if err := unsupported(spec.Service{Image: "x", EgressAllow: []string{"github.com", "pypi.org:443"}}); err != nil {
 		t.Fatalf("an allow-list with no extra port was refused: %v", err)
 	}
+}
+
+// A filter built by an older sbx keeps running the old filter code - a fix to the filter never
+// reached a sandbox created before it. A re-run create replaces it. The declaration is unchanged,
+// so the new filter carries the same policy label and EgressControl.Sync pushes any live change
+// back (TestSyncRestoresTheLivePolicyToAReplacedFilter): live changes are kept, and the message
+// does not claim they were dropped.
+func TestAFilterBuiltByAnOlderSbxIsReplacedKeepingItsDeclaration(t *testing.T) {
+	same := `{"defaultAction":"deny","egress":[{"action":"allow","target":"new.example"},{"action":"allow","target":"*.new.example"}]}`
+	calls := colimaDocker(t, true, same+"\x1f\x1f172.30.255.254\x1fsbx-egress-filter:0123456789abcdef")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
+
+	svc := spec.Service{Image: "alpine:3.20", Ports: []int{8080}, EgressAllow: []string{"new.example"}}
+
+	out := captureStdout(t, func() {
+		if err := d.Create(context.Background(), "fx", 3, 0, "app", svc,
+			[]Endpoint{{Host: "127.0.0.1", Port: 20060}}, t.TempDir(), IsolationContainer); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	})
+
+	log := callLog(t, calls)
+
+	if _, ok := calledWith(log, "rm -f sbx-egressfilter-fx"); !ok {
+		t.Fatalf("a filter built by an older sbx was kept:\n%s", strings.Join(log, "\n"))
+	}
+
+	if !strings.Contains(out, "replacing the egress filter for fx: built by an older sbx") ||
+		strings.Contains(out, "dropped") {
+		t.Errorf("the replacement did not say why, or claimed live changes were dropped: %q", out)
+	}
+
+	run, ok := calledWith(log, "run -d --name sbx-egressfilter-fx")
+	if !ok || !strings.Contains(run, "--label sbx.egress.policy="+same+" ") {
+		t.Fatalf("the replacement changed the declaration, so Sync would drop live changes:\n%s", run)
+	}
+}
+
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := os.Stdout
+	os.Stdout = w
+
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+
+	f()
+
+	os.Stdout = old
+	_ = w.Close()
+
+	return <-done
 }

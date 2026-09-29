@@ -79,6 +79,16 @@ func filterImageTag(files map[string]string) string {
 
 // ensureFilterImage builds the filter image if this machine does not already have it, and
 // returns its tag.
+// filterImageWant is the tag of the filter image this sbx builds.
+func filterImageWant() (string, error) {
+	files, err := egress.BuildContext(filterBuilderImage, filterRuntimeImage)
+	if err != nil {
+		return "", err
+	}
+
+	return filterImageTag(files), nil
+}
+
 func (d *dockerProvider) ensureFilterImage() (string, error) {
 	files, err := egress.BuildContext(filterBuilderImage, filterRuntimeImage)
 	if err != nil {
@@ -160,14 +170,21 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 		return filterSetup{}, err
 	}
 
+	// The tag this sbx would build, computed from its own source without building anything.
+	image, err := filterImageWant()
+	if err != nil {
+		return filterSetup{}, err
+	}
+
 	// One inspect for the declaration and the address. The address is the one the container asked
 	// for (IPAMConfig), which a stopped container still has, rather than the one it holds now.
 	format := label(labelEgressPolicy) + "\x1f" + label(labelEgressPorts) + "\x1f" +
-		`{{with index .NetworkSettings.Networks "` + network + `"}}{{with .IPAMConfig}}{{.IPv4Address}}{{end}}{{end}}`
+		`{{with index .NetworkSettings.Networks "` + network + `"}}{{with .IPAMConfig}}{{.IPv4Address}}{{end}}{{end}}` +
+		"\x1f{{.Config.Image}}"
 
 	if cur, err := d.docker("inspect", "--format", format, name); err == nil {
 		f := strings.Split(strings.TrimSpace(cur), "\x1f")
-		for len(f) < 3 {
+		for len(f) < 4 {
 			f = append(f, "")
 		}
 
@@ -180,6 +197,12 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 			why = "the ports its egress_allow grants changed"
 		case f[2] != ip:
 			why = "it predates the filter's fixed address on the sandbox network"
+		// The filter's code is baked into its image, tagged by the hash of its source. A filter
+		// from an older sbx keeps enforcing with the old code - every fix to the filter stopped at
+		// sandboxes created before it. The declaration is unchanged, so the replacement carries the
+		// same policy label and Sync pushes any live change back: those are kept.
+		case f[3] != image:
+			why = "built by an older sbx"
 		}
 
 		if why == "" {
@@ -197,8 +220,7 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 		fmt.Printf("  replacing the egress filter for %s: %s\n", sandbox, why)
 	}
 
-	image, err := d.ensureFilterImage()
-	if err != nil {
+	if _, err := d.ensureFilterImage(); err != nil {
 		return filterSetup{}, err
 	}
 
