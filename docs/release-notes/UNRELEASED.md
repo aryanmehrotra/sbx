@@ -50,7 +50,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx checkpoint` is refused up front on a local macOS engine, where a checkpoint could be taken but never resumed.
 - `sbx validate` refuses an unknown or blank `cap_add` name, a `${VAR:-x}` or other non-plain `${...}` in `env` (every one in the file at once), and `cpu`, `memory` or `gpus` values no provider accepts. A `CAP_` prefix is accepted, as docker does.
 - `sbx serve --osb-addr` on a source build compiles the sandbox agent at startup, so the first create does not time out, and warns at start when the agent cannot be found.
-- `sbx ready`, `sbx wake` and `sbx create` check that each service's workload answers at the port `sbx serve` forwards to, not only the daemon's port.
+- `sbx ready`, `sbx wake` and `sbx create` check inside each container that something listens on its ports where outside can reach them, and that it has a network; the error names which is missing.
 - `sbx sleep` stops frozen services too, and stops services in parallel, dependents before what they `depends_on`.
 - `sbx create` stops with an error naming the holding pid if the slot or sandbox lock stays held for 10 minutes; it used to go ahead unlocked after 90 s. An API create in that case is `Failed` with `slot_lock_timeout`.
 - `sbx with` refuses a name another `sbx create`, `add` or `with` is making, and its teardown removes only the containers it created.
