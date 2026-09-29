@@ -256,9 +256,9 @@ type Service struct {
 	// has no ceiling at all, and the failure is the machine rather than the sandbox - the
 	// limit that binds first, long before any wake latency does.
 	//
-	// Not validated here. Docker and Kubernetes each reject their own malformed values
-	// with a better message than this could paraphrase, and unlike `egress` a typo here
-	// fails loudly at create rather than silently leaving something open.
+	// Checked at load only for a shape no provider accepts (checkLimits): "lots" used to pass
+	// `sbx validate` and fail at create, after the pull. Which spelling each provider takes -
+	// docker's "512m", Kubernetes' "512Mi" - is still left to that provider.
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
 
@@ -270,7 +270,8 @@ type Service struct {
 	// Empty uses the daemon's global --idle.
 	Idle string `json:"idle,omitempty"`
 
-	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
+	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none. Load
+	// refuses a value docker's --gpus parser would (checkLimits).
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.
 	GPUs string `json:"gpus,omitempty"`
@@ -665,6 +666,10 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		// literal by contract - sbx does not expand it - so a caller's `${X:-y}` is a value, not
 		// a mistake. Only a spec file promises `${NAME}` substitution.
 		if err := checkEnvSyntax(name, svc.Env); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+
+		if err := checkLimits(name, svc); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}

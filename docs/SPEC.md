@@ -220,7 +220,8 @@ sbx falls back to `./sandbox.json`.
 ### `cpu` and `memory`
 
 Docker gets `--cpus` and `--memory`. Kubernetes gets `resources.limits`. Set them when you run
-many sandboxes on one laptop.
+many sandboxes on one laptop. Load refuses a value no provider takes, like `"lots"` or `"-1"`, and
+a `gpus` value docker would refuse. Each provider still checks its own spelling at create.
 
 ### `cap_add`
 
