@@ -215,6 +215,12 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 ) error {
 	eps := p.Endpoints(sandbox, name, slot, start, svc.Ports)
 
+	// Read before Create, not after: whether this create made the service is what matters, and
+	// Running cannot say. A microVM's Create ends by putting the new VM to sleep, so a service
+	// made a moment ago lists as not running too - and it still needs its health wait and init.
+	prior, lookupErr := unitFor(ctx, p, sandbox, name)
+	asleepBefore := lookupErr == nil && !prior.Running
+
 	if err := p.Create(ctx, sandbox, slot, start, name, svc, eps, specDir, iso); err != nil {
 		return fmt.Errorf("service %q: %w", name, err)
 	}
@@ -222,6 +228,17 @@ func createOne(ctx context.Context, p provider.Provider, sandbox string, slot, s
 	ref, err := refFor(ctx, p, sandbox, name)
 	if err != nil {
 		return err
+	}
+
+	// A service that already existed and is asleep is left as it is. Its mount check, health wait
+	// and init all exec into it, and an exec into a stopped container fails - which the file check
+	// used to report as "your file mounted as a directory". They ran when it was created. Waking
+	// it here to repeat them would start a container behind the daemon's back, so this says how
+	// to re-run them instead.
+	if asleepBefore {
+		fmt.Printf("  %-12s asleep - left as it is; to re-run its checks and init: sbx wake %s, then this create again\n",
+			name, sandbox)
+		return nil
 	}
 
 	if err := checkMounts(ctx, p, ref, name, svc, specDir); err != nil {
@@ -318,18 +335,23 @@ func checkOneMount(ctx context.Context, p provider.Provider, ref, name, host, de
 }
 
 func refFor(ctx context.Context, p provider.Provider, sandbox, service string) (string, error) {
+	u, err := unitFor(ctx, p, sandbox, service)
+	return u.Ref, err
+}
+
+func unitFor(ctx context.Context, p provider.Provider, sandbox, service string) (provider.Unit, error) {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
-		return "", err
+		return provider.Unit{}, err
 	}
 
 	for _, u := range units {
 		if u.Service == service {
-			return u.Ref, nil
+			return u, nil
 		}
 	}
 
-	return "", fmt.Errorf("service %q was created but the provider does not list it", service)
+	return provider.Unit{}, fmt.Errorf("service %q was created but the provider does not list it", service)
 }
 
 // waitHealthy blocks until the workload says it is serving, or gives up loudly.
