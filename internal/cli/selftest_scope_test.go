@@ -48,10 +48,10 @@ func bound(port int) bool {
 // discovery adopted every sandbox on the engine: it raced the real daemon for their ports and
 // its reaper slept a live stack it had no business touching. It may adopt its own sandbox and
 // nothing else - not a stranger, and not another selftest whose name it is a prefix of.
+//
+// The logger is left alone here: swapping it back while the daemon's listener goroutines are still
+// logging is a data race under -race. Capture is TestSelftestDaemonLogStaysOffStdout's subject.
 func TestSelftestDaemonAdoptsOnlyItsOwnSandbox(t *testing.T) {
-	restore, _ := quietDaemonLog()
-	defer restore()
-
 	mine, theirs, sibling := freeTCPPort(t), freeTCPPort(t), freeTCPPort(t)
 	up := []provider.Endpoint{{Host: "127.0.0.1", Port: 1}}
 
