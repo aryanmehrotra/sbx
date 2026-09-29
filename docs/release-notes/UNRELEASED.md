@@ -74,6 +74,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx resume` refuses a running service instead of reporting "memory and processes intact".
 - `sbx fork` writes `sandbox.<fork>.json`, so forks of one snapshot no longer share a spec file, and forks of `build` services work.
 - `sbx selftest` no longer fronts or sleeps other sandboxes on the machine, and its log no longer interleaves with its output.
+- `sbx selftest` registers as an `--only` daemon for its own sandbox while it runs, so `sbx serve` leaves it alone instead of logging "address already in use".
 - A service's own `idle` window is honoured within a third of it, not at the daemon's 30 s cadence.
 - `sbx history` records sleeps from `sbx sleep` and wakes caused by `sbx exec` and `sbx cp`.
 - `sbx env` no longer needs `${VAR}` secrets set, and `sbx add` keeps clear of the spec's reserved ordinals when one is unset.
