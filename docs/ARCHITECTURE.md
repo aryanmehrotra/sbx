@@ -155,6 +155,12 @@ runs.
 - The guard exists because the activator once scaled a sandbox to zero 39 seconds into its own
   creation.
 - The proxy splices bytes and parses no protocol, so it works for anything over TCP.
+- The reaper decides on its clock and runs each stop on its own goroutine. A stop can take
+  docker's 10 s grace, and waiting for it would make every other service late.
+- Discovery marks a unit asleep only after asking the provider again under the wake lock. A
+  listing can predate a wake that finished after it.
+- An unscoped daemon leaves sandboxes a live `--only` daemon covers to that daemon, re-read
+  every `--refresh`.
 
 ### Kubernetes: the activator
 

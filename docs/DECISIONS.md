@@ -22,6 +22,8 @@ amended entry carries a **Status:** line under its heading.
 | [Ask the workload, not the platform](#ask-the-workload-not-the-platform) | Lifecycle and wake | v0.1.0 | current |
 | [A published port is not readiness](#a-published-port-is-not-readiness) | Lifecycle and wake | v0.1.0 | current |
 | [A sandbox cannot sleep until it has been seen serving](#a-sandbox-cannot-sleep-until-it-has-been-seen-serving) | Lifecycle and wake | v0.1.0 | current |
+| [Stops run off the reaper, and a listing that contradicts the daemon is asked again](#stops-run-off-the-reaper-and-a-listing-that-contradicts-the-daemon-is-asked-again) | Lifecycle and wake | unreleased | current |
+| [The machine's daemon leaves a live `--only` daemon's sandboxes to it](#the-machines-daemon-leaves-a-live---only-daemons-sandboxes-to-it) | Lifecycle and wake | unreleased | current |
 | [Slots are allocated, not hashed](#slots-are-allocated-not-hashed) | Addressing and slots | v0.1.0 | amended v0.10.0 |
 | [Optional services still reserve their ports](#optional-services-still-reserve-their-ports) | Addressing and slots | v0.1.0 | current |
 | [128 docker slots, bounded by the ephemeral range](#128-docker-slots-bounded-by-the-ephemeral-range) | Addressing and slots | v0.10.0 | current |
@@ -106,6 +108,35 @@ migrations looks exactly like one nobody has touched. Left ungated, that reading
 fast — scaling to zero **39 seconds into creation**, while create is still waiting on the first
 health check, is well within range. So a sandbox is not eligible to sleep until it has been seen
 serving at least once.
+
+### Stops run off the reaper, and a listing that contradicts the daemon is asked again
+
+The reaper decides on its own clock and runs each stop on a goroutine of its own. A stop is slow:
+docker waits a **10 s** grace for a workload that ignores SIGTERM, and a busybox `sh -c` loop does.
+Run inline, one such stop held the reaper and the discovery tick for those ten seconds, so a
+service with `"idle": "3s"` slept **14 s** after its last byte in three runs out of three. Measured
+after the change on the same machine: stopped **3.2-4.0 s** after the last byte, then the grace.
+A unit already on its way down is not stopped again, and it keeps its dependencies up until its
+stop returns, which is the top-down order the inline reaper got by blocking.
+
+Discovery lists every sandbox and revokes "awake" from any the provider reports stopped. The
+listing can be older than a wake that finished after it. A connection that arrived mid-stop woke
+the service in 175 ms, and 17 ms later the tick applied its stale "not running": the container ran
+while the daemon believed it asleep, and the reaper, which only looks at awake units, never slept
+it again. So a listing that contradicts the daemon is asked again under the wake lock, where no
+wake or stop can move the unit. The obvious alternative, trusting the lock alone, proves only that
+no wake is in flight now, not that none finished since the listing. Asking again costs a call
+only on a contradiction, never for the sleeping majority.
+
+### The machine's daemon leaves a live `--only` daemon's sandboxes to it
+
+An unscoped `sbx serve` adopted every sandbox, including those a running `--only` daemon covered,
+so two daemons raced to bind the same ports. The loser logged "address already in use" every
+`--refresh`, and which one fronted the sandbox was an accident of timing. So the unscoped daemon
+reads `~/.sbx/daemons` on every discovery pass and skips what a live scoped daemon covers. Every
+pass, not once at start, so a scoped daemon that stops hands its sandboxes back within one tick.
+Live means its pid exists, and a dead daemon's record is deleted when read, so a killed `--only`
+daemon hides nothing.
 
 
 ---
