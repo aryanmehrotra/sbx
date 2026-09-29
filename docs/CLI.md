@@ -49,7 +49,7 @@ names are the command, and its own flags stay its own.
 | `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything. (B) | `--tail N` (default 100), `-f` |
 | `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. Piped stdin reaches it; sbx exits with its status. (B) | `-t` attaches a terminal |
 | `sbx cp <sandbox> <service> <src> <dst>` | Copy a file in or out. Prefix the in-service path with `:`. (B) | none |
-| `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` is refused. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
+| `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` or `SBX_ISOLATION` is refused, naming which one asked. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
 | `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |

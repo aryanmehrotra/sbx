@@ -1134,9 +1134,17 @@ func runAdd(args []string) error {
 	// The sandbox's own tier unless one was asked for - by the flag or by SBX_ISOLATION, both of
 	// which say "I want this tier" - and a different one is refused. See cli.AddIsolation.
 	if units, err := p.List(context.Background(), sandbox); err == nil && len(units) > 0 {
-		explicit := wasSet(fs, "isolation") || os.Getenv("SBX_ISOLATION") != ""
+		// The flag wins when both are set, as it does for the value itself.
+		source := ""
 
-		if iso, err = cli.AddIsolation(p.Name(), units, iso, explicit); err != nil {
+		switch {
+		case wasSet(fs, "isolation"):
+			source = "--isolation"
+		case os.Getenv("SBX_ISOLATION") != "":
+			source = "SBX_ISOLATION"
+		}
+
+		if iso, err = cli.AddIsolation(p.Name(), units, iso, source); err != nil {
 			return err
 		}
 	}
