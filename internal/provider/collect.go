@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -236,29 +239,12 @@ func (d *dockerProvider) usage() (unitUsage, error) {
 
 	args := append([]string{"inspect", "--type", "container", "--format", format}, lines(ids)...)
 
-	out, err := d.docker(args...)
-	if err != nil {
-		// A container removed between the list and the inspect fails the whole inspect. Once
-		// more, from a fresh list; a second failure is a real one.
-		return d.usageOnce(format)
-	}
-
-	return parseUsage(out), nil
-}
-
-func (d *dockerProvider) usageOnce(format string) (unitUsage, error) {
-	ids, err := d.docker("ps", "-aq", "--no-trunc")
-	if err != nil {
-		return unitUsage{}, err
-	}
-
-	if len(lines(ids)) == 0 {
-		return unitUsage{}, nil
-	}
-
-	out, err := d.docker(append([]string{"inspect", "--type", "container", "--format", format}, lines(ids)...)...)
-	if err != nil {
-		return unitUsage{}, err
+	// A container removed between the list and the inspect fails the whole inspect, although
+	// every other container was read. Where other sandboxes come and go that is most runs, and
+	// retrying only moved the race. What was read is the answer: the vanished one uses nothing.
+	out, stderr, err := d.inspectSplit(args...)
+	if err != nil && !onlyVanished(stderr) {
+		return unitUsage{}, fmt.Errorf("docker inspect: %w: %s", err, strings.TrimSpace(stderr))
 	}
 
 	return parseUsage(out), nil
@@ -488,4 +474,35 @@ func markNoImage(arts []Artifact, meta map[string]imageMeta) {
 			a.NoImage = true
 		}
 	}
+}
+
+// onlyVanished reports whether an inspect failed only because containers it was asked about are
+// gone. A container removed since `docker ps` uses nothing, so its absence changes no answer;
+// anything else in stderr, or nothing at all, is a real failure.
+func onlyVanished(stderr string) bool {
+	ls := lines(stderr)
+	if len(ls) == 0 {
+		return false
+	}
+
+	for _, l := range ls {
+		if !strings.Contains(l, "No such container") {
+			return false
+		}
+	}
+
+	return true
+}
+
+// inspectSplit runs docker with stdout and stderr apart, so a partial answer can be used.
+func (d *dockerProvider) inspectSplit(args ...string) (stdout, stderr string, err error) {
+	cmd := exec.Command("docker", args...)
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+d.endpoint.String())
+
+	var o, e bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &o, &e
+
+	err = cmd.Run()
+
+	return o.String(), e.String(), err
 }

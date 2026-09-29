@@ -125,3 +125,23 @@ func TestMarkNoImage(t *testing.T) {
 		}
 	}
 }
+
+// On a machine where other sandboxes come and go, a container removed between `docker ps` and
+// `docker inspect` fails the inspect (exit 1) though every other container was read. That one
+// uses nothing any more, so its absence is not a reason to refuse: gc and --rm failed with
+// "could not tell whether a sandbox still uses" while other agents churned containers. Any
+// other failure still is.
+func TestOnlyVanished(t *testing.T) {
+	for stderr, want := range map[string]bool{
+		"Error: No such container: 5c7511dc3ea6\n":                   true,
+		"Error: No such container: a\nError: No such container: b\n": true,
+		"Error response from daemon: No such container: a\n":         true,
+		"":                                    false, // failed with no reason given
+		"Cannot connect to the Docker daemon": false,
+		"Error: No such container: a\ntemplate parsing error: map has no entry": false,
+	} {
+		if got := onlyVanished(stderr); got != want {
+			t.Errorf("onlyVanished(%q) = %v, want %v", stderr, got, want)
+		}
+	}
+}
