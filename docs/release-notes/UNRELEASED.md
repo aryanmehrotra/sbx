@@ -58,7 +58,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx create` and `sbx add` on a name a running `sbx with` owns are refused at once instead of joining a sandbox that command will remove.
 - `sbx install` exits non-zero when a name you gave cannot be installed, `--dry-run` included.
 - Restart `sbx serve` after upgrading, and do not run two sbx versions at once: an older daemon cannot read a new egress filter's activity or snapshot pause marks, and lock files now store the holder's start time, which an older sbx cannot read.
-- `sbx gc` also lists origin records (`~/.sbx/origins`) with no sandbox or snapshot of their name, and removes them with `--force`.
+- `sbx gc` also lists origin records (`~/.sbx/origins`) with no sandbox or snapshot of their name, and removes them with `--force` - only records written by the backend being asked. Records written before v0.16.0 name no backend: gc counts them in one line and never removes them; delete one by hand if you want it gone.
 - When nothing listens on a declared port, the readiness error names the ports the workload does listen on.
 - The daemon checks idle services every second, so a service sleeps within about a second of its `idle` window whatever its length; it used to check every third of the shortest window.
 
