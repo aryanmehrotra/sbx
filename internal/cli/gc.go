@@ -54,14 +54,14 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 
 	var (
 		sweep     []provider.Artifact
-		snapshots int // skipped because snapshots are opt-in
-		inUse     int // skipped because a sandbox still runs from or mounts it
-		tooNew    int // skipped because of --older-than
+		snapshots kinds // skipped because snapshots are opt-in
+		inUse     kinds // skipped because a sandbox still runs from or mounts it
+		tooNew    int   // skipped because of --older-than
 	)
 
 	for _, a := range items {
 		if a.Snapshot && !withSnapshots {
-			snapshots++
+			snapshots.add(a.Kind)
 			continue
 		}
 
@@ -70,7 +70,7 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 		// was wrong, and --force then deleted what docker let go and failed on the rest,
 		// leaving a snapshot with some of its services for the next fork to start from.
 		if a.InUse {
-			inUse++
+			inUse.add(a.Kind)
 			continue
 		}
 
@@ -94,13 +94,32 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 		return nil
 	}
 
+	var noImage []string
+
 	for _, a := range sweep {
 		what := a.Kind
 		if a.Snapshot {
 			what += ", snapshot"
 		}
 
-		fmt.Fprintf(w, "  %-40s %-18s %s\n", a.Name, what, age(a.Age))
+		if a.NoImage {
+			what += ", no image"
+			noImage = append(noImage, a.Name)
+		}
+
+		fmt.Fprintf(w, "  %-40s %-26s %s\n", a.Name, what, age(a.Age))
+	}
+
+	// Named, because a volume with no image reads as half of a snapshot that is still there, and
+	// it is not: `sbx snapshot` was killed mid-copy, before any image. The name is read up to the
+	// last dash, which is right unless the service name has a dash in it.
+	for _, v := range noImage {
+		name := strings.TrimPrefix(v, "sbx-snapvol-")
+		if i := strings.LastIndex(name, "-"); i > 0 {
+			name = name[:i]
+		}
+
+		fmt.Fprintf(w, "  %s has no image: an interrupted snapshot left it. sbx snapshot --rm %s removes it.\n", v, name)
 	}
 
 	if !force {
@@ -152,20 +171,15 @@ func age(d time.Duration) string {
 // did not apply. It used to be one lumped number - "24 more were skipped for being newer than 0s,
 // or for being snapshots" - where, with no --older-than, the first reason was impossible and the
 // reader could not tell how many of the 24 a --snapshots run would add.
-func skipped(snapshots, inUse, tooNew int, olderThan time.Duration) string {
+func skipped(snapshots, inUse kinds, tooNew int, olderThan time.Duration) string {
 	var parts []string
 
-	if snapshots > 0 {
-		noun := "snapshots"
-		if snapshots == 1 {
-			noun = "snapshot"
-		}
-
-		parts = append(parts, fmt.Sprintf("%d %s skipped (--snapshots includes them)", snapshots, noun))
+	if !snapshots.none() {
+		parts = append(parts, snapshots.String()+" of snapshots skipped (--snapshots includes them)")
 	}
 
-	if inUse > 0 {
-		parts = append(parts, fmt.Sprintf("%d in use by a sandbox skipped (sbx rm the sandbox that uses it first)", inUse))
+	if !inUse.none() {
+		parts = append(parts, inUse.String()+" in use by a sandbox skipped (sbx rm the sandbox that uses it first)")
 	}
 
 	if tooNew > 0 {
@@ -173,4 +187,39 @@ func skipped(snapshots, inUse, tooNew int, olderThan time.Duration) string {
 	}
 
 	return strings.Join(parts, ", ")
+}
+
+// kinds counts skipped artifacts by kind. The summary used to say "29 snapshots skipped" for
+// what were images and volumes together, so one pg+redis snapshot read as four snapshots.
+// Counting whole snapshots would mean resolving each artifact to its snapshot's name, which an
+// unlabelled image or a volume cannot always give; saying what was counted cannot be wrong.
+type kinds struct{ images, volumes int }
+
+func (k *kinds) add(kind string) {
+	if kind == "image" {
+		k.images++
+	} else {
+		k.volumes++
+	}
+}
+
+func (k kinds) none() bool { return k.images == 0 && k.volumes == 0 }
+
+func (k kinds) String() string {
+	count := func(n int, noun string) string {
+		if n == 1 {
+			return "1 " + noun
+		}
+
+		return fmt.Sprintf("%d %ss", n, noun)
+	}
+
+	switch {
+	case k.volumes == 0:
+		return count(k.images, "image")
+	case k.images == 0:
+		return count(k.volumes, "volume")
+	default:
+		return count(k.images, "image") + " and " + count(k.volumes, "volume")
+	}
 }

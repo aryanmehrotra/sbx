@@ -101,3 +101,47 @@ func TestParseUsage(t *testing.T) {
 		t.Errorf("users of bbb = %v", got)
 	}
 }
+
+// A snapshot volume no listed image claims is what `kill -9` of `sbx snapshot` mid-copy leaves.
+// gc names it, so the leftover reads as one instead of as half of some snapshot.
+func TestMarkNoImage(t *testing.T) {
+	arts := []Artifact{
+		{Kind: "image", Name: "sbx-snap-gold-db:latest", Snapshot: true},
+		{Kind: "image", Name: "sbx-snap-old-web:latest", Snapshot: true}, // unlabelled: pairs by name
+		{Kind: "volume", Name: "sbx-snapvol-gold-data", Snapshot: true},  // gold-db's, by label
+		{Kind: "volume", Name: "sbx-snapvol-old-web", Snapshot: true},
+		{Kind: "volume", Name: "sbx-snapvol-cut-db", Snapshot: true}, // no image at all
+		{Kind: "volume", Name: "sbx-gone-db-data"},                   // not a snapshot's
+	}
+
+	markNoImage(arts, map[string]imageMeta{
+		"sbx-snap-gold-db:latest": {ID: "a", Snapshot: "gold", Volume: "sbx-snapvol-gold-data"},
+		"sbx-snap-old-web:latest": {ID: "b"},
+	})
+
+	for _, a := range arts {
+		if want := a.Name == "sbx-snapvol-cut-db"; a.NoImage != want {
+			t.Errorf("%s: NoImage = %v, want %v", a.Name, a.NoImage, want)
+		}
+	}
+}
+
+// On a machine where other sandboxes come and go, a container removed between `docker ps` and
+// `docker inspect` fails the inspect (exit 1) though every other container was read. That one
+// uses nothing any more, so its absence is not a reason to refuse: gc and --rm failed with
+// "could not tell whether a sandbox still uses" while other agents churned containers. Any
+// other failure still is.
+func TestOnlyVanished(t *testing.T) {
+	for stderr, want := range map[string]bool{
+		"Error: No such container: 5c7511dc3ea6\n":                   true,
+		"Error: No such container: a\nError: No such container: b\n": true,
+		"Error response from daemon: No such container: a\n":         true,
+		"":                                    false, // failed with no reason given
+		"Cannot connect to the Docker daemon": false,
+		"Error: No such container: a\ntemplate parsing error: map has no entry": false,
+	} {
+		if got := onlyVanished(stderr); got != want {
+			t.Errorf("onlyVanished(%q) = %v, want %v", stderr, got, want)
+		}
+	}
+}

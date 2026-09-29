@@ -665,13 +665,28 @@ func RemoveSnapshot(ctx context.Context, p provider.Provider, name string) error
 			"snapshot whose name starts with %q. If it is this one's: docker rmi %s\n", img, name+"-", img)
 	}
 
-	if len(refs) == 0 {
+	// Volumes no image claims: a snapshot killed mid-copy (kill -9, a lost machine) made them and
+	// never reached its commits, so a lookup by image alone answered "no snapshot" for a name that
+	// still held its data.
+	leftover, unsure, err := leftoverVolumes(ctx, p, snap, name)
+	if err != nil {
+		return err
+	}
+
+	for _, v := range unsure {
+		fmt.Printf("  skipped %s: no image claims it, and it may belong to an interrupted snapshot "+
+			"whose name starts with %q. If it is this one's: docker volume rm %s\n", v, name+"-", v)
+	}
+
+	if len(refs) == 0 && len(leftover) == 0 {
 		return fmt.Errorf("no snapshot %q - sbx gc --snapshots lists the ones there are", name)
 	}
 
 	vols, _ := p.(provider.NamedVolumes)
 
-	var images, volumes []string
+	var images []string
+
+	volumes := slices.Clone(leftover)
 
 	for _, r := range refs {
 		images = append(images, r.Image)
@@ -845,4 +860,59 @@ func restoreVolumes(ctx context.Context, snap provider.Snapshotter,
 	}
 
 	return nil
+}
+
+// leftoverVolumes finds the snapshot volumes under name that no snapshot image claims - what an
+// interrupted snapshot leaves, since it copies every volume before it commits any image.
+//
+// Claimed means some image, of any snapshot, names the volume by label or by the conventional
+// sbx-snapvol-<x> beside sbx-snap-<x>. What is left is this snapshot's when the part after the
+// name has no dash; with a dash it may be an interrupted "<name>-<more>"'s instead, with nothing
+// left to say which, so it is returned as unsure and not removed - the same rule snapshotRefs
+// applies to unlabelled images.
+func leftoverVolumes(ctx context.Context, p provider.Provider, snap provider.Snapshotter, name string,
+) (ours, unsure []string, err error) {
+	lister, ok := p.(provider.VolumeLister)
+	if !ok {
+		return nil, nil, nil
+	}
+
+	candidates, err := lister.Volumes(ctx, "sbx-snapvol-"+name+"-")
+	if err != nil || len(candidates) == 0 {
+		return nil, nil, err
+	}
+
+	images, err := snap.Images(ctx, "sbx-snap-")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	labeler, _ := snap.(provider.ImageLabeler)
+	claimed := map[string]bool{}
+
+	for _, img := range images {
+		claimed["sbx-snapvol-"+strings.TrimSuffix(strings.TrimPrefix(img, "sbx-snap-"), ":latest")] = true
+
+		if labeler != nil {
+			if v, err := labeler.ImageLabel(ctx, img, labelSnapshotVolume); err == nil {
+				if v = strings.TrimSpace(v); v != "" && v != noVolume && v != "<no value>" {
+					claimed[v] = true
+				}
+			}
+		}
+	}
+
+	for _, v := range candidates {
+		if claimed[v] {
+			continue
+		}
+
+		if strings.Contains(strings.TrimPrefix(v, "sbx-snapvol-"+name+"-"), "-") {
+			unsure = append(unsure, v)
+		} else {
+			ours = append(ours, v)
+		}
+	}
+
+	return ours, unsure, nil
 }

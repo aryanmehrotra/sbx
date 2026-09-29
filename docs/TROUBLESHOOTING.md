@@ -309,6 +309,14 @@ rewrites its files in the background, such as ClickHouse merging parts, removed 
 and snapshot failed and removed what it wrote. Run `sbx sleep <sandbox>` first, then snapshot
 it. Fixed after v0.15.1: snapshot pauses running services for the copy and thaws them after.
 
+### `sbx snapshot --rm` says "no snapshot" but `sbx-snapvol-<name>-*` volumes are there
+
+A snapshot killed mid-copy (`kill -9`, a lost machine) copies volumes before it commits any
+image, so it leaves volumes with no image. Up to v0.15.1, `--rm` looked a snapshot up by its
+images and found none. Remove them with `docker volume rm sbx-snapvol-<name>-<service>`. Fixed
+after v0.15.1: `--rm` finds them by name, and `sbx gc --snapshots` lists them as "no image". A
+volume whose service part has a dash is left alone, because it may be another snapshot's.
+
 ### `sbx snapshot` fails: "the source is empty or does not exist"
 
 Up to v0.15.1 on docker, snapshot fails when any service in the sandbox has no `volume`. That

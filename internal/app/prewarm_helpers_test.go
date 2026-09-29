@@ -56,3 +56,13 @@ func TestPrewarmHelpersFollowTheSpecsEgress(t *testing.T) {
 		t.Error("a spec with no filtered service gets the filter's images")
 	}
 }
+
+// `sbx prewarm busybox:1.36.1 busybox:1.36.1` listed it twice and counted 2. Named images are
+// kept in the order given, each once.
+func TestNamedImagesAreEachPulledOnce(t *testing.T) {
+	got := uniqueImages([]string{"busybox:1.36.1", "redis:7", "busybox:1.36.1", "alpine:3"})
+
+	if want := []string{"busybox:1.36.1", "redis:7", "alpine:3"}; !slices.Equal(got, want) {
+		t.Errorf("uniqueImages = %v, want %v", got, want)
+	}
+}

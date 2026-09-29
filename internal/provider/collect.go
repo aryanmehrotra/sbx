@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -70,7 +73,13 @@ func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {
 		}
 	}
 
-	markInUse(out, d.imageMetas(names), u)
+	meta := d.imageMetas(names)
+	markInUse(out, meta, u)
+
+	// Only from a complete image listing: without one every snapshot volume would look imageless.
+	if !noImages {
+		markNoImage(out, meta)
+	}
 
 	if noImages {
 		for i := range out {
@@ -230,29 +239,12 @@ func (d *dockerProvider) usage() (unitUsage, error) {
 
 	args := append([]string{"inspect", "--type", "container", "--format", format}, lines(ids)...)
 
-	out, err := d.docker(args...)
-	if err != nil {
-		// A container removed between the list and the inspect fails the whole inspect. Once
-		// more, from a fresh list; a second failure is a real one.
-		return d.usageOnce(format)
-	}
-
-	return parseUsage(out), nil
-}
-
-func (d *dockerProvider) usageOnce(format string) (unitUsage, error) {
-	ids, err := d.docker("ps", "-aq", "--no-trunc")
-	if err != nil {
-		return unitUsage{}, err
-	}
-
-	if len(lines(ids)) == 0 {
-		return unitUsage{}, nil
-	}
-
-	out, err := d.docker(append([]string{"inspect", "--type", "container", "--format", format}, lines(ids)...)...)
-	if err != nil {
-		return unitUsage{}, err
+	// A container removed between the list and the inspect fails the whole inspect, although
+	// every other container was read. Where other sandboxes come and go that is most runs, and
+	// retrying only moved the race. What was read is the answer: the vanished one uses nothing.
+	out, stderr, err := d.inspectSplit(args...)
+	if err != nil && !onlyVanished(stderr) {
+		return unitUsage{}, fmt.Errorf("docker inspect: %w: %s", err, strings.TrimSpace(stderr))
 	}
 
 	return parseUsage(out), nil
@@ -436,4 +428,81 @@ func configLabels(config string) map[string]string {
 	}
 
 	return c.Labels
+}
+
+// Volumes implements VolumeLister. docker's name filter matches anywhere in the name, so the
+// prefix is applied here as well.
+func (d *dockerProvider) Volumes(_ context.Context, prefix string) ([]string, error) {
+	out, err := d.docker("volume", "ls", "--format", "{{.Name}}", "--filter", "name="+prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+
+	for _, n := range lines(out) {
+		if strings.HasPrefix(n, prefix) {
+			names = append(names, n)
+		}
+	}
+
+	return names, nil
+}
+
+var _ VolumeLister = (*dockerProvider)(nil)
+
+// markNoImage sets NoImage on each snapshot volume that no listed snapshot image claims, by label
+// or by the conventional sbx-snapvol-<x> beside sbx-snap-<x>.
+func markNoImage(arts []Artifact, meta map[string]imageMeta) {
+	claimed := map[string]bool{}
+
+	for _, a := range arts {
+		if a.Kind != "image" {
+			continue
+		}
+
+		claimed["sbx-snapvol-"+strings.TrimSuffix(strings.TrimPrefix(a.Name, "sbx-snap-"), ":latest")] = true
+
+		if v := meta[a.Name].Volume; v != "" && v != "none" {
+			claimed[v] = true
+		}
+	}
+
+	for i := range arts {
+		a := &arts[i]
+		if a.Kind == "volume" && a.Snapshot && strings.HasPrefix(a.Name, "sbx-snapvol-") && !claimed[a.Name] {
+			a.NoImage = true
+		}
+	}
+}
+
+// onlyVanished reports whether an inspect failed only because containers it was asked about are
+// gone. A container removed since `docker ps` uses nothing, so its absence changes no answer;
+// anything else in stderr, or nothing at all, is a real failure.
+func onlyVanished(stderr string) bool {
+	ls := lines(stderr)
+	if len(ls) == 0 {
+		return false
+	}
+
+	for _, l := range ls {
+		if !strings.Contains(l, "No such container") {
+			return false
+		}
+	}
+
+	return true
+}
+
+// inspectSplit runs docker with stdout and stderr apart, so a partial answer can be used.
+func (d *dockerProvider) inspectSplit(args ...string) (stdout, stderr string, err error) {
+	cmd := exec.Command("docker", args...)
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+d.endpoint.String())
+
+	var o, e bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &o, &e
+
+	err = cmd.Run()
+
+	return o.String(), e.String(), err
 }
