@@ -229,9 +229,54 @@ The service is running, so its checkpoint describes a past it has moved on from.
 ### A service with `egress_allow` cannot reach a host
 
 Only listed hosts and their subdomains are reachable, and only through `HTTP_PROXY`/`HTTPS_PROXY`.
-A client that ignores those variables has no route, and raw TCP (`git://`, SSH, a remote
-database) never passes. Add the host with `sbx egress <sandbox> --allow <host>`, make the client
-use the proxy, or switch to HTTPS ([SPEC.md](SPEC.md#egress-the-network-a-service-may-reach)).
+A client that ignores those variables has no route. Add the host with `sbx egress <sandbox>
+--allow <host>`, make the client use the proxy, or switch to HTTPS
+([SPEC.md](SPEC.md#egress-the-network-a-service-may-reach)).
+
+### The filter answers 403 "port N of HOST: the egress filter carries ports 80 and 443 only"
+
+**Symptom:** SSH, a database or any other port through the proxy gets 403, even under
+`"egress": "allow"`.
+
+**Cause:** the filter carries ports 80 and 443 only. After v0.15.0 that is enforced; before, a
+`CONNECT` to any port was tunnelled.
+
+**Fix:** add the port to `egress_allow` as `host:port` (`"github.com:22"`) and run `sbx create`
+again. `egress_policy` and `sbx egress` have no port field, so a sandbox that needs another port
+uses `egress_allow`.
+
+### 403 "the machine the egress filter runs on, or one behind it"
+
+**Symptom:** a request to `host.docker.internal`, `host.lima.internal`, `172.17.0.1` or another
+docker gateway gets 403 although a rule allows it.
+
+**Cause:** on colima and Docker Desktop those addresses are the VM and your Mac. No policy opens
+them ([SECURITY.md](../SECURITY.md#containers)).
+
+**Fix:** run what the sandbox needs as a service in the sandbox instead, and reach it by its
+service name.
+
+### Under `--isolation gvisor`, `bad address 'sbx-egress:20999'`
+
+**Symptom:** every request from a filtered service fails with `bad address 'sbx-egress:20999'`.
+
+**Cause:** gVisor does not use docker's DNS server on the sandbox's network, and services found
+the filter by DNS name.
+
+**Fix:** fixed after v0.15.0: the filter has a fixed address and services find it through
+`/etc/hosts`. Recreate the sandbox (`sbx rm`, then `sbx create`). Service names still do not
+resolve under gVisor.
+
+### An edit to `egress_allow` or `egress_policy` did not take effect
+
+**Symptom:** after editing the spec and running `sbx create` again, the old hosts are still
+reachable.
+
+**Cause:** up to v0.15.0 the filter was only created with a service's container, so an existing
+sandbox kept its old filter.
+
+**Fix:** fixed after v0.15.0: `sbx create` replaces the filter and says so. On an older version,
+`sbx rm` the sandbox and create it again.
 
 ### An allowed host answers 502 "lookup ...: operation was canceled"
 

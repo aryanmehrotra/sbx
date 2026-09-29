@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 	"time"
 )
@@ -282,7 +283,11 @@ func listError(ep dockerEndpoint, err error) error {
 }
 
 func (d *dockerProvider) slotOf(sandbox string) (int, bool) {
-	out, err := d.docker("ps", "-aq", "--filter", "label="+labelSandbox+"="+sandbox)
+	// Only containers that carry a slot: the egress filter is labelled with its sandbox too, and
+	// `docker ps` lists newest first, so a filter replaced by a re-run create came first, had no
+	// slot to read, and the sandbox was handed a new one - its services' ports then disagreed with
+	// the ones create printed.
+	out, err := d.docker("ps", "-aq", "--filter", "label="+labelSandbox+"="+sandbox, "--filter", "label="+labelSlot)
 	if err != nil || strings.TrimSpace(out) == "" {
 		return 0, false
 	}
@@ -313,6 +318,48 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	if svc.Egress == spec.EgressDeny || svc.Filtered() {
 		if err := d.ensureEgressNetwork(sandbox); err != nil {
 			return err
+		}
+	}
+
+	// The filter is ensured before asking whether the service exists, so that `sbx create` run
+	// again after an edit to egress_policy or egress_allow applies it. It used to be ensured only
+	// on the way to creating a service's container, so for a sandbox that already existed the old
+	// filter stayed, silently, still carrying hosts the spec no longer names.
+	var (
+		gw     string
+		filter *filterSetup // a container filter, where this machine cannot host one
+		hosted error        // why it cannot: the daemon's bind would fail
+	)
+
+	if svc.Filtered() {
+		var err error
+		if gw, err = d.egressGateway(sandbox); err != nil {
+			return err
+		}
+
+		// The filter is a listener the daemon opens ON that gateway, and the daemon runs
+		// wherever you are - which on a VM-backed docker is not where the bridge is. Colima
+		// and Docker Desktop put the bridge inside the Linux VM, so 172.x.0.1 exists there
+		// and not on this machine, and the bind fails with "can't assign requested address".
+		//
+		// Left to the daemon this is a warning every refresh tick and a sandbox that was
+		// reported created: the service comes up, reports healthy, and has no egress at all -
+		// not to the allowed hosts either. Fails closed, which is the safe direction and the
+		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
+		// refused up front for the same reason, and this is the same shape.
+		// Where the daemon can hold that address it does, and the filter is a listener in the
+		// daemon - fewer moving parts, and it already knows which units are awake. Where it
+		// cannot, the same filter runs as a container on the bridge instead, which is on the
+		// right side of the VM boundary by construction. Either way the workload has no route
+		// out of its own, so the proxy is the only door.
+		if hosted = bindable(gw); hosted != nil {
+			fs, err := d.ensureFilterContainer(sandbox, svc.DeclaredPolicy(),
+				egress.PortGrantsFromAllowList(svc.EgressAllow))
+			if err != nil {
+				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", hosted, err)
+			}
+
+			filter = &fs
 		}
 	}
 
@@ -413,35 +460,15 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	if svc.Filtered() {
 		declared := svc.DeclaredPolicy()
 
-		gw, err := d.egressGateway(sandbox)
-		if err != nil {
-			return err
-		}
-
-		// The filter is a listener the daemon opens ON that gateway, and the daemon runs
-		// wherever you are - which on a VM-backed docker is not where the bridge is. Colima
-		// and Docker Desktop put the bridge inside the Linux VM, so 172.x.0.1 exists there
-		// and not on this machine, and the bind fails with "can't assign requested address".
-		//
-		// Left to the daemon this is a warning every refresh tick and a sandbox that was
-		// reported created: the service comes up, reports healthy, and has no egress at all -
-		// not to the allowed hosts either. Fails closed, which is the safe direction and the
-		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
-		// refused up front for the same reason, and this is the same shape.
-		// Where the daemon can hold that address it does, and the filter is a listener in the
-		// daemon - fewer moving parts, and it already knows which units are awake. Where it
-		// cannot, the same filter runs as a container on the bridge instead, which is on the
-		// right side of the VM boundary by construction. Either way the workload has no route
-		// out of its own, so the proxy is the only door.
 		proxyHost, stat := gw, ""
 
-		if err := bindable(gw); err != nil {
-			addr, cerr := d.ensureFilterContainer(sandbox, declared)
-			if cerr != nil {
-				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", err, cerr)
-			}
+		if filter != nil {
+			proxyHost, stat = filterAlias, filter.stat
 
-			proxyHost, stat = filterAlias, addr
+			// The alias by /etc/hosts as well as by docker's DNS: gVisor's netstack does not
+			// use the embedded DNS server, so under --isolation gvisor the alias alone never
+			// resolved. The address is fixed (filterIP), so a replaced filter keeps it.
+			args = append(args, "--add-host", filterAlias+":"+filter.ip)
 		}
 
 		proxy := "http://" + net.JoinHostPort(proxyHost, strconv.Itoa(EgressProxyPort))

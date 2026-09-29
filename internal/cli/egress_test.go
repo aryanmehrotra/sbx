@@ -65,3 +65,41 @@ func TestEgressKeepsTheOrderTheRulesWereTyped(t *testing.T) {
 		t.Errorf("the table does not show the rule: %s", out.String())
 	}
 }
+
+// `sbx egress <sb> --remove <target>` for a target with no rule exited 0 and printed the policy
+// unchanged, so a typo in a lock-down read as success. It is an error naming the rules there are,
+// and nothing is changed - not even the other targets on the same command line.
+func TestEgressRemoveOfATargetWithNoRuleIsAnError(t *testing.T) {
+	start := egress.Policy{DefaultAction: egress.ActionAllow, Egress: []egress.Rule{
+		{Action: "deny", Target: "10.0.0.0/8"}, {Action: "deny", Target: "*.pastebin.com"}}}
+	f := egress.NewPolicy(start)
+	srv := httptest.NewServer(&egress.Control{Filter: f, Token: "k"})
+
+	defer srv.Close()
+
+	p := oneFilter{f: provider.EgressFilter{Sandbox: "s", Services: []string{"a"}, Declared: start,
+		Control: strings.TrimPrefix(srv.URL, "http://"), Token: "k"}}
+	c := daemon.NewEgressControl(p, t.TempDir())
+
+	var out bytes.Buffer
+
+	err := egressTo(context.Background(), &out, c, "s", "", EgressChange{Remove: []string{"10.0.0.0/8", "pastebin.com"}})
+	if err == nil {
+		t.Fatal("removing a target with no rule succeeded")
+	}
+
+	for _, want := range []string{`"pastebin.com"`, "10.0.0.0/8", "*.pastebin.com"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not name %s: %v", want, err)
+		}
+	}
+
+	if len(f.Policy().Egress) != 2 {
+		t.Errorf("a refused --remove still changed the policy: %+v", f.Policy())
+	}
+
+	// Case and surrounding space are not a different target.
+	if err := egressTo(context.Background(), &out, c, "s", "", EgressChange{Remove: []string{" *.PasteBin.com "}}); err != nil {
+		t.Fatalf("removing a present target: %v", err)
+	}
+}

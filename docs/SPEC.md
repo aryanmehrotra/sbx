@@ -47,7 +47,7 @@ For tasks built on these fields (seeding, CI, agents, microVMs), see [GUIDES.md]
 | `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep. Checked every third of the shortest window in force (1 s to 30 s): a service sleeps at most one check after its window |
 | `on_idle` | string | `"stop"` | `"freeze"` pauses instead of stopping |
 | `egress` | string | open | `"deny"` or `"allow"` (open, through the filter) |
-| `egress_allow` | string list | | Reach only these hosts and their subdomains |
+| `egress_allow` | string list | | Reach only these hosts and their subdomains, on ports 80 and 443. `host:port` adds that port |
 | `egress_policy` | object | | OpenSandbox network policy. Changeable live with `sbx egress` |
 | `cpu` | string | unlimited | Cores: `"0.5"`, `"2"` |
 | `memory` | string | unlimited | Cap: `"512m"`, `"2g"` |
@@ -273,13 +273,20 @@ Kubernetes refuses all four rather than run a policy nothing enforces. Firecrack
 four.
 
 `"deny"` turns off routing out of the sandbox's own network. Ports are still published, so waking
-works, and DNS still resolves.
+works, and DNS still resolves. Under `--isolation gvisor` it does not: gVisor does not use
+docker's DNS server on a sandbox's network, so neither internet names nor service names resolve.
+Use addresses there.
 
 `egress_allow` sends clients through a filtering proxy via `HTTP_PROXY` and `HTTPS_PROXY`. A
-client that ignores them has no route out. Each entry matches the host and its subdomains. On
-native Linux Docker the filter runs inside `sbx serve`. On colima, Docker Desktop or rootless
-Docker it runs as a small container on the sandbox's network. Calls out keep every allow-listed
-service in the sandbox awake, including during a long streaming response.
+client that ignores them has no route out. Each entry matches the host and its subdomains, on
+ports 80 and 443. Write an entry as `host:port` to add that port for that host:
+`"github.com:22"` lets a client tunnel SSH to github.com through the proxy. A port that is not a
+number from 1 to 65535 is refused, and so is any port under `--provider firecracker`.
+
+On native Linux Docker the filter runs inside `sbx serve`. On colima, Docker Desktop or rootless
+Docker it runs as a small container on the sandbox's network, at a fixed address that services
+find through `/etc/hosts`, so it works under `--isolation gvisor` too. Calls out keep every
+allow-listed service in the sandbox awake, including during a long streaming response.
 
 `egress_policy` uses the `NetworkPolicy` format of OpenSandbox release-1.1.0:
 
@@ -302,13 +309,24 @@ service in the sandbox awake, including during a long streaming response.
 
 `egress: "allow"` equals `{"defaultAction":"allow"}`. `egress_allow: ["openai.com"]` equals deny
 by default plus `openai.com` and `*.openai.com`. Services in one sandbox share one filter, so they
-must declare the same policy.
+must declare the same policy. Allow-lists are merged: every service gets the union of them.
 
 Limits:
 
-- HTTP and HTTPS only. A default-allow service has no raw TCP out (`git://`, SSH, a remote database).
+- Ports 80 and 443 only, for plain HTTP and for `CONNECT`. Any other port gets 403 naming the
+  port, including under a default of allow, unless an `egress_allow` entry names it as
+  `host:port`. `egress_policy` has no port field.
 - Loopback and link-local addresses, including cloud metadata at `169.254.0.0/16`, are refused unless a rule names them.
+- On colima and Docker Desktop, the machine behind the filter is refused whatever a rule says: every
+  docker network's gateway, the default bridge, and what `host.docker.internal`,
+  `host.lima.internal` and `gateway.docker.internal` resolve to (the whole `/24`). A service
+  cannot reach the VM or your Mac through the proxy.
 - Traffic between services in the same sandbox is not filtered.
+
+Run `sbx create` again after editing `egress_policy` or `egress_allow` and the filter is replaced
+with the new declaration. Live changes made with `sbx egress` are dropped then, because they were
+changes to the old declaration. Other edits to a service that already exists still need
+`sbx rm` first.
 
 ### Change a running sandbox's policy
 
@@ -322,7 +340,8 @@ sbx egress agent-1 --json                              # OpenSandbox's policy st
 ```
 
 Nothing restarts. New rules go ahead of existing ones, so a deny can carve into a wildcard allow.
-Open connections are not cut. The live policy is saved in `~/.sbx/egress/<sandbox>.json`,
+`--remove` names a target exactly as the policy lists it, and one with no rule is an error that
+lists the rules there are. Open connections are not cut. The live policy is saved in `~/.sbx/egress/<sandbox>.json`,
 survives restarts, and is deleted by `sbx rm`. Only a sandbox created with `egress_policy`,
 `egress_allow` or `egress: "allow"` has a filter to change.
 

@@ -40,6 +40,14 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
 - `egress: "deny"` puts the service on a bridge with IP masquerade disabled. It is not a
   filtering firewall, and docker enforces it, not sbx. On kubernetes it is refused, because a
   NetworkPolicy is enforced only by some CNIs.
+- A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out only through
+  sbx's egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. Where
+  the filter is a container (colima, Docker Desktop, rootless or remote docker) it refuses, whatever
+  the policy says, every docker network's gateway, the default bridge's subnet, its own routes'
+  gateways, and the `/24` around what `host.docker.internal`, `host.lima.internal` and
+  `gateway.docker.internal` resolve to. That closes the VM and, through it, your Mac's loopback.
+  A docker network created after the filter started is not in that list until the filter is
+  recreated, so the VM's ports 80 and 443 on that network's gateway stay reachable meanwhile.
 - A spec is executable: it names images, commands (`health`, `init`) and host files to mount.
   Treat someone else's `sandbox.json` like their Makefile.
 - `${VAR}` keeps a secret out of a committed spec, but the value still reaches the container's

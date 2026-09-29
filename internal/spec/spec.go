@@ -410,6 +410,12 @@ func (s Service) validate(name string) error {
 			if strings.TrimSpace(h) == "" {
 				return fmt.Errorf("service %q: egress_allow has a blank host", name)
 			}
+
+			// A port on an entry is a grant (ports 80 and 443 need none), so one that is not a
+			// port is refused here rather than becoming a grant that never matches.
+			if err := egress.CheckAllowEntry(h); err != nil {
+				return fmt.Errorf("service %q: %w", name, err)
+			}
 		}
 	}
 

@@ -6,6 +6,7 @@ package main
 // covers, not a second implementation of the same idea that can drift from it.
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -20,6 +21,8 @@ func main() {
 	var (
 		allow  = flag.String("allow", "", "comma-separated hosts this sandbox may reach (egress_allow)")
 		policy = flag.String("policy", "", "the network policy to start with, as JSON; wins over -allow")
+		ports  = flag.String("ports", "", "comma-separated host:port grants beyond 80 and 443 (egress_allow entries with a port)")
+		refuse = flag.String("refuse", "", "comma-separated addresses and CIDRs never dialled, whatever the policy: the docker engine's gateways and the default bridge")
 		token  = flag.String("token", os.Getenv("SBX_EGRESS_TOKEN"), "secret the control endpoint requires")
 		state  = flag.String("state", "/var/lib/sbx-egress/policy.json", "where a live policy is kept across restarts")
 		listen = flag.String("listen", ":20999", "proxy address")
@@ -29,6 +32,16 @@ func main() {
 	flag.Parse()
 
 	start := New(strings.Split(*allow, ",")).Policy()
+
+	// Grants are the declaration's, not the live policy's: they are fixed for the life of this
+	// container, and a changed set replaces it (the provider compares them by label).
+	grants, err := ParsePortGrants(*ports)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "-ports:", err)
+		os.Exit(2)
+	}
+
+	grants = append(PortGrantsFromAllowList(strings.Split(*allow, ",")), grants...)
 
 	if *policy != "" {
 		p, err := ParsePolicy([]byte(*policy))
@@ -57,6 +70,28 @@ func main() {
 	last.Store(time.Now().UnixNano())
 
 	f := NewPolicy(start)
+	f.SetPorts(grants)
+
+	// The machine this container runs on, and the one behind it, are never a destination: see
+	// Doors. Read once now so the first request is judged against it, then again every half
+	// minute, because a name like host.docker.internal can move with the VM's network.
+	static, err := ParsePrefixes(*refuse)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "-refuse:", err)
+		os.Exit(2)
+	}
+
+	doors := &Doors{Static: static}
+	doors.Refresh(context.Background())
+	f.Refuse = doors.Refuse
+
+	go func() {
+		for range time.Tick(30 * time.Second) {
+			doors.Refresh(context.Background())
+		}
+	}()
+
+	fmt.Fprintf(os.Stderr, "refusing, whatever the policy: %v\n", doors.Prefixes())
 	f.OnActivity = func() { last.Store(time.Now().UnixNano()) }
 
 	ctl := &Control{Filter: f, Token: *token, Persist: func(p Policy) error {

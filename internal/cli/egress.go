@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/aryanmehrotra/sbx/internal/daemon"
@@ -46,6 +47,10 @@ func egressTo(ctx context.Context, w io.Writer, c *daemon.EgressControl, sandbox
 	}
 
 	if len(ch.Remove) > 0 {
+		if err := removable(sandbox, st, ch.Remove); err != nil {
+			return err
+		}
+
 		if st, err = c.DeleteRules(ctx, sandbox, service, ch.Remove); err != nil {
 			return err
 		}
@@ -98,4 +103,48 @@ func printEgress(w io.Writer, sandbox string, st egress.Status) {
 	if st.Reason != "" {
 		fmt.Fprintf(w, "  %s\n", st.Reason)
 	}
+}
+
+// removable refuses a --remove naming a target the policy in force has no rule for.
+//
+// The OpenSandbox DELETE ignores such a target, as upstream's does, and the API keeps that. A
+// person typing `--remove` is different: a misspelt target left the rule in place and exited 0,
+// so the lock-down they meant to undo - or the hole they meant to close - read as done. Checked
+// for every target before any is removed, so a refused command changes nothing.
+func removable(sandbox string, st egress.Status, targets []string) error {
+	var rules []egress.Rule
+	if st.Policy != nil {
+		rules = st.Policy.Egress
+	}
+
+	have := map[string]bool{}
+	for _, r := range rules {
+		have[strings.ToLower(r.Target)] = true
+	}
+
+	var missing []string
+
+	for _, t := range targets {
+		if !have[strings.ToLower(strings.TrimSpace(t))] {
+			missing = append(missing, fmt.Sprintf("%q", t))
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	if len(rules) == 0 {
+		return fmt.Errorf("the egress policy of %s has no rule for %s: it has no rules at all, only "+
+			"its default. Nothing was removed", sandbox, strings.Join(missing, ", "))
+	}
+
+	list := make([]string, len(rules))
+	for i, r := range rules {
+		list[i] = r.Action + " " + r.Target
+	}
+
+	return fmt.Errorf("the egress policy of %s has no rule for %s, so nothing was removed. Its rules "+
+		"are: %s. Name a target exactly as `sbx egress %s` lists it", sandbox,
+		strings.Join(missing, ", "), strings.Join(list, ", "), sandbox)
 }
