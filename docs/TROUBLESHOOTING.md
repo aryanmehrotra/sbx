@@ -402,8 +402,8 @@ host: allow the host first.
 
 ### 403 "the machine the egress filter runs on, or one behind it"
 
-**Symptom:** a request to `host.docker.internal`, `host.lima.internal`, `172.17.0.1` or another
-docker gateway gets 403 although a rule allows it, on any port.
+**Symptom:** a request to `host.docker.internal`, `host.lima.internal`, `172.17.0.1`, another
+docker gateway, or the filter itself (`sbx-egress`) gets 403 although a rule allows it, on any port.
 
 **Cause:** on colima and Docker Desktop those addresses are the VM and your Mac. No policy opens
 them ([SECURITY.md](../SECURITY.md#containers)).

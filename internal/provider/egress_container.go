@@ -265,6 +265,7 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 		"-policy", list,
 		"-ports", grants,
 		"-refuse", doors,
+		"-names", name,
 		"-listen", ":"+strconv.Itoa(EgressProxyPort),
 		"-stat", ":"+strconv.Itoa(filterStatPort),
 	)

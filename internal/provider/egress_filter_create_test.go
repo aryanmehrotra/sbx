@@ -185,7 +185,7 @@ func TestANewFilterContainerIsAddressedAndClosedOffTheEngine(t *testing.T) {
 		t.Fatalf("no filter container:\n%s", strings.Join(log, "\n"))
 	}
 
-	for _, want := range []string{"--ip 172.30.255.254", "-refuse 172.17.0.1,172.17.0.0/16,172.30.0.1,192.0.2.1"} {
+	for _, want := range []string{"--ip 172.30.255.254", "-refuse 172.17.0.1,172.17.0.0/16,172.30.0.1,192.0.2.1", "-names sbx-egressfilter-fx"} {
 		if !strings.Contains(filter, want) {
 			t.Errorf("the filter was started without %q:\n%s", want, filter)
 		}
