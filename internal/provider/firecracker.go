@@ -1670,7 +1670,16 @@ func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	// Asleep is nothing to ask, not a failing check: Create leaves every VM asleep, and a caller
 	// that probes right after it (the CLI's post-create wait) must not spin on a VM nobody woke.
 	// The wake path probes after Start, when the VM is running.
-	if state, err := p.running(ctx, ref); err != nil || state != fc.StateRunning {
+	//
+	// But a VMM that is alive and did not answer its API is not asleep: running says so with an
+	// error, and that is a check that did not pass, not nothing to check. Read as undeclared, the
+	// CLI's wait returned "serving" and the daemon marked the wake awake for a VM it could not ask.
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return false, true
+	}
+
+	if state != fc.StateRunning {
 		return false, false
 	}
 

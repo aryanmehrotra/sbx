@@ -192,10 +192,14 @@ func (r *Remote) Stop(ctx context.Context, ref string) error {
 
 type health struct{ Serving, Declared bool }
 
+// Healthy and Probe answer (false, true) when the call into the helper VM fails. declared=false
+// means "no health check" and every caller reads it as nothing to wait for - the CLI's wait
+// returns, the daemon marks the unit awake - so an ssh hop that timed out used to be reported as
+// serving. A question nobody answered is a check that did not pass.
 func (r *Remote) Healthy(ctx context.Context, ref string) (bool, bool) {
 	var h health
 	if r.call(ctx, "healthy", request{Ref: ref}, nil, &h) != nil {
-		return false, false
+		return false, true
 	}
 
 	return h.Serving, h.Declared
@@ -204,7 +208,7 @@ func (r *Remote) Healthy(ctx context.Context, ref string) (bool, bool) {
 func (r *Remote) Probe(ctx context.Context, ref string) (bool, bool) {
 	var h health
 	if r.call(ctx, "probe", request{Ref: ref}, nil, &h) != nil {
-		return false, false
+		return false, true // see Healthy
 	}
 
 	return h.Serving, h.Declared
