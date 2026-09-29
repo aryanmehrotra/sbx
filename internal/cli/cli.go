@@ -77,6 +77,8 @@ type createOpts struct {
 // create that waited its own fixed two minutes inside that budget made `sbx with --timeout 20s`
 // wait 2m against a service that never answered.
 func createWithin(ctx context.Context, p provider.Provider, path, sandbox string, withOptional bool, iso provider.Isolation, o createOpts) error {
+	began := time.Now() // what create's final check calls "started during this create"
+
 	healthTimeout, placed := o.healthTimeout, o.placed
 
 	if err := ValidateName("sandbox", sandbox); err != nil {
@@ -247,7 +249,7 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 
 	// Healthy inside the container is not serving from outside it: ask what sbx ready asks before
 	// saying "ready". Thirty seconds covers a process still binding its port after its health check.
-	if err := checkCreatedWorkloads(ctx, p, sandbox, done, time.Now().Add(createServeWait)); err != nil {
+	if err := checkCreatedWorkloads(ctx, p, sandbox, done, began, time.Now().Add(createServeWait)); err != nil {
 		return &notServingError{err: err, sandbox: sandbox}
 	}
 
@@ -389,6 +391,8 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 		return fmt.Errorf("service %q: %w%s", name, err, discardFailedRun(ctx, p, sandbox, name, prior, existed))
 	}
 
+	made := time.Now()
+
 	if onCreated != nil {
 		onCreated()
 	}
@@ -433,6 +437,10 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 		if _, err := p.Exec(ctx, ref, []string{"sh", "-c", step}); err != nil {
 			return fmt.Errorf("service %q: init step failed: %w", name, err)
 		}
+	}
+
+	if err := exitedAfterCreate(ctx, p, sandbox, name, made); err != nil {
+		return err
 	}
 
 	fmt.Printf("  %-12s ✓ %s\n", name, joinEndpoints(eps))

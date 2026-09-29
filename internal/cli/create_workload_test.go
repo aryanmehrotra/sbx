@@ -68,7 +68,7 @@ func TestCreateRefusesToCallAnUnreachableWorkloadReady(t *testing.T) {
 			Client: []provider.Endpoint{{Host: "127.0.0.1", Port: 1}}},
 	}}
 
-	err := checkCreatedWorkloads(context.Background(), p, "x", []string{"bad"}, time.Now().Add(500*time.Millisecond))
+	err := checkCreatedWorkloads(context.Background(), p, "x", []string{"bad"}, time.Time{}, time.Now().Add(500*time.Millisecond))
 	if err == nil || !strings.Contains(err.Error(), "bad") {
 		t.Fatalf("a workload that closes every connection got %v, want it named as not serving", err)
 	}
@@ -85,7 +85,7 @@ func TestCreateDoesNotDialAnAsleepOrUntouchedService(t *testing.T) {
 			Client: []provider.Endpoint{{Host: "127.0.0.1", Port: 1}}},
 	}}
 
-	if err := checkCreatedWorkloads(context.Background(), p, "x", []string{"vm"}, time.Now().Add(300*time.Millisecond)); err != nil {
+	if err := checkCreatedWorkloads(context.Background(), p, "x", []string{"vm"}, time.Time{}, time.Now().Add(300*time.Millisecond)); err != nil {
 		t.Fatalf("an asleep service and one this create did not make were checked: %v", err)
 	}
 }

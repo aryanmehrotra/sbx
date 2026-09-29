@@ -474,7 +474,14 @@ func judgeWorkload(ctx context.Context, d workloadDial) string {
 // Only services this create made, and only those running now: a microVM's create ends by putting
 // it to sleep, and its port has nothing behind it until a connection wakes it, which is not a
 // failure. Asking is cheap for the rest, so this does not wait for anything to wake.
-func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox string, made []string, deadline time.Time) error {
+//
+// Not running is a failure in one case: the runtime records that it started during this create
+// (at or after began) and has exited since. That container outlived its tick and died before this
+// check, which skipped it and printed "ready" for a sandbox whose service was gone. One asleep
+// before this create - left as it is on a re-run - started earlier, and still passes.
+func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox string, made []string,
+	began, deadline time.Time,
+) error {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return err
@@ -485,13 +492,35 @@ func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox str
 		want[s] = true
 	}
 
-	var check []provider.Unit
+	var (
+		check  []provider.Unit
+		exited []string
+	)
+
+	er, _ := p.(provider.ExitReporter)
 
 	for _, u := range units {
-		if want[u.Service] && u.Running {
+		switch {
+		case !want[u.Service]:
+		case u.Running:
 			check = append(check, u)
+		case er != nil:
+			st, err := er.ExitOf(ctx, u.Ref)
+			if err == nil && st.Status != "running" && !st.StartedAt.IsZero() && !st.StartedAt.Before(began) {
+				exited = append(exited, fmt.Sprintf("\n     %s: its container is not running: %s\n       see why: sbx logs %s %s",
+					u.Service, st, sandbox, u.Service))
+			}
 		}
 	}
 
-	return waitWorkloads(ctx, sandbox, workloadDials(p, check), deadline)
+	err = waitWorkloads(ctx, sandbox, workloadDials(p, check), deadline)
+
+	switch {
+	case len(exited) == 0:
+		return err
+	case err != nil:
+		return fmt.Errorf("%w%s", err, strings.Join(exited, ""))
+	default:
+		return fmt.Errorf("sandbox %q is not serving:%s", sandbox, strings.Join(exited, ""))
+	}
 }

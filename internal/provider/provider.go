@@ -1007,6 +1007,10 @@ type ExitState struct {
 	ExitCode  int
 	OOMKilled bool
 	Error     string // the runtime's own error, e.g. an OCI start failure
+
+	// StartedAt is when the runtime last started it; zero where it does not say. Create reads it to
+	// tell a container that exited on its own during the create from one that was already asleep.
+	StartedAt time.Time
 }
 
 // String renders the state as one clause for a failure message.

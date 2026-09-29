@@ -221,7 +221,7 @@ func TestCreatePassesAListenerThatAcceptsAndCloses(t *testing.T) {
 	p := serving(t)
 	p.upstream = listening(t)
 
-	if err := checkCreatedWorkloads(context.Background(), p, "x", []string{"redis"}, time.Now().Add(time.Second)); err != nil {
+	if err := checkCreatedWorkloads(context.Background(), p, "x", []string{"redis"}, time.Time{}, time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("create refused a listener that accepts and closes: %v", err)
 	}
 }
