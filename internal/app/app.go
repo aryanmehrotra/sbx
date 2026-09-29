@@ -32,7 +32,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -923,15 +922,7 @@ func dispatch(cmd string, args []string) error {
 				return err
 			}
 
-			images = images[:0]
-
-			for _, svc := range s.Services {
-				if svc.Image != "" {
-					images = append(images, svc.Image)
-				}
-			}
-
-			sort.Strings(images)
+			images = specImages(s)
 
 			helpers = copiesVolumes(s)
 		}

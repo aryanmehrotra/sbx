@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -193,4 +194,20 @@ func copiesVolumes(s *spec.Spec) bool {
 	}
 
 	return false
+}
+
+// specImages is the images s pulls, sorted and each once: two services on one image are one
+// pull, and listing it twice made the "already present" count read as two.
+func specImages(s *spec.Spec) []string {
+	var images []string
+
+	for _, svc := range s.Services {
+		if svc.Image != "" {
+			images = append(images, svc.Image)
+		}
+	}
+
+	sort.Strings(images)
+
+	return slices.Compact(images)
 }
