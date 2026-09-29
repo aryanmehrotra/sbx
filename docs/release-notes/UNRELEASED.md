@@ -24,13 +24,6 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Added
 
-- New guides: a ten-minute quickstart (`docs/QUICKSTART.md`), a full CLI reference (`docs/CLI.md`: every command, `sbx serve` flag and `SBX_*` variable), and one how-to page, `docs/GUIDES.md`.
-- Docs: a self-hosting guide (`docs/SELF-HOSTING.md`) and an FAQ (`docs/FAQ.md`).
-
 ## Changed
 
-- The README, comparison, roadmap and user guides are rewritten against v0.14. The use-case and AI-agent guides merge into `docs/GUIDES.md`; the README is a short landing page, and platform status and terms move to `docs/ARCHITECTURE.md`.
-
 ## Fixed
-
-- `sbx serve --help` lists `firecracker` among the `--provider` values.

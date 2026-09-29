@@ -151,6 +151,20 @@ A client that ignores those variables has no route, and raw TCP (`git://`, SSH, 
 database) never passes. Add the host with `sbx egress <sandbox> --allow <host>`, make the client
 use the proxy, or switch to HTTPS ([SPEC.md](SPEC.md#egress-the-network-a-service-may-reach)).
 
+### An allowed host answers 502 "lookup ...: operation was canceled"
+
+**Symptom:** a host that `sbx egress <sandbox>` lists as `allow` fails with `502 Bad Gateway`
+from busybox `wget` (every alpine image), while a denied host correctly gets 403.
+
+**Cause:** that `wget` shuts its write side as soon as its request is sent. Go's HTTP server
+cancels a request's context when it sees that EOF, and the filter resolved and dialled on that
+context, so the lookup was cancelled before it answered.
+
+**Fix:** fixed after v0.15.0 - the filter now resolves and dials on a context detached from the
+client's read side, bounded at 30 s. On an older version, use a client that keeps its connection
+open (`curl`, or any language's HTTP library). The filter image is rebuilt from the new source
+on the next `sbx create` that needs it; an existing sandbox keeps its old filter until recreated.
+
 ### `sbx egress` says there is no filter to change
 
 Only a sandbox created with `egress_policy`, `egress_allow` or `"egress": "allow"` has a filter.
