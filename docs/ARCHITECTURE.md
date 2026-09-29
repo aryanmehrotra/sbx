@@ -122,6 +122,7 @@ from the caller or bounded by the daemon:
 | API `resume` | the caller asked; it releases the hold and thaws | the daemon |
 | API `DELETE`, the expiry reaper | the sandbox's `timeout` is the caller's; removal is not a start | nobody: it is gone |
 | API `POST .../snapshots` | `docker commit` pauses a running container for the copy, then thaws it | the daemon; a stopped one is committed without starting |
+| `sbx snapshot` | pauses every running service for the volume copies and the commits, then thaws them; a file under `~/.sbx/snapshot-paused/` tells the daemon the pause is not a freeze | the daemon; an asleep or frozen service is left as it was |
 | warm-pool members | created running before any caller, and pinned: the reaper skips them until claimed | the daemon, from the claim; the idle clock starts then |
 | `create` (CLI or API) | a new container is started once, to be made | the daemon, from its first idle check |
 | `sbx wake` / `sbx sleep`, the dashboard's `s`, connect-endpoint control | a one-transition override; the idle policy is untouched | the daemon, from its next connection or tick |

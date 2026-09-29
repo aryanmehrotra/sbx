@@ -27,6 +27,7 @@ type engine struct {
 	copyErr   map[string]error             // src -> error CopyVolume returns
 	commitErr map[string]error             // image -> error Commit returns
 	users     map[string][]string          // image or volume -> sandboxes using it (InUse)
+	events    []string                     // pause, copy, commit, unpause, in the order they happened
 }
 
 func newEngine(units ...provider.Unit) *engine {
@@ -39,7 +40,9 @@ func (e *engine) VolumeFor(sandbox, service string) string {
 	return "sbx-" + sandbox + "-" + service + "-data"
 }
 
-func (e *engine) Commit(_ context.Context, _, image string, changes ...string) error {
+func (e *engine) Commit(_ context.Context, ref, image string, changes ...string) error {
+	e.events = append(e.events, "commit "+ref)
+
 	if err := e.commitErr[image]; err != nil {
 		return err
 	}
@@ -61,6 +64,8 @@ func (e *engine) Commit(_ context.Context, _, image string, changes ...string) e
 // CopyVolume behaves as a mount does: asked to copy from a volume that is not there, it
 // creates it, so the CLI must not ask. An empty source is refused with ErrEmptyVolume.
 func (e *engine) CopyVolume(_ context.Context, src, dst string) error {
+	e.events = append(e.events, "copy "+src)
+
 	if _, ok := e.volumes[src]; !ok {
 		e.volumes[src] = 0
 	}

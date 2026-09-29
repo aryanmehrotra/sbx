@@ -102,9 +102,11 @@ var help = map[string]struct{ synopsis, about, example string }{
 	"snapshot": {
 		"sbx snapshot [--replace] <sandbox> <name> | sbx snapshot --rm <name>",
 		"Save every service's filesystem under a name. Data only: processes start cold when\n" +
-			"a fork of it is woken. A failed snapshot removes what it wrote. A name that is taken\n" +
-			"is refused; --replace removes that snapshot whole, then takes a fresh one. --rm deletes\n" +
-			"one snapshot's images and volumes; both refuse while a fork still runs from it.",
+			"a fork of it is woken. Running services are paused for the copy and thawed after, so\n" +
+			"a database is saved at one instant. A failed snapshot removes what it wrote. A name\n" +
+			"that is taken is refused; --replace removes that snapshot whole, then takes a fresh\n" +
+			"one. --rm deletes one snapshot's images and volumes; both refuse while a fork still\n" +
+			"runs from it.",
 		"sbx snapshot main golden",
 	},
 	"fork": {

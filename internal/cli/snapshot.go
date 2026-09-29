@@ -55,11 +55,12 @@ func snapshotImage(name, service string) string {
 
 // Snapshot commits every service of a sandbox to an image.
 //
-// It does not stop anything first. Committing a running container gives a crash-consistent
-// filesystem - the same state the service would recover from after a power cut, which every
-// database in this project's examples is built to survive. Stopping first would be cleaner
-// and would also mean the snapshot silently interrupts whoever is using the sandbox.
-func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([]SnapshotRef, error) {
+// It pauses rather than stops: every running service is frozen for the copy and the commit and
+// thawed afterwards, which gives a crash-consistent filesystem - the state the service would
+// recover from after a power cut, which every database in this project's examples is built to
+// survive - without the restart a stop would cost whoever is using the sandbox. See
+// pauseRunning for why it pauses at all.
+func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) (refs []SnapshotRef, err error) {
 	if err := ValidateName("sandbox", sandbox); err != nil {
 		return nil, err
 	}
@@ -104,6 +105,27 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 	if err := taken.refusal(name, sandbox); err != nil {
 		return nil, err
 	}
+
+	// Interrupted mid-snapshot, this process must not die with services frozen. The signal is
+	// caught for the length of the pause, and each step checks for it: a copy in flight has
+	// usually died of the same Ctrl-C already (the terminal signals docker too), and the
+	// rollback and the thaw below then run as for any other failure.
+	stop := interruptions(ctx)
+	defer stop.release()
+
+	resume, err := pauseRunning(ctx, p, units)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deferred after the signal handler, so it runs before the handler is let go: every return
+	// below thaws what was paused - the rollback in fail included - and a second Ctrl-C during
+	// the thaw is still caught.
+	defer func() {
+		if uerr := resume(); uerr != nil {
+			err = errors.Join(err, uerr)
+		}
+	}()
 
 	// Everything this call writes, so a failure can take it back. A snapshot that fails part
 	// way used to leave its first images and volumes behind under a message saying nothing
@@ -151,6 +173,10 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 			}
 		}
 
+		if err := stop.check(); err != nil {
+			return fail(err)
+		}
+
 		dst := snapshotVolume(name, u.Service)
 
 		existed := false
@@ -178,7 +204,7 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 		volumeOf[u.Service] = dst
 	}
 
-	refs := make([]SnapshotRef, 0, len(units))
+	refs = make([]SnapshotRef, 0, len(units))
 
 	for _, u := range units {
 		img := snapshotImage(name, u.Service)
@@ -194,6 +220,10 @@ func Snapshot(ctx context.Context, p provider.Provider, sandbox, name string) ([
 				"LABEL " + labelSnapshotName + "=" + name,
 				"LABEL " + labelSnapshotVolume + "=" + cmp.Or(dst, noVolume),
 			}
+		}
+
+		if err := stop.check(); err != nil {
+			return fail(err)
 		}
 
 		if err := snap.Commit(ctx, u.Ref, img, changes...); err != nil {

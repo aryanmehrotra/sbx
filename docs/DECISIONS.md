@@ -38,6 +38,7 @@ amended entry carries a **Status:** line under its heading.
 | [Capabilities are negotiated, not stubbed - and sbx does not reach around a provider](#capabilities-are-negotiated-not-stubbed---and-sbx-does-not-reach-around-a-provider) | Scope, isolation and trust | v0.1.0 | current |
 | [Tunnels are shelled out, and the anonymous one is opt-in](#tunnels-are-shelled-out-and-the-anonymous-one-is-opt-in) | Scope, isolation and trust | v0.1.0 | current |
 | [A snapshot is the volume, not the container](#a-snapshot-is-the-volume-not-the-container) | Snapshots and checkpoints | v0.1.0 | current |
+| [A snapshot pauses what is running, and marks the pause for the daemon](#a-snapshot-pauses-what-is-running-and-marks-the-pause-for-the-daemon) | Snapshots and checkpoints | unreleased | current |
 | [Memory checkpoint goes through podman, because docker's restore path doesn't work](#memory-checkpoint-goes-through-podman-because-dockers-restore-path-doesnt-work) | Snapshots and checkpoints | v0.7.0 | current |
 | [Egress is denied by a bridge without NAT, not by a firewall sbx writes](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes) | Egress | v0.1.0 | amended v0.7.0–v0.9.0 |
 | [Traffic through the egress filter counts as activity, stamped on bytes](#traffic-through-the-egress-filter-counts-as-activity-stamped-on-bytes) | Egress | v0.8.0 | current |
@@ -451,6 +452,37 @@ re-seeds a seeded database.
 
 The fork keeps its own `volume` declaration, rather than assuming the image carries the data —
 that assumption is exactly the one `docker commit` gets wrong.
+
+### A snapshot pauses what is running, and marks the pause for the daemon
+
+Copying a live database's volume is not a snapshot of it. ClickHouse merges parts in the
+background, so `cp -a` listed a part directory that the merge then removed, and the copy failed
+with "can't stat ... No such file or directory". On a sandbox churning inserts, three snapshots
+of three failed on the copy check. A copy that happens to finish is worse: its files come from
+different instants.
+
+So `sbx snapshot` pauses every running service (`docker pause`, the cgroup freezer) before the
+volume copies and thaws them after the commits, always, including on failure and on Ctrl-C,
+which it catches for the length of the pause. Paused, the volume and the committed filesystem
+are one instant: what a crash would leave, which the databases here recover from. All
+services pause together rather than one at a time. That keeps one service's volume and image
+from the same instant, keeps every volume copied before any image exists, and makes the
+snapshot one instant across services. The cost is that the sandbox is frozen for the length of
+the snapshot; connections wait rather than drop. A service asleep is copied as it is, and one
+already frozen by `on_idle` stays frozen: the snapshot did not pause it, so it does not thaw it.
+
+Pausing, not stopping, because a stop is a restart for whoever is using the sandbox.
+
+The daemon sees a paused container on its discovery tick and would read it as a pause done
+outside sbx: frozen, not awake. After the thaw it would believe a running container asleep,
+and never sleep it again until something connected. A label cannot say "snapshot", since a
+running container's labels cannot change, so the snapshot writes a file per paused container
+under `~/.sbx/snapshot-paused/` holding its pid, before the pause and removed after the thaw.
+The daemon's `correctAwake` and its reaper leave a marked unit alone. A mark whose process is
+gone is ignored and cleared, so a snapshot killed with SIGKILL cannot wedge the daemon: the
+container stays paused, the daemon then records it frozen, and the next connection thaws it.
+The mark is advisory and local, like the slot lock: a daemon running under another home
+directory does not see it.
 
 ### Memory checkpoint goes through podman, because docker's restore path doesn't work
 
