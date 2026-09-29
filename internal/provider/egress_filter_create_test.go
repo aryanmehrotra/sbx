@@ -320,3 +320,21 @@ func captureStdout(t *testing.T, f func()) string {
 
 	return <-done
 }
+
+// The daemon's view of the engine's doors, pushed to every running filter each tick: every
+// network's gateway and the default bridge's subnet, with nothing sandbox-specific in it - the
+// same list whichever filter it goes to.
+func TestEgressDoorsIsEveryGatewayAndTheDefaultBridge(t *testing.T) {
+	colimaDocker(t, false, "")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
+
+	got, err := d.EgressDoors(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(got, ",") != "172.17.0.1,172.17.0.0/16,172.30.0.1" {
+		t.Fatalf("EgressDoors = %v", got)
+	}
+}

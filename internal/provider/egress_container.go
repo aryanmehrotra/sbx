@@ -340,11 +340,51 @@ func lastUsable(subnet string) (string, error) {
 // engineDoors is the -refuse list of a new filter container: the gateway of every network on the
 // engine and the default bridge's subnet, plus the sandbox's own gateway. On a VM-backed docker
 // every gateway is an address of the VM itself (egress.Doors has the measurements). The container
-// adds its own routes and what host.docker.internal and friends resolve to.
+// adds its own routes and what host.docker.internal and friends resolve to, and the daemon keeps
+// it current as networks come and go (EgressDoors).
 func (d *dockerProvider) engineDoors(sandbox string) (string, error) {
+	out, err := d.networkDoors()
+	if err != nil {
+		return "", err
+	}
+
+	gw, err := d.egressGateway(sandbox)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.Join(dedupDoors(append(out, gw)), ","), nil
+}
+
+// EgressDoorSets is a provider that can say which addresses every container filter must refuse
+// right now. The daemon asks once a discovery tick and pushes the answer to each filter, because
+// the list a filter is started with goes stale the moment another sandbox creates a network.
+type EgressDoorSets interface {
+	EgressDoors(ctx context.Context) ([]string, error)
+}
+
+// EgressDoors is the engine's doors as they are now: every network's gateway and the default
+// bridge's subnet. An empty answer is an error, never "nothing to refuse": the default bridge
+// always has a gateway, so empty means the listing failed, and a push of it would drop what the
+// last good one added.
+func (d *dockerProvider) EgressDoors(_ context.Context) ([]string, error) {
+	out, err := d.networkDoors()
+	if err != nil {
+		return nil, err
+	}
+
+	if out = dedupDoors(out); len(out) == 0 {
+		return nil, errors.New("docker listed no network gateways; not pushing an empty refuse set")
+	}
+
+	return out, nil
+}
+
+// networkDoors lists every network's gateways and the default bridge's subnet.
+func (d *dockerProvider) networkDoors() ([]string, error) {
 	ids, err := d.docker("network", "ls", "-q")
 	if err != nil {
-		return "", fmt.Errorf("listing docker's networks, to close the egress filter off from them: %w", err)
+		return nil, fmt.Errorf("listing docker's networks, to close the egress filter off from them: %w", err)
 	}
 
 	format := `{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}} {{end}}{{end}}` +
@@ -368,21 +408,19 @@ func (d *dockerProvider) engineDoors(sandbox string) (string, error) {
 		}
 	}
 
-	gw, err := d.egressGateway(sandbox)
-	if err != nil {
-		return "", err
-	}
+	return out, nil
+}
 
-	out = append(out, gw)
-
-	// Checked here rather than left for the container to refuse: a filter that exits on a bad
-	// argument is a sandbox with no egress and a restart loop.
+// dedupDoors drops repeats and anything that is not an address or a CIDR. Checked here rather
+// than left for the container to refuse: a filter that exits on a bad argument is a sandbox with
+// no egress and a restart loop, and a push with one bad entry is rejected whole.
+func dedupDoors(in []string) []string {
 	seen := map[string]bool{}
 
 	var list []string
 
-	for _, s := range out {
-		if _, err := egress.ParsePrefixes(s); err != nil || seen[s] {
+	for _, s := range in {
+		if _, err := egress.ParsePrefixes(s); err != nil || s == "" || seen[s] {
 			continue
 		}
 
@@ -390,7 +428,7 @@ func (d *dockerProvider) engineDoors(sandbox string) (string, error) {
 		list = append(list, s)
 	}
 
-	return strings.Join(list, ","), nil
+	return list
 }
 
 // filterStatAddr asks docker which loopback address it published the stat port on, or returns ""

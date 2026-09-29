@@ -36,10 +36,18 @@ import (
 //   - the /24 (or /64) around what HostDoorNames resolve to here. The whole prefix, not the one
 //     address, because it is the VM's link to the host: on colima 192.168.5.2 is the Mac and
 //     192.168.5.15 the VM itself, and on Docker Desktop 192.168.65.0/24 is the same arrangement.
+//   - Pushed: what the daemon sends over the control endpoint (PUT /refuse) on every discovery
+//     tick - the engine's gateways and default bridge subnet as they are NOW.
 //
-// What it cannot see: a docker network created after the filter started has a gateway on the VM
-// that is in neither list until the filter is recreated. With ports limited to 80 and 443 (see
-// DefaultPorts) that door is only to what the VM itself serves on those ports.
+// Pushed exists because the first three are fixed when the filter starts, and a docker network
+// created later (another sandbox's) has a gateway on the VM that is in none of them. The filter
+// cannot list docker's networks itself: it has no docker socket, and must never be given one. The
+// daemon can, so it keeps this current. Pushed is replaced wholesale, so a removed network drops
+// out, but it only ever adds to the rest: an empty push leaves the start list and the names.
+//
+// What it still cannot see: a network created while no daemon is running, or in the one tick
+// before the daemon notices it. The last push is saved beside the policy (see the container's
+// main), so a restarted filter comes back refusing what it was last told.
 type Doors struct {
 	// Static is what the provider named at start.
 	Static []netip.Prefix
@@ -50,7 +58,28 @@ type Doors struct {
 	// Routes returns the contents of /proc/net/route, or is nil to read it.
 	Routes func() (string, error)
 
-	set atomic.Pointer[[]netip.Prefix]
+	set    atomic.Pointer[[]netip.Prefix]
+	pushed atomic.Pointer[[]netip.Prefix]
+}
+
+// SetPushed replaces the set the daemon pushed. It never narrows Static, the routes or the names:
+// those are refused whatever this holds.
+func (d *Doors) SetPushed(p []netip.Prefix) {
+	cp := make([]netip.Prefix, 0, len(p))
+	for _, q := range p {
+		cp = append(cp, unmapPrefix(q.Masked()))
+	}
+
+	d.pushed.Store(&cp)
+}
+
+// Pushed returns the set the daemon last pushed.
+func (d *Doors) Pushed() []netip.Prefix {
+	if p := d.pushed.Load(); p != nil {
+		return *p
+	}
+
+	return nil
 }
 
 // HostDoorNames are the names a docker engine gives the machine it runs on, or the one behind it.
@@ -144,16 +173,20 @@ func (d *Doors) Refuse(a netip.Addr) bool {
 		return true
 	}
 
-	return contains(*set, a.Unmap())
+	a = a.Unmap()
+
+	return contains(*set, a) || contains(d.Pushed(), a)
 }
 
-// Prefixes returns the refused set, for the filter's start-up log.
+// Prefixes returns the whole refused set, found and pushed, for the start-up log and GET /refuse.
 func (d *Doors) Prefixes() []netip.Prefix {
+	var out []netip.Prefix
+
 	if set := d.set.Load(); set != nil {
-		return *set
+		out = append(out, *set...)
 	}
 
-	return nil
+	return append(out, d.Pushed()...)
 }
 
 // RouteGateways returns every gateway in a /proc/net/route table - on a container, the default

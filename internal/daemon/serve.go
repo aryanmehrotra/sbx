@@ -121,6 +121,9 @@ type daemon struct {
 	// exists to fix, running the other way.
 	egressSeen map[string]int64
 
+	// endpoints caches where each container filter answers and its token - see egressdoors.go.
+	endpoints filterEndpoints
+
 	// egressCtl is the policy API, built on first use so a daemon constructed as a literal
 	// (tests, selftest) gets one too. egressDir overrides where live policies are kept.
 	egressOnce sync.Once
@@ -595,6 +598,10 @@ func (d *daemon) discover(ctx context.Context) {
 	// A container filter replaced or restarted from an older copy is told the live policy
 	// again. Only sandboxes somebody changed live are asked.
 	d.syncEgress(ctx, found)
+
+	// And every container filter is told the engine's doors as they are now, so a network another
+	// sandbox created since it started is refused too (egressdoors.go).
+	d.pushEgressDoors(ctx, found)
 }
 
 // correctAwake revokes a belief the provider contradicts.
