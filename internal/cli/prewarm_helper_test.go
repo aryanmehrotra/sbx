@@ -6,12 +6,27 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // A puller whose backend runs a helper image of its own, as docker's volume copy does.
 type helperPuller struct{ fakePuller }
 
-func (h *helperPuller) HelperImages() []string { return []string{"alpine:3"} }
+func (h *helperPuller) HelperImages(n provider.HelperNeeds) []provider.Helper {
+	var out []provider.Helper
+
+	if n.Volumes {
+		out = append(out, provider.Helper{Image: "alpine:3", For: "snapshot and fork copy volumes with it"})
+	}
+
+	if n.Egress {
+		out = append(out, provider.Helper{Image: "golang:1.26-alpine", For: "the egress filter is built with it"},
+			provider.Helper{Image: "alpine:3.20", For: "the egress filter runs on it"})
+	}
+
+	return out
+}
 
 // `sbx prewarm --spec F` pulled the spec's images but not the helper snapshot and fork copy a
 // volume with, so the first fork after a "warm" CI step was a 95 s pull. Prewarm pulls it too
@@ -20,7 +35,7 @@ func TestPrewarmPullsTheVolumeCopyHelper(t *testing.T) {
 	h := &helperPuller{fakePuller{present: map[string]bool{}}}
 
 	var out bytes.Buffer
-	if err := Prewarm(context.Background(), h, &out, []string{"redis:7"}, true); err != nil {
+	if err := Prewarm(context.Background(), h, &out, []string{"redis:7"}, provider.HelperNeeds{Volumes: true}); err != nil {
 		t.Fatalf("Prewarm: %v", err)
 	}
 
@@ -41,7 +56,7 @@ func TestPrewarmPullsTheVolumeCopyHelper(t *testing.T) {
 	h.present = map[string]bool{"redis:7": true, "alpine:3": true}
 	out.Reset()
 
-	if err := Prewarm(context.Background(), h, &out, []string{"redis:7"}, true); err != nil {
+	if err := Prewarm(context.Background(), h, &out, []string{"redis:7"}, provider.HelperNeeds{Volumes: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,7 +68,7 @@ func TestPrewarmPullsTheVolumeCopyHelper(t *testing.T) {
 	h.pulled = nil
 	h.present = map[string]bool{}
 
-	if err := Prewarm(context.Background(), h, &out, []string{"redis:7"}, false); err != nil {
+	if err := Prewarm(context.Background(), h, &out, []string{"redis:7"}, provider.HelperNeeds{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,11 +82,35 @@ func TestPrewarmDoesNotPullTheHelperTwice(t *testing.T) {
 	h := &helperPuller{fakePuller{present: map[string]bool{}}}
 
 	var out bytes.Buffer
-	if err := Prewarm(context.Background(), h, &out, []string{"alpine:3"}, true); err != nil {
+	if err := Prewarm(context.Background(), h, &out, []string{"alpine:3"}, provider.HelperNeeds{Volumes: true}); err != nil {
 		t.Fatal(err)
 	}
 
 	if len(h.pulled) != 1 {
 		t.Errorf("pulled %v, want alpine:3 once", h.pulled)
+	}
+}
+
+// A filtered spec's prewarm pulls the filter's build and runtime images and says what each is for.
+func TestPrewarmPullsTheEgressFilterImages(t *testing.T) {
+	h := &helperPuller{fakePuller{present: map[string]bool{}}}
+
+	var out bytes.Buffer
+	if err := Prewarm(context.Background(), h, &out, []string{"app:1"}, provider.HelperNeeds{Egress: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, img := range []string{"golang:1.26-alpine", "alpine:3.20"} {
+		if !slices.Contains(h.pulled, img) {
+			t.Errorf("%s was not pulled: %v", img, h.pulled)
+		}
+	}
+
+	if slices.Contains(h.pulled, "alpine:3") {
+		t.Errorf("the volume helper was pulled for a spec that only filters: %v", h.pulled)
+	}
+
+	if !strings.Contains(out.String(), "egress filter") || !strings.Contains(out.String(), "3 pulled") {
+		t.Errorf("the summary does not report the filter's images:\n%s", out.String())
 	}
 }

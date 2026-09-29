@@ -218,11 +218,13 @@ exists; `docker ps -a --format '{{.Names}} {{.Image}}'` shows which containers r
 `sbx-snap-*` image. Fixed after v0.15.1: gc skips a snapshot any container uses, its images and
 volumes alike, and prints how many it skipped.
 
-### The first `sbx fork` after `sbx prewarm` is still slow
+### The first `sbx fork` or filtered `sbx create` after `sbx prewarm` is still slow
 
-Up to v0.15.1 on docker, prewarm did not pull `alpine:3`, which snapshot and fork copy volumes
-with, so the first fork pulled it. Run `docker pull alpine:3` in the same step. Fixed after
-v0.15.1: prewarm pulls it too, unless you name images or the spec declares no `volume`.
+Up to v0.15.1 on docker, prewarm pulled only the images a spec names. The first fork then pulled
+`alpine:3`, which snapshot and fork copy volumes with. The first create of a service with
+`egress_allow`, `egress_policy` or `egress: "allow"` on colima or Docker Desktop pulled
+`golang:1.26-alpine` and `alpine:3.20` to build the egress filter. Run `docker pull` for those in
+the same step. Fixed after v0.15.1: prewarm pulls each one the spec would run.
 
 ### `sbx create` again keeps running the old build
 

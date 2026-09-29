@@ -23,30 +23,32 @@ import (
 
 // Prewarm fetches images so a later create does not have to. With helpers it also fetches the
 // images the backend runs on its own (provider.HelperImager): on docker, the one snapshot and
-// fork copy a volume through. Without it the first fork after a "warm" CI step was a 95 s
-// pull of that helper, inside the timed part the step exists to keep clean.
-func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []string, helpers bool) error {
+// fork copy a volume through, and the egress filter's build and runtime images. Without them the
+// first fork or filtered create after a "warm" CI step pulled them cold, inside the timed part
+// the step exists to keep clean.
+func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []string, needs provider.HelperNeeds) error {
 	pl, err := provider.PullerFor(p)
 	if err != nil {
 		return err
 	}
 
-	var helping []string
+	var helping []provider.Helper
 
-	if hi, ok := p.(provider.HelperImager); ok && helpers {
-		for _, img := range hi.HelperImages() {
-			if !slices.Contains(images, img) {
-				helping = append(helping, img)
+	if hi, ok := p.(provider.HelperImager); ok {
+		for _, h := range hi.HelperImages(needs) {
+			if !slices.Contains(images, h.Image) {
+				helping = append(helping, h)
+				images = append(slices.Clip(images), h.Image)
 			}
 		}
-
-		images = append(slices.Clip(images), helping...)
 	}
 
 	// A helper is said to be one, so a CI log reader knows why an image no spec names was pulled.
 	name := func(img string) string {
-		if slices.Contains(helping, img) {
-			return img + " (snapshot and fork helper)"
+		for _, h := range helping {
+			if h.Image == img {
+				return img + " (helper)"
+			}
 		}
 
 		return img
@@ -96,7 +98,12 @@ func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []str
 	fmt.Fprintf(w, "\n%d pulled, %d already present", pulled, already)
 
 	if len(helping) > 0 {
-		fmt.Fprintf(w, " (including %s, which snapshot and fork copy volumes with)", strings.Join(helping, ", "))
+		var why []string
+		for _, h := range helping {
+			why = append(why, h.Image+": "+h.For)
+		}
+
+		fmt.Fprintf(w, " (including helpers - %s)", strings.Join(why, "; "))
 	}
 
 	if len(failed) > 0 {

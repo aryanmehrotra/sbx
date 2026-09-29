@@ -1025,7 +1025,24 @@ func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, err
 const VolumeCopyImage = "alpine:3"
 
 // HelperImages implements HelperImager.
-func (d *dockerProvider) HelperImages() []string { return []string{VolumeCopyImage} }
+func (d *dockerProvider) HelperImages(needs HelperNeeds) []Helper {
+	var out []Helper
+
+	if needs.Volumes {
+		out = append(out, Helper{VolumeCopyImage, "snapshot and fork copy volumes with it"})
+	}
+
+	// Both, although a machine whose daemon can bind the sandbox gateway runs the filter in the
+	// daemon and never builds this image: whether it can is decided per sandbox at create, from
+	// a gateway that does not exist yet at prewarm. Pulling on a machine that did not need it
+	// costs a download; not pulling on one that did (colima, Docker Desktop) is the cold build.
+	if needs.Egress {
+		out = append(out, Helper{filterBuilderImage, "the egress filter is built with it"},
+			Helper{filterRuntimeImage, "the egress filter runs on it"})
+	}
+
+	return out
+}
 
 var _ HelperImager = (*dockerProvider)(nil)
 

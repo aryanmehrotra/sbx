@@ -908,13 +908,10 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		// The volume-copy helper comes with every template (they declare volumes) and with a spec
-		// only when one of its services declares a `volume`: that is the only thing snapshot and
-		// fork copy, so a volume-less spec never runs it and a CI cache should not carry it.
-		// Named images mean exactly those.
-		helpers := len(named) == 0
-
+		// Helpers follow what the specs would run (helperNeeds): the template set by default, the
+		// one spec with --spec. Named images mean exactly those, so none.
 		images := TemplateImages()
+		needs := templateNeeds()
 
 		if *specPath != "" {
 			s, err := spec.LoadSpec(*specPath)
@@ -924,14 +921,15 @@ func dispatch(cmd string, args []string) error {
 
 			images = specImages(s)
 
-			helpers = copiesVolumes(s)
+			needs = helperNeeds(s)
 		}
 
 		if len(named) > 0 {
 			images = named
+			needs = provider.HelperNeeds{}
 		}
 
-		return cli.Prewarm(context.Background(), p, os.Stdout, images, helpers)
+		return cli.Prewarm(context.Background(), p, os.Stdout, images, needs)
 
 	case "ui", "dash", "dashboard":
 		fs := newFlagSet("ui")

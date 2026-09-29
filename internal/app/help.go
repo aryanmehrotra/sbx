@@ -159,8 +159,9 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx prewarm [--provider firecracker] [--spec sandbox.json | IMAGE...]",
 		"Pull the images now, so the first create is not a download. On firecracker it also\n" +
 			"builds each image's root filesystem, which for a large image is most of a first create.\n" +
-			"On docker it also pulls alpine:3, which snapshot and fork copy volumes with, unless\n" +
-			"you name images or the --spec declares no volume.\n" +
+			"On docker it also pulls the helpers the spec would run: alpine:3, which snapshot and\n" +
+			"fork copy volumes with, if a service declares a volume; the egress filter's builder\n" +
+			"and runtime images if a service is filtered. Named images get no helpers.\n" +
 			"Useful in a CI image or before a demo.",
 		"sbx prewarm --provider firecracker python:3.11-slim",
 	},
