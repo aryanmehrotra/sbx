@@ -28,11 +28,15 @@ func captureStderr(t *testing.T) *bytes.Buffer {
 
 const exportsYAtX = `{
   "version": 1,
-  "services": {"x": {"image": "redis:7-alpine", "ports": [6379]}},
+  "services": {
+    "x": {"image": "redis:7-alpine", "ports": [6379]},
+    "y": {"image": "redis:7-alpine", "ports": [6379]}
+  },
   "exports": {"Y_PORT": "x:6379"}
 }`
 
-// The export wins - it is the spec author's contract - and y is named as having lost it.
+// The export wins - it is the spec author's contract - and y, a spec service nobody exported, is
+// named as having lost it, with the fix that works for a spec service.
 func TestEnvWarnsWhenAnExportHoldsAServicesDerivedName(t *testing.T) {
 	warned := captureStderr(t)
 
@@ -50,7 +54,7 @@ func TestEnvWarnsWhenAnExportHoldsAServicesDerivedName(t *testing.T) {
 		t.Errorf("Y_PORT = %q, want the export's 20010 (x)", got)
 	}
 
-	for _, want := range []string{`"y"`, "Y_PORT", "export", "exports"} {
+	for _, want := range []string{`"y"`, "Y_PORT", "an `exports` entry"} {
 		if !strings.Contains(warned.String(), want) {
 			t.Errorf("the warning does not say %q:\n%s", want, warned.String())
 		}
@@ -80,7 +84,8 @@ func TestEnvGivesACollidingNameToNeitherService(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{`"my-cache"`, `"my.cache"`, "MY_CACHE_PORT", "exports"} {
+	// Added with `sbx add`, so no export can name them: the advice has to be the one that works.
+	for _, want := range []string{`"my-cache"`, `"my.cache"`, "MY_CACHE_PORT", "sbx add", "another name"} {
 		if !strings.Contains(warned.String(), want) {
 			t.Errorf("the warning does not say %q:\n%s", want, warned.String())
 		}

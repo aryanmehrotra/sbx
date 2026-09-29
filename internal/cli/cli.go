@@ -909,6 +909,17 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 		fmt.Fprintf(stderr, "sbx: warning: "+format+"\n", args...)
 	}
 
+	// What to do about it depends on where the service came from. An export can only name a
+	// service in sandbox.json - one pointing anywhere else fails `sbx env` outright - so a
+	// service from `sbx add` can only be added again under another name.
+	fix := func(service string) string {
+		if _, inSpec := sp.Services[service]; inSpec {
+			return fmt.Sprintf("give %q an `exports` entry in sandbox.json", service)
+		}
+
+		return fmt.Sprintf("%q came from `sbx add`, which no export can name: add it again under another name", service)
+	}
+
 	for _, base := range names {
 		cs := byName[base]
 		host, port := base+"_HOST", base+"_PORT"
@@ -923,20 +934,20 @@ func unexportedVars(sp *spec.Spec, units []provider.Unit, index map[string]provi
 			}
 
 			for _, c := range cs {
-				warn("service %q gets no %s: an export already has that name. Give it an "+
-					"`exports` entry of its own in sandbox.json, or rename the service", c.service, held)
+				warn("service %q gets no %s: an export already has that name. To address it, %s",
+					c.service, held, fix(c.service))
 			}
 
 		case len(cs) > 1:
 			// None of them gets it. Handing it to one means the name points at the wrong
 			// service for anyone who meant another, and nothing would say which.
-			quoted := make([]string, len(cs))
+			quoted, fixes := make([]string, len(cs)), make([]string, len(cs))
 			for i, c := range cs {
-				quoted[i] = fmt.Sprintf("%q", c.service)
+				quoted[i], fixes[i] = fmt.Sprintf("%q", c.service), fix(c.service)
 			}
 
-			warn("services %s all map to %s and %s, so none of them gets those. Give each an "+
-				"`exports` entry in sandbox.json, or rename one", strings.Join(quoted, " and "), host, port)
+			warn("services %s map to the same %s and %s, so none of them gets those. To address them, %s",
+				strings.Join(quoted, " and "), host, port, strings.Join(fixes, "; "))
 
 		default:
 			taken[host], taken[port] = true, true
