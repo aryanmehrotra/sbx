@@ -168,6 +168,8 @@ to finish removed it under the other.
 
 Pid files rather than `flock`: it is what the slot lock already was, it builds on all eight
 platforms, and the pid is what the error prints. One machine only, as before.
+The OpenSandbox API takes the same error-returning lock: a create whose wait runs out is
+`Failed` with reason `slot_lock_timeout` and places no container.
 
 
 ---
