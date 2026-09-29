@@ -76,6 +76,11 @@ The runtime could not reach the host path in `files`, so docker created an empty
 VM-backed docker (colima, Docker Desktop) shares `$HOME` but usually not `/var/folders` on macOS.
 Move the file under your home directory. sbx checks for this after create and says so.
 
+Up to v0.15.0 that check also fired, wrongly, when `sbx create` was re-run over a sandbox that
+was asleep: it could not look inside a stopped container and reported the file as a directory.
+If the same path is a regular file once awake (`sbx exec <sandbox> <service> stat -c %F <path>`),
+the mount was fine. Fixed after v0.15.0: an asleep service is left as it is, and create says so.
+
 ### Two `sbx create` at the same moment fail on a port conflict
 
 Two racing creates can pick the same block of ports. A lock under `~/.sbx` makes this rare, but
