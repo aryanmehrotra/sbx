@@ -98,6 +98,12 @@ type Unit struct {
 	Listen   []int
 	Upstream []Endpoint
 
+	// Private is the port inside the workload each Upstream reaches, index for index, or 0 where
+	// the runtime does not say - a docker container that is not running publishes nothing to
+	// read. It lets a readiness check ask the workload itself whether anything listens there,
+	// which a dial from the host cannot tell apart from a forwarder holding the line.
+	Private []int
+
 	// EgressAllow and EgressGateway carry a service's egress allow-list to the daemon, which
 	// runs a filtering proxy for it on the gateway. Both empty when there is no allow-list.
 	EgressAllow   []string

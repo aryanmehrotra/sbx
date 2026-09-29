@@ -1392,10 +1392,18 @@ func unitOf(c container) (Unit, bool) {
 		u.DependsOn = strings.Split(dep, ",")
 	}
 
+	inside := map[int]int{} // backing host port -> the port inside the container
+	for _, cp := range c.Ports {
+		if cp.Type == "tcp" && cp.PublicPort != 0 {
+			inside[cp.PublicPort] = cp.PrivatePort
+		}
+	}
+
 	for _, pr := range pairs {
 		u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pr.Public})
 		u.Listen = append(u.Listen, pr.Public)
 		u.Upstream = append(u.Upstream, Endpoint{Host: "127.0.0.1", Port: pr.Backing})
+		u.Private = append(u.Private, inside[pr.Backing])
 	}
 
 	return u, true
