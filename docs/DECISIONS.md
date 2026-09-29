@@ -683,6 +683,38 @@ What it does not cover: a docker network created after the filter started. Its g
 VM and is not in the list until the filter is recreated; with ports limited to 80 and 443 that is
 the VM's own web ports on that address, if it serves any.
 
+### The daemon keeps every container filter's doors current
+
+**Status:** current, 2026-09-29. Closes the gap the entry above left open.
+
+Measured on colima: a filter started before another sandbox's network existed answered
+`CONNECT 172.26.0.1:443`, that network's gateway, with 502 `connection refused` - it dialled the
+VM. A listener on the VM's port 443 would have been reached.
+
+**The daemon lists the doors and pushes them.** On every discovery pass it asks docker for every
+network's gateway and the default bridge's subnet, and sends the list to each container filter as
+`PUT /refuse` on the control port it already uses for `/policy`. The filter unions it with its
+start list, routes and host names. Replaced whole, so a removed network drops out; it only adds,
+so an empty or failed listing is never pushed; a body with one bad entry changes nothing. The
+filter saves the last push beside its policy, so a restart does not reopen what it was told.
+
+**Rejected: a docker socket in the filter.** It would let the filter list networks itself, and
+would hand the one container the workload can reach control of the whole engine.
+
+**Rejected: pushing only on change.** The daemon cannot tell a replaced filter, which starts from
+its create-time list, from one that has the last push, without asking; asking costs the same
+loopback request as telling. The listing is two docker calls a pass, made only while a container
+filter exists.
+
+**Every path on the control port needs the token, `/last` included.** The workload can reach that
+port, and `/last` answered it. The daemon reads the address and token through the provider and
+caches them until a request fails.
+
+What it does not cover: a network created while no daemon runs, or in the pass before the daemon
+sees it, and a filter on a remote docker, whose control port is that machine's loopback. A daemon
+older than this reads `/last` without the token and gets 401, so a new filter's traffic stops
+counting as activity under an old daemon until both are upgraded.
+
 
 ---
 

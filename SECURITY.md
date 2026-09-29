@@ -46,8 +46,14 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   the policy says, every docker network's gateway, the default bridge's subnet, its own routes'
   gateways, and the `/24` around what `host.docker.internal`, `host.lima.internal` and
   `gateway.docker.internal` resolve to. That closes the VM and, through it, your Mac's loopback.
-  A docker network created after the filter started is not in that list until the filter is
-  recreated, so the VM's ports 80 and 443 on that network's gateway stay reachable meanwhile.
+  A docker network created after the filter started is refused once `sbx serve` has run a
+  discovery pass (every `--refresh`, 15 s by default): the daemon lists the engine's gateways and
+  pushes them to each container filter over its token-guarded control port, and the filter keeps
+  the last push across a restart. With no daemon running, or with the filter on a remote docker
+  (whose control port the daemon cannot reach), a network created later stays reachable on ports
+  80 and 443 of its gateway until a daemon runs or the sandbox is removed and created again.
+- The filter's control port (`sbx-egress:20998`) is reachable from the workload, so every path
+  on it, the activity reading included, needs the per-filter token the daemon holds.
 - A spec is executable: it names images, commands (`health`, `init`) and host files to mount.
   Treat someone else's `sandbox.json` like their Makefile.
 - `${VAR}` keeps a secret out of a committed spec, but the value still reaches the container's
@@ -182,6 +188,12 @@ below.
 - Fixed in v0.16.0: the filter refuses every gateway of its networks, the default bridge's subnet
   and the `/24` around each host alias, re-read every 30 s, whatever the policy says; and it
   carries only ports 80 and 443 unless an `egress_allow` entry names another as `host:port`.
+- Also fixed in v0.16.0: a docker network created after the filter started (another sandbox's)
+  was not refused, and `CONNECT <its gateway>:443` reached the VM. `sbx serve` now pushes the
+  engine's gateways to every container filter on each discovery pass. That needs the daemon
+  running: a network created while none runs is reachable until one does.
+- The filter's activity endpoint, `GET sbx-egress:20998/last`, answered the workload. It needs
+  the control token since v0.16.0.
 - Upgrading is not enough for an existing sandbox: run `sbx create` again over it (with v0.16.0 it
   replaces a filter built by an older sbx), or `sbx rm` and create it.
 - Workaround before upgrading: use `egress: "deny"`, or an allow-list, for any sandbox that runs
