@@ -38,6 +38,10 @@ type Server struct {
 	// Running, so readiness polling has something to wait for.
 	PendingPolls int
 
+	// FailNew, when not empty, makes every new sandbox Failed (reason runtime_error) with this
+	// message, and never ready - a create that failed for a reason other than time.
+	FailNew string
+
 	// StandardSSE makes the command stream use `data:` framing. The default is the bare
 	// JSON-then-blank-line framing that execd actually writes.
 	StandardSSE bool
@@ -329,6 +333,12 @@ func (s *Server) newSandbox(req map[string]any, pending int) string {
 		"createdAt":  now.Format(time.RFC3339),
 		"entrypoint": []string{"tail", "-f", "/dev/null"},
 		"metadata":   map[string]string{},
+	}
+
+	if s.FailNew != "" {
+		info["status"] = map[string]any{"state": "Failed", "reason": "runtime_error", "message": s.FailNew,
+			"lastTransitionAt": now.Format(time.RFC3339)}
+		pending = 1 << 30
 	}
 
 	for _, k := range []string{"image", "metadata", "entrypoint", "extensions", "platform"} {

@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/agentbin"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/osb"
 )
@@ -38,11 +41,6 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		key = os.Getenv("SBX_OSB_KEY")
 	}
 
-	key, err := d.osbKey(addr, key)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	if d.provider == nil {
 		return nil, nil, fmt.Errorf("--osb-addr needs a container runtime to create sandboxes in, "+
 			"and this daemon has none: %v", d.startupErr)
@@ -59,6 +57,22 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 			"excludes; add --only osb-", scope)
 	}
 
+	// Bound before the key, like every other refusal that does not depend on it: a port already
+	// taken is a refusal too, and says nothing about keys.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
+	}
+
+	// The key last, after every refusal that does not depend on it. It used to come first, so a
+	// start refused for --osb-addr 0.0.0.0:8080 had already minted ~/.sbx/osb/key - a credential
+	// on disk for an API that never ran, which `sbx mcp` would then find and use.
+	key, err = d.osbKey(addr, key)
+	if err != nil {
+		_ = ln.Close()
+		return nil, nil, err
+	}
+
 	api, err := osb.New(osb.Options{
 		Provider:     d.provider,
 		Runtime:      d,
@@ -73,15 +87,13 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		PoolFreeze:   poolFreeze,
 	})
 	if err != nil {
+		_ = ln.Close()
 		return nil, nil, err
 	}
 
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("--osb-addr %s: %w", addr, err)
-	}
-
 	d.servesOSB = true
+
+	go warmAgent(logs.Version)
 
 	return api, ln, nil
 }
@@ -100,4 +112,25 @@ func splitPaths(s string) []string {
 	}
 
 	return out
+}
+
+// warmAgent starts building the linux sbx that API sandboxes run as their agent, so the first
+// create does not.
+//
+// A release finds a published image or its own binary and returns at once. A source build
+// cross-compiles, about 50s on a cold go cache in the report that found this; inside a create that
+// ran into sbx mcp's 30s ready timeout, and the sandbox was removed with nothing logged. The
+// server's own ready timeout already starts after placement (osb waitReady), so it was never the
+// one firing - the client's was, and no server-side timeout can extend that. Building here, when
+// the API starts, is the change that fixes it; agentbin shares the one build with the create that
+// arrives while it runs.
+//
+// runtime.GOARCH is the engine's architecture on the setups this is for (colima or Docker Desktop
+// on the same Mac). A sandbox image of another architecture still builds its own on first use.
+var warmAgent = func(version string) {
+	if agentbin.Release(version) {
+		return
+	}
+
+	_, _ = agentbin.Locate(context.Background(), runtime.GOARCH, version)
 }

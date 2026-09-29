@@ -49,18 +49,19 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	}
 
 	var (
-		sweep []provider.Artifact
-		kept  int
+		sweep     []provider.Artifact
+		snapshots int // skipped because snapshots are opt-in
+		tooNew    int // skipped because of --older-than
 	)
 
 	for _, a := range items {
 		if a.Snapshot && !withSnapshots {
-			kept++
+			snapshots++
 			continue
 		}
 
 		if a.Age < olderThan {
-			kept++
+			tooNew++
 			continue
 		}
 
@@ -68,10 +69,10 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	}
 
 	if len(sweep) == 0 {
-		fmt.Fprintf(w, "nothing to reclaim")
+		fmt.Fprint(w, "nothing to reclaim")
 
-		if kept > 0 {
-			fmt.Fprintf(w, " (%d skipped: newer than %s, or a snapshot)", kept, olderThan)
+		if why := skipped(snapshots, tooNew, olderThan); why != "" {
+			fmt.Fprintf(w, " (%s)", why)
 		}
 
 		fmt.Fprintln(w)
@@ -91,9 +92,8 @@ func gcWith(ctx context.Context, col provider.Collector, w io.Writer, olderThan 
 	if !force {
 		fmt.Fprintf(w, "\n%d reclaimable, nothing deleted. Add --force to delete them.\n", len(sweep))
 
-		if kept > 0 {
-			fmt.Fprintf(w, "%d more were skipped for being newer than %s, or for being snapshots "+
-				"(--snapshots includes those).\n", kept, olderThan)
+		if why := skipped(snapshots, tooNew, olderThan); why != "" {
+			fmt.Fprintf(w, "Also %s.\n", why)
 		}
 
 		return nil
@@ -126,4 +126,27 @@ func age(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dd old", int(d.Hours()/24))
 	}
+}
+
+// skipped says why artifacts were left out, one count per reason, and nothing for a reason that
+// did not apply. It used to be one lumped number - "24 more were skipped for being newer than 0s,
+// or for being snapshots" - where, with no --older-than, the first reason was impossible and the
+// reader could not tell how many of the 24 a --snapshots run would add.
+func skipped(snapshots, tooNew int, olderThan time.Duration) string {
+	var parts []string
+
+	if snapshots > 0 {
+		noun := "snapshots"
+		if snapshots == 1 {
+			noun = "snapshot"
+		}
+
+		parts = append(parts, fmt.Sprintf("%d %s skipped (--snapshots includes them)", snapshots, noun))
+	}
+
+	if tooNew > 0 {
+		parts = append(parts, fmt.Sprintf("%d newer than %s skipped (--older-than)", tooNew, olderThan))
+	}
+
+	return strings.Join(parts, ", ")
 }

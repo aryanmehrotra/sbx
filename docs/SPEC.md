@@ -44,7 +44,7 @@ For tasks built on these fields (seeding, CI, agents, microVMs), see [GUIDES.md]
 | `init` | string list | | Run once after the first healthy check, not on each wake. Schemas, seed data |
 | `depends_on` | string list | | Services that must be ready first, at create and on every wake |
 | `optional` | bool | `false` | Created only with `--optional`. Still reserves its ports |
-| `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep |
+| `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep. Checked every third of the shortest window in force (1 s to 30 s): a service sleeps at most one check after its window |
 | `on_idle` | string | `"stop"` | `"freeze"` pauses instead of stopping |
 | `egress` | string | open | `"deny"` or `"allow"` (open, through the filter) |
 | `egress_allow` | string list | | Reach only these hosts and their subdomains |

@@ -1187,12 +1187,7 @@ func List(ctx context.Context, p provider.Provider, asJSON bool) error {
 	fmt.Printf("%-20s %-14s %-9s %s\n", "SANDBOX", "SERVICE", "STATE", "ADDRESS")
 
 	for _, u := range units {
-		state := "asleep"
-		if u.Running {
-			state = "awake"
-		}
-
-		fmt.Printf("%-20s %-14s %-9s %s\n", u.Sandbox, u.Service, state, joinEndpoints(u.Client))
+		fmt.Printf("%-20s %-14s %-9s %s\n", u.Sandbox, u.Service, unitState(u), joinEndpoints(u.Client))
 	}
 
 	// The ADDRESS column is a promise only the daemon can keep.
@@ -1240,6 +1235,7 @@ func listJSON(w io.Writer, units []provider.Unit, backend string) error {
 		Sandbox   string   `json:"sandbox"`
 		Service   string   `json:"service"`
 		Awake     bool     `json:"awake"`
+		State     string   `json:"state"`
 		Addresses []string `json:"addresses"`
 		Ref       string   `json:"ref"`
 		Provider  string   `json:"provider"`
@@ -1262,7 +1258,7 @@ func listJSON(w io.Writer, units []provider.Unit, backend string) error {
 		}
 
 		out = append(out, entry{
-			Sandbox: u.Sandbox, Service: u.Service, Awake: u.Running,
+			Sandbox: u.Sandbox, Service: u.Service, Awake: u.Running, State: unitState(u),
 			Addresses: addrs, Ref: u.Ref, Provider: backend,
 		})
 	}

@@ -123,3 +123,25 @@ func TestScopePatterns(t *testing.T) {
 		t.Fatal("a malformed glob was accepted")
 	}
 }
+
+// Exact exists because a bare --only pattern is a prefix: selftest-42 scoped by prefix would take
+// in selftest-421, another run's sandbox, and front and sleep it.
+func TestExactScopeMatchesOneNameOnly(t *testing.T) {
+	s := Exact("selftest-42")
+
+	for name, want := range map[string]bool{
+		"selftest-42":  true,
+		"selftest-421": false,
+		"selftest-4":   false,
+		"zopnight":     false,
+		"xselftest-42": false,
+	} {
+		if got := s.Match(name); got != want {
+			t.Errorf("Exact(selftest-42).Match(%q) = %v, want %v", name, got, want)
+		}
+	}
+
+	if Exact("").Match("anything") {
+		t.Fatal("an empty name must match nothing, not everything")
+	}
+}

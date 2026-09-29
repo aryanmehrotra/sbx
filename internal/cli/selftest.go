@@ -20,14 +20,17 @@ package cli
 // Nothing is stubbed. It is the real provider, the real daemon loop and a real client.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/daemon"
+	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
@@ -53,7 +56,7 @@ type step struct {
 	err  error
 }
 
-func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, keep bool) error {
+func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, keep bool) (err error) {
 	name := fmt.Sprintf("selftest-%d", os.Getpid())
 	sp := selftestSpec()
 
@@ -130,7 +133,17 @@ func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, 
 		return fmt.Errorf("selftest: provider does not list the sandbox it just created")
 	}
 
-	d := daemon.New(p, 3*time.Second, 90*time.Second, time.Second)
+	_, daemonLog := quietDaemonLog()
+
+	defer func() {
+		if err != nil {
+			if out := strings.TrimSpace(daemonLog.String()); out != "" {
+				fmt.Printf("\n  the in-process daemon said:\n%s\n", "      "+strings.ReplaceAll(out, "\n", "\n      "))
+			}
+		}
+	}()
+
+	d := selftestDaemon(p, name)
 
 	dctx, dcancel := context.WithCancel(ctx)
 	defer dcancel()
@@ -203,4 +216,55 @@ func Selftest(ctx context.Context, p provider.Provider, iso provider.Isolation, 
 	fmt.Println("  a sandbox was created, slept to zero, woken by a socket, and remembered.")
 
 	return nil
+}
+
+// selftestDaemon is the daemon selftest runs in-process, fenced to the one sandbox it created.
+//
+// selftest runs beside the machine's own `sbx serve`, on the same engine. Unscoped, this daemon's
+// one-second discovery adopted every sandbox there: it raced the real daemon for their ports
+// ("address already in use") and, three seconds later, its reaper slept somebody's live stack.
+// Exact rather than a prefix, because selftest-42 as a prefix also takes in selftest-421.
+func selftestDaemon(p provider.Provider, name string) interface {
+	Run(context.Context)
+	Refresh(context.Context)
+} {
+	d := daemon.New(p, 3*time.Second, 90*time.Second, time.Second)
+	d.SetScope(daemon.Exact(name))
+
+	return d
+}
+
+// lockedBuffer is a bytes.Buffer the daemon's goroutines can write while selftest reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// quietDaemonLog sends the process logger - which the in-process daemon writes through - to a
+// buffer, so its JSON lines stop landing in the middle of selftest's step table. Selftest prints
+// the buffer only when a step fails, where the daemon's account is the evidence.
+//
+// restore is for tests. Selftest itself never calls it: the daemon's goroutines are still winding
+// down when it returns, and swapping the logger back under them would be a data race for no gain
+// in a process that is about to exit.
+func quietDaemonLog() (restore func(), buf *lockedBuffer) {
+	prev := logs.Default
+	buf = &lockedBuffer{}
+	logs.Default = logs.New(buf)
+
+	return func() { logs.Default = prev }, buf
 }

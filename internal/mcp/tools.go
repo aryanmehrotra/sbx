@@ -541,8 +541,15 @@ func (s *Sandboxes) create(ctx context.Context, call *Call) (any, error) {
 				return nil, fmt.Errorf("%w\nremoving it failed too (%v): kill %s yourself with sandbox_kill", err, derr, sb.ID)
 			}
 
-			return nil, fmt.Errorf("%w\nthe sandbox was removed; raise ready_timeout_seconds for a slow image, "+
-				"or check the server's logs for why it did not start", err)
+			// The timeout advice only for a timeout. Appended to every failure, it told a caller
+			// whose sandbox the server had reported Failed - with its reason right there - to wait
+			// longer for something that was never going to answer.
+			if errors.Is(err, osbclient.ErrNotReady) {
+				return nil, fmt.Errorf("%w\nthe sandbox was removed; raise ready_timeout_seconds for a slow image, "+
+					"or check the server's logs for why it did not start", err)
+			}
+
+			return nil, err
 		}
 	}
 

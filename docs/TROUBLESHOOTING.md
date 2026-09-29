@@ -17,6 +17,13 @@ Your sandboxes survive, and the first connection after the runtime returns wakes
 starts or stops the runtime. If colima stopped on its own, `~/.colima/_lima/colima/ha.stderr.log`
 shows whether something ran `colima stop`.
 
+### `sbx doctor` lists kata, but a Kata sandbox has no network or will not restart
+
+The `isolation kata` row checks only that dockerd has `kata-runtime` registered. doctor never
+runs a Kata container. Kata boots a VM per container, which can fail on a nested or VM host.
+Create one sandbox with `--isolation kata` and connect to it before relying on it. Otherwise use
+`--isolation gvisor`, or the microVM provider if doctor's `microVM` row allows it.
+
 ### "docker did not answer in time"
 
 The runtime is up but too slow. On a loaded colima, listing seven containers took 1 minute 36
@@ -50,6 +57,13 @@ Almost always, no `sbx serve` is running, and the daemon owns those ports. Check
   daemon serving x's old ports, when the recreate landed on a new slot. `sbx list` shows the new
   ports; `lsof -nP -iTCP -sTCP:LISTEN | grep sbx` shows the old ones. Restart `sbx serve`.
   Fixed after v0.15.1: the daemon notices the new container and serves its ports.
+
+### Other sandboxes went to sleep during `sbx selftest`
+
+Up to v0.15.1, the daemon `sbx selftest` runs in-process adopted every sandbox on the engine,
+not just its own. It fought `sbx serve` for their ports ("address already in use" in its log) and
+slept them after 3 s idle. They wake on the next connection. If a port stays refused, restart
+`sbx serve`. Fixed after v0.15.1: selftest touches only its own `selftest-<pid>` sandbox.
 
 ### `sbx serve` says it is already running
 
@@ -267,6 +281,16 @@ The container stopped before sbx's in-sandbox agent answered. `status.message` g
 state, exit code, `OOMKilled` and the start error. Exit 137 with no output is SIGKILL: out of
 memory (host or `resourceLimits.memory`) or a `docker kill`. 143 is SIGTERM from outside. Raise
 `resourceLimits.memory` or free host memory. The daemon log and `sbx history <id>` show the same.
+
+### An API create on a source build fails with "invalid reference format"
+
+Up to v0.15.1, a build whose version is not a release tag (`v0.15.1-dev+ffd872d`) asked docker for
+an activator image of that version, which was never published and is not a valid tag. It also left
+an empty `sbx-execd-<version>` volume; remove it with `docker volume rm`. Fixed after v0.15.1: such a
+build compiles the agent from its checkout, or asks you to set `SBX_EXECD_BINARY`.
+
+The compile starts with `sbx serve --osb-addr`, so the first create does not wait inside its
+ready timeout. The log says `building the sandbox agent` and then `built the sandbox agent ... in`.
 
 ## Remote deployments
 

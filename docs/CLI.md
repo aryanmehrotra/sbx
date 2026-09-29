@@ -25,7 +25,7 @@ Commands marked (B) below also take these.
 | `sbx install [NAME...]` | Install what `sbx doctor` reports missing: tools from the package manager, and gVisor, Kata or checkpoint registered with this machine's dockerd. Shows each command, then asks | `--yes`, `--dry-run` |
 | `sbx init` | Write a `sandbox.json` interactively. Piped or with `--template`, prints it to stdout | `--template NAME` (default `postgres`), `--yes`, `--from-devcontainer PATH` (gated: `devcontainer`) |
 | `sbx serve` | The daemon, one per machine. See [sbx serve](#sbx-serve) | see below |
-| `sbx selftest` | Create, sleep, wake and check a sandbox on this machine. (B) | `--keep` |
+| `sbx selftest` | Create, sleep, wake and check a sandbox on this machine. Touches no other sandbox. (B) | `--keep` |
 
 ### Every day
 
@@ -34,7 +34,7 @@ Commands marked (B) below also take these.
 | `sbx create <sandbox>` | Make a sandbox. Services start asleep. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
 | `sbx with <sandbox> -- <cmd>` | Create, wait until ready, run `cmd` with the env, then remove. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` |
 | `sbx env <sandbox>` | Print the services' addresses as shell exports. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
-| `sbx list` | Every sandbox, its services, state and address. (B) | `--json` |
+| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it) and address. `--json` adds `state`; `awake` is false for a frozen service. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
 | `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. (B) | none |
 
@@ -48,7 +48,7 @@ Commands marked (B) below also take these.
 | `sbx add <sandbox> <service>` | Add a service the spec never declared. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
-| `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`) |
+| `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |
 | `sbx ready <sandbox>` | Block until every service really answers. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
 | `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. (B) | none |
@@ -118,7 +118,7 @@ The daemon. It owns the ports `sbx env` prints, wakes a sandbox on connect and s
 | `--front SPEC` | `$SBX_FRONT`, else off | Carry non-sandbox ports: `5432`, `db=5432,cache=6379`, `db=10.0.4.7:3306` |
 | `--behind-proxy` | off | A proxy in front terminates TLS, so a non-loopback address is allowed |
 | `--osb-addr ADDR` | `$SBX_OSB_ADDR`, else off | Serve the OpenSandbox lifecycle API (the one its SDKs and `sbx mcp` call), e.g. `127.0.0.1:8080` |
-| `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` | Required `OPEN-SANDBOX-API-KEY` |
+| `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` once the API starts (a refused start writes none) | Required `OPEN-SANDBOX-API-KEY` |
 | `--osb-insecure-no-key` | off | Serve the API with no key. Loopback only |
 | `--osb-host-paths DIRS` | `$SBX_OSB_HOST_PATHS`, else none | Host directories an OpenSandbox host volume may bind from |
 | `--osb-pool IMAGE[=N]` | `$SBX_OSB_POOL`, else none | Keep N (default 8) warm sandboxes of this image. Repeatable |

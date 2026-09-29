@@ -421,11 +421,15 @@ func (d *daemon) run(ctx context.Context) {
 	discovery := time.NewTicker(d.refresh)
 	defer discovery.Stop()
 
-	// The reaper's cadence has to follow the idle window, not ignore it. Fixed at 30s, a
-	// sandbox configured to sleep after 5s slept after 60 - two ticks, because the first
-	// one only established that it had ever been serving. The setting meant nothing below
-	// half a minute, which is exactly where anyone testing it would set it.
-	reap := time.NewTicker(reapEvery(d.idle))
+	// The reaper's cadence has to follow the shortest idle window in force, not ignore it.
+	// Fixed at 30s, a sandbox configured to sleep after 5s slept after 60 - two ticks, because
+	// the first one only established that it had ever been serving. Following --idle alone had
+	// the same flaw one level down: a service with its own "idle": "30s" under the default 5m
+	// slept after 59s. So the cadence is recomputed on every discovery tick, from the
+	// daemon's window and every per-service one - see reapCadence.
+	cadence := d.reapCadence()
+
+	reap := time.NewTicker(cadence)
 	defer reap.Stop()
 
 	for {
@@ -434,6 +438,11 @@ func (d *daemon) run(ctx context.Context) {
 			return
 		case <-discovery.C:
 			d.discover(ctx)
+
+			if c := d.reapCadence(); c != cadence {
+				cadence = c
+				reap.Reset(c)
+			}
 		case <-reap.C:
 			d.reap(ctx)
 		}
@@ -722,6 +731,26 @@ func replaced(cur *unit, f provider.Unit, legs []leg) bool {
 	}
 
 	return false
+}
+
+// reapCadence is how often the reaper runs: reapEvery of the shortest idle window any unit is
+// under. A unit with its own "idle" uses that; "never" and "0" units never sleep on idle, so
+// they do not count; everything else is on the daemon's --idle. The result is in [1s, 30s].
+//
+// The resolution this buys: a service sleeps between its window and its window plus a third of
+// it (plus one extra tick the first time, while the reaper learns it has ever served).
+func (d *daemon) reapCadence() time.Duration {
+	shortest := d.idle
+
+	d.mu.Lock()
+	for _, u := range d.units {
+		if !u.keepAwake && u.idle > 0 && u.idle < shortest {
+			shortest = u.idle
+		}
+	}
+	d.mu.Unlock()
+
+	return reapEvery(shortest)
 }
 
 // reapEvery keeps the check frequent enough that the idle window is honoured and rare
