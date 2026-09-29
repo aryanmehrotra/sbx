@@ -3,6 +3,7 @@ package spec
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -123,3 +124,47 @@ func TestEnvSyntaxReportsEveryBadForm(t *testing.T) {
 func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 func writeFile(path string, body []byte) error { return os.WriteFile(path, body, 0o600) }
+
+// A bad form and an unset variable in one spec were reported one per run: the syntax refusal
+// returned before expansion looked for unset variables, so fixing it surfaced the next error.
+// Both classes come back in one error, each in full, bad forms first, the same every run.
+func TestEnvBadFormsAndUnsetVariablesAreReportedTogether(t *testing.T) {
+	body := []byte(`{"version":1,"services":{
+		"a":{"image":"alpine","ports":[80],"env":{"P":"${X_R3:-y}","Q":"${UNSET_R3_A}"}},
+		"b":{"image":"alpine","ports":[81],"env":{"R":"${UNSET_R3_B} ${Y_R3:?z}"}}}}`)
+
+	_, err := ParseSpec(body, "spec.json")
+	if err == nil {
+		t.Fatal("accepted a bad form and two unset variables")
+	}
+
+	msg := err.Error()
+	for _, want := range []string{`"${X_R3:-y}"`, `"${Y_R3:?z}"`, "a.P", "b.R", "UNSET_R3_A (used by a.Q)",
+		"UNSET_R3_B (used by b.R)", "not set"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %s", msg, want)
+		}
+	}
+
+	if i, j := strings.Index(msg, "does not expand"), strings.Index(msg, "not set"); i < 0 || j < 0 || i > j {
+		t.Errorf("want bad forms, then unset variables: %q", msg)
+	}
+
+	for range 5 {
+		if _, again := ParseSpec(body, "spec.json"); again == nil || again.Error() != msg {
+			t.Fatalf("the error changed between runs:\n%v\n%v", msg, again)
+		}
+	}
+
+	// A command that does not expand (sbx env) still refuses the form, and does not ask for
+	// variables it would never read.
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = LoadSpecUnexpanded(path)
+	if err == nil || !strings.Contains(err.Error(), "does not expand") || strings.Contains(err.Error(), "not set") {
+		t.Errorf("unexpanded load: err = %v, want the syntax refusal alone", err)
+	}
+}

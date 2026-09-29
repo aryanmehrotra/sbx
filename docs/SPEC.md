@@ -210,7 +210,8 @@ different program: `"entrypoint": ["python", "-m"], "args": ["http.server", "800
 Keeps a secret out of a committed file. Works in `env` values only. Any other `${...}` form, such
 as a default (`${VAR:-x}`) or nesting, is refused at load, every one in the file in one error.
 Write `$${` for a literal `${`: `"$${HOME}"` reaches the container as `${HOME}`. A bare `$NAME` or
-`$$` is left alone. An unset variable is an error before anything is created, listing every missing name. Only commands that start a service need it:
+`$$` is left alone. An unset variable is an error before anything is created, listing every missing
+name in the same error as any refused form. Only commands that start a service need it:
 `sbx env` prints ports without it.
 
 ### Which spec a sandbox uses
