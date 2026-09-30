@@ -47,7 +47,17 @@ func (e *ChildExit) ChildStatus() int { return e.Code }
 // 143 for SIGTERM - which is what a shell or a CI runner reads as "stopped by that signal".
 type Interrupted struct{ Signal os.Signal }
 
-func (e *Interrupted) Error() string { return fmt.Sprintf("interrupted by %v", e.Signal) }
+// Error names the signal as a shell does: os.Signal's own String says "interrupt" for SIGINT.
+func (e *Interrupted) Error() string {
+	switch e.Signal {
+	case syscall.SIGINT:
+		return "interrupted by SIGINT"
+	case syscall.SIGTERM:
+		return "interrupted by SIGTERM"
+	}
+
+	return fmt.Sprintf("interrupted by %v", e.Signal)
+}
 
 func (e *Interrupted) ChildStatus() int {
 	if s, ok := e.Signal.(syscall.Signal); ok {
