@@ -126,6 +126,8 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 - `sbx rm` also removes the sandbox's name lock when its holder is no longer running, so a killed create's lock no longer waits for `sbx gc`.
 - `sbx rm` of a sandbox a running `sbx with` owns is refused and names that command's pid, as `sbx create` and `sbx add` already were; it used to remove the sandbox from under the command.
 - `sbx create`, `sbx ready` and `sbx wake` check a scratch or distroless image (no `cat`) from inside its network namespace on docker, so a listener that accepts and closes without a byte is no longer refused.
-- `sbx create` no longer prints ✓ for a service whose container exited; it names the service with its exit state.
+- `sbx create` prints ✓ for a service, and `sbx ready`/`sbx wake` print `serving`, only once that service passes the serving check; a service that fails it gets ✗ and its reason, or its exit state if its container exited, instead of a success line followed by a failure.
+- `sbx ready` and `sbx wake` fail at once, instead of waiting out `--timeout`, on a container with no network interface but loopback or one that was started during the command and has exited.
+- `sbx egress` changes can no longer be reverted by the running daemon: a removed rule could keep working until the daemon's next tick when the two wrote the policy at the same moment.
 - `sbx rm <name>` clears the origin record and stale name lock a failed create left behind for a sandbox that no longer exists, and says so.
 - `cap_add` validation names every refused entry in one error instead of stopping at the first.
