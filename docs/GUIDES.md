@@ -15,6 +15,7 @@ PGPASSWORD=app psql -U app -d app -c 'select 1'   # this connection wakes it
 Ports are assigned per sandbox, so read them from `sbx env`. `sbx templates` lists the built-in
 specs; [examples/](../examples/) explains each. To add a service mid-task:
 `sbx add feature-x cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'`.
+`sbx env` then prints `CACHE_HOST` and `CACHE_PORT` for it.
 
 `--template browser` gives a headless Chrome that Playwright and Puppeteer drive over CDP at
 `$CDP_HOST:$CDP_PORT` ([examples/browser](../examples/browser/)).
@@ -22,7 +23,12 @@ specs; [examples/](../examples/) explains each. To add a service mid-task:
 ## Test fixtures in CI
 
 `sbx with` creates a sandbox, waits until it answers, runs the command, then removes it, even on
-failure. It exits with the command's status. `--keep` leaves the sandbox for inspection.
+failure. It exits with the command's status. `--keep` leaves the sandbox for inspection. On Ctrl-C
+or SIGTERM it passes the signal to the command, removes the sandbox, and exits 130 or 143.
+
+It takes only a name that is not in use, because it removes the sandbox afterwards. Against an
+existing sandbox, use `eval "$(sbx env <sandbox>)"` instead. A create that fails is removed too,
+and `--timeout` bounds each wait for a service to serve.
 
 ```sh
 sbx with test-db --template postgres -- go test ./...
@@ -96,6 +102,9 @@ From a devcontainer (preview feature):
 build, ports, env, the workspace mount and the create commands, and lists what it skipped on
 stderr. Features, `postStartCommand` and `postAttachCommand` are dropped; pass `remoteUser` as
 `sbx ssh --user`. A `dockerComposeFile` is refused; add those services to `sandbox.json` yourself.
+In env, `${localEnv:X}` becomes `${X}`, and a default is dropped and listed.
+`${containerWorkspaceFolder}` becomes the workspace path. Any other `${` is written as `$${`, so the
+container gets it as written; `${containerEnv:X}` is listed as not evaluated.
 
 ## Keep a sandbox awake, or limit where it can connect
 
@@ -140,8 +149,9 @@ and do not connect to a shared local database.
 There is no start and no stop. **Connecting is what wakes a service** - psql, a driver, a test
 runner, curl - and idleness puts it back to sleep, using 0 B of RAM. Never hardcode a port: read
 it from `sbx env`, which is the only place the real numbers exist. The variable names come from
-the spec's `exports` (the postgres template gives `DATABASE_HOST` and `DATABASE_PORT`), so run
-`sbx env <task>` and read them rather than assuming.
+the spec's `exports` (the postgres template gives `DATABASE_HOST` and `DATABASE_PORT`); a
+service you `sbx add` gets `<SERVICE>_HOST` and `<SERVICE>_PORT`. Run `sbx env <task>` and read
+them rather than assuming.
 
     sbx add <task> cache --image redis:7-alpine --port 6379 --health 'redis-cli ping'
     sbx exec <task> postgres psql -U app -d app -c 'select 1'
@@ -165,7 +175,7 @@ JSON output an agent can parse. Every refusal also names the field or flag behin
 
 | command | gives |
 |---|---|
-| `sbx list --json` | every sandbox and service, with `awake`, `addresses`, `ref` |
+| `sbx list --json` | every sandbox and service, with `awake`, `state`, `isolation`, `addresses`, `ref` |
 | `sbx env <sandbox> --shell json` | the addresses as an object |
 | `sbx doctor --json` | capabilities; each missing one says what it costs |
 | `sbx history [sandbox] --json` | newline-delimited wakes, sleeps and changes |

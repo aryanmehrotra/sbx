@@ -22,10 +22,13 @@ amended entry carries a **Status:** line under its heading.
 | [Ask the workload, not the platform](#ask-the-workload-not-the-platform) | Lifecycle and wake | v0.1.0 | current |
 | [A published port is not readiness](#a-published-port-is-not-readiness) | Lifecycle and wake | v0.1.0 | current |
 | [A sandbox cannot sleep until it has been seen serving](#a-sandbox-cannot-sleep-until-it-has-been-seen-serving) | Lifecycle and wake | v0.1.0 | current |
+| [Stops run off the reaper, and a listing that contradicts the daemon is asked again](#stops-run-off-the-reaper-and-a-listing-that-contradicts-the-daemon-is-asked-again) | Lifecycle and wake | unreleased | current |
+| [The machine's daemon leaves a live `--only` daemon's sandboxes to it](#the-machines-daemon-leaves-a-live---only-daemons-sandboxes-to-it) | Lifecycle and wake | unreleased | current |
 | [Slots are allocated, not hashed](#slots-are-allocated-not-hashed) | Addressing and slots | v0.1.0 | amended v0.10.0 |
 | [Optional services still reserve their ports](#optional-services-still-reserve-their-ports) | Addressing and slots | v0.1.0 | current |
 | [128 docker slots, bounded by the ephemeral range](#128-docker-slots-bounded-by-the-ephemeral-range) | Addressing and slots | v0.10.0 | current |
 | [The API's creates hold the slot lock for the choice only](#the-apis-creates-hold-the-slot-lock-for-the-choice-only) | Addressing and slots | v0.10.0 | current |
+| [A lock wait that runs out is an error, and a name has a lock too](#a-lock-wait-that-runs-out-is-an-error-and-a-name-has-a-lock-too) | Addressing and slots | unreleased | current |
 | [Three containers, not one image with everything in it](#three-containers-not-one-image-with-everything-in-it) | Spec, images and templates | v0.1.0 | current |
 | [A built image is keyed by its content, never by its age](#a-built-image-is-keyed-by-its-content-never-by-its-age) | Spec, images and templates | v0.1.0 | current |
 | [Adding an optional spec field does not bump `version`](#adding-an-optional-spec-field-does-not-bump-version) | Spec, images and templates | v0.1.0 | current |
@@ -34,9 +37,11 @@ amended entry carries a **Status:** line under its heading.
 | [sbx is a tool people run, not a service anyone offers](#sbx-is-a-tool-people-run-not-a-service-anyone-offers) | Scope, isolation and trust | v0.1.0 | current |
 | [Loopback is not a trust boundary on a VM-backed engine](#loopback-is-not-a-trust-boundary-on-a-vm-backed-engine) | Scope, isolation and trust | v0.10.0 | current |
 | [Isolation fails closed, and says why](#isolation-fails-closed-and-says-why) | Scope, isolation and trust | v0.1.0 | current |
+| [A sandbox has one isolation tier](#a-sandbox-has-one-isolation-tier) | Scope, isolation and trust | unreleased | current |
 | [Capabilities are negotiated, not stubbed - and sbx does not reach around a provider](#capabilities-are-negotiated-not-stubbed---and-sbx-does-not-reach-around-a-provider) | Scope, isolation and trust | v0.1.0 | current |
 | [Tunnels are shelled out, and the anonymous one is opt-in](#tunnels-are-shelled-out-and-the-anonymous-one-is-opt-in) | Scope, isolation and trust | v0.1.0 | current |
 | [A snapshot is the volume, not the container](#a-snapshot-is-the-volume-not-the-container) | Snapshots and checkpoints | v0.1.0 | current |
+| [A snapshot pauses what is running, and marks the pause for the daemon](#a-snapshot-pauses-what-is-running-and-marks-the-pause-for-the-daemon) | Snapshots and checkpoints | unreleased | current |
 | [Memory checkpoint goes through podman, because docker's restore path doesn't work](#memory-checkpoint-goes-through-podman-because-dockers-restore-path-doesnt-work) | Snapshots and checkpoints | v0.7.0 | current |
 | [Egress is denied by a bridge without NAT, not by a firewall sbx writes](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes) | Egress | v0.1.0 | amended v0.7.0–v0.9.0 |
 | [Traffic through the egress filter counts as activity, stamped on bytes](#traffic-through-the-egress-filter-counts-as-activity-stamped-on-bytes) | Egress | v0.8.0 | current |
@@ -106,6 +111,35 @@ fast — scaling to zero **39 seconds into creation**, while create is still wai
 health check, is well within range. So a sandbox is not eligible to sleep until it has been seen
 serving at least once.
 
+### Stops run off the reaper, and a listing that contradicts the daemon is asked again
+
+The reaper decides on its own clock and runs each stop on a goroutine of its own. A stop is slow:
+docker waits a **10 s** grace for a workload that ignores SIGTERM, and a busybox `sh -c` loop does.
+Run inline, one such stop held the reaper and the discovery tick for those ten seconds, so a
+service with `"idle": "3s"` slept **14 s** after its last byte in three runs out of three. Measured
+after the change on the same machine: stopped **3.2-4.0 s** after the last byte, then the grace.
+A unit already on its way down is not stopped again, and it keeps its dependencies up until its
+stop returns, which is the top-down order the inline reaper got by blocking.
+
+Discovery lists every sandbox and revokes "awake" from any the provider reports stopped. The
+listing can be older than a wake that finished after it. A connection that arrived mid-stop woke
+the service in 175 ms, and 17 ms later the tick applied its stale "not running": the container ran
+while the daemon believed it asleep, and the reaper, which only looks at awake units, never slept
+it again. So a listing that contradicts the daemon is asked again under the wake lock, where no
+wake or stop can move the unit. The obvious alternative, trusting the lock alone, proves only that
+no wake is in flight now, not that none finished since the listing. Asking again costs a call
+only on a contradiction, never for the sleeping majority.
+
+### The machine's daemon leaves a live `--only` daemon's sandboxes to it
+
+An unscoped `sbx serve` adopted every sandbox, including those a running `--only` daemon covered,
+so two daemons raced to bind the same ports. The loser logged "address already in use" every
+`--refresh`, and which one fronted the sandbox was an accident of timing. So the unscoped daemon
+reads `~/.sbx/daemons` on every discovery pass and skips what a live scoped daemon covers. Every
+pass, not once at start, so a scoped daemon that stops hands its sandboxes back within one tick.
+Live means its pid exists, and a dead daemon's record is deleted when read, so a killed `--only`
+daemon hides nothing.
+
 
 ---
 
@@ -149,6 +183,30 @@ run` can now pick the same slot, where before it waited. It fails at `docker run
 the port probe in the choice narrows this, as it already did for two machines on one remote
 engine - and a retry takes the next slot (TROUBLESHOOTING.md). Closing it would mean the CLI
 asking the daemon for a slot, a protocol this does not add.
+
+### A lock wait that runs out is an error, and a name has a lock too
+
+The CLI's slot lock is held from choosing a slot until the first container exists, and no
+longer: health waits and init run without it. A wait for it that runs out after 10 minutes is an
+error naming the holding pid. It used to go ahead unlocked after 90 seconds, which was the race
+the lock exists for: behind a create that held it through a slow health check, four waiters gave
+up together and two sandboxes were listed on one slot.
+
+A sandbox name has a lock of the same kind (`~/.sbx/locks/<name>.lock`). `sbx create` and
+`sbx add` hold it from reading what the sandbox has to making what it lacks; `sbx with` takes it
+without waiting, refuses a name someone holds, holds it until its teardown is done, and records
+the containers it made so the teardown removes only those. A create or add of a name a live
+`sbx with` holds is refused at once rather than queued behind a command that ends by deleting
+the sandbox. Two `sbx with` of one name used to share a sandbox, and the first
+to finish removed it under the other.
+
+Pid files rather than `flock`: it is what the slot lock already was, it builds on all eight
+platforms, and the pid is what the error prints. The file carries the holder's start time too
+(`internal/procid`), so a pid recycled to another process is stale; the daemon registry,
+snapshot's pause marks and the helper-VM lock (`sbx fc`) use the same record. Where the platform cannot tell a start time (the
+BSDs, Windows) it is the pid alone. One machine only, as before.
+The OpenSandbox API takes the same error-returning lock: a create whose wait runs out is
+`Failed` with reason `slot_lock_timeout` and places no container.
 
 
 ---
@@ -351,6 +409,36 @@ immediately. Kubernetes' own default is to refuse silently, taking two minutes t
 service "never became ready" when the real problem is a missing RuntimeClass — so sbx checks
 first and says so in one second, rather than letting that report stand in for a diagnosis.
 
+### A sandbox has one isolation tier
+
+`--isolation` is chosen when a sandbox is created, and nothing recorded it. `sbx add` takes the
+same flag with the same default, `container`, so adding a service to a gVisor sandbox ran it on
+runc beside services under runsc. Nothing warned, and `sbx list` showed nothing different. The
+sandbox kept its name and lost the property it was created for. Re-creating a service whose
+image changed had the same hole: a bare `sbx create` passes `container` too.
+
+Every docker container now carries its tier as the `sbx.isolation` label, and the sandbox's tier
+is the one its services were created with:
+
+- `sbx add` with no `--isolation` (and no `SBX_ISOLATION`) joins the sandbox's tier.
+- An explicit tier that differs is refused, naming both tiers and the recreate that gets the
+  other one. The flag and the variable both count as asking.
+- A service re-created because its image changed keeps its container's tier, not the command's.
+- A container without the label predates it and was created as `container`, so it reads as that.
+  A provider that records no tier (firecracker, kubernetes) is not checked.
+
+**Rejected: warn and carry on.** A warning is a line in a scrollback. The sandbox left behind is
+still mixed, and the next reader of `sbx list` has no way to find the service that is not.
+
+**Rejected: let the flag win per service.** It is expressible, but the services of a sandbox talk
+to each other on one bridge. One runc service there is the weakest member, and it is the
+sandbox's isolation, not the service's, that a user chose.
+
+**Rejected: read the runtime back from docker (`HostConfig.Runtime`).** It says `runsc` or
+`kata-runtime` on this engine, but the name is whatever the operator registered. Mapping it back
+to a tier would be a guess, and a label is how sbx already remembers everything else about a
+container.
+
 ### Capabilities are negotiated, not stubbed - and sbx does not reach around a provider
 
 The obvious way to add snapshot support is four new methods on the core `Provider` interface —
@@ -420,6 +508,37 @@ re-seeds a seeded database.
 
 The fork keeps its own `volume` declaration, rather than assuming the image carries the data —
 that assumption is exactly the one `docker commit` gets wrong.
+
+### A snapshot pauses what is running, and marks the pause for the daemon
+
+Copying a live database's volume is not a snapshot of it. ClickHouse merges parts in the
+background, so `cp -a` listed a part directory that the merge then removed, and the copy failed
+with "can't stat ... No such file or directory". On a sandbox churning inserts, three snapshots
+of three failed on the copy check. A copy that happens to finish is worse: its files come from
+different instants.
+
+So `sbx snapshot` pauses every running service (`docker pause`, the cgroup freezer) before the
+volume copies and thaws them after the commits, always, including on failure and on Ctrl-C,
+which it catches for the length of the pause. Paused, the volume and the committed filesystem
+are one instant: what a crash would leave, which the databases here recover from. All
+services pause together rather than one at a time. That keeps one service's volume and image
+from the same instant, keeps every volume copied before any image exists, and makes the
+snapshot one instant across services. The cost is that the sandbox is frozen for the length of
+the snapshot; connections wait rather than drop. A service asleep is copied as it is, and one
+already frozen by `on_idle` stays frozen: the snapshot did not pause it, so it does not thaw it.
+
+Pausing, not stopping, because a stop is a restart for whoever is using the sandbox.
+
+The daemon sees a paused container on its discovery tick and would read it as a pause done
+outside sbx: frozen, not awake. After the thaw it would believe a running container asleep,
+and never sleep it again until something connected. A label cannot say "snapshot", since a
+running container's labels cannot change, so the snapshot writes a file per paused container
+under `~/.sbx/snapshot-paused/` holding its pid, before the pause and removed after the thaw.
+The daemon's `correctAwake` and its reaper leave a marked unit alone. A mark whose process is
+gone is ignored and cleared, so a snapshot killed with SIGKILL cannot wedge the daemon: the
+container stays paused, the daemon then records it frozen, and the next connection thaws it.
+The mark is advisory and local, like the slot lock: a daemon running under another home
+directory does not see it.
 
 ### Memory checkpoint goes through podman, because docker's restore path doesn't work
 
@@ -608,6 +727,81 @@ against the address rules and dials the one it checked, so a permitted name cann
 denied range. And it refuses its own loopback and link-local unless a rule names them: upstream
 enforces inside the sandbox's namespace, where `127.0.0.1` is the sandbox; sbx's filter is on the
 host or beside the box, where `127.0.0.1` is somebody's docker socket.
+
+### The container filter refuses the machines behind it, and carries two ports
+
+**Status:** current, 2026-09-29. Corrects the entry above in two places: "no raw TCP" was not
+enforced, and the container filter's loopback was not the only thing behind it.
+
+Measured on colima before this change, from inside a sandbox under `egress: "allow"`:
+`CONNECT host.lima.internal:<port>` reached a listener bound only to the Mac's `127.0.0.1`, as did
+`192.168.5.2` and `host.docker.internal`; `CONNECT 172.17.0.1:22` answered with the VM's
+`SSH-2.0-OpenSSH_9.6p1`; `CONNECT 1.1.1.1:53` answered 200. The workload has no route to any of
+them. The filter gave it one.
+
+**Ports: 80 and 443, plus what `egress_allow` names.** A proxy that tunnels a `CONNECT` to any port
+is a TCP relay, and the promise was HTTP and HTTPS. An `egress_allow` entry written as `host:port`
+always parsed and its port was dropped; it is now the one way to add a port, for that host only,
+matched on the name the client wrote so a name's grant does not open its addresses to other names.
+`egress_policy` stays OpenSandbox's shape, which has no port, so it gets 80 and 443.
+
+**The machines behind a container filter are refused like the host is behind a hosted one.** The
+filter gets a `Refuse` set, which no rule opens: every docker network's gateway and the default
+bridge's subnet (named by the provider at start), its own routes' gateways, and the `/24` around
+what `host.docker.internal`, `host.lima.internal` and `gateway.docker.internal` resolve to. The
+`/24` rather than the address because it is the VM's link to the host: on colima `.2` is the Mac,
+`.3` its DNS and `.15` the VM.
+
+**Rejected: refuse every private range, as the microVM filter does.** It would break a
+default-allow container sandbox that reaches a LAN or VPN host through the proxy, which SPEC.md
+allows, and would need the operator switch the microVM filter has for widening it. The
+engine's own addresses are what the report showed, and they are closed.
+
+**Rejected: a network of the filter's own for its route out.** It would keep the filter off the
+default bridge and its neighbours, at the cost of a second bridge per filtered sandbox, and
+docker's address pools hold about thirty. The default bridge's subnet is refused instead.
+
+**Rejected: refusing `--isolation gvisor` with `egress_allow`.** gVisor does not use docker's DNS
+on a user-defined network, so the filter's alias never resolved. The filter now sits at the last
+address of the sandbox's subnet (docker allocates from the bottom, and `--ip` reserves it), and
+each service gets it through `--add-host`. A fixed address survives the filter being replaced, so
+the hosts entry, written once, stays true.
+
+What it does not cover: a docker network created after the filter started. Its gateway is on the
+VM and is not in the list until the filter is recreated; with ports limited to 80 and 443 that is
+the VM's own web ports on that address, if it serves any.
+
+### The daemon keeps every container filter's doors current
+
+**Status:** current, 2026-09-29. Closes the gap the entry above left open.
+
+Measured on colima: a filter started before another sandbox's network existed answered
+`CONNECT 172.26.0.1:443`, that network's gateway, with 502 `connection refused` - it dialled the
+VM. A listener on the VM's port 443 would have been reached.
+
+**The daemon lists the doors and pushes them.** On every discovery pass it asks docker for every
+network's gateway and the default bridge's subnet, and sends the list to each container filter as
+`PUT /refuse` on the control port it already uses for `/policy`. The filter unions it with its
+start list, routes and host names. Replaced whole, so a removed network drops out; it only adds,
+so an empty or failed listing is never pushed; a body with one bad entry changes nothing. The
+filter saves the last push beside its policy, so a restart does not reopen what it was told.
+
+**Rejected: a docker socket in the filter.** It would let the filter list networks itself, and
+would hand the one container the workload can reach control of the whole engine.
+
+**Rejected: pushing only on change.** The daemon cannot tell a replaced filter, which starts from
+its create-time list, from one that has the last push, without asking; asking costs the same
+loopback request as telling. The listing is two docker calls a pass, made only while a container
+filter exists.
+
+**Every path on the control port needs the token, `/last` included.** The workload can reach that
+port, and `/last` answered it. The daemon reads the address and token through the provider and
+caches them until a request fails.
+
+What it does not cover: a network created while no daemon runs, or in the pass before the daemon
+sees it, and a filter on a remote docker, whose control port is that machine's loopback. A daemon
+older than this reads `/last` without the token and gets 401, so a new filter's traffic stops
+counting as activity under an old daemon until both are upgraded.
 
 
 ---

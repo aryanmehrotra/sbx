@@ -133,6 +133,17 @@ type container struct {
 	Names  []string          `json:"Names"`
 	State  string            `json:"State"`
 	Labels map[string]string `json:"Labels"`
+
+	// Ports is what docker publishes for a running container: which port inside it each host
+	// port reaches. Empty for a stopped one.
+	Ports []containerPort `json:"Ports"`
+}
+
+// containerPort is one entry of /containers/json's Ports.
+type containerPort struct {
+	PrivatePort int    `json:"PrivatePort"`
+	PublicPort  int    `json:"PublicPort"`
+	Type        string `json:"Type"`
 }
 
 func (c container) name() string {
@@ -190,7 +201,9 @@ type health struct {
 func (d *dockerClient) healthy(ctx context.Context, id string) (serving, ok bool) {
 	var h health
 	if err := d.do(ctx, http.MethodGet, "/containers/"+id+"/json", &h); err != nil {
-		return false, false
+		// Not "undeclared": every caller reads that as nothing to wait for. An inspect that
+		// failed - a stalled engine, a container that is gone - is a check that did not pass.
+		return false, true
 	}
 
 	if h.State.Health == nil {
@@ -285,14 +298,18 @@ func (d *dockerClient) exec(ctx context.Context, id string, argv []string) (int,
 // an edited health command left the old one in the map, on the wake path, for the life of a
 // daemon designed to run for weeks. A cache whose invalidation was reasoned about against a
 // key that does not carry the property.
-func (d *dockerClient) healthCommand(ctx context.Context, id string) (string, bool) {
+//
+// The error is returned rather than folded into "none declared": the engine API stalled for about
+// a minute during a Kata start, every inspect failed, and reading that as "no health check" made
+// `sbx ready` report serving for a container that had exited.
+func (d *dockerClient) healthCommand(ctx context.Context, id string) (string, bool, error) {
 	var h health
 	if err := d.do(ctx, http.MethodGet, "/containers/"+id+"/json", &h); err != nil {
-		return "", false
+		return "", false, err
 	}
 
 	if h.Config.Healthcheck == nil || len(h.Config.Healthcheck.Test) < 2 {
-		return "", false
+		return "", false, nil
 	}
 
 	test := h.Config.Healthcheck.Test
@@ -300,12 +317,12 @@ func (d *dockerClient) healthCommand(ctx context.Context, id string) (string, bo
 	// ["CMD-SHELL", "redis-cli ping"] or ["CMD", "redis-cli", "ping"].
 	switch test[0] {
 	case "CMD-SHELL":
-		return test[1], true
+		return test[1], true, nil
 	case "CMD":
-		return strings.Join(test[1:], " "), true
+		return strings.Join(test[1:], " "), true, nil
 	}
 
-	return "", false
+	return "", false, nil
 }
 
 // hostLimits is the part of a container's inspect document that carries its ceilings.
@@ -414,6 +431,7 @@ func (d *dockerClient) exitState(ctx context.Context, name string) (ExitState, e
 			ExitCode  int    `json:"ExitCode"`
 			OOMKilled bool   `json:"OOMKilled"`
 			Error     string `json:"Error"`
+			StartedAt string `json:"StartedAt"`
 		} `json:"State"`
 	}
 
@@ -423,5 +441,8 @@ func (d *dockerClient) exitState(ctx context.Context, name string) (ExitState, e
 
 	st := got.State
 
-	return ExitState{Status: st.Status, ExitCode: st.ExitCode, OOMKilled: st.OOMKilled, Error: st.Error}, nil
+	started, _ := time.Parse(time.RFC3339Nano, st.StartedAt) // zero when absent or unparsable
+
+	return ExitState{Status: st.Status, ExitCode: st.ExitCode, OOMKilled: st.OOMKilled, Error: st.Error,
+		StartedAt: started}, nil
 }

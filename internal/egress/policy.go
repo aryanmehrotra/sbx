@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -480,7 +482,9 @@ func contains(set []netip.Prefix, a netip.Addr) bool {
 // database on the laptop - which the workload could never have reached on its own. A
 // default-allow policy must not turn the proxy into a door onto its own host. An explicit
 // allow rule for the address or a range containing it still opens it, because then somebody
-// asked for exactly that.
+// asked for exactly that. What must stay closed whatever a rule says - the host, the VM behind a
+// container filter - is Filter.Refuse's job, not this default's.
+//
 // HostLocal is hostLocal as a Filter.Refuse: for a filter the daemon hosts on the host itself,
 // whose loopback and link-local (cloud metadata) are the host's, not a container's.
 func HostLocal(a netip.Addr) bool { return hostLocal(a.Unmap()) }
@@ -536,4 +540,164 @@ func (c *compiled) allowsName(host string) bool {
 	}
 
 	return c.p.DefaultAction == ActionAllow
+}
+
+// DefaultPorts are the ports every filter carries: HTTP and HTTPS, the two a proxy is for.
+//
+// A CONNECT names any port, and a filter that honoured every one was a raw TCP relay: under a
+// default of allow, "CONNECT 1.1.1.1:53" answered 200 and spliced whatever followed, to anywhere.
+// SPEC.md always said "HTTP and HTTPS only"; this is where that became true.
+var DefaultPorts = []uint16{80, 443}
+
+// PortGrant is one extra port a filter carries for one target, from an egress_allow entry written
+// as host:port. Target is a host (matching itself and its subdomains, as the entry does), a
+// "*."-wildcard (subdomains only), an IP or a CIDR.
+//
+// A grant is a property of the declaration, not of the live policy: OpenSandbox's NetworkRule has
+// no port, so egress_policy and `sbx egress` cannot grant one, and a grant only matters for a
+// host the policy in force still permits - a live deny of the host closes its port too.
+type PortGrant struct {
+	Target string
+	Port   uint16
+}
+
+func (g PortGrant) String() string {
+	if a, err := netip.ParseAddr(g.Target); err == nil && a.Is6() {
+		return "[" + g.Target + "]:" + strconv.Itoa(int(g.Port))
+	}
+
+	return g.Target + ":" + strconv.Itoa(int(g.Port))
+}
+
+// covers reports whether the grant names host, which is an IP literal or a name as the client
+// wrote it - never an address a name resolved to, so a grant for a name cannot be reached by
+// dialling that name's IP.
+func (g PortGrant) covers(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+
+	if a, err := netip.ParseAddr(host); err == nil {
+		a = a.Unmap()
+
+		if t, err := netip.ParseAddr(g.Target); err == nil {
+			return t.Unmap() == a
+		}
+
+		if p, err := netip.ParsePrefix(g.Target); err == nil {
+			return unmapPrefix(p.Masked()).Contains(a)
+		}
+
+		return false
+	}
+
+	if rest, ok := strings.CutPrefix(g.Target, "*."); ok {
+		return strings.HasSuffix(host, "."+rest)
+	}
+
+	return host == g.Target || strings.HasSuffix(host, "."+g.Target)
+}
+
+// splitAllowEntry splits an egress_allow entry into its host and its port, "" when it has none.
+// An IPv6 literal has no port unless it is bracketed, and a CIDR's port follows its mask.
+func splitAllowEntry(entry string) (host, port string) {
+	entry = strings.ToLower(strings.TrimSpace(entry))
+
+	if h, p, err := net.SplitHostPort(entry); err == nil {
+		return strings.TrimSuffix(h, "."), p
+	}
+
+	return strings.TrimSuffix(entry, "."), ""
+}
+
+func parsePort(s string) (uint16, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 65535 {
+		return 0, fmt.Errorf("%q is not a port: a port is a number from 1 to 65535", s)
+	}
+
+	return uint16(n), nil
+}
+
+// CheckAllowEntry refuses an egress_allow entry whose port is not a port. The port was once
+// dropped, so "github.com:ssh" meant github.com; now that it means something, a port that cannot
+// be one is an error at create rather than a grant that never matches.
+func CheckAllowEntry(entry string) error {
+	host, port := splitAllowEntry(entry)
+	if host == "" {
+		return fmt.Errorf("egress_allow entry %q has no host", entry)
+	}
+
+	// "github.com:" splits into a host and an empty port; "fe80::" does not split at all.
+	if _, p, err := net.SplitHostPort(strings.TrimSpace(entry)); err == nil && p == "" {
+		return fmt.Errorf("egress_allow entry %q ends in a colon with no port after it", entry)
+	}
+
+	if port == "" {
+		return nil
+	}
+
+	if _, err := parsePort(port); err != nil {
+		return fmt.Errorf("egress_allow entry %q: %v. Write it as \"host\" (ports 80 and 443) or "+
+			"\"host:port\", like \"github.com:22\"", entry, err)
+	}
+
+	return nil
+}
+
+// PortGrantsFromAllowList is the extra ports an egress_allow list grants: one per entry written as
+// host:port, apart from 80 and 443, which every filter carries anyway. An entry whose port is not
+// a port grants nothing (CheckAllowEntry refuses it before anything is created).
+func PortGrantsFromAllowList(allow []string) []PortGrant {
+	var out []PortGrant
+
+	seen := map[PortGrant]bool{}
+
+	for _, a := range allow {
+		host, port := splitAllowEntry(a)
+		if host == "" || port == "" {
+			continue
+		}
+
+		n, err := parsePort(port)
+		if err != nil || slices.Contains(DefaultPorts, n) {
+			continue
+		}
+
+		g := PortGrant{Target: host, Port: n}
+		if !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+
+	return out
+}
+
+// FormatPortGrants writes grants as the comma-separated host:port list ParsePortGrants reads - the
+// filter container's -ports argument, and the label a changed set of grants is noticed by.
+func FormatPortGrants(grants []PortGrant) string {
+	parts := make([]string, len(grants))
+	for i, g := range grants {
+		parts[i] = g.String()
+	}
+
+	return strings.Join(parts, ",")
+}
+
+// ParsePortGrants reads FormatPortGrants' output. Empty is no grants.
+func ParsePortGrants(s string) ([]PortGrant, error) {
+	var entries []string
+
+	for _, e := range strings.Split(s, ",") {
+		if e = strings.TrimSpace(e); e == "" {
+			continue
+		}
+
+		if err := CheckAllowEntry(e); err != nil {
+			return nil, err
+		}
+
+		entries = append(entries, e)
+	}
+
+	return PortGrantsFromAllowList(entries), nil
 }

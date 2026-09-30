@@ -76,6 +76,17 @@ func TestEgressAllowValidation(t *testing.T) {
 	if blank.validate("svc") == nil {
 		t.Error("a blank egress_allow host was accepted; it is a hole in the list")
 	}
+
+	// A port is a grant now, so one that is not a port is refused rather than never matching.
+	port := Service{Image: "x", Ports: []int{1}, EgressAllow: []string{"github.com:22"}}
+	if err := port.validate("svc"); err != nil {
+		t.Errorf("host:port should be valid: %v", err)
+	}
+
+	badPort := Service{Image: "x", Ports: []int{1}, EgressAllow: []string{"github.com:ssh"}}
+	if badPort.validate("svc") == nil {
+		t.Error("egress_allow \"github.com:ssh\" was accepted; its port can never match")
+	}
 }
 
 func TestIdleValidation(t *testing.T) {

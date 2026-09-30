@@ -157,6 +157,10 @@ func (f *fakeDocker) SeedFile(context.Context, string, string, string, string) e
 func (f *fakeDocker) SeedFromImage(context.Context, string, string, string) error    { return nil }
 func (f *fakeDocker) HostVolumes()                                                   {}
 
+func (f *fakeDocker) ExecStream(context.Context, string, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+
 func (f *fakeDocker) Pull(_ context.Context, image string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -296,7 +300,7 @@ func (h *harness) start(opts ...option) {
 		Execd: func(context.Context, string) (execdSource, error) {
 			return execdSource{Volume: "sbx-execd-test", File: "/dev/null"}, nil
 		},
-		LockSlots:    func() func() { return func() {} },
+		LockSlots:    func(context.Context) (func(), error) { return func() {}, nil },
 		Egress:       h.eg,
 		EgressStatus: fakeEgressStatus,
 	}

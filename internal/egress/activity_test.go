@@ -105,7 +105,7 @@ func TestTunnelStampsActivityAsBytesMove(t *testing.T) {
 
 	var n atomic.Int64
 
-	f := New([]string{"127.0.0.1"})
+	f := New([]string{host}) // host:port - the listener's port is not 80 or 443
 	f.OnActivity = func() { n.Add(1) }
 
 	proxy := httptest.NewServer(f)

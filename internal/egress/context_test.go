@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestBuildContextHasWhatADockerBuildNeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, want := range []string{"Dockerfile", "go.mod", "filter.go", "main.go"} {
+	for _, want := range []string{"Dockerfile", "go.mod", "filter.go", "doors.go", "main.go"} {
 		if files[want] == "" {
 			t.Fatalf("the context has no %s", want)
 		}
@@ -52,15 +53,10 @@ func TestBuildContextRefusesWithoutPins(t *testing.T) {
 	}
 }
 
-// TestTheGeneratedContextCompilesAndFilters is the one that earns the design. The container runs
-// a copy of this package's source, and the way that stays true is to build the copy and put real
-// traffic through it - allowed host through, blocked host refused - rather than to assert that
-// two files look alike.
-//
-// It compiles on the host rather than in a container: the question is whether the generated
-// source is a valid program that enforces the list, and that answer does not change with the
-// kernel it runs on. Whether docker can build it is the provider's test.
-func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
+// buildFilter compiles the generated context and returns the binary.
+func buildFilter(t *testing.T) string {
+	t.Helper()
+
 	if testing.Short() {
 		t.Skip("compiles a program; not for -short")
 	}
@@ -96,6 +92,21 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 		t.Fatalf("the generated context does not compile: %v\n%s", err, out)
 	}
 
+	return bin
+}
+
+// TestTheGeneratedContextCompilesAndFilters is the one that earns the design. The container runs
+// a copy of this package's source, and the way that stays true is to build the copy and put real
+// traffic through it - allowed host through, blocked host refused - rather than to assert that
+// two files look alike.
+//
+// It compiles on the host rather than in a container: the question is whether the generated
+// source is a valid program that enforces the list, and that answer does not change with the
+// kernel it runs on. Whether docker can build it is the provider's test.
+func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
+	bin := buildFilter(t)
+	dir := t.TempDir()
+
 	// Something to be allowed to reach.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "upstream says hello")
@@ -106,9 +117,12 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 
 	cmd := exec.Command(bin,
 		"-allow", "127.0.0.1",
+		// httptest listens on a port the filter would not otherwise carry.
+		"-ports", strings.TrimPrefix(upstream.URL, "http://"),
 		"-token", "t0ken",
 		"-state", filepath.Join(dir, "policy.json"),
 		"-listen", "127.0.0.1:"+proxyPort,
+		"-test-dial-self",
 		"-stat", "127.0.0.1:"+statPort)
 
 	if err := cmd.Start(); err != nil {
@@ -151,8 +165,12 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 			bresp.StatusCode)
 	}
 
-	// And the stat endpoint the daemon scrapes moved, because traffic went through.
-	sresp, err := http.Get("http://127.0.0.1:" + statPort + "/last")
+	// And the stat endpoint the daemon scrapes moved, because traffic went through. It answers
+	// the daemon's token only: the workload can reach this port.
+	sreq, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+statPort+"/last", nil)
+	sreq.Header.Set(TokenHeader, "t0ken")
+
+	sresp, err := http.DefaultClient.Do(sreq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +178,7 @@ func TestTheGeneratedContextCompilesAndFilters(t *testing.T) {
 	defer sresp.Body.Close()
 
 	raw, _ := io.ReadAll(sresp.Body)
-	if strings.TrimSpace(string(raw)) == "" {
+	if _, perr := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); sresp.StatusCode != http.StatusOK || perr != nil {
 		t.Fatal("the stat endpoint returned nothing; the daemon would never stamp this sandbox")
 	}
 

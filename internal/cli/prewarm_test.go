@@ -44,7 +44,7 @@ func TestPrewarmSkipsWhatIsAlreadyPresent(t *testing.T) {
 	f := &fakePuller{present: map[string]bool{"a:1": true, "b:1": true}}
 
 	var out bytes.Buffer
-	if err := Prewarm(context.Background(), f, &out, []string{"a:1", "b:1"}); err != nil {
+	if err := Prewarm(context.Background(), f, &out, []string{"a:1", "b:1"}, provider.HelperNeeds{}); err != nil {
 		t.Fatalf("Prewarm: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestPrewarmPullsWhatIsMissing(t *testing.T) {
 	f := &fakePuller{present: map[string]bool{"a:1": true}}
 
 	var out bytes.Buffer
-	if err := Prewarm(context.Background(), f, &out, []string{"a:1", "b:1"}); err != nil {
+	if err := Prewarm(context.Background(), f, &out, []string{"a:1", "b:1"}, provider.HelperNeeds{}); err != nil {
 		t.Fatalf("Prewarm: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestPrewarmFailsLoudlyAndNamesTheImage(t *testing.T) {
 
 	var out bytes.Buffer
 
-	err := Prewarm(context.Background(), f, &out, []string{"a:1", "b:1"})
+	err := Prewarm(context.Background(), f, &out, []string{"a:1", "b:1"}, provider.HelperNeeds{})
 	if err == nil {
 		t.Fatal("a failed pull was reported as success")
 	}
@@ -101,7 +101,7 @@ func (noPuller) Name() string { return "kubernetes" }
 func TestPrewarmRefusesAProviderThatCannot(t *testing.T) {
 	var out bytes.Buffer
 
-	err := Prewarm(context.Background(), noPuller{}, &out, []string{"a:1"})
+	err := Prewarm(context.Background(), noPuller{}, &out, []string{"a:1"}, provider.HelperNeeds{})
 	if err == nil {
 		t.Fatal("a provider with no Pull was accepted")
 	}

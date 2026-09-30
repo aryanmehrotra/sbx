@@ -6,9 +6,13 @@ package main
 // covers, not a second implementation of the same idea that can drift from it.
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
+	"net"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,15 +24,32 @@ func main() {
 	var (
 		allow  = flag.String("allow", "", "comma-separated hosts this sandbox may reach (egress_allow)")
 		policy = flag.String("policy", "", "the network policy to start with, as JSON; wins over -allow")
+		ports  = flag.String("ports", "", "comma-separated host:port grants beyond 80 and 443 (egress_allow entries with a port)")
+		names  = flag.String("names", "", "comma-separated further names this filter answers to (its container name), refused like its addresses")
+		refuse = flag.String("refuse", "", "comma-separated addresses and CIDRs never dialled, whatever the policy: the docker engine's gateways and the default bridge")
 		token  = flag.String("token", os.Getenv("SBX_EGRESS_TOKEN"), "secret the control endpoint requires")
 		state  = flag.String("state", "/var/lib/sbx-egress/policy.json", "where a live policy is kept across restarts")
 		listen = flag.String("listen", ":20999", "proxy address")
 		stat   = flag.String("stat", ":20998", "address serving the last-activity timestamp and the control endpoint")
+
+		// Only for a test that runs this program on the machine its upstream listens on, where
+		// every upstream is one of this process's own addresses. sbx never passes it.
+		dialSelf = flag.Bool("test-dial-self", false, "do not refuse this process's own interface addresses (tests only)")
 	)
 
 	flag.Parse()
 
 	start := New(strings.Split(*allow, ",")).Policy()
+
+	// Grants are the declaration's, not the live policy's: they are fixed for the life of this
+	// container, and a changed set replaces it (the provider compares them by label).
+	grants, err := ParsePortGrants(*ports)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "-ports:", err)
+		os.Exit(2)
+	}
+
+	grants = append(PortGrantsFromAllowList(strings.Split(*allow, ",")), grants...)
 
 	if *policy != "" {
 		p, err := ParsePolicy([]byte(*policy))
@@ -57,6 +78,59 @@ func main() {
 	last.Store(time.Now().UnixNano())
 
 	f := NewPolicy(start)
+	f.SetPorts(grants)
+
+	// The machine this container runs on, and the one behind it, are never a destination: see
+	// Doors. Read once now so the first request is judged against it, then again every half
+	// minute, because a name like host.docker.internal can move with the VM's network.
+	static, err := ParsePrefixes(*refuse)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "-refuse:", err)
+		os.Exit(2)
+	}
+
+	doors := &Doors{Static: static}
+
+	// The names this filter answers to, besides its addresses: the alias services reach it by,
+	// localhost, and its hostname (docker sets the container ID). A request naming one is a
+	// request to the filter itself, which no policy or port grant opens.
+	f.SelfNames = []string{"sbx-egress", "localhost"}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		f.SelfNames = append(f.SelfNames, h)
+	}
+
+	for _, n := range strings.Split(*names, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			f.SelfNames = append(f.SelfNames, n)
+		}
+	}
+	if *dialSelf {
+		doors.Interfaces = func() ([]net.Addr, error) { return nil, nil }
+	}
+
+	// What the daemon last pushed (Control's /refuse), so a restart does not reopen a network
+	// created since this container was: until the daemon's next tick it would otherwise be a door.
+	// Unreadable is not fatal - the start list and the names still hold, and the push comes back.
+	refuseState := filepath.Join(filepath.Dir(*state), "refuse.json")
+	if b, err := os.ReadFile(refuseState); err == nil {
+		var saved RefuseSet
+		if err := json.Unmarshal(b, &saved); err == nil {
+			if set, err := ParsePrefixes(strings.Join(saved.Prefixes, ",")); err == nil {
+				doors.SetPushed(set)
+			}
+		}
+	}
+
+	doors.Refresh(context.Background())
+	f.Refuse = doors.Refuse
+
+	go func() {
+		for range time.Tick(30 * time.Second) {
+			doors.Refresh(context.Background())
+		}
+	}()
+
+	fmt.Fprintf(os.Stderr, "refusing, whatever the policy: %v\n", doors.Prefixes())
 	f.OnActivity = func() { last.Store(time.Now().UnixNano()) }
 
 	ctl := &Control{Filter: f, Token: *token, Persist: func(p Policy) error {
@@ -77,21 +151,41 @@ func main() {
 		return os.Rename(tmp, *state)
 	}}
 
+	ctl.Doors = doors
+	ctl.Last = last.Load
+	ctl.PersistRefuse = func(set []netip.Prefix) error {
+		out := RefuseSet{Prefixes: []string{}}
+		for _, p := range set {
+			out.Prefixes = append(out.Prefixes, p.String())
+		}
+
+		b, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
+
+		if err := os.MkdirAll(filepath.Dir(refuseState), 0o700); err != nil {
+			return err
+		}
+
+		tmp := refuseState + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o600); err != nil {
+			return err
+		}
+
+		return os.Rename(tmp, refuseState)
+	}
+
 	// The daemon runs on the host and cannot see into the sandbox's bridge, so it cannot observe
 	// this filter's traffic the way it observes its own. It scrapes this instead, once a refresh
 	// tick, and stamps the sandbox's units when the number has moved. A tick is seconds and an
 	// idle window is minutes, so the lag is far inside the decision it feeds.
 	//
 	// The same listener carries the control endpoint, because it is the one port of this
-	// container the daemon can already reach.
+	// container the daemon can already reach. Every path on it, /last included, is behind the
+	// token: the workload can reach this port too.
 	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/last", func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprintf(w, "%d\n", last.Load())
-		})
-		mux.Handle("/policy", ctl)
-
-		s := &http.Server{Addr: *stat, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		s := &http.Server{Addr: *stat, Handler: ctl, ReadHeaderTimeout: 5 * time.Second}
 		if err := s.ListenAndServe(); err != nil {
 			fmt.Fprintln(os.Stderr, "stat listener:", err)
 		}

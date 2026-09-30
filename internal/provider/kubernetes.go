@@ -85,21 +85,23 @@ func (k *kubeProvider) forgetReady(ref string) {
 }
 
 // cachedReady returns the readiness command, asking kubectl only once per deployment.
-func (k *kubeProvider) cachedReady(ref string) (string, bool) {
+func (k *kubeProvider) cachedReady(ref string) (string, bool, error) {
 	k.mu.Lock()
 	e, seen := k.ready[ref]
 	k.mu.Unlock()
 
 	if seen && time.Since(e.at) < readyTTL {
-		return e.command, e.command != ""
+		return e.command, e.command != "", nil
 	}
 
 	out, err := k.kc("", "get", "deployment", ref, "-o",
 		"jsonpath={.spec.template.spec.containers[0].readinessProbe.exec.command[-1]}")
 	if err != nil {
 		// Not cached: an unreachable API server is not an answer about this deployment, and
-		// remembering it as "no command" would make every later probe wrong.
-		return "", false
+		// remembering it as "no command" would make every later probe wrong. Returning it as
+		// "no command" would be the same mistake made once: callers read that as nothing to wait
+		// for, and report serving.
+		return "", false, err
 	}
 
 	cmd := strings.TrimSpace(out)
@@ -108,7 +110,7 @@ func (k *kubeProvider) cachedReady(ref string) (string, bool) {
 	k.ready[ref] = readyEntry{command: cmd, at: time.Now()}
 	k.mu.Unlock()
 
-	return cmd, cmd != ""
+	return cmd, cmd != "", nil
 }
 
 func (k *kubeProvider) Name() string { return "kubernetes/" + k.namespace }
@@ -249,7 +251,26 @@ func (k *kubeProvider) Create(ctx context.Context, sandbox string, slot, ordinal
 	name := kubeName(sandbox, service)
 
 	if _, err := k.kc("", "get", "deployment", name); err == nil {
-		fmt.Printf("  %-12s already exists\n", service)
+		// The same rule as docker's Create: the declared image is the one difference a re-create
+		// acts on, because a `build` service's image is a hash of its context and stopping at
+		// "already exists" kept the old build under a success message. Patched in place rather
+		// than re-applied or deleted: the pod template changes and nothing else, so the
+		// deployment keeps its PersistentVolumeClaim and a scaled-to-zero one stays asleep.
+		running, err := k.kc("", "get", "deployment", name, "-o",
+			"jsonpath={.spec.template.spec.containers[0].image}")
+		if err != nil || running == svc.Image || svc.Image == "" {
+			fmt.Printf("  %-12s already exists\n", service)
+			return nil
+		}
+
+		if _, err := k.kc("", "set", "image", "deployment/"+name, "app="+svc.Image); err != nil {
+			return fmt.Errorf("service %q runs %s but its spec now says %s, and the deployment "+
+				"could not be patched: %w", service, running, svc.Image, err)
+		}
+
+		k.forgetReady(name)
+		fmt.Printf("  %-12s recreated (image changed)\n", service)
+
 		return nil
 	}
 
@@ -519,7 +540,7 @@ func (k *kubeProvider) Healthy(_ context.Context, ref string) (bool, bool) {
 	probe, err := k.kc("", "get", "deployment", ref, "-o",
 		"jsonpath={.spec.template.spec.containers[0].readinessProbe}")
 	if err != nil {
-		return false, false
+		return false, true // an unreachable API server is not a deployment with no probe
 	}
 
 	declared := strings.TrimSpace(probe) != ""
@@ -538,7 +559,11 @@ func (k *kubeProvider) Healthy(_ context.Context, ref string) (bool, bool) {
 // does: on the wake path the caller is holding a connection, and readiness republished on a
 // probe interval is slower than asking.
 func (k *kubeProvider) Probe(ctx context.Context, ref string) (bool, bool) {
-	cmd, ok := k.cachedReady(ref)
+	cmd, ok, err := k.cachedReady(ref)
+	if err != nil {
+		return false, true // could not ask, which is not "nothing to ask"
+	}
+
 	if !ok {
 		return false, false
 	}
@@ -563,6 +588,22 @@ func (k *kubeProvider) ExecTTY(ctx context.Context, ref string, argv []string) e
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
 	return cmd.Run()
+}
+
+// ExecStream is `kubectl exec`, which exits with the workload's own status, and passes -i only
+// when there is stdin: kubectl without -i never reads ours.
+func (k *kubeProvider) ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	args := []string{"-n", k.namespace, "exec"}
+	if stdin != nil {
+		args = append(args, "-i")
+	}
+
+	args = append(append(args, "deployment/"+ref, "--"), argv...)
+
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+
+	return exitStatus(cmd.Run())
 }
 
 func (k *kubeProvider) Exec(_ context.Context, ref string, argv []string) (string, error) {
@@ -698,3 +739,16 @@ func (k *kubeProvider) Remove(_ context.Context, sandbox string) error {
 
 	return nil
 }
+
+// Where implements Locator: the kubectl context, since sbx talks to whichever cluster that names
+// and Name carries only the namespace. "" when kubectl cannot say.
+func (k *kubeProvider) Where() string {
+	out, err := kubectl("", "config", "current-context")
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(out)
+}
+
+var _ Locator = (*kubeProvider)(nil)

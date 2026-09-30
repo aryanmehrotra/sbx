@@ -17,41 +17,45 @@ Commands marked (B) below also take these.
 
 ## Commands
 
+Flags go before, between or after the names: `sbx logs -f b svc` and `sbx logs b svc -f` are the
+same. Everything after a bare `--` is a name. For `sbx exec` and `sbx add`, the words after the
+names are the command, and its own flags stay its own.
+
 ### Start here
 
 | command | purpose | flags |
 |---|---|---|
 | `sbx doctor` | What this machine can and cannot do. Run it first | `--json` |
-| `sbx install [NAME...]` | Install what `sbx doctor` reports missing: tools from the package manager, and gVisor, Kata or checkpoint registered with this machine's dockerd. Shows each command, then asks | `--yes`, `--dry-run` |
+| `sbx install [NAME...]` | Install what `sbx doctor` reports missing: tools from the package manager, and gVisor, Kata or checkpoint registered with this machine's dockerd. Shows each command, then asks. Exits non-zero if a named item cannot be installed here | `--yes`, `--dry-run` |
 | `sbx init` | Write a `sandbox.json` interactively. Piped or with `--template`, prints it to stdout | `--template NAME` (default `postgres`), `--yes`, `--from-devcontainer PATH` (gated: `devcontainer`) |
 | `sbx serve` | The daemon, one per machine. See [sbx serve](#sbx-serve) | see below |
-| `sbx selftest` | Create, sleep, wake and check a sandbox on this machine. (B) | `--keep` |
+| `sbx selftest` | Create, sleep, wake and check a sandbox on this machine. Touches no other sandbox. (B) | `--keep` |
 
 ### Every day
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx create <sandbox>` | Make a sandbox. Services start asleep. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
-| `sbx with <sandbox> -- <cmd>` | Create, wait until ready, run `cmd` with the env, then remove. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` |
-| `sbx env <sandbox>` | Print the services' addresses as shell exports. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
-| `sbx list` | Every sandbox, its services, state and address. (B) | `--json` |
+| `sbx create <sandbox>` | Make a sandbox. Services start asleep. Run again, it recreates only a service whose image changed (an edited `build` context), keeping its volume. (B) | `--spec FILE` (default `sandbox.json`), `--template NAME`, `--optional` |
+| `sbx with <sandbox> -- <cmd>` | Create a new sandbox, wait until ready, run `cmd` with the env, then remove what it created, also when create fails or on SIGINT/SIGTERM (passed on to `cmd`). Refuses a name in use or being created. Exits with `cmd`'s status (B) | `--spec`, `--template`, `--optional`, `--keep`, `--timeout 90s` (each wait for a service) |
+| `sbx env <sandbox>` | Print the services' addresses as shell exports: each `exports` name, and `<SERVICE>_HOST`/`_PORT` for a service no export names. Needs no `${VAR}` set. (B) | `--shell posix\|fish\|powershell\|cmd\|json` (detected if unset), `--spec`, `--template` |
+| `sbx list` | Every sandbox, its services, state (`awake`, `asleep`, or `frozen` when `on_idle: "freeze"` paused it), isolation tier and address. `--json` adds `state` and `isolation`; `awake` is false for a frozen service. (B) | `--json` |
 | `sbx ui` | Live dashboard. Aliases: `dash`, `dashboard`. (B) | `--connect URL` (repeatable), `--sandbox NAME` (repeatable, with `--connect`) |
-| `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. (B) | none |
+| `sbx rm <sandbox>` | Delete a sandbox and its data. No undo. A name with no sandbox left only its origin record behind (a failed create); rm clears that and says so, when the record names this backend. A record from before records named one is left, with the command to remove it by hand. (B) | none |
 
 ### While you work
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything. (B) | `--tail N` (default 100), `-f` |
-| `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. (B) | `-t` attaches a terminal |
+| `sbx logs <sandbox> [service]` | What a service printed. Does not wake anything; `-f` stops, and says so, when the service goes to sleep. (B) | `--tail N` (default 100), `-f` |
+| `sbx exec [-t] <sandbox> <service> <cmd>...` | Run a command inside a service. Piped stdin reaches it; sbx exits with its status. (B) | `-t` attaches a terminal |
 | `sbx cp <sandbox> <service> <src> <dst>` | Copy a file in or out. Prefix the in-service path with `:`. (B) | none |
-| `sbx add <sandbox> <service>` | Add a service the spec never declared. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
+| `sbx add <sandbox> <service>` | Add a service the spec never declared, on the sandbox's own isolation tier. A different `--isolation` or `SBX_ISOLATION` is refused, naming which one asked. (B) | `--image` (required), `--port N[,N]` (required), `--health CMD`, `--volume PATH`, `--env K=V,...`, `--spec` |
 | `sbx url <sandbox> <service>` | Public link that wakes the service when opened. (B) | `--via cloudflared\|ngrok\|ssh` (detected if unset), `--host-header rewrite\|pass` (default `rewrite`) |
 | `sbx connect <url>...` | Local ports for a sandbox deployed elsewhere. Reads `SBX_CONNECT_TOKEN`. | `--port-offset N\|LABEL=N`, `--sandbox NAME` (repeatable) |
-| `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`) |
-| `sbx ready <sandbox>` | Block until every service really answers. For CI. (B) | `--timeout 90s` |
+| `sbx pack [service]` | Build contexts for a platform that runs one container on one HTTP port. The image installs sbx at this release, or at `--version`; a source build needs `--version` | `--spec FILE` (default `sandbox.json`), `--out DIR` (default `sbx-pack`), `--version vX.Y.Z` |
+| `sbx ready <sandbox>` | Block until every service is running and, checked inside its container, listens on its ports where outside can reach them. For CI. (B) | `--timeout 90s` |
 | `sbx wake <sandbox>` | Wake now and wait until serving. (B) | `--timeout 90s` |
-| `sbx sleep <sandbox>` | Stop every service now and drop to 0 B. (B) | none |
+| `sbx sleep <sandbox>` | Stop every service now, frozen ones included, and drop to 0 B. Dependents stop before what they `depends_on`; the rest stop together. (B) | none |
 | `sbx egress <sandbox> [service]` | Read or change a running sandbox's network policy. (B) | `--allow H`, `--deny H`, `--remove H` (all repeatable), `--default allow\|deny`, `--reset`, `--show`, `--json` |
 | `sbx mcp` | MCP server (tools an AI app can call) on stdio, with OpenSandbox's 19 tools. Needs `sbx serve --osb-addr`. [Setup](GUIDES.md#mcp). | `--url` (see [env](#opensandbox-api-and-mcp)), `--key` |
 | `sbx ssh <sandbox> [service]` | Reach a service with an editor over ssh. Gated: `SBX_FEATURES=ssh`. (B) | `--user` (default `root`), `--folder` (default `/work`), `--template`, `--spec` |
@@ -60,11 +64,12 @@ Commands marked (B) below also take these.
 
 | command | purpose | flags |
 |---|---|---|
-| `sbx snapshot <sandbox> <name>` | Save every service's filesystem. (B) | none |
-| `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. (B) | `--spec`, `--template`, `--optional` |
-| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only. (B) | none |
-| `sbx resume <sandbox> <name>` | Restore from a checkpoint. (B) | none |
-| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
+| `sbx snapshot <sandbox> <name>` | Save every service's filesystem: its volume, and its image. A service without `volume` is saved as its image alone. Running services are paused for the copy and thawed after, so a database is saved at one instant. A failed or interrupted snapshot removes what it wrote. Refuses a name that is taken; `--replace` removes that snapshot whole, then takes a fresh one. (B) | `--replace` |
+| `sbx snapshot --rm <name>` | Delete one snapshot's images and volumes, including volumes an interrupted snapshot left without an image. Refuses, removing nothing, while a container still uses it. (B) | none |
+| `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
+| `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |
+| `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
+| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left, and lock files whose holder is gone, and origin records (`~/.sbx/origins`) this backend wrote with no sandbox or snapshot of their name (a long list is counted, with the first ten named). Records naming another backend are left to it; records naming none are counted and never removed. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 
 ### Finding out
 
@@ -73,7 +78,7 @@ Commands marked (B) below also take these.
 | `sbx history [sandbox]` | Commands that changed something, and every wake and sleep. Reads a file. | `--limit N` (default 50, 0 = all), `--commands`, `--events`, `--json` |
 | `sbx templates` | The built-in specs and when their images were pinned. | none |
 | `sbx validate [sandbox.json]` | Check a spec, create nothing. | `--spec`, `--template` |
-| `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. (B) | `--spec FILE` |
+| `sbx prewarm [IMAGE...]` | Pull images now; on firecracker also build root filesystems. On docker it also pulls the helpers the specs would run: `alpine:3` (snapshot and fork copy volumes with it) if a service declares `volume`, and the egress filter's `golang:1.26-alpine` and `alpine:3.20` if a service is filtered. Named images get no helpers. (B) | `--spec FILE` |
 | `sbx features` | List preview features and whether each is on. | none |
 | `sbx version` | Print the version. Also `--version`, `-v`. | none |
 | `sbx help` | Top-level help. Also `--help`, `-h`. | none |
@@ -113,12 +118,12 @@ The daemon. It owns the ports `sbx env` prints, wakes a sandbox on connect and s
 | `--idle` | `5m` | Sleep a service after this long with no bytes |
 | `--ready` | `90s` | Give up waking a service after this long |
 | `--refresh` | `15s` | How often to look for new or removed sandboxes |
-| `--only PREFIX` | `$SBX_ONLY`, else all | Manage only sandboxes matching this prefix or glob. Repeatable or comma-separated |
+| `--only PREFIX` | `$SBX_ONLY`, else all | Manage only sandboxes matching this prefix or glob. Repeatable or comma-separated. An unscoped daemon leaves these to it while it runs |
 | `--connect-addr ADDR` | `$SBX_CONNECT_ADDR`, else off | Serve the `sbx connect` endpoint here. Needs `SBX_CONNECT_TOKEN` |
 | `--front SPEC` | `$SBX_FRONT`, else off | Carry non-sandbox ports: `5432`, `db=5432,cache=6379`, `db=10.0.4.7:3306` |
 | `--behind-proxy` | off | A proxy in front terminates TLS, so a non-loopback address is allowed |
 | `--osb-addr ADDR` | `$SBX_OSB_ADDR`, else off | Serve the OpenSandbox lifecycle API (the one its SDKs and `sbx mcp` call), e.g. `127.0.0.1:8080` |
-| `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` | Required `OPEN-SANDBOX-API-KEY` |
+| `--osb-key KEY` | `$SBX_OSB_KEY`, else generated into `~/.sbx/osb/key` once the API starts (a refused start writes none) | Required `OPEN-SANDBOX-API-KEY` |
 | `--osb-insecure-no-key` | off | Serve the API with no key. Loopback only |
 | `--osb-host-paths DIRS` | `$SBX_OSB_HOST_PATHS`, else none | Host directories an OpenSandbox host volume may bind from |
 | `--osb-pool IMAGE[=N]` | `$SBX_OSB_POOL`, else none | Keep N (default 8) warm sandboxes of this image. Repeatable |
@@ -155,6 +160,21 @@ small Linux VM that sbx starts. There the API key is always on, and only these f
 | `SBX_NO_UPDATE_CHECK` | unset | Any value: turn off the update check (see below) |
 
 `sbx env` also prints `SBX_SANDBOX` and `SBX_PROVIDER` for your shell. sbx does not read them.
+
+A service no export names, such as one from `sbx add`, gets `<SERVICE>_HOST` and
+`<SERVICE>_PORT` for its first port. The name is upper-cased, with anything but a letter or
+digit turned into `_`: `sbx add b my-cache ...` prints `MY_CACHE_PORT`. An export of the same
+name wins. Two services that map to one name, such as `my.cache` and `my-cache`, get neither.
+Either case prints a warning on stderr naming the services: from `sbx env`, from the `sbx add`
+that causes it, and from `sbx validate` and `sbx create` when the spec alone shows it. None of
+them refuses. A service in `sandbox.json` can take an `exports` entry; one from `sbx add` cannot,
+so add it again under another name.
+
+`sbx exec` without `-t` passes stdin on when it is a pipe or a file, and exits with the
+command's own status: `pg_dump | sbx exec b postgres psql -U app` works, and so does a CI
+step gating on `sbx exec b app ./check`. In a `while read` loop, give it `</dev/null` so it
+does not read the loop's input. The firecracker provider refuses stdin that holds data,
+because its in-VM agent cannot signal end of input: copy the file in with `sbx cp` instead.
 
 ### Remote (connect, pack, front)
 

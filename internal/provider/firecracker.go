@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/agentbin"
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execdctl"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
@@ -559,6 +560,11 @@ func unsupported(svc spec.Service) error {
 	add(len(svc.CapAdd) > 0, "cap_add", "the workload is root in its own kernel; there is no capability set to widen")
 	add(svc.Egress != "" && svc.Egress != spec.EgressDeny && svc.Egress != spec.EgressAllow, "egress",
 		"a VM bridge has no NAT: its egress is deny, or the filter (allow, egress_allow, egress_policy)")
+	// A port on an egress_allow entry is a grant on docker. A microVM's filter is built from the
+	// declared policy alone, which has no port, so the grant would be dropped - the silent kind of
+	// refusal a port that "does nothing" is.
+	add(len(egress.PortGrantsFromAllowList(svc.EgressAllow)) > 0, "egress_allow host:port",
+		"a microVM's egress filter carries ports 80 and 443 only; list the host without a port")
 
 	if len(why) == 0 {
 		return nil
@@ -1670,7 +1676,16 @@ func (p *fcProvider) Probe(ctx context.Context, ref string) (bool, bool) {
 	// Asleep is nothing to ask, not a failing check: Create leaves every VM asleep, and a caller
 	// that probes right after it (the CLI's post-create wait) must not spin on a VM nobody woke.
 	// The wake path probes after Start, when the VM is running.
-	if state, err := p.running(ctx, ref); err != nil || state != fc.StateRunning {
+	//
+	// But a VMM that is alive and did not answer its API is not asleep: running says so with an
+	// error, and that is a check that did not pass, not nothing to check. Read as undeclared, the
+	// CLI's wait returned "serving" and the daemon marked the wake awake for a VM it could not ask.
+	state, err := p.running(ctx, ref)
+	if err != nil {
+		return false, true
+	}
+
+	if state != fc.StateRunning {
 		return false, false
 	}
 

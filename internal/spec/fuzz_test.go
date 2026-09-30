@@ -117,6 +117,7 @@ func FuzzExpandEnv(f *testing.F) {
 		`{"version":1,"services":{"a":{"image":"x","ports":[1],"env":{"K":"${FOO"}}}}`,
 		`{"version":1,"services":{"a":{"image":"x","ports":[1],"env":{"K":"${FOO}${BAR}"}}}}`,
 		`{"version":1,"services":{"a":{"image":"x","ports":[1],"env":{"K":"$${FOO}"}}}}`,
+		`{"version":1,"services":{"a":{"image":"x","ports":[1],"env":{"K":"$$${FOO}$${"}}}}`,
 		`{"version":1,"services":{"a":{"image":"x","ports":[1],"env":{"K":"a${FOO}b"}}}}`,
 	} {
 		f.Add(s, "SET")
@@ -130,27 +131,44 @@ func FuzzExpandEnv(f *testing.F) {
 			t.Fatal(err)
 		}
 
-		sp, err := LoadSpec(path)
+		// Unexpanded, so this test's expandEnv is the only pass: expansion is once per load,
+		// because a `$${` becomes a literal `${` that a second pass would read as a reference.
+		sp, err := LoadSpecUnexpanded(path)
 		if err != nil {
 			return
+		}
+
+		before := map[string]map[string]string{}
+		for name, svc := range sp.Services {
+			before[name] = map[string]string{}
+			for k, v := range svc.Env {
+				before[name][k] = v
+			}
 		}
 
 		// Every declared variable resolves, or the whole load fails. A partially expanded
 		// value reaching a container is the outcome with no acceptable version.
-		err = sp.expandEnv(func(string) (string, bool) { return value, true })
-		if err != nil {
-			return
+		if err := sp.expandEnv(func(string) (string, bool) { return value, true }); err != nil {
+			t.Fatalf("every variable is set, yet expandEnv failed: %v: %q", err, body)
 		}
 
+		// Checked against a second, independent reading of the syntax: set every `$${` aside,
+		// substitute each well-formed ${NAME}, then put the escapes back as literal `${`. It
+		// catches a reference left unexpanded, an escape that was expanded, and an escape
+		// that was lost.
 		for name, svc := range sp.Services {
 			for k, v := range svc.Env {
-				// Only a WELL-FORMED reference. The regex deliberately matches ${NAME} and
-				// nothing else, so `${}` and an unterminated `${FOO` are literals by design -
-				// braces are what make the boundary unambiguous, and a password containing a
-				// literal $ must not silently become a substitution.
-				if envRef.MatchString(v) {
-					t.Errorf("service %q env %q still holds an unexpanded reference %q "+
-						"after a successful expand: %q", name, k, v, body)
+				in := before[name][k]
+				if strings.Contains(in+value, "\x00") {
+					continue
+				}
+
+				want := strings.ReplaceAll(in, "$${", "\x00")
+				want = envRef.ReplaceAllLiteralString(want, value)
+				want = strings.ReplaceAll(want, "\x00", "${")
+
+				if v != want {
+					t.Errorf("service %q env %q: %q expanded to %q, want %q", name, k, in, v, want)
 				}
 			}
 		}

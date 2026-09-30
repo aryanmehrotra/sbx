@@ -26,6 +26,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/snapshotpause"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 	"strings"
 )
@@ -121,6 +122,9 @@ type daemon struct {
 	// exists to fix, running the other way.
 	egressSeen map[string]int64
 
+	// endpoints caches where each container filter answers and its token - see egressdoors.go.
+	endpoints filterEndpoints
+
 	// egressCtl is the policy API, built on first use so a daemon constructed as a literal
 	// (tests, selftest) gets one too. egressDir overrides where live policies are kept.
 	egressOnce sync.Once
@@ -166,6 +170,10 @@ type daemon struct {
 	// servesOSB is set when this daemon serves --osb-addr. An unscoped daemon without it leaves
 	// containers the API created (label sbx.osb) to the daemon that does - see scope.go.
 	servesOSB bool
+
+	// deferred is the sandboxes this unscoped daemon leaves to a live --only daemon, by that
+	// daemon's pid, under mu. Only so the hand-over is logged once each way - see noteDeferred.
+	deferred map[string]int
 }
 
 // runServe is the daemon. One per machine, or one Deployment per cluster namespace: it
@@ -421,11 +429,12 @@ func (d *daemon) run(ctx context.Context) {
 	discovery := time.NewTicker(d.refresh)
 	defer discovery.Stop()
 
-	// The reaper's cadence has to follow the idle window, not ignore it. Fixed at 30s, a
-	// sandbox configured to sleep after 5s slept after 60 - two ticks, because the first
-	// one only established that it had ever been serving. The setting meant nothing below
-	// half a minute, which is exactly where anyone testing it would set it.
-	reap := time.NewTicker(reapEvery(d.idle))
+	// The reaper decides every reapTick, whatever the windows are, so a unit sleeps within about a
+	// second of its own window. It used to run every third of the shortest window in force (1s to
+	// 30s): fixed at 30s a 5s window slept after 60, and even following the windows a 30s one
+	// slept 37-40s after its last byte. A tick is decided in memory - see reapAsync and
+	// BenchmarkReapTick - so running it every second costs nothing a slower one saved.
+	reap := time.NewTicker(reapTick)
 	defer reap.Stop()
 
 	for {
@@ -435,7 +444,9 @@ func (d *daemon) run(ctx context.Context) {
 		case <-discovery.C:
 			d.discover(ctx)
 		case <-reap.C:
-			d.reap(ctx)
+			// Not waited on: a stop can take docker's whole grace period, and this loop is the
+			// clock every other unit's sleep and every discovery tick run on. See reapAsync.
+			d.reapAsync(ctx)
 		}
 	}
 }
@@ -458,13 +469,17 @@ func (d *daemon) discover(ctx context.Context) {
 	}
 
 	// Filtered here, once, so that nothing downstream - listeners, the reaper, the egress
-	// filters, correctAwake - ever holds a unit outside --only, or an API sandbox this daemon
-	// does not own, to act on.
-	if len(d.scope) > 0 || !d.servesOSB {
+	// filters, correctAwake - ever holds a unit outside --only, an API sandbox this daemon
+	// does not own, or a sandbox a live --only daemon covers, to act on.
+	//
+	// The scoped daemons are read once per pass, not per unit: a pass sees one registry.
+	claims := d.scopedClaims()
+
+	if len(d.scope) > 0 || !d.servesOSB || len(claims) > 0 {
 		in := found[:0:0]
 
 		for _, f := range found {
-			if d.adopts(f) {
+			if d.adoptsGiven(f, claims) {
 				in = append(in, f)
 			}
 		}
@@ -493,8 +508,16 @@ func (d *daemon) discover(ctx context.Context) {
 		seen[f.Ref] = true
 
 		d.mu.Lock()
-		_, known := d.units[f.Ref]
+		cur, known := d.units[f.Ref]
 		d.mu.Unlock()
+
+		// Same Ref, different thing: retire the old unit and serve this one as new. See replaced.
+		if known && replaced(cur, f, legsOf(d.provider, f)) {
+			logs.Default.Info(f.Sandbox, f.Service, "replaced under the same name - serving the new one")
+			d.forget(f.Ref, cur)
+
+			known = false
+		}
 
 		if known {
 			d.correctAwake(f)
@@ -578,6 +601,10 @@ func (d *daemon) discover(ctx context.Context) {
 	// A container filter replaced or restarted from an older copy is told the live policy
 	// again. Only sandboxes somebody changed live are asked.
 	d.syncEgress(ctx, found)
+
+	// And every container filter is told the engine's doors as they are now, so a network another
+	// sandbox created since it started is refused too (egressdoors.go).
+	d.pushEgressDoors(ctx, found)
 }
 
 // correctAwake revokes a belief the provider contradicts.
@@ -602,6 +629,14 @@ func (d *daemon) correctAwake(f provider.Unit) {
 		return
 	}
 
+	// `sbx snapshot` pauses running services for the length of its copy and marks each pause
+	// (internal/snapshotpause). That pause is not a freeze: the snapshot thaws it itself, and a
+	// unit recorded frozen and asleep here would be a running container the daemon never
+	// sleeps again. Left exactly as it is; the next tick after the thaw finds it running.
+	if f.Paused && snapshotpause.Held(f.Ref) {
+		return
+	}
+
 	d.mu.Lock()
 	u := d.units[f.Ref]
 	d.mu.Unlock()
@@ -610,32 +645,64 @@ func (d *daemon) correctAwake(f provider.Unit) {
 		return
 	}
 
-	// Frozen or stopped decides which verb wakes it, and a pause done outside sbx (`docker
-	// pause`) is otherwise invisible until a Start is refused. Synced whenever no wake is in
-	// flight, awake or not - it is a fact about the container, not a belief about serving.
-	if f.Paused != u.isFrozen() && u.waking.TryLock() {
-		u.setFrozen(f.Paused)
-		u.waking.Unlock()
-	}
-
-	if !u.isAwake() {
+	// Nothing to correct - every sleeping unit on every tick - costs nothing more than it did.
+	if f.Paused == u.isFrozen() && !u.isAwake() {
 		return
 	}
 
 	if !u.waking.TryLock() {
-		return // a wake is in progress; its own bookkeeping is the truth
+		return // a wake or a sleep is in progress; its own bookkeeping is the truth
 	}
 	defer u.waking.Unlock()
 
-	// Re-checked under the lock: a wake may have finished between the test above and here.
+	// The listing may predate the lock, so it is asked again now that nothing can move the unit.
+	//
+	// Taking the lock proves no wake is in flight NOW, not that none finished after the listing
+	// was taken. That gap is not hypothetical: a connection arriving during a stop wakes the unit
+	// the moment the stop returns, and the discovery tick due during the stop listed the
+	// container as exited just before. The wake finished (woke in 175ms), discover then applied
+	// its 17ms-stale "not running", and the unit was marked asleep with its container up - where
+	// the reaper, which only considers units it believes awake, never looked at it again. A
+	// "idle": "3s" service stayed up for minutes.
+	//
+	// A listing only reaches here when it contradicts the daemon, so the second ask is rare.
+	now, ok := d.relist(f)
+	if !ok || now.Running {
+		return
+	}
+
+	// Frozen or stopped decides which verb wakes it, and a pause done outside sbx (`docker
+	// pause`) is otherwise invisible until a Start is refused. Synced whenever no wake is in
+	// flight, awake or not - it is a fact about the container, not a belief about serving.
+	u.setFrozen(now.Paused)
+
 	if !u.isAwake() {
 		return
 	}
 
-	u.setFrozen(f.Paused)
-
 	u.setAwake(false)
 	logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; will be started on demand")
+}
+
+// relist asks the provider for one unit's state now. ok is false if it could not say, which
+// leaves the daemon's belief alone: a wrong "awake" is corrected by the next tick or the next
+// dial, a wrong "asleep" is a running container nothing will ever sleep.
+func (d *daemon) relist(f provider.Unit) (provider.Unit, bool) {
+	ctx, cancel := context.WithTimeout(d.lifetime(context.Background()), 10*time.Second)
+	defer cancel()
+
+	units, err := d.provider.List(ctx, f.Sandbox)
+	if err != nil {
+		return provider.Unit{}, false
+	}
+
+	for _, u := range units {
+		if u.Ref == f.Ref {
+			return u, true
+		}
+	}
+
+	return provider.Unit{}, false
 }
 
 // peersOf resolves service names to units within one sandbox.
@@ -685,9 +752,46 @@ func (d *daemon) forget(ref string, want *unit) {
 	delete(d.stop, ref)
 }
 
-// reapEvery keeps the check frequent enough that the idle window is honoured and rare
-// enough that a hundred sleeping sandboxes are not polled constantly.
-func reapEvery(idle time.Duration) time.Duration {
+// replaced reports that the unit served under a Ref is no longer the one the provider lists.
+//
+// A Ref alone cannot say. On docker it is the container's name, derived from the sandbox and
+// service, so `sbx rm x && sbx create x` between two ticks hands discover the identical Ref for a
+// new container on a new slot. Treated as known, the old unit kept the old slot's ports - the
+// new ones printed by `sbx env` had nothing listening - and its idle timer later stopped the new
+// container by name. The instance (a container ID, a VM's id) changes on recreate; where a
+// provider reports none, the ports it is fronted on still do.
+func replaced(cur *unit, f provider.Unit, legs []leg) bool {
+	if cur.instance != "" && f.Instance != "" && cur.instance != f.Instance {
+		return true
+	}
+
+	if len(legs) == 0 {
+		// Nothing to front is not evidence of a replacement; the new-unit path skips it anyway.
+		return false
+	}
+
+	if len(cur.legs) != len(legs) {
+		return true
+	}
+
+	for i := range legs {
+		if cur.legs[i].Listen != legs[i].Listen {
+			return true
+		}
+	}
+
+	return false
+}
+
+// reapTick is how often the reaper decides. A tick reads each unit's last-byte clock and asks the
+// provider nothing for a unit that has served; so a unit sleeps at most one tick after its window.
+const reapTick = time.Second
+
+// healthEvery is how often the reaper asks the provider whether a unit that has never served is
+// healthy yet (sleepable): a third of its window, 1s to 30s - the cadence the whole reaper used to
+// run at, kept for the one per-unit call a tick can make, so a hundred containers stuck unhealthy
+// are not inspected every second.
+func healthEvery(idle time.Duration) time.Duration {
 	every := idle / 3
 
 	if every < time.Second {
@@ -731,8 +835,25 @@ func legsOf(p provider.Provider, u provider.Unit) []leg {
 	return legs
 }
 
-// reap sleeps every unit that has been quiet for longer than the idle window.
-func (d *daemon) reap(ctx context.Context) {
+// reap sleeps every unit that has been quiet for longer than the idle window, and returns once
+// those sleeps have finished. The daemon's own loop uses reapAsync and does not wait.
+func (d *daemon) reap(ctx context.Context) { d.reapAsync(ctx).Wait() }
+
+// reapAsync decides which units are due and starts their sleeps, each on its own goroutine, and
+// returns without waiting for any of them.
+//
+// Deciding stays on the caller's goroutine, in step with discovery; only the stop moves off it.
+// A stop is not quick: docker waits out a 10s grace for a workload that ignores SIGTERM (a
+// busybox `sh -c` loop does), and run inline it held this loop - the reaper's clock and the
+// discovery tick - for all ten. A service with "idle": "3s" then slept 14s after its last byte,
+// three runs out of three, and every other due service waited behind it.
+//
+// A unit already being stopped is skipped rather than stopped twice: its sleep holds the wake
+// lock for the whole stop, so a second one would only queue behind it and then find the unit
+// asleep.
+func (d *daemon) reapAsync(ctx context.Context) *sync.WaitGroup {
+	var wg sync.WaitGroup
+
 	d.mu.Lock()
 	units := make([]*unit, 0, len(d.units))
 
@@ -761,7 +882,11 @@ func (d *daemon) reap(ctx context.Context) {
 	needed := make(map[string]bool, len(units))
 
 	for _, u := range units {
-		if !u.isAwake() {
+		// Mid-stop counts as awake here. sleep() marks a unit asleep the moment it starts, and
+		// the stop can take ten seconds; a dependent shutting down gracefully may still be
+		// flushing to its database, so the database waits for the stop to finish - the
+		// top-down order the inline reaper got for free by blocking.
+		if !u.isAwake() && !u.stopping.Load() {
 			continue
 		}
 
@@ -784,12 +909,34 @@ func (d *daemon) reap(ctx context.Context) {
 			window = u.idle
 		}
 
-		if !u.isAwake() || !u.sleepable(ctx, d.provider) || u.idleFor() < window {
+		// In memory for every unit, every tick: the provider is asked only by sleepable, only
+		// for a unit that has never served, and only every healthEvery(window).
+		if !u.isAwake() || !u.sleepable(ctx, d.provider, healthEvery(window)) || u.idleFor() < window {
 			continue
 		}
 
-		u.sleep(ctx, d.provider, window)
+		// Mid-snapshot: stopping or freezing it under the copy would leave the belief wrong
+		// again once the snapshot thaws it. Its idle clock keeps running; the next tick decides.
+		// Asked only of a unit that is due - it reads a file.
+		if snapshotpause.Held(u.ref) {
+			continue
+		}
+
+		if !u.stopping.CompareAndSwap(false, true) {
+			continue // already on its way down
+		}
+
+		wg.Add(1)
+
+		go func(u *unit, window time.Duration) {
+			defer wg.Done()
+			defer u.stopping.Store(false)
+
+			u.sleep(ctx, d.provider, window)
+		}(u, window)
 	}
+
+	return &wg
 }
 
 // parseFront reads --front: "5432", "5432,6379", "db=5432,cache=6379", or "db=10.0.4.7:3306".

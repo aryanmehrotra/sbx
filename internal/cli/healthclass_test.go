@@ -115,7 +115,7 @@ func TestAFailedStartupReportsWhatTheWorkloadSaid(t *testing.T) {
 	p := &logStub{said: fatal}
 
 	err := waitHealthy(context.Background(), p, "sbx-x-k3s", "kubectl get --raw /readyz",
-		50*time.Millisecond)
+		50*time.Millisecond, time.Now())
 	if err == nil {
 		t.Fatal("a workload that never came up was reported as ready")
 	}
@@ -130,7 +130,7 @@ func TestAFailedStartupReportsWhatTheWorkloadSaid(t *testing.T) {
 func TestASilentWorkloadAddsNothingToTheError(t *testing.T) {
 	p := &logStub{said: "   \n  \n"}
 
-	err := waitHealthy(context.Background(), p, "sbx-x-y", "true", 50*time.Millisecond)
+	err := waitHealthy(context.Background(), p, "sbx-x-y", "true", 50*time.Millisecond, time.Now())
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}

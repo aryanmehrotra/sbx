@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -19,11 +21,37 @@ import (
 // which images were already there - an unchanged CI cache should print "already present" for
 // everything, and a run that pulls when it should not is the cache being broken.
 
-// Prewarm fetches images so a later create does not have to.
-func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []string) error {
+// Prewarm fetches images so a later create does not have to. With helpers it also fetches the
+// images the backend runs on its own (provider.HelperImager): on docker, the one snapshot and
+// fork copy a volume through, and the egress filter's build and runtime images. Without them the
+// first fork or filtered create after a "warm" CI step pulled them cold, inside the timed part
+// the step exists to keep clean.
+func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []string, needs provider.HelperNeeds) error {
 	pl, err := provider.PullerFor(p)
 	if err != nil {
 		return err
+	}
+
+	var helping []provider.Helper
+
+	if hi, ok := p.(provider.HelperImager); ok {
+		for _, h := range hi.HelperImages(needs) {
+			if !slices.Contains(images, h.Image) {
+				helping = append(helping, h)
+				images = append(slices.Clip(images), h.Image)
+			}
+		}
+	}
+
+	// A helper is said to be one, so a CI log reader knows why an image no spec names was pulled.
+	name := func(img string) string {
+		for _, h := range helping {
+			if h.Image == img {
+				return img + " (helper)"
+			}
+		}
+
+		return img
 	}
 
 	if wm, ok := p.(provider.Warmer); ok {
@@ -44,7 +72,7 @@ func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []str
 	for _, img := range images {
 		if has != nil {
 			if ok, err := has.HasImage(ctx, img); err == nil && ok {
-				fmt.Fprintf(w, "  %-64s already present\n", img)
+				fmt.Fprintf(w, "  %-64s already present\n", name(img))
 
 				already++
 
@@ -55,19 +83,28 @@ func Prewarm(ctx context.Context, p provider.Provider, w io.Writer, images []str
 		start := time.Now()
 
 		if err := pl.Pull(ctx, img); err != nil {
-			fmt.Fprintf(w, "  %-64s FAILED\n", img)
+			fmt.Fprintf(w, "  %-64s FAILED\n", name(img))
 
 			failed = append(failed, fmt.Sprintf("%s: %v", img, err))
 
 			continue
 		}
 
-		fmt.Fprintf(w, "  %-64s pulled in %s\n", img, time.Since(start).Round(100*time.Millisecond))
+		fmt.Fprintf(w, "  %-64s pulled in %s\n", name(img), time.Since(start).Round(100*time.Millisecond))
 
 		pulled++
 	}
 
 	fmt.Fprintf(w, "\n%d pulled, %d already present", pulled, already)
+
+	if len(helping) > 0 {
+		var why []string
+		for _, h := range helping {
+			why = append(why, h.Image+": "+h.For)
+		}
+
+		fmt.Fprintf(w, " (including helpers - %s)", strings.Join(why, "; "))
+	}
 
 	if len(failed) > 0 {
 		fmt.Fprintf(w, ", %d failed\n", len(failed))

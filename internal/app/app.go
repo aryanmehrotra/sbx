@@ -31,7 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -311,8 +311,7 @@ func dispatch(cmd string, args []string) error {
 		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
 		optional := fs.Bool("optional", false, "include services marked optional")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -328,13 +327,19 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		if err := cli.Create(context.Background(), p, path, positional[0], *optional, iso); err != nil {
-			return err
-		}
+		// Remembered as soon as the first container exists, not after a create that succeeded: one
+		// that fails later (a service that never serves, a broken mount on the second of three)
+		// still leaves a sandbox, and `sbx env` or `sbx ready` on it from another directory then
+		// found no spec - or, beside a different sandbox.json, the wrong one. sbx rm forgets it.
+		name := positional[0]
 
-		cli.Remember(positional[0], *tmpl, *spec)
+		// SIGINT and SIGTERM stop the create rather than kill it: killed, it said nothing about the
+		// half-built sandbox and left its name lock behind. See cli.Create.
+		ctx, stop := cli.CreateSignalContext(context.Background())
+		defer stop()
 
-		return nil
+		return cli.Create(ctx, p, path, name, *optional, iso,
+			func() { cli.Remember(p, name, *tmpl, *spec) })
 
 	case "env":
 		fs := newFlagSet("env")
@@ -342,8 +347,7 @@ func dispatch(cmd string, args []string) error {
 		tmpl := fs.String("template", "", "use a built-in spec instead")
 		shell := fs.String("shell", "", "posix | fish | powershell | cmd | json; detected if unset")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -365,8 +369,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("ready")
 		timeout := fs.Duration("timeout", 90*time.Second, "give up after this long")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -391,8 +394,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("wake")
 		timeout := fs.Duration("timeout", 90*time.Second, "give up after this long")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -412,8 +414,7 @@ func dispatch(cmd string, args []string) error {
 	case "sleep":
 		fs := newFlagSet("sleep")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -438,11 +439,23 @@ func dispatch(cmd string, args []string) error {
 
 	case "snapshot":
 		fs := newFlagSet("snapshot")
+		// A flag rather than `sbx snapshot rm <name>`: "rm" is a legal sandbox name, and
+		// `sbx snapshot rm golden` already means "snapshot the sandbox rm as golden". Reading
+		// it as a delete instead would destroy the snapshot its author meant to make.
+		remove := fs.Bool("rm", false, "delete the named snapshot's images and volumes instead")
+		replace := fs.Bool("replace", false, "remove the snapshot of that name entirely, then take a fresh one")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
-		if len(positional) < 2 {
+		if *remove && *replace {
+			return fmt.Errorf("sbx snapshot takes --rm or --replace, not both: --rm <name> deletes, --replace <sandbox> <name> re-takes")
+		}
+
+		if *remove && len(positional) != 1 {
+			return fmt.Errorf("sbx snapshot --rm takes one snapshot name: sbx snapshot --rm <name>")
+		}
+
+		if !*remove && len(positional) < 2 {
 			return missing("snapshot", "arguments")
 		}
 
@@ -451,7 +464,16 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		if _, err := cli.Snapshot(context.Background(), p, positional[0], positional[1]); err != nil {
+		if *remove {
+			return cli.RemoveSnapshot(context.Background(), p, positional[0])
+		}
+
+		take := cli.Snapshot
+		if *replace {
+			take = cli.ReplaceSnapshot
+		}
+
+		if _, err := take(context.Background(), p, positional[0], positional[1]); err != nil {
 			return err
 		}
 
@@ -465,8 +487,7 @@ func dispatch(cmd string, args []string) error {
 		tmpl := fs.String("template", "", "use a built-in spec instead: "+strings.Join(TemplateNames(), ", "))
 		optional := fs.Bool("optional", false, "include services marked optional")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("fork", "arguments")
@@ -487,7 +508,7 @@ func dispatch(cmd string, args []string) error {
 		}
 
 		if *tmpl != "" || wasSet(fs, "spec") {
-			cli.Remember(positional[1], *tmpl, *spec)
+			cli.Remember(p, positional[1], *tmpl, *spec)
 		} else {
 			cli.Inherit(positional[0], positional[1])
 		}
@@ -510,8 +531,7 @@ func dispatch(cmd string, args []string) error {
 		keep := fs.Bool("keep", false, "leave the sandbox afterwards instead of removing it")
 		timeout := fs.Duration("timeout", 90*time.Second, "how long to wait for services to serve")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(head, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, head)
 
 		if len(positional) < 1 {
 			return missing("with", "sandbox name")
@@ -527,13 +547,19 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		return cli.With(context.Background(), p, path, positional[0], *optional, iso, *timeout, *keep, cmd)
+		// Signals become a cancelled context rather than the default kill: SIGTERM from a CI
+		// runner or a Ctrl-C used to end sbx on the spot and leave the sandbox behind, which is
+		// the one leak `sbx with` exists to prevent. With them caught, the command is sent the
+		// same signal, the sandbox is removed, and the exit status is still 128+signal.
+		ctx, stop := cli.SignalContext(context.Background())
+		defer stop()
+
+		return cli.With(ctx, p, path, positional[0], *optional, iso, *timeout, *keep, cmd)
 
 	case "checkpoint":
 		fs := newFlagSet("checkpoint")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("checkpoint", "arguments")
@@ -549,8 +575,7 @@ func dispatch(cmd string, args []string) error {
 	case "resume":
 		fs := newFlagSet("resume")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return missing("resume", "arguments")
@@ -599,14 +624,12 @@ func dispatch(cmd string, args []string) error {
 		kind, socket, ns, isolation := backendFlags(fs)
 		tty := fs.Bool("t", false, "attach a terminal - for a shell, psql, redis-cli")
 
-		// Parse first, then take positionals from what is left. flag stops at the first
-		// non-flag argument, so `sbx exec -t br pg psql -U app` gives sbx the -t and hands
-		// psql its own -U untouched - which is how docker and kubectl behave, and what
-		// anyone typing this expects. Splitting positionals first, as the other commands
-		// do, made a LEADING flag consume the sandbox name and print a usage error.
-		_ = fs.Parse(args)
+		// The two names wherever sbx's own flags are, and everything after them is the command,
+		// untouched: `sbx exec -t br pg psql -U app` gives sbx the -t and hands psql its own -U,
+		// which is how docker and kubectl behave. `sbx exec br -t pg psql` works as well now.
+		positional, argv := parseNames(fs, args, 2)
+		positional = append(positional, argv...)
 
-		positional := fs.Args()
 		if len(positional) < 3 {
 			return missing("exec", "arguments")
 		}
@@ -623,10 +646,9 @@ func dispatch(cmd string, args []string) error {
 		lines := fs.Int("tail", 100, "how many lines")
 		follow := fs.Bool("f", false, "keep streaming")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
-		if len(positional) < 1 {
+		if len(positional) < 1 || len(positional) > 2 {
 			return fmt.Errorf("usage: sbx logs <sandbox> [service] [--tail N] [-f]")
 		}
 
@@ -648,8 +670,7 @@ func dispatch(cmd string, args []string) error {
 	case "cp":
 		fs := newFlagSet("cp")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 4)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 4 {
 			return fmt.Errorf("usage: sbx cp <sandbox> <service> <src> <dst>   (prefix the inside path with :)")
@@ -666,8 +687,8 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("pack")
 		specPath := fs.String("spec", "sandbox.json", "the spec to pack")
 		out := fs.String("out", "sbx-pack", "directory to write the build contexts into")
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		pin := fs.String("version", "", "the sbx release the image installs (default: this build, if it is a release)")
+		positional := parsePositional(fs, args)
 
 		service := ""
 		if len(positional) > 0 {
@@ -679,6 +700,7 @@ func dispatch(cmd string, args []string) error {
 			Service: service,
 			Out:     *out,
 			Version: version,
+			Pin:     *pin,
 			Inspect: cli.InspectImage(dockerCLI),
 			Out2:    os.Stdout,
 		})
@@ -689,26 +711,11 @@ func dispatch(cmd string, args []string) error {
 			"add this to every local port, label=N for one deployment, or both (1000,replica=2000)")
 		only := multiFlag{}
 		fs.Var(&only, "sandbox", "only this sandbox; repeatable")
-		positional, rest := splitPositional(args, len(args))
-		_ = fs.Parse(rest)
-
-		// Go's flag package stops at the first non-flag argument, so a URL written after a flag
-		// is left behind in fs.Args() rather than parsed. Every other command here takes a fixed
-		// number of names and splits them off the front, which makes that impossible; this one
-		// takes as many as you give it, so `sbx connect db=… --port-offset 1000 cache=…` quietly
-		// connected db alone and said nothing about cache.
-		//
-		// Refused rather than ignored, because a port map with a hole in it is the failure this
-		// whole command is built to avoid: the missing port is left to whatever else answers on
-		// it - often this machine's own `sbx serve` - and the caller reaches a local sandbox
-		// believing it reached the remote one.
-		if fs.NArg() > 0 {
-			return fmt.Errorf("%s came after a flag, where it would have been ignored\n"+
-				"     flags go last, so that every deployment is seen:\n"+
-				"       sbx connect %s ...",
-				strings.Join(fs.Args(), ", "),
-				strings.Join(append(append([]string{}, positional...), fs.Args()...), " "))
-		}
+		// Every URL, wherever the flags are. Go's flag package stops at the first non-flag, so
+		// `sbx connect db=… --port-offset 1000 cache=…` once connected db alone and said nothing
+		// about cache - a port map with a hole in it, which leaves the missing port to whatever
+		// else answers there. That was refused; now the URL after the flag is simply kept.
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return fmt.Errorf("usage: sbx connect <url> [<url> ...] [--sandbox NAME] [--port-offset N]\n" +
@@ -747,8 +754,7 @@ func dispatch(cmd string, args []string) error {
 			"rewrite: the service is sent Host: 127.0.0.1:<port> | pass: it is sent the public hostname")
 
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 2 {
 			return fmt.Errorf(
@@ -804,8 +810,7 @@ func dispatch(cmd string, args []string) error {
 		// in at all. Defaulted rather than guessed, and one flag away when the image differs.
 		user := fs.String("user", "root", "the ssh user the image accepts")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 2)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return fmt.Errorf("usage: sbx ssh <sandbox> [service] [--folder /work]")
@@ -885,8 +890,7 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("validate")
 		specFlag := fs.String("spec", defaultSpec, "path to sandbox.json")
 		tmpl := fs.String("template", "", "check a built-in template instead")
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		// A bare path is the shape a linter is invoked with: `sbx validate ./sandbox.json`.
 		path := *specFlag
@@ -905,9 +909,9 @@ func dispatch(cmd string, args []string) error {
 		fs := newFlagSet("prewarm")
 		kind, socket, ns, isolation := backendFlags(fs)
 		specPath := fs.String("spec", "", "pull the images this spec needs instead of every template's")
-		_ = fs.Parse(args)
 
-		named := fs.Args()
+		// Image names wherever the flags are: `sbx prewarm redis:7 --provider x` used to drop the flag.
+		named := parsePositional(fs, args)
 		if len(named) > 0 && *specPath != "" {
 			return fmt.Errorf("prewarm takes --spec or image names, not both")
 		}
@@ -917,7 +921,10 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
+		// Helpers follow what the specs would run (helperNeeds): the template set by default, the
+		// one spec with --spec. Named images mean exactly those, so none.
 		images := TemplateImages()
+		needs := templateNeeds()
 
 		if *specPath != "" {
 			s, err := spec.LoadSpec(*specPath)
@@ -925,22 +932,17 @@ func dispatch(cmd string, args []string) error {
 				return err
 			}
 
-			images = images[:0]
+			images = specImages(s)
 
-			for _, svc := range s.Services {
-				if svc.Image != "" {
-					images = append(images, svc.Image)
-				}
-			}
-
-			sort.Strings(images)
+			needs = helperNeeds(s)
 		}
 
 		if len(named) > 0 {
-			images = named
+			images = uniqueImages(named)
+			needs = provider.HelperNeeds{}
 		}
 
-		return cli.Prewarm(context.Background(), p, os.Stdout, images)
+		return cli.Prewarm(context.Background(), p, os.Stdout, images, needs)
 
 	case "ui", "dash", "dashboard":
 		fs := newFlagSet("ui")
@@ -1006,8 +1008,7 @@ func dispatch(cmd string, args []string) error {
 	case "rm":
 		fs := newFlagSet("rm")
 		kind, socket, ns, isolation := backendFlags(fs)
-		positional, rest := splitPositional(args, 1)
-		_ = fs.Parse(rest)
+		positional := parsePositional(fs, args)
 
 		if len(positional) < 1 {
 			return missing(cmd, "sandbox name")
@@ -1018,22 +1019,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		// Checked here rather than trusting the backend's own refusal: a provider reports
-		// "no sandbox" without knowing which ones do exist, and a typo is the usual reason
-		// somebody is reading this.
-		ctx := context.Background()
-
-		if units, err := p.List(ctx, positional[0]); err == nil && len(units) == 0 {
-			return cli.UnknownSandbox(ctx, p, positional[0])
-		}
-
-		if err := cli.Remove(ctx, p, positional[0]); err != nil {
-			return err
-		}
-
-		cli.Forget(positional[0])
-
-		return nil
+		return cli.Rm(context.Background(), p, positional[0])
 
 	case "selftest":
 		fs := newFlagSet("selftest")
@@ -1081,12 +1067,6 @@ func dispatch(cmd string, args []string) error {
 
 // runAdd is the agent-facing path: put a service nobody declared into an existing sandbox.
 func runAdd(args []string) error {
-	// `sbx add <sandbox> <service> --image ...` reads the way a person would write it, but
-	// Go's flag package stops at the first non-flag argument, so the flags after the two
-	// names would be silently ignored - and the command would fail claiming --image was
-	// missing while it sat right there on the line. Split the leading names off first.
-	positional, rest := splitPositional(args, 2)
-
 	fs := newFlagSet("add")
 	image := fs.String("image", "", "container image (required)")
 	ports := fs.String("port", "", "comma-separated container ports (required)")
@@ -1095,7 +1075,11 @@ func runAdd(args []string) error {
 	envs := fs.String("env", "", "comma-separated KEY=VALUE pairs")
 	spec := fs.String("spec", defaultSpec, "path to sandbox.json, whose reservations are respected")
 	kind, socket, ns, isolation := backendFlags(fs)
-	_ = fs.Parse(rest)
+
+	// The two names wherever the flags are - `sbx add <sandbox> <service> --image ...` is how a
+	// person writes it, and Go's flag package alone stops at the first name, leaving --image
+	// unread. Whatever follows the names and their flags is the image's command, untouched.
+	positional, extra := parseNames(fs, args, 2)
 
 	if len(positional) < 2 {
 		return missing("add", "arguments")
@@ -1131,17 +1115,8 @@ func runAdd(args []string) error {
 		}
 	}
 
-	// Anything left over is passed to the image as its command, so an agent can add a
-	// service that needs arguments without sbx having to know what they mean.
-	extra := fs.Args()
-
-	if *health == "" {
-		fmt.Fprintln(os.Stderr,
-			"sbx: warning: no --health given, so waking this service can only wait for its\n"+
-				"     published port, which docker answers before the server does. The first\n"+
-				"     query after a wake may hit a socket that is about to close.")
-	}
-
+	// The no --health warning is cli.Add's to print, after it has refused a duplicate name: printed
+	// here, it came before the refusal, as advice about a service that was never going to exist.
 	p, iso, err := resolve(*kind, *socket, *ns, *isolation)
 	if err != nil {
 		return err
@@ -1154,6 +1129,24 @@ func runAdd(args []string) error {
 	specPath, err := specFor(fs, sandbox, "", *spec)
 	if err != nil {
 		return err
+	}
+
+	// The sandbox's own tier unless one was asked for - by the flag or by SBX_ISOLATION, both of
+	// which say "I want this tier" - and a different one is refused. See cli.AddIsolation.
+	if units, err := p.List(context.Background(), sandbox); err == nil && len(units) > 0 {
+		// The flag wins when both are set, as it does for the value itself.
+		source := ""
+
+		switch {
+		case wasSet(fs, "isolation"):
+			source = "--isolation"
+		case os.Getenv("SBX_ISOLATION") != "":
+			source = "SBX_ISOLATION"
+		}
+
+		if iso, err = cli.AddIsolation(p.Name(), units, iso, source); err != nil {
+			return err
+		}
 	}
 
 	return cli.Add(context.Background(), p, specPath, sandbox, service, *image, cps, *health, env, *volume, extra, iso)
@@ -1172,14 +1165,54 @@ func parseInterleaved(fs *flag.FlagSet, args []string) []string {
 	return positional
 }
 
-// splitPositional peels up to n leading non-flag arguments off the front.
-func splitPositional(args []string, n int) (positional, rest []string) {
-	i := 0
-	for i < len(args) && i < n && !strings.HasPrefix(args[i], "-") {
-		i++
+// parsePositional parses flags wherever they appear - before, between or after the names -
+// and returns every name. Everything after a bare -- is a name, even one starting with a dash.
+//
+// Every command that takes names uses it. Taking only LEADING names, as commands once did, made
+// a flag first (`sbx logs -f sb svc`, the way `tail -f` and `docker logs -f` are typed) hide
+// every name behind it and print a usage error - or worse, silently drop the names after it.
+func parsePositional(fs *flag.FlagSet, args []string) []string {
+	names, _ := parseNames(fs, args, -1)
+
+	return names
+}
+
+// parseNames takes up to n names (n < 0: no limit) wherever the flags are, then parses the flags
+// that follow the last one and returns what is left untouched: the command of `sbx exec` or the
+// image arguments of `sbx add`, whose own flags (`psql -U app`) are not sbx's.
+//
+// The line is split at the first bare -- before any parsing, because each re-parse starts fresh
+// and would otherwise read the word after -- as a flag again. A -- that comes after the n names
+// is part of the command and is handed back with it.
+func parseNames(fs *flag.FlagSet, args []string, n int) (names, rest []string) {
+	head, tail := splitAtDoubleDash(args)
+
+	for {
+		_ = fs.Parse(head)
+		head = fs.Args()
+
+		if len(head) == 0 || len(names) == n {
+			break
+		}
+
+		names = append(names, head[0])
+		head = head[1:]
 	}
 
-	return args[:i], args[i:]
+	if tail == nil {
+		return names, head
+	}
+
+	if len(head) > 0 {
+		return names, slices.Concat(head, []string{"--"}, tail)
+	}
+
+	k := len(tail)
+	if n >= 0 {
+		k = min(k, n-len(names))
+	}
+
+	return append(names, tail[:k]...), tail[k:]
 }
 
 // splitAtDoubleDash returns the args before the first bare "--" and the command after it. A
@@ -1339,8 +1372,7 @@ func runEgress(args []string) error {
 	_ = fs.Bool("show", false, "print the policy in force (what no other flag does anyway)")
 	asJSON := fs.Bool("json", false, "print OpenSandbox's policy status, for something that parses")
 
-	positional, rest := splitPositional(args, 2)
-	_ = fs.Parse(rest)
+	positional := parsePositional(fs, args)
 
 	if len(positional) < 1 {
 		return missing("egress", "sandbox name")

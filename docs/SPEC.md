@@ -44,14 +44,14 @@ For tasks built on these fields (seeding, CI, agents, microVMs), see [GUIDES.md]
 | `init` | string list | | Run once after the first healthy check, not on each wake. Schemas, seed data |
 | `depends_on` | string list | | Services that must be ready first, at create and on every wake |
 | `optional` | bool | `false` | Created only with `--optional`. Still reserves its ports |
-| `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep |
+| `idle` | string | daemon's `--idle` | `"30m"`, or `"never"` / `"0"` to never sleep. Checked every second, whatever the window: a service is stopped within about a second of its window running out, however slow other stops are. On docker a workload that ignores SIGTERM then takes up to 10 s more to exit |
 | `on_idle` | string | `"stop"` | `"freeze"` pauses instead of stopping |
 | `egress` | string | open | `"deny"` or `"allow"` (open, through the filter) |
-| `egress_allow` | string list | | Reach only these hosts and their subdomains |
+| `egress_allow` | string list | | Reach only these hosts and their subdomains, on ports 80 and 443. `host:port` adds that port |
 | `egress_policy` | object | | OpenSandbox network policy. Changeable live with `sbx egress` |
 | `cpu` | string | unlimited | Cores: `"0.5"`, `"2"` |
 | `memory` | string | unlimited | Cap: `"512m"`, `"2g"` |
-| `cap_add` | string list | | Capabilities without `CAP_`: `["SYS_PTRACE"]`. Docker only |
+| `cap_add` | string list | | Capabilities by name: `["SYS_PTRACE"]`. Not `ALL`. Docker only |
 | `gpus` | string | none | Passed to the runtime: `"all"`, `"1"`, `"device=0"` |
 
 Use only one of `egress`, `egress_allow` and `egress_policy`. A spec naming two is refused.
@@ -207,9 +207,12 @@ different program: `"entrypoint": ["python", "-m"], "args": ["http.server", "800
 { "env": { "POSTGRES_PASSWORD": "${DB_PASSWORD}" } }
 ```
 
-Keeps a secret out of a committed file. Works in `env` values only, with no defaults
-(`${VAR:-x}`) or nesting. A bare `$NAME` is left alone. An unset variable is an error before
-anything is created, listing every missing name.
+Keeps a secret out of a committed file. Works in `env` values only. Any other `${...}` form, such
+as a default (`${VAR:-x}`) or nesting, is refused at load, every one in the file in one error.
+Write `$${` for a literal `${`: `"$${HOME}"` reaches the container as `${HOME}`. A bare `$NAME` or
+`$$` is left alone. An unset variable is an error before anything is created, listing every missing
+name in the same error as any refused form. Only commands that start a service need it:
+`sbx env` prints ports without it.
 
 ### Which spec a sandbox uses
 
@@ -220,14 +223,17 @@ sbx falls back to `./sandbox.json`.
 ### `cpu` and `memory`
 
 Docker gets `--cpus` and `--memory`. Kubernetes gets `resources.limits`. Set them when you run
-many sandboxes on one laptop.
+many sandboxes on one laptop. Load refuses a value no provider takes, like `"lots"` or `"-1"`, and
+a `gpus` value docker would refuse. Each provider still checks its own spelling at create.
 
 ### `cap_add`
 
-Name only what the workload needs. sbx has no `privileged` option. Docker's default seccomp
-profile still applies, so CRIU (a process-checkpoint tool) fails inside a sandbox; run
-`sbx checkpoint` on the host instead. Kubernetes refuses `cap_add` because Pod Security admission
-decides capabilities there.
+Name only what the workload needs. sbx has no `privileged` option, so `ALL` is refused: list the
+capabilities instead. Names are checked at load against the kernel's list, so `sbx validate`
+catches a typo or a blank entry. Case and a `CAP_` prefix do not matter: `SYS_PTRACE` and
+`CAP_SYS_PTRACE` are the same. Docker's default seccomp profile still applies, so CRIU (a process-checkpoint
+tool) fails inside a sandbox; run `sbx checkpoint` on the host instead. Kubernetes refuses
+`cap_add` because Pod Security admission decides capabilities there.
 
 ### `idle` keeps a sandbox awake while it works
 
@@ -270,13 +276,20 @@ Kubernetes refuses all four rather than run a policy nothing enforces. Firecrack
 four.
 
 `"deny"` turns off routing out of the sandbox's own network. Ports are still published, so waking
-works, and DNS still resolves.
+works, and DNS still resolves. Under `--isolation gvisor` it does not: gVisor does not use
+docker's DNS server on a sandbox's network, so neither internet names nor service names resolve.
+Use addresses there.
 
 `egress_allow` sends clients through a filtering proxy via `HTTP_PROXY` and `HTTPS_PROXY`. A
-client that ignores them has no route out. Each entry matches the host and its subdomains. On
-native Linux Docker the filter runs inside `sbx serve`. On colima, Docker Desktop or rootless
-Docker it runs as a small container on the sandbox's network. Calls out keep every allow-listed
-service in the sandbox awake, including during a long streaming response.
+client that ignores them has no route out. Each entry matches the host and its subdomains, on
+ports 80 and 443. Write an entry as `host:port` to add that port for that host:
+`"github.com:22"` lets a client tunnel SSH to github.com through the proxy. A port that is not a
+number from 1 to 65535 is refused, and so is any port under `--provider firecracker`.
+
+On native Linux Docker the filter runs inside `sbx serve`. On colima, Docker Desktop or rootless
+Docker it runs as a small container on the sandbox's network, at a fixed address that services
+find through `/etc/hosts`, so it works under `--isolation gvisor` too. Calls out keep every
+allow-listed service in the sandbox awake, including during a long streaming response.
 
 `egress_policy` uses the `NetworkPolicy` format of OpenSandbox release-1.1.0:
 
@@ -299,13 +312,31 @@ service in the sandbox awake, including during a long streaming response.
 
 `egress: "allow"` equals `{"defaultAction":"allow"}`. `egress_allow: ["openai.com"]` equals deny
 by default plus `openai.com` and `*.openai.com`. Services in one sandbox share one filter, so they
-must declare the same policy.
+must declare the same policy. Allow-lists are merged: every service gets the union of them.
 
 Limits:
 
-- HTTP and HTTPS only. A default-allow service has no raw TCP out (`git://`, SSH, a remote database).
+- Ports 80 and 443 only, for plain HTTP and for `CONNECT`. Any other port gets 403 naming the
+  port, including under a default of allow, unless an `egress_allow` entry names it as
+  `host:port`. `egress_policy` has no port field.
 - Loopback and link-local addresses, including cloud metadata at `169.254.0.0/16`, are refused unless a rule names them.
+- On colima and Docker Desktop, the machine behind the filter is refused whatever a rule says: every
+  docker network's gateway, the default bridge, and what `host.docker.internal`,
+  `host.lima.internal` and `gateway.docker.internal` resolve to (the whole `/24`), and the filter's own
+  addresses, `sbx-egress` included. A service cannot reach the VM or your Mac through the proxy.
+- A docker network created after a filter started is refused from the next discovery pass of
+  `sbx serve` (`--refresh`, 15 s by default), which pushes the engine's gateways to every
+  filter. While no `sbx serve` runs, and on a remote docker, a network created later is not
+  refused until the sandbox is removed and created again.
+- A request to one of those addresses gets 403 saying so, on any port. The port hint ("list
+  `host:port` in `egress_allow`") is given only to a host the policy would otherwise let through.
 - Traffic between services in the same sandbox is not filtered.
+
+Run `sbx create` again after editing `egress_policy` or `egress_allow` and the filter is replaced
+with the new declaration. Live changes made with `sbx egress` are dropped then, because they were
+changes to the old declaration. A filter built by an older sbx is replaced too, and there live
+changes are kept, since the declaration is the same. Other edits to a service that already exists
+still need `sbx rm` first.
 
 ### Change a running sandbox's policy
 
@@ -319,7 +350,8 @@ sbx egress agent-1 --json                              # OpenSandbox's policy st
 ```
 
 Nothing restarts. New rules go ahead of existing ones, so a deny can carve into a wildcard allow.
-Open connections are not cut. The live policy is saved in `~/.sbx/egress/<sandbox>.json`,
+`--remove` names a target exactly as the policy lists it, and one with no rule is an error that
+lists the rules there are. Open connections are not cut. The live policy is saved in `~/.sbx/egress/<sandbox>.json`,
 survives restarts, and is deleted by `sbx rm`. Only a sandbox created with `egress_policy`,
 `egress_allow` or `egress: "allow"` has a filter to change.
 

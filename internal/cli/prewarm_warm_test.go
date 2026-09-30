@@ -43,7 +43,7 @@ func TestPrewarmBuildsAMicroVMRootfsNotJustThePull(t *testing.T) {
 	f := &fakeWarmer{cached: map[string]bool{"python:3.11-slim": true}}
 
 	var out bytes.Buffer
-	if err := Prewarm(context.Background(), f, &out, []string{"python:3.11-slim", "opensandbox/code-interpreter:v1"}); err != nil {
+	if err := Prewarm(context.Background(), f, &out, []string{"python:3.11-slim", "opensandbox/code-interpreter:v1"}, provider.HelperNeeds{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,7 +57,7 @@ func TestPrewarmBuildsAMicroVMRootfsNotJustThePull(t *testing.T) {
 
 	out.Reset()
 
-	if err := Prewarm(context.Background(), f, &out, []string{"bad:1"}); err == nil || !strings.Contains(out.String(), "mkfs.ext4 failed") {
+	if err := Prewarm(context.Background(), f, &out, []string{"bad:1"}, provider.HelperNeeds{}); err == nil || !strings.Contains(out.String(), "mkfs.ext4 failed") {
 		t.Fatalf("a failed build was not reported by name: %v\n%s", err, out.String())
 	}
 }

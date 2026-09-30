@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,6 +79,16 @@ func filterImageTag(files map[string]string) string {
 
 // ensureFilterImage builds the filter image if this machine does not already have it, and
 // returns its tag.
+// filterImageWant is the tag of the filter image this sbx builds.
+func filterImageWant() (string, error) {
+	files, err := egress.BuildContext(filterBuilderImage, filterRuntimeImage)
+	if err != nil {
+		return "", err
+	}
+
+	return filterImageTag(files), nil
+}
+
 func (d *dockerProvider) ensureFilterImage() (string, error) {
 	files, err := egress.BuildContext(filterBuilderImage, filterRuntimeImage)
 	if err != nil {
@@ -113,47 +125,113 @@ func (d *dockerProvider) ensureFilterImage() (string, error) {
 	return tag, nil
 }
 
-// ensureFilterContainer starts (or reuses) the sandbox's filter container and returns the
-// loopback address its stat endpoint is published on, for the daemon to scrape.
+// labelEgressPorts is the port grants a filter container was started with (egress.FormatPortGrants),
+// beside labelEgressPolicy: together they are its declaration, and a change to either replaces it.
+const labelEgressPorts = "sbx.egress.ports"
+
+// filterSetup is what a service needs to know about the container filter it goes out through.
+type filterSetup struct {
+	// stat is the loopback address the filter's activity and control endpoint is published on,
+	// for the daemon; "" on a remote docker.
+	stat string
+
+	// ip is the filter's address on the sandbox's bridge. Fixed (see filterIP), so a service can
+	// be told it once, at create, and it stays true when the filter is replaced.
+	ip string
+}
+
+// ensureFilterContainer starts (or reuses) the sandbox's filter container.
 //
-// declared is the policy the spec gives the sandbox. A changed declaration replaces the
-// container rather than leaving it enforcing the old one - the failure that would otherwise be
-// silent is a host you just removed from the spec still being reachable. A policy changed LIVE
-// is not a changed declaration: it is held by the running filter (and by the daemon, which
-// pushes it back if the container is ever replaced), so reusing the container keeps it.
-func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.Policy) (string, error) {
+// declared and ports are the sandbox's declaration: the policy its spec gives it and the extra
+// ports its egress_allow entries grant. A changed declaration replaces the container rather than
+// leaving it enforcing the old one - the failure that would otherwise be silent is a host you just
+// removed from the spec still being reachable. It is asked on every create, including one over a
+// sandbox whose services already exist, because that is exactly when a spec edit arrives.
+//
+// A policy changed LIVE is not a changed declaration: it is held by the running filter (and by the
+// daemon, which pushes it back if the container is replaced), so reusing the container keeps it.
+// A replaced declaration drops it: the daemon's copy was made against the old declaration, and
+// EgressControl.Sync forgets a copy whose declaration no longer matches.
+func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.Policy, ports []egress.PortGrant) (filterSetup, error) {
 	if err := d.ensureEgressNetwork(sandbox); err != nil {
-		return "", err
+		return filterSetup{}, err
 	}
 
 	body, err := json.Marshal(declared)
 	if err != nil {
-		return "", err
+		return filterSetup{}, err
 	}
 
-	list := string(body)
-	name := filterContainer(sandbox)
+	list, grants := string(body), egress.FormatPortGrants(ports)
+	name, network := filterContainer(sandbox), egressNetwork(sandbox)
 
-	if cur, err := d.docker("inspect", "--format", "{{index .Config.Labels \""+labelEgressPolicy+"\"}}", name); err == nil {
-		if strings.TrimSpace(cur) == list {
-			// Already running the right list. Make sure it is up: a machine that rebooted
-			// leaves it created and stopped.
+	ip, err := d.filterIP(sandbox)
+	if err != nil {
+		return filterSetup{}, err
+	}
+
+	// The tag this sbx would build, computed from its own source without building anything.
+	image, err := filterImageWant()
+	if err != nil {
+		return filterSetup{}, err
+	}
+
+	// One inspect for the declaration and the address. The address is the one the container asked
+	// for (IPAMConfig), which a stopped container still has, rather than the one it holds now.
+	format := label(labelEgressPolicy) + "\x1f" + label(labelEgressPorts) + "\x1f" +
+		`{{with index .NetworkSettings.Networks "` + network + `"}}{{with .IPAMConfig}}{{.IPv4Address}}{{end}}{{end}}` +
+		"\x1f{{.Config.Image}}"
+
+	if cur, err := d.docker("inspect", "--format", format, name); err == nil {
+		f := strings.Split(strings.TrimSpace(cur), "\x1f")
+		for len(f) < 4 {
+			f = append(f, "")
+		}
+
+		var why string
+
+		switch {
+		case f[0] != list:
+			why = "its declared egress policy changed; live changes made with `sbx egress` were dropped"
+		case f[1] != grants:
+			why = "the ports its egress_allow grants changed"
+		case f[2] != ip:
+			why = "it predates the filter's fixed address on the sandbox network"
+		// The filter's code is baked into its image, tagged by the hash of its source. A filter
+		// from an older sbx keeps enforcing with the old code - every fix to the filter stopped at
+		// sandboxes created before it. The declaration is unchanged, so the replacement carries the
+		// same policy label and Sync pushes any live change back: those are kept.
+		case f[3] != image:
+			why = "built by an older sbx"
+		}
+
+		if why == "" {
+			// Already running the right declaration. Make sure it is up: a machine that
+			// rebooted leaves it created and stopped.
 			if _, err := d.docker("start", name); err == nil {
-				return d.filterStatAddr(name)
+				stat, err := d.filterStatAddr(name)
+				return filterSetup{stat: stat, ip: ip}, err
 			}
+
+			why = "it would not start"
 		}
 
 		_, _ = d.docker("rm", "-f", name)
+		fmt.Printf("  replacing the egress filter for %s: %s\n", sandbox, why)
 	}
 
-	image, err := d.ensureFilterImage()
-	if err != nil {
-		return "", err
+	if _, err := d.ensureFilterImage(); err != nil {
+		return filterSetup{}, err
 	}
 
 	token, err := newToken()
 	if err != nil {
-		return "", err
+		return filterSetup{}, err
+	}
+
+	doors, err := d.engineDoors(sandbox)
+	if err != nil {
+		return filterSetup{}, err
 	}
 
 	// The token travels as an environment variable rather than an argument so it is not in
@@ -164,9 +242,11 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 		"run", "-d", "--name", name,
 		"--label", labelSandbox + "=" + sandbox,
 		"--label", labelEgressPolicy + "=" + list,
+		"--label", labelEgressPorts + "=" + grants,
 		"--label", labelEgressToken + "=" + token,
 		"-e", "SBX_EGRESS_TOKEN=" + token,
-		"--network", egressNetwork(sandbox),
+		"--network", network,
+		"--ip", ip,
 		"--network-alias", filterAlias,
 		"--restart", "unless-stopped",
 	}
@@ -183,25 +263,173 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 	args = append(args,
 		image,
 		"-policy", list,
+		"-ports", grants,
+		"-refuse", doors,
+		"-names", name,
 		"-listen", ":"+strconv.Itoa(EgressProxyPort),
 		"-stat", ":"+strconv.Itoa(filterStatPort),
 	)
 
 	if _, err := d.docker(args...); err != nil {
-		return "", fmt.Errorf("the egress filter container could not be started: %w", err)
+		return filterSetup{}, fmt.Errorf("the egress filter container could not be started: %w", err)
 	}
 
 	// The second home. The sandbox's own bridge has masquerade off, which is what denies the
 	// workload a route out; the filter needs one, and this is where it gets it. Attached after
 	// creation because a container is created on exactly one network.
+	//
+	// It is docker's default bridge rather than a network of the filter's own because docker's
+	// address pools hold about thirty bridges, and a second per filtered sandbox would halve how
+	// many sandboxes fit. The price is neighbours: every other container on the default bridge,
+	// and the bridge's gateway (the VM). engineDoors closes the whole subnet to the filter, which
+	// needs the bridge only as a route out.
 	if _, err := d.docker("network", "connect", "bridge", name); err != nil {
 		_, _ = d.docker("rm", "-f", name)
 
-		return "", fmt.Errorf("the egress filter has no way out (could not attach it to the "+
+		return filterSetup{}, fmt.Errorf("the egress filter has no way out (could not attach it to the "+
 			"default bridge): %w", err)
 	}
 
-	return d.filterStatAddr(name)
+	stat, err := d.filterStatAddr(name)
+
+	return filterSetup{stat: stat, ip: ip}, err
+}
+
+// filterIP is the filter's fixed address on the sandbox's bridge: the last usable address of the
+// bridge's subnet.
+//
+// Fixed, because a service reaches the filter by a hosts entry written when the service is created
+// (see Create): gVisor's netstack does not use docker's embedded DNS, so under --isolation gvisor
+// the network alias never resolved and every request failed with "bad address 'sbx-egress:20999'".
+// An address docker assigns changes when the filter is recreated, and would strand that entry.
+// The top of the subnet, because docker's IPAM hands addresses out from the bottom, and `--ip`
+// reserves it for as long as the filter exists.
+func (d *dockerProvider) filterIP(sandbox string) (string, error) {
+	out, err := d.docker("network", "inspect", egressNetwork(sandbox),
+		"--format", "{{(index .IPAM.Config 0).Subnet}}")
+	if err != nil {
+		return "", fmt.Errorf("finding the subnet of %s for its egress filter: %w", egressNetwork(sandbox), err)
+	}
+
+	ip, err := lastUsable(strings.TrimSpace(out))
+	if err != nil {
+		return "", fmt.Errorf("the egress filter needs a fixed address on %s: %w", egressNetwork(sandbox), err)
+	}
+
+	return ip, nil
+}
+
+// lastUsable is the highest address of an IPv4 subnet below its broadcast address.
+func lastUsable(subnet string) (string, error) {
+	p, err := netip.ParsePrefix(subnet)
+	if err != nil {
+		return "", fmt.Errorf("%q is not a subnet", subnet)
+	}
+
+	if !p.Addr().Is4() || p.Bits() > 30 {
+		return "", fmt.Errorf("subnet %s is not an IPv4 subnet with room for a filter "+
+			"(docker's default address pools are)", subnet)
+	}
+
+	b := p.Masked().Addr().As4()
+	n := binary.BigEndian.Uint32(b[:]) | (1<<(32-p.Bits()) - 1) // broadcast
+	binary.BigEndian.PutUint32(b[:], n-1)
+
+	return netip.AddrFrom4(b).String(), nil
+}
+
+// engineDoors is the -refuse list of a new filter container: the gateway of every network on the
+// engine and the default bridge's subnet, plus the sandbox's own gateway. On a VM-backed docker
+// every gateway is an address of the VM itself (egress.Doors has the measurements). The container
+// adds its own routes and what host.docker.internal and friends resolve to, and the daemon keeps
+// it current as networks come and go (EgressDoors).
+func (d *dockerProvider) engineDoors(sandbox string) (string, error) {
+	out, err := d.networkDoors()
+	if err != nil {
+		return "", err
+	}
+
+	gw, err := d.egressGateway(sandbox)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.Join(dedupDoors(append(out, gw)), ","), nil
+}
+
+// EgressDoorSets is a provider that can say which addresses every container filter must refuse
+// right now. The daemon asks once a discovery tick and pushes the answer to each filter, because
+// the list a filter is started with goes stale the moment another sandbox creates a network.
+type EgressDoorSets interface {
+	EgressDoors(ctx context.Context) ([]string, error)
+}
+
+// EgressDoors is the engine's doors as they are now: every network's gateway and the default
+// bridge's subnet. An empty answer is an error, never "nothing to refuse": the default bridge
+// always has a gateway, so empty means the listing failed, and a push of it would drop what the
+// last good one added.
+func (d *dockerProvider) EgressDoors(_ context.Context) ([]string, error) {
+	out, err := d.networkDoors()
+	if err != nil {
+		return nil, err
+	}
+
+	if out = dedupDoors(out); len(out) == 0 {
+		return nil, errors.New("docker listed no network gateways; not pushing an empty refuse set")
+	}
+
+	return out, nil
+}
+
+// networkDoors lists every network's gateways and the default bridge's subnet.
+func (d *dockerProvider) networkDoors() ([]string, error) {
+	ids, err := d.docker("network", "ls", "-q")
+	if err != nil {
+		return nil, fmt.Errorf("listing docker's networks, to close the egress filter off from them: %w", err)
+	}
+
+	format := `{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}} {{end}}{{end}}` +
+		`{{if eq .Name "bridge"}}{{range .IPAM.Config}}{{.Subnet}} {{end}}{{end}}`
+
+	var out []string
+
+	inspect := func(names ...string) error {
+		o, err := d.docker(append([]string{"network", "inspect", "--format", format}, names...)...)
+		if err == nil {
+			out = append(out, strings.Fields(o)...)
+		}
+
+		return err
+	}
+
+	// All at once; one at a time only when a network vanished between the list and the inspect.
+	if ids := strings.Fields(ids); len(ids) > 0 && inspect(ids...) != nil {
+		for _, id := range ids {
+			_ = inspect(id)
+		}
+	}
+
+	return out, nil
+}
+
+// dedupDoors drops repeats and anything that is not an address or a CIDR. Checked here rather
+// than left for the container to refuse: a filter that exits on a bad argument is a sandbox with
+// no egress and a restart loop, and a push with one bad entry is rejected whole.
+func dedupDoors(in []string) []string {
+	seen := map[string]bool{}
+
+	var list []string
+
+	for _, s := range in {
+		if _, err := egress.ParsePrefixes(s); err != nil || s == "" || seen[s] {
+			continue
+		}
+
+		seen[s] = true
+		list = append(list, s)
+	}
+
+	return list
 }
 
 // filterStatAddr asks docker which loopback address it published the stat port on, or returns ""
@@ -321,11 +549,20 @@ func (d *dockerProvider) EgressFilter(ctx context.Context, sandbox string) (Egre
 
 	name := filterContainer(sandbox)
 
-	token, err := d.docker("inspect", "--format", "{{index .Config.Labels \""+labelEgressToken+"\"}}", name)
+	out, err := d.docker("inspect", "--format", label(labelEgressToken)+"\x1f"+label(labelEgressPolicy), name)
 	if err != nil {
 		// No container: the filter is the daemon's own listener on the gateway.
 		return f, nil
 	}
+
+	token, declared, _ := strings.Cut(strings.TrimSpace(out), "\x1f")
+
+	// The filter's own label is the declaration it enforces, and it wins over the services'.
+	// `sbx create` run again after a spec edit replaces the filter but cannot relabel a service
+	// container that already exists, so the services' labels still name the old declaration - and
+	// a reset back to that, or a saved live copy made against it and pushed back, would undo the
+	// edit.
+	f.Declared = filterDeclaration(f.Declared, declared)
 
 	if f.Token = strings.TrimSpace(token); f.Token == "" {
 		return EgressFilter{}, fmt.Errorf("the egress filter for %q predates live policies and "+
@@ -378,4 +615,18 @@ func filterOf(sandbox string, units []Unit) (EgressFilter, error) {
 	f.Declared = DeclaredPolicy(filtered)
 
 	return f, nil
+}
+
+// filterDeclaration is the declaration a sandbox's filter enforces: the filter container's own
+// label when it has a readable one, else what the services declared.
+func filterDeclaration(services egress.Policy, filterLabel string) egress.Policy {
+	if filterLabel == "" {
+		return services
+	}
+
+	if p, err := egress.ParsePolicy([]byte(filterLabel)); err == nil {
+		return p
+	}
+
+	return services
 }

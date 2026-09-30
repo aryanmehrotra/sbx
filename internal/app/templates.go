@@ -13,8 +13,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // templates are the built-in specs, embedded so that --template nginx works on a machine
@@ -179,4 +183,82 @@ func MaterializeTemplate(name string) (string, error) {
 	}
 
 	return filepath.Join(dir, "sandbox.json"), nil
+}
+
+// helperNeeds is which backend helpers a sandbox from s would run. Volumes: snapshot and fork
+// copy only a service's own `volume`, so a volume-less spec never runs the copy helper. Egress:
+// the filter is built only for a filtered service (egress_allow, egress_policy, egress "allow").
+func helperNeeds(s *spec.Spec) provider.HelperNeeds {
+	n := provider.HelperNeeds{Volumes: copiesVolumes(s)}
+
+	for _, svc := range s.Services {
+		n.Egress = n.Egress || svc.Filtered()
+	}
+
+	return n
+}
+
+// templateNeeds is helperNeeds over every built-in template, for a prewarm with no arguments.
+func templateNeeds() provider.HelperNeeds {
+	var n provider.HelperNeeds
+
+	for _, name := range TemplateNames() {
+		body, err := fs.ReadFile(templates, "examples/"+name+"/sandbox.json")
+		if err != nil {
+			continue
+		}
+
+		var s spec.Spec
+		if json.Unmarshal(body, &s) != nil {
+			continue
+		}
+
+		t := helperNeeds(&s)
+		n.Volumes = n.Volumes || t.Volumes
+		n.Egress = n.Egress || t.Egress
+	}
+
+	return n
+}
+
+// copiesVolumes reports whether snapshot or fork of a sandbox from s would copy a volume, and so
+// run the backend's volume-copy helper: only a service's own `volume` is copied.
+func copiesVolumes(s *spec.Spec) bool {
+	for _, svc := range s.Services {
+		if svc.Volume != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// specImages is the images s pulls, sorted and each once: two services on one image are one
+// pull, and listing it twice made the "already present" count read as two.
+func specImages(s *spec.Spec) []string {
+	var images []string
+
+	for _, svc := range s.Services {
+		if svc.Image != "" {
+			images = append(images, svc.Image)
+		}
+	}
+
+	sort.Strings(images)
+
+	return slices.Compact(images)
+}
+
+// uniqueImages keeps named images in the order given, each once: an image named twice is one
+// pull, and listing it twice made "N already present" count it twice.
+func uniqueImages(images []string) []string {
+	out := make([]string, 0, len(images))
+
+	for _, img := range images {
+		if !slices.Contains(out, img) {
+			out = append(out, img)
+		}
+	}
+
+	return out
 }

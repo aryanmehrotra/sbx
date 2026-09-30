@@ -256,9 +256,9 @@ type Service struct {
 	// has no ceiling at all, and the failure is the machine rather than the sandbox - the
 	// limit that binds first, long before any wake latency does.
 	//
-	// Not validated here. Docker and Kubernetes each reject their own malformed values
-	// with a better message than this could paraphrase, and unlike `egress` a typo here
-	// fails loudly at create rather than silently leaving something open.
+	// Checked at load only for a shape no provider accepts (checkLimits): "lots" used to pass
+	// `sbx validate` and fail at create, after the pull. Which spelling each provider takes -
+	// docker's "512m", Kubernetes' "512Mi" - is still left to that provider.
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
 
@@ -270,7 +270,8 @@ type Service struct {
 	// Empty uses the daemon's global --idle.
 	Idle string `json:"idle,omitempty"`
 
-	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none.
+	// GPUs is passed to the runtime verbatim: "all", "1", "device=0". Empty means none. Load
+	// refuses a value docker's --gpus parser would (checkLimits).
 	// Declared here rather than inferred, because a sandbox that quietly grabs every GPU
 	// on a shared machine is a bad neighbour.
 	GPUs string `json:"gpus,omitempty"`
@@ -290,8 +291,8 @@ type Service struct {
 	// the machine it is on. A spec asking for CHECKPOINT_RESTORE says what it needs and gets
 	// only that, and a reviewer reading the committed file can see the difference.
 	//
-	// Not validated against a list of known names. Docker rejects an unknown capability at
-	// create with a better message than this could paraphrase, and the set differs by kernel.
+	// Checked against the kernel's list at load (checkCapAdd): docker would refuse an unknown
+	// name too, but only at create, after the pull, and `sbx validate` would have passed it.
 	CapAdd []string `json:"cap_add,omitempty"`
 
 	// Entrypoint replaces the image's ENTRYPOINT: the first element is the program, the rest its
@@ -400,10 +401,20 @@ func (s Service) validate(name string) error {
 		return err
 	}
 
+	if err := checkCapAdd(name, s.CapAdd); err != nil {
+		return err
+	}
+
 	if len(s.EgressAllow) > 0 {
 		for _, h := range s.EgressAllow {
 			if strings.TrimSpace(h) == "" {
 				return fmt.Errorf("service %q: egress_allow has a blank host", name)
+			}
+
+			// A port on an entry is a grant (ports 80 and 443 need none), so one that is not a
+			// port is refused here rather than becoming a grant that never matches.
+			if err := egress.CheckAllowEntry(h); err != nil {
+				return fmt.Errorf("service %q: %w", name, err)
 			}
 		}
 	}
@@ -597,8 +608,18 @@ const (
 // than loading a sandbox.json - the OpenSandbox API does - and want the same refusals.
 func (s Service) Validate(name string) error { return s.validate(name) }
 
-// LoadSpec reads and validates a sandbox.json.
-func LoadSpec(path string) (*Spec, error) {
+// LoadSpec reads and validates a sandbox.json, and resolves ${VAR} in its env values - the
+// loader for anything that starts a workload, which must refuse an unset variable before
+// anything is created.
+func LoadSpec(path string) (*Spec, error) { return loadSpec(path, true) }
+
+// LoadSpecUnexpanded is LoadSpec for a command that only reads addressing - `sbx env`, the
+// ordinals `sbx add` avoids. Those need no secret, and the shell asking for a port is often
+// not the one holding it (a second terminal, a CI step after create), so ${VAR} is left as
+// written instead of being required. Validation is identical.
+func LoadSpecUnexpanded(path string) (*Spec, error) { return loadSpec(path, false) }
+
+func loadSpec(path string, expand bool) (*Spec, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		// A missing spec is the first thing anybody hits on a real repo, and `open
@@ -615,7 +636,7 @@ func LoadSpec(path string) (*Spec, error) {
 		return nil, err
 	}
 
-	return ParseSpec(raw, path)
+	return parseSpec(raw, path, expand)
 }
 
 // ServiceName is what a service may be called: the container-name rule, because that is what
@@ -623,7 +644,9 @@ func LoadSpec(path string) (*Spec, error) {
 // they are the same rule, asserted equal by a test.
 var ServiceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
-func ParseSpec(raw []byte, path string) (*Spec, error) {
+func ParseSpec(raw []byte, path string) (*Spec, error) { return parseSpec(raw, path, true) }
+
+func parseSpec(raw []byte, path string, expand bool) (*Spec, error) {
 	var s Spec
 	// DisallowUnknownFields: a typo in a spec should be a startup error, not a setting
 	// that silently did nothing for a week.
@@ -656,6 +679,27 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		if err := svc.validate(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+
+		if err := checkLimits(name, svc); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+
+	// Here rather than in validate, which the OpenSandbox API also runs: env there is literal by
+	// contract - sbx does not expand it - so a caller's `${X:-y}` is a value, not a mistake. Only a
+	// spec file promises `${NAME}` substitution. After the loop, so every bad form in every
+	// service is reported at once.
+	if err := s.checkEnvSyntax(); err != nil {
+		// Unset variables too, in the same error: returning here alone meant a spec with a bad
+		// form and an unset variable reported the second only on the run after the first was
+		// fixed. Only when this load expands - `sbx env` never reads them, so it does not ask.
+		if expand {
+			if unset := s.unsetEnv(osLookup); unset != nil {
+				err = fmt.Errorf("%w; and %w", err, unset)
+			}
+		}
+
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
 	// The sandbox-wide default gets the same check as a service's own, or a typo there is one
@@ -668,12 +712,20 @@ func ParseSpec(raw []byte, path string) (*Spec, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
+	// A cycle is a property of the file, so it is refused at load with the file's name like
+	// every other mistake in it - not later, by whichever command first asks for an order.
+	if _, err := s.CreationOrder(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
 	if err := s.checkEgressFilters(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	if err := s.expandEnv(osLookup); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if expand {
+		if err := s.expandEnv(osLookup); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 
 	for env, ref := range s.Exports {

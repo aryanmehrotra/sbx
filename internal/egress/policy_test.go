@@ -316,6 +316,7 @@ func TestSetPolicyChangesARunningFilter(t *testing.T) {
 	defer upstream.Close()
 
 	f := NewPolicy(mustPolicy(t, `{"egress":[{"action":"allow","target":"127.0.0.1"}]}`))
+	f.SetPorts(PortGrantsFromAllowList([]string{strings.TrimPrefix(upstream.URL, "http://")}))
 	proxy := httptest.NewServer(f)
 
 	defer proxy.Close()

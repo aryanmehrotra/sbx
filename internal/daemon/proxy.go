@@ -71,6 +71,11 @@ type unit struct {
 	// pinned is keepAwake set at run time, by the OpenSandbox warm pool - see pin.go.
 	pinned atomic.Bool
 
+	// stopping is true while the reaper's sleep of this unit is in flight, from the decision to
+	// the stop returning. It keeps a second tick from starting another, and keeps this unit's
+	// dependencies up until it is actually down - see reapAsync.
+	stopping atomic.Bool
+
 	// served records that this unit has been seen serving at least once.
 	//
 	// Until then it is not eligible to sleep, because "idle" is meaningless before a
@@ -78,6 +83,11 @@ type unit struct {
 	// schema migrations looks exactly like one nobody has touched. Measured from discovery
 	// instead, a 39-second creation was put to sleep underneath the command creating it.
 	served bool
+
+	// healthAsked is when sleepable last asked the provider whether a never-served unit is healthy.
+	// The reaper ticks every second; the ask is an Engine API call, so it is made no more often
+	// than healthEvery of the unit's window - the rate the old reap cadence asked at. Guarded by mu.
+	healthAsked time.Time
 
 	// freezeOnIdle makes going idle a pause rather than a stop (spec on_idle: "freeze"). The
 	// sandbox keeps its memory and running processes and uses no CPU; the next connection thaws
@@ -195,12 +205,15 @@ func (u *unit) touch() { u.lastByte.Store(time.Now().UnixNano()) }
 // member rather than its sum. Recursion walks the chain, and the visited set both dedupes a
 // diamond and stops a cycle: two services declaring each other is a spec written by hand, and
 // a daemon that hangs holding the connection open is a worse answer than starting both.
-func (u *unit) wakeDeps(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+//
+// verify makes each dependency confirm an "awake" belief with the provider rather than trust it -
+// see wake for when that is asked for.
+func (u *unit) wakeDeps(ctx context.Context, p provider.Provider, readyTimeout time.Duration, verify bool) error {
 	if len(u.dependsOn) == 0 || u.peers == nil {
 		return nil
 	}
 
-	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), newVisited(u.name))
+	return wakeAll(ctx, p, readyTimeout, u.peers(u.sandbox, u.dependsOn), newVisited(u.name), verify)
 }
 
 // visited is the set of units a single wake has already claimed, shared across the whole
@@ -249,7 +262,7 @@ func (v *visited) claim(name string) bool {
 //
 // A failure is returned but does not cancel the siblings: they are already starting, and
 // stopping halfway would leave the sandbox in a state nobody asked for.
-func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen *visited) error {
+func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duration, us []*unit, seen *visited, verify bool) error {
 	var (
 		mu    sync.Mutex
 		wg    sync.WaitGroup
@@ -277,7 +290,7 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 				deeper := d.peers(d.sandbox, d.dependsOn)
 				mu.Unlock()
 
-				if err := wakeAll(ctx, p, readyTimeout, deeper, seen); err != nil {
+				if err := wakeAll(ctx, p, readyTimeout, deeper, seen, verify); err != nil {
 					mu.Lock()
 					if first == nil {
 						first = err
@@ -288,7 +301,7 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 				}
 			}
 
-			if err := d.wakeSelf(ctx, p, readyTimeout); err != nil {
+			if err := d.wakeUnit(ctx, p, readyTimeout, verify); err != nil {
 				mu.Lock()
 				if first == nil {
 					first = err
@@ -307,13 +320,25 @@ func wakeAll(ctx context.Context, p provider.Provider, readyTimeout time.Duratio
 //
 // The first time it is seen serving, the clock is restarted from that moment: a unit that
 // took two minutes to come up has not been idle for two minutes, it has been starting.
-func (u *unit) sleepable(ctx context.Context, p provider.Provider) bool {
+//
+// Until then each call asks the provider, at most once per every: the reaper ticks every second
+// and this is the one provider call a tick can make.
+func (u *unit) sleepable(ctx context.Context, p provider.Provider, every time.Duration) bool {
 	u.mu.Lock()
 	served := u.served
+
+	asked := !served && !u.healthAsked.IsZero() && time.Since(u.healthAsked) < every
+	if !served && !asked {
+		u.healthAsked = time.Now()
+	}
 	u.mu.Unlock()
 
 	if served {
 		return true
+	}
+
+	if asked {
+		return false // asked recently; the answer cannot have been yes, or served would be set
 	}
 
 	if serving, declared := p.Healthy(ctx, u.ref); !serving && declared {
@@ -505,15 +530,34 @@ func (u *unit) pipe(dst, src net.Conn, done chan<- struct{}) {
 //
 // Split from wakeSelf so that waking a dependency cannot recurse back through the dependency
 // walk: wakeAll calls wakeSelf directly, having already handled that unit's own chain.
+//
+// Its dependencies are asked to confirm their "awake" with the provider whenever this unit is not
+// itself awake - it is cold, or handle() has just revoked its belief after a failed dial.
+//
+// That is the moment a dependency's belief is suspect. `sbx sleep` stops every service through the
+// provider, behind the daemon's back, so every belief in the sandbox is stale at once. The dialled
+// unit's own is corrected by its failed dial; a dependency's never is, because nothing dials it.
+// Trusted, it returned at the fast path, and b came up with a stopped - reproduced 5 of 5 - until a
+// discovery tick and a NEW connection to b. Not asked on every connection, which is the obvious
+// fix: an awake unit's dependencies would then cost a provider call per connection, the same
+// shape as the 68 ms exec the fast path in wakeUnit exists to remove.
 func (u *unit) wake(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
-	if err := u.wakeDeps(ctx, p, readyTimeout); err != nil {
+	if err := u.wakeDeps(ctx, p, readyTimeout, !u.isAwake()); err != nil {
 		return err
 	}
 
 	return u.wakeSelf(ctx, p, readyTimeout)
 }
 
+// wakeSelf wakes this unit alone, trusting its "awake" belief: the caller dials it next, and a
+// failed dial is what corrects that belief.
 func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout time.Duration) error {
+	return u.wakeUnit(ctx, p, readyTimeout, false)
+}
+
+// wakeUnit is wakeSelf, and with verify an "awake" belief is confirmed with the provider before
+// it is trusted - for a dependency, which nothing dials to correct it.
+func (u *unit) wakeUnit(ctx context.Context, p provider.Provider, readyTimeout time.Duration, verify bool) error {
 	// A unit the daemon woke and has not slept is awake, and the daemon is the only thing
 	// that sleeps one. Asking the workload again costs a `docker exec` - measured at 68 ms
 	// median per connection against 0.8 ms straight to docker - and it was being paid on
@@ -558,9 +602,15 @@ func (u *unit) wakeSelf(ctx context.Context, p provider.Provider, readyTimeout t
 		// It cannot hold anything awake that should sleep: the only callers are handle(),
 		// which has already touched for the byte it is about to relay, and a dependency walk,
 		// which is somebody genuinely needing this unit right now.
-		u.touch()
+		if !verify || u.confirmRunning(ctx, p) {
+			u.touch()
 
-		return nil
+			return nil
+		}
+
+		// Stopped behind the daemon's back. Start it like any sleeping unit, below.
+		u.setAwake(false)
+		logs.Default.Info(u.sandbox, u.service, "was stopped outside sbx; starting it for a dependent")
 	}
 
 	start := time.Now()
@@ -681,9 +731,18 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 	u.waking.Lock()
 	defer u.waking.Unlock()
 
-	if u.idleFor() < idle {
+	// The idle time that justified this sleep, read once, here, and the only one reported.
+	//
+	// It used to be re-read for the log line after Stop returned, and a stop can take ten
+	// seconds - long enough for a client to arrive, stamp the unit and queue behind this lock
+	// to wake it. The record then said "slept - idle for 2s" (1967ms) of a service whose window
+	// is 3s: a sleep the policy never allowed, reported as one it did.
+	idleFor := u.idleFor()
+	if idleFor < idle {
 		return
 	}
+
+	decided := time.Now()
 
 	u.mu.Lock()
 	for c := range u.live {
@@ -715,7 +774,7 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 
 			u.setFrozen(true)
 			logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "froze",
-				u.idleFor().Milliseconds(), "froze - idle for %s", u.idleFor().Round(time.Second))
+				idleFor.Milliseconds(), "froze - idle for %s", idleFor.Round(time.Second))
 
 			return
 		}
@@ -733,8 +792,30 @@ func (u *unit) sleep(ctx context.Context, p provider.Provider, idle time.Duratio
 
 		return
 	}
+	// The stop's own duration is said separately, because it is the part of "how late did this
+	// sleep" that the reaper does not control: docker's grace period for a workload that
+	// ignores SIGTERM is ten seconds of it.
 	logs.Default.Event(logs.LevelInfo, u.sandbox, u.service, "slept",
-		u.idleFor().Milliseconds(), "slept - idle for %s", u.idleFor().Round(time.Second))
+		idleFor.Milliseconds(), "slept - idle for %s (stop took %s)",
+		idleFor.Round(time.Second), time.Since(decided).Round(10*time.Millisecond))
+}
+
+// confirmRunning asks the provider whether this unit's container is running. It answers true when
+// the provider cannot say, leaving the belief as it was: a start on a guess costs a probe loop on
+// every dependent's wake, and discovery's correctAwake still catches a real stop within a tick.
+func (u *unit) confirmRunning(ctx context.Context, p provider.Provider) bool {
+	units, err := p.List(ctx, u.sandbox)
+	if err != nil {
+		return true
+	}
+
+	for _, f := range units {
+		if f.Ref == u.ref {
+			return f.Running
+		}
+	}
+
+	return true
 }
 
 func (u *unit) track(c net.Conn) {

@@ -20,6 +20,7 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/slotlock"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -623,6 +624,13 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 			return
 		}
 
+		// Its own reason, not create_failed: nothing was attempted, and the fix is on this
+		// machine (another create holding the lock), not in the request.
+		if he := (*slotlock.HeldError)(nil); errors.As(err, &he) {
+			fail("slot_lock_timeout", err.Error())
+			return
+		}
+
 		fail("create_failed", err.Error())
 
 		return
@@ -665,7 +673,11 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 	// and on every other path by the defer - once either way.
 	var once sync.Once
 
-	unlock := s.lockSlots()
+	unlock, err := s.lockSlots(ctx)
+	if err != nil {
+		return slotLockErr(ctx, err)
+	}
+
 	release := func() { once.Do(unlock) }
 
 	defer release()

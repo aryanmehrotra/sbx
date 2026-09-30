@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -152,12 +153,23 @@ func (dc File) translate(dir string) (*Result, error) {
 			"it forwards no ports, so 22 was added - the port `sbx ssh` looks for")
 	}
 
-	out.Spec.Env = mergeEnv(dc.ContainerEnv, dc.RemoteEnv)
-
 	// The workspace, mounted from wherever the spec is written.
 	folder := dc.WorkspaceFolder
 	if folder == "" {
 		folder = "/workspaces/" + out.Service
+	}
+
+	out.Spec.Env = mergeEnv(dc.ContainerEnv, dc.RemoteEnv)
+	envKeys := make([]string, 0, len(out.Spec.Env))
+	for k := range out.Spec.Env {
+		envKeys = append(envKeys, k)
+	}
+
+	sort.Strings(envKeys) // so the notes come out in the same order every run
+
+	for _, k := range envKeys {
+		out.Spec.Env[k] = translateEnv(k, out.Spec.Env[k], folder,
+			func(msg string) { out.Dropped = append(out.Dropped, msg) })
 	}
 
 	out.Spec.Mounts = map[string]string{".": folder}
@@ -370,4 +382,95 @@ func mergeEnv(maps ...map[string]string) map[string]string {
 	}
 
 	return out
+}
+
+// devcontainerVar is a devcontainer variable reference, ${...} up to the first closing brace.
+var devcontainerVar = regexp.MustCompile(`^\$\{[^}]*\}`)
+
+// sbxEnvName is the name sbx's own ${NAME} accepts (internal/spec's envRef).
+var sbxEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// translateEnv rewrites one env value from devcontainer variable syntax into sandbox.json's.
+//
+// Copied as written, any ${ in a value made a spec that load refuses: sbx reads ${NAME} itself
+// and refuses every other ${ form. So each ${...} is decided here:
+//
+//   - ${localEnv:X} is the host's X when the container is created, which is what sbx's ${X}
+//     means, so it becomes ${X}. A default (${localEnv:X:d}) is dropped, and said so: sbx has no
+//     defaults, and refuses to start with X unset rather than quietly using d.
+//   - ${containerWorkspaceFolder} is known here: the folder the workspace is mounted at.
+//   - Anything else - ${containerEnv:X}, ${localWorkspaceFolder}, a template string the program
+//     inside reads - sbx cannot evaluate, so it is escaped as $${ and reaches the container as
+//     written. The ones that are devcontainer variables are reported, since the container now
+//     sees the reference rather than its value.
+func translateEnv(key, val, folder string, note func(string)) string {
+	if !strings.Contains(val, "${") {
+		return val
+	}
+
+	var b strings.Builder
+
+	for i := 0; i < len(val); {
+		rest := val[i:]
+		if !strings.HasPrefix(rest, "${") {
+			b.WriteByte(val[i])
+			i++
+
+			continue
+		}
+
+		ref := devcontainerVar.FindString(rest)
+		if ref == "" {
+			// Unterminated: a literal, escaped so sbx does not refuse it.
+			b.WriteString("$${")
+			i += 2
+
+			continue
+		}
+
+		inner := ref[2 : len(ref)-1]
+		i += len(ref)
+
+		if name, ok := strings.CutPrefix(inner, "localEnv:"); ok {
+			name, def, hasDef := strings.Cut(name, ":")
+			if sbxEnvName.MatchString(name) {
+				b.WriteString("${" + name + "}")
+
+				if hasDef {
+					note(fmt.Sprintf("env %s: the default %q in %s was dropped - sbx has no defaults, "+
+						"so %s must be set when the sandbox is created", key, def, ref, name))
+				}
+
+				continue
+			}
+		}
+
+		if inner == "containerWorkspaceFolder" {
+			b.WriteString(strings.ReplaceAll(folder, "${", "$${"))
+
+			continue
+		}
+
+		if isDevcontainerVar(inner) {
+			note(fmt.Sprintf("env %s: %s is a devcontainer variable sbx cannot evaluate, so the "+
+				"container gets it as written", key, ref))
+		}
+
+		// Every ${ in it, not just the first: ${${0} is one match of devcontainerVar.
+		b.WriteString(strings.ReplaceAll(ref, "${", "$${"))
+	}
+
+	return b.String()
+}
+
+// isDevcontainerVar reports whether inner (the text between ${ and }) is one of the variables the
+// devcontainer spec defines, as opposed to text that only happens to look like one.
+func isDevcontainerVar(inner string) bool {
+	switch inner {
+	case "localWorkspaceFolder", "localWorkspaceFolderBasename", "containerWorkspaceFolderBasename",
+		"devcontainerId":
+		return true
+	}
+
+	return strings.HasPrefix(inner, "localEnv:") || strings.HasPrefix(inner, "containerEnv:")
 }

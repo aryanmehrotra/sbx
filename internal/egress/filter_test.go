@@ -22,7 +22,7 @@ func TestEgressPermits(t *testing.T) {
 		{"api.openai.com", true},     // a subdomain
 		{"api.openai.com:443", true}, // host:port
 		{"API.OpenAI.com", true},     // case-insensitive
-		{"pypi.org", true},           // the port on the allow entry is ignored
+		{"pypi.org", true},           // an entry with a port still permits its host
 		{"files.pythonhosted.org", false},
 		{"notopenai.com", false},       // not a subdomain, a different host that ends the same
 		{"openai.com.evil.com", false}, // the classic suffix-attack - must NOT match
@@ -79,7 +79,7 @@ func TestEgressAllowedConnectTunnels(t *testing.T) {
 		_, _ = io.Copy(c, c) // echo
 	}()
 
-	proxy := httptest.NewServer(New([]string{"127.0.0.1"}))
+	proxy := httptest.NewServer(New([]string{echo.Addr().String()})) // host:port: not 80 or 443
 	defer proxy.Close()
 
 	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))

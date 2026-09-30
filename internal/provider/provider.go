@@ -47,6 +47,7 @@ const (
 	labelDependsOn     = "sbx.dependsOn"      // comma-joined depends_on, so wake can follow it
 	labelOnIdle        = "sbx.onIdle"         // "freeze" when idle should pause rather than stop
 	labelOSB           = "sbx.osb"            // set on containers the OpenSandbox API created: whose they are
+	labelIsolation     = "sbx.isolation"      // the isolation tier it was created with, so `sbx add` can match it
 
 	// Kubernetes label keys are stricter than docker's, so the cluster side uses its own
 	// names rather than risking a silently rejected manifest.
@@ -97,6 +98,12 @@ type Unit struct {
 	Listen   []int
 	Upstream []Endpoint
 
+	// Private is the port inside the workload each Upstream reaches, index for index, or 0 where
+	// the runtime does not say - a docker container that is not running publishes nothing to
+	// read. It lets a readiness check ask the workload itself whether anything listens there,
+	// which a dial from the host cannot tell apart from a forwarder holding the line.
+	Private []int
+
 	// EgressAllow and EgressGateway carry a service's egress allow-list to the daemon, which
 	// runs a filtering proxy for it on the gateway. Both empty when there is no allow-list.
 	EgressAllow   []string
@@ -144,6 +151,11 @@ type Unit struct {
 	// OSB is the sbx.osb label: non-empty on a container created through the OpenSandbox API. A
 	// daemon that does not serve the API, and was not scoped to include them, leaves these alone.
 	OSB string
+
+	// Isolation is the tier the unit was created with, from its sbx.isolation label. Empty for
+	// a unit created before the label existed, or by a provider that does not record it;
+	// callers read empty as "container" on docker, which is what those units got.
+	Isolation Isolation
 }
 
 // EgressProxyPort is where a sandbox's egress filter listens on its no-NAT bridge gateway. The
@@ -229,6 +241,17 @@ type Provider interface {
 	// echo and no job control.
 	ExecTTY(ctx context.Context, ref string, argv []string) error
 
+	// ExecStream runs argv with the caller's streams attached and returns the command's own
+	// exit status. It is what `sbx exec` without -t uses: `pg_dump | sbx exec b pg psql` has
+	// to reach psql's stdin, and `sbx exec b app ./check` has to exit with ./check's status,
+	// and Exec does neither - it captures output for sbx's own use (health, init, mounts)
+	// and turns every failure into an error.
+	//
+	// err is for a command that could not be run or whose status never arrived; a command
+	// that ran and failed is (its status, nil). A nil stdin means the command gets none. A
+	// provider that cannot carry stdin says so in err rather than dropping it.
+	ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+
 	// Logs writes a service's output to w, optionally following it.
 	//
 	// A writer rather than a string because following has no end: a sandbox is a set of
@@ -303,6 +326,22 @@ type Snapshotter interface {
 	// RemoveImage deletes a saved image; one already gone is success. An image still used by
 	// a unit is refused by the backend, and that refusal is returned rather than forced.
 	RemoveImage(ctx context.Context, image string) error
+}
+
+// ImageLabeler reads one label off a saved image, "" when it has none. Optional beside
+// Snapshotter: a snapshot records which snapshot it belongs to and whether it carries a volume
+// as labels on its images, and a backend without labels falls back to reading the image name.
+type ImageLabeler interface {
+	ImageLabel(ctx context.Context, image, key string) (string, error)
+}
+
+// UsageFinder says which of the named images and volumes a unit, in any state, still uses:
+// the name maps to the sandboxes (or, unlabelled, the containers) using it, and a name nobody
+// uses is absent. Optional beside Snapshotter. Removing a snapshot asks it first, so a
+// snapshot a fork still runs from is refused whole instead of losing the parts the backend
+// happened to let go before refusing the rest.
+type UsageFinder interface {
+	InUse(ctx context.Context, images, volumes []string) (map[string][]string, error)
 }
 
 // SnapshotterFor returns the provider's snapshot support, or a refusal naming the backend.
@@ -547,6 +586,19 @@ type Artifact struct {
 	Sandbox  string        // the sandbox it belonged to, where that is knowable
 	Age      time.Duration // since it was created
 	Snapshot bool          // made deliberately, by name, and outliving its sandbox is the point
+
+	// InUse is set when a unit, in any state, still runs from it or mounts it: a fork's
+	// containers are created from a snapshot's images, so the snapshot is not garbage while
+	// the fork exists, whatever became of the sandbox it was first taken from.
+	InUse bool
+
+	// NoImage marks a snapshot volume no snapshot image claims: what `sbx snapshot` leaves when
+	// it is killed mid-copy, since it copies every volume before it commits any image.
+	NoImage bool
+
+	// SnapshotName is the snapshot a snapshot volume belongs to, from its label; "" when it has
+	// none (made before volumes were labelled), and then nothing can say.
+	SnapshotName string
 }
 
 // Collector finds and removes what sandboxes leave behind.
@@ -934,12 +986,46 @@ type ExitReporter interface {
 	ExitOf(ctx context.Context, ref string) (ExitState, error)
 }
 
+// Locator says where a provider points, for a machine that can reach several of its kind: a docker
+// endpoint, a kubectl context. Origin records carry it beside Name, so a record is only ever
+// cleared through the backend that owns it. "" where it cannot say.
+type Locator interface {
+	Where() string
+}
+
+// NetTabler reads a running unit's network tables - /proc/net/dev, tcp and tcp6 - from outside its
+// image: a throwaway helper that joins the unit's network namespace, so an image with no `cat`
+// (scratch, distroless) can still be asked whether it listens. Only meaningful where the
+// workload's sockets live in that namespace, which is not so under gVisor or Kata: their guest
+// kernel keeps them, and the host-side namespace a helper joins holds none. The caller decides.
+//
+// TCP6 is empty on a kernel with IPv6 off.
+type NetTabler interface {
+	NetTables(ctx context.Context, ref string) (NetTables, error)
+}
+
+// NetTables is what NetTabler read.
+type NetTables struct {
+	Dev, TCP, TCP6 string
+}
+
+// UnitRemover removes one service's workload and its anonymous volumes, leaving the rest of the
+// sandbox and its named data volumes. Create uses it to take out a container whose mount check
+// failed: the mount is fixed at creation, so that container can only ever serve the wrong path.
+type UnitRemover interface {
+	RemoveUnit(ctx context.Context, ref string) error
+}
+
 // ExitState is a stopped workload's last state, as the runtime recorded it.
 type ExitState struct {
 	Status    string // the runtime's word: "exited", "created", "dead", ...
 	ExitCode  int
 	OOMKilled bool
 	Error     string // the runtime's own error, e.g. an OCI start failure
+
+	// StartedAt is when the runtime last started it; zero where it does not say. Create reads it to
+	// tell a container that exited on its own during the create from one that was already asleep.
+	StartedAt time.Time
 }
 
 // String renders the state as one clause for a failure message.
@@ -980,4 +1066,34 @@ func orUnknown(s string) string {
 	}
 
 	return s
+}
+
+// HelperImager names images a backend runs on its own, which no spec mentions: on docker, the
+// small image snapshot and fork copy a volume through, and the two the egress filter is built
+// from. Optional beside Puller, so prewarm can fetch them with everything else instead of
+// leaving the first fork, or the first filtered create, to pull one. Only the helpers needs
+// asks for are returned: a CI cache should not carry an image its specs never run.
+type HelperImager interface {
+	HelperImages(needs HelperNeeds) []Helper
+}
+
+// HelperNeeds says which helpers are wanted: Volumes for snapshot and fork (a service with a
+// `volume`), Egress for a filtered service.
+type HelperNeeds struct{ Volumes, Egress bool }
+
+// Helper is one helper image and what it is for, in words a CI log reader understands.
+type Helper struct{ Image, For string }
+
+// VolumeLister lists volumes whose names begin with prefix. Optional beside NamedVolumes: a
+// snapshot interrupted before its images were committed exists only as volumes, and removing
+// it by name needs to find them without an image to start from.
+type VolumeLister interface {
+	Volumes(ctx context.Context, prefix string) ([]string, error)
+}
+
+// VolumeLabeler reads one label off a volume, "" when it has none. Optional beside NamedVolumes:
+// a snapshot volume carries its snapshot's name, which its own name cannot give when the
+// service name has a dash in it.
+type VolumeLabeler interface {
+	VolumeLabel(ctx context.Context, volume, key string) (string, error)
 }

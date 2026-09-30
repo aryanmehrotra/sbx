@@ -62,6 +62,7 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | docker · macOS (colima, Docker Desktop) | **unit-tested** in CI on every PR and daily; **run by hand** on an M4 with colima (benchmarks) |
 | docker · Windows | inside WSL2 only; **not yet run end to end** on a Windows host |
 | docker `--isolation gvisor` | **verified in CI** (`isolation` job) |
+| docker `--isolation kata` | **run by hand** on a nested VM host at v0.15.1: the container got no network and could not restart. `sbx doctor` checks registration only |
 | kubernetes | **unit-tested**; **run by hand** on minikube (benchmarks); not in CI |
 | kubernetes `--isolation firecracker` (kata-fc) | **unit-tested**; **not yet run end to end** on a cluster |
 | firecracker · Linux with `/dev/kvm` | **verified in CI** (`microvm` job, nested KVM, jailer on) |
@@ -121,6 +122,7 @@ from the caller or bounded by the daemon:
 | API `resume` | the caller asked; it releases the hold and thaws | the daemon |
 | API `DELETE`, the expiry reaper | the sandbox's `timeout` is the caller's; removal is not a start | nobody: it is gone |
 | API `POST .../snapshots` | `docker commit` pauses a running container for the copy, then thaws it | the daemon; a stopped one is committed without starting |
+| `sbx snapshot` | pauses every running service for the volume copies and the commits, then thaws them; a file under `~/.sbx/snapshot-paused/` tells the daemon the pause is not a freeze | the daemon; an asleep or frozen service is left as it was |
 | warm-pool members | created running before any caller, and pinned: the reaper skips them until claimed | the daemon, from the claim; the idle clock starts then |
 | `create` (CLI or API) | a new container is started once, to be made | the daemon, from its first idle check |
 | `sbx wake` / `sbx sleep`, the dashboard's `s`, connect-endpoint control | a one-transition override; the idle policy is untouched | the daemon, from its next connection or tick |
@@ -145,7 +147,7 @@ runs.
             a connection / exec / URL hit
    ASLEEP (0 B) ─────────────────────────────▶ AWAKE
         ◀──────── no bytes for --idle ─────────
-                 (reaped every idle/3)
+   (reaped every shortest idle/3, 1-30 s)
    the volume or PVC persists across both
    guard: a sandbox cannot sleep until seen serving once
 ```
@@ -154,6 +156,12 @@ runs.
 - The guard exists because the activator once scaled a sandbox to zero 39 seconds into its own
   creation.
 - The proxy splices bytes and parses no protocol, so it works for anything over TCP.
+- The reaper decides on its clock and runs each stop on its own goroutine. A stop can take
+  docker's 10 s grace, and waiting for it would make every other service late.
+- Discovery marks a unit asleep only after asking the provider again under the wake lock. A
+  listing can predate a wake that finished after it.
+- An unscoped daemon leaves sandboxes a live `--only` daemon covers to that daemon, re-read
+  every `--refresh`.
 
 ### Kubernetes: the activator
 
@@ -264,8 +272,15 @@ A sandbox's `egress` field is enforced by a component, `internal/egress`.
   clients at it. A refused destination gets 403, and no socket is opened to it.
 - On native Linux docker and on firecracker it runs inside `sbx serve`. Where the gateway is inside
   an engine's VM (Docker Desktop, colima), it runs as a container on the bridge
-  (`internal/provider/egress_container.go`).
-- `egress: "allow"` uses the same proxy with an open default, so it carries HTTP and HTTPS only.
+  (`internal/provider/egress_container.go`), at the last address of the bridge's subnet, which
+  services find through `/etc/hosts`. It refuses the engine's gateways, the default bridge and the
+  host behind the VM (`egress.Doors`), whatever the policy says. The daemon lists the engine's
+  gateways on every discovery pass and pushes them to each container filter (`PUT /refuse`), so a
+  network created later is refused too. The filter also refuses its own interface addresses, so
+  `CONNECT sbx-egress:443` is not dialled back into itself.
+- Every filter carries ports 80 and 443. On docker, `egress_allow` entries written as `host:port`
+  add that port; firecracker refuses them. `egress:
+  "allow"` uses the same proxy with an open default, so it carries HTTP and HTTPS only.
 - `sbx egress` swaps the policy in place without cutting open tunnels.
 - A permitted request counts as activity, so an agent that only calls an API stays awake.
 - A microVM's filter refuses private ranges and host subnets unless `--vm-egress-allow` names

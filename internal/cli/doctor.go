@@ -148,16 +148,7 @@ func Doctor(ctx context.Context) Report {
 		{"isolation gvisor", "runsc", "--isolation gvisor is refused; a container shares the host kernel"},
 		{"isolation kata", "kata-runtime", "--isolation kata is refused; a container shares the host kernel"},
 	} {
-		ok := hasRuntime(rts, iso.runtime)
-		detail := "runtime " + iso.runtime + " not registered with the docker daemon"
-
-		if ok {
-			detail = "runtime " + iso.runtime + " available"
-		}
-
-		rep.Capabilities = append(rep.Capabilities, Capability{
-			Name: iso.flag, Have: ok, Detail: detail, Meaning: iso.why,
-		})
+		rep.Capabilities = append(rep.Capabilities, isolationRow(iso.flag, iso.runtime, iso.why, hasRuntime(rts, iso.runtime)))
 	}
 
 	// A microVM is a backend decision, not a docker runtime, so it gets its own row: which
@@ -207,11 +198,7 @@ func Doctor(ctx context.Context) Report {
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.
 	exp, _ := dockerInfo(ctx, "{{.ExperimentalBuild}}")
-	rep.Capabilities = append(rep.Capabilities, Capability{
-		Name: "docker checkpoint", Have: exp == "true",
-		Detail:  "daemon experimental=" + orUnknown(exp),
-		Meaning: "sbx checkpoint / resume is unavailable; sleeping and forking keep the disk, not the process",
-	})
+	rep.Capabilities = append(rep.Capabilities, checkpointCapability(exp, provider.CheckpointHostOK()))
 
 	kubectlOK, kubectlWhere := have("kubectl")
 	rep.Capabilities = append(rep.Capabilities, Capability{
@@ -343,4 +330,46 @@ func daemonCapability() Capability {
 		Name: "sbx serve", Have: false, Detail: "not running",
 		Meaning: "nothing accepts on the ports `sbx env` exports; start one: sbx serve --idle 5m &",
 	}
+}
+
+// isolationRow reports a docker runtime by what doctor actually checked: that dockerd has it
+// registered. doctor never runs a container in it - that would be slow, and pull an image as a
+// side effect of asking a question - so the row must not claim it works. It said "available",
+// and a host showed "✓ isolation kata ... available" while a Kata container there got no network
+// and could not restart.
+//
+// Kata gets the caveat by name: it boots a VM per container, which a nested or VM-backed host
+// (colima, Docker Desktop, a cloud VM without nested virtualisation) often cannot provide, and
+// registration succeeds either way.
+func isolationRow(flag, runtime, why string, ok bool) Capability {
+	detail := "runtime " + runtime + " not registered with the docker daemon"
+
+	if ok {
+		detail = "runtime " + runtime + " registered with the docker daemon (registration only; not run)"
+	}
+
+	if ok && runtime == "kata-runtime" {
+		detail = "runtime " + runtime + " registered with the docker daemon; whether a container " +
+			"starts and gets a network is unverified, and it can fail on a nested or VM host - " +
+			"create one sandbox with `--isolation kata` and connect to it before relying on it"
+	}
+
+	return Capability{Name: flag, Have: ok, Detail: detail, Meaning: why}
+}
+
+// checkpointCapability is the `docker checkpoint` row. It asks the same question `sbx
+// checkpoint` does: a VM-backed engine with experimental on was reported as able to
+// checkpoint, took the dump, and could never restore it.
+func checkpointCapability(exp string, hostErr error) Capability {
+	c := Capability{
+		Name: "docker checkpoint", Have: exp == "true" && hostErr == nil,
+		Detail:  "daemon experimental=" + orUnknown(exp),
+		Meaning: "sbx checkpoint / resume is unavailable; sleeping and forking keep the disk, not the process",
+	}
+
+	if hostErr != nil {
+		c.Detail += "; the engine runs in a VM here, and a restore needs a Linux host"
+	}
+
+	return c
 }

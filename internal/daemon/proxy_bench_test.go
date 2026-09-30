@@ -52,6 +52,9 @@ func (alwaysServing) CopyVolume(context.Context, string, string) error { return 
 func (alwaysServing) VolumeFor(string, string) string { return "" }
 
 func (alwaysServing) ExecTTY(context.Context, string, []string) error { return nil }
+func (alwaysServing) ExecStream(context.Context, string, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
 
 func (alwaysServing) Exec(context.Context, string, []string) (string, error)   { return "", nil }
 func (alwaysServing) Logs(context.Context, string, int, bool, io.Writer) error { return nil }

@@ -12,6 +12,7 @@ package provider
 // provider, where a pod has its own address and MySQL is just :3306.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,11 +22,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 	"time"
 )
@@ -280,7 +283,11 @@ func listError(ep dockerEndpoint, err error) error {
 }
 
 func (d *dockerProvider) slotOf(sandbox string) (int, bool) {
-	out, err := d.docker("ps", "-aq", "--filter", "label="+labelSandbox+"="+sandbox)
+	// Only containers that carry a slot: the egress filter is labelled with its sandbox too, and
+	// `docker ps` lists newest first, so a filter replaced by a re-run create came first, had no
+	// slot to read, and the sandbox was handed a new one - its services' ports then disagreed with
+	// the ones create printed.
+	out, err := d.docker("ps", "-aq", "--filter", "label="+labelSandbox+"="+sandbox, "--filter", "label="+labelSlot)
 	if err != nil || strings.TrimSpace(out) == "" {
 		return 0, false
 	}
@@ -314,9 +321,75 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		}
 	}
 
-	if _, err := d.docker("inspect", cn); err == nil {
-		fmt.Printf("  %-12s already exists\n", service)
-		return nil
+	// The filter is ensured before asking whether the service exists, so that `sbx create` run
+	// again after an edit to egress_policy or egress_allow applies it. It used to be ensured only
+	// on the way to creating a service's container, so for a sandbox that already existed the old
+	// filter stayed, silently, still carrying hosts the spec no longer names.
+	var (
+		gw     string
+		filter *filterSetup // a container filter, where this machine cannot host one
+		hosted error        // why it cannot: the daemon's bind would fail
+	)
+
+	if svc.Filtered() {
+		var err error
+		if gw, err = d.egressGateway(sandbox); err != nil {
+			return err
+		}
+
+		// The filter is a listener the daemon opens ON that gateway, and the daemon runs
+		// wherever you are - which on a VM-backed docker is not where the bridge is. Colima
+		// and Docker Desktop put the bridge inside the Linux VM, so 172.x.0.1 exists there
+		// and not on this machine, and the bind fails with "can't assign requested address".
+		//
+		// Left to the daemon this is a warning every refresh tick and a sandbox that was
+		// reported created: the service comes up, reports healthy, and has no egress at all -
+		// not to the allowed hosts either. Fails closed, which is the safe direction and the
+		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
+		// refused up front for the same reason, and this is the same shape.
+		// Where the daemon can hold that address it does, and the filter is a listener in the
+		// daemon - fewer moving parts, and it already knows which units are awake. Where it
+		// cannot, the same filter runs as a container on the bridge instead, which is on the
+		// right side of the VM boundary by construction. Either way the workload has no route
+		// out of its own, so the proxy is the only door.
+		if hosted = bindable(gw); hosted != nil {
+			fs, err := d.ensureFilterContainer(sandbox, svc.DeclaredPolicy(),
+				egress.PortGrantsFromAllowList(svc.EgressAllow))
+			if err != nil {
+				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", hosted, err)
+			}
+
+			filter = &fs
+		}
+	}
+
+	if found, err := d.docker("inspect", "--format", "{{.Config.Image}}|"+label(labelIsolation), cn); err == nil {
+		running, tier, _ := strings.Cut(found, "|")
+
+		// The declared image is the one difference a re-create acts on. A `build` service's
+		// image is sbx-build-<hash of its context>, so an edited Dockerfile is a new tag - and
+		// stopping at "already exists" left the container on the OLD build while create
+		// printed a check mark. Only the image: anything else that changed (env, ports,
+		// limits) still needs `sbx rm`, because replacing a container for those is a larger
+		// promise than this makes. The named volume is not touched, so the data survives.
+		if running == svc.Image || svc.Image == "" {
+			fmt.Printf("  %-12s already exists\n", service)
+			return nil
+		}
+
+		if _, err := d.docker("rm", "-f", cn); err != nil {
+			return fmt.Errorf("service %q runs %s but its spec now says %s, and the old "+
+				"container could not be removed to replace it: %w", service, running, svc.Image, err)
+		}
+
+		// On the tier the sandbox was made with, not whatever this command defaulted to: a bare
+		// `sbx create` on a gVisor sandbox passes "container", and taking that would move the
+		// service to runc as a side effect of a new image.
+		if Isolation(tier).Valid() {
+			iso = Isolation(tier)
+		}
+
+		fmt.Printf("  %-12s recreated (image changed)\n", service)
 	}
 
 	var wake, backing []string
@@ -331,6 +404,10 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		"--label", labelSlot + "=" + strconv.Itoa(slot),
 		"--label", labelService + "=" + service,
 		"--label", labelPorts + "=" + pairLabel(wake, backing),
+		// Recorded so a later `sbx add` joins the sandbox on the same runtime. Without it the
+		// tier existed only in the flags of the command that made the sandbox, and a service
+		// added to a gVisor sandbox quietly ran on runc.
+		"--label", labelIsolation + "=" + string(cmp.Or(iso, IsolationContainer)),
 	}
 
 	// A non-default runtime is how the isolation tier is actually applied. Locally this is
@@ -383,35 +460,15 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 	if svc.Filtered() {
 		declared := svc.DeclaredPolicy()
 
-		gw, err := d.egressGateway(sandbox)
-		if err != nil {
-			return err
-		}
-
-		// The filter is a listener the daemon opens ON that gateway, and the daemon runs
-		// wherever you are - which on a VM-backed docker is not where the bridge is. Colima
-		// and Docker Desktop put the bridge inside the Linux VM, so 172.x.0.1 exists there
-		// and not on this machine, and the bind fails with "can't assign requested address".
-		//
-		// Left to the daemon this is a warning every refresh tick and a sandbox that was
-		// reported created: the service comes up, reports healthy, and has no egress at all -
-		// not to the allowed hosts either. Fails closed, which is the safe direction and the
-		// wrong report. `--isolation gvisor|kata` and `egress: "deny"` on kubernetes are both
-		// refused up front for the same reason, and this is the same shape.
-		// Where the daemon can hold that address it does, and the filter is a listener in the
-		// daemon - fewer moving parts, and it already knows which units are awake. Where it
-		// cannot, the same filter runs as a container on the bridge instead, which is on the
-		// right side of the VM boundary by construction. Either way the workload has no route
-		// out of its own, so the proxy is the only door.
 		proxyHost, stat := gw, ""
 
-		if err := bindable(gw); err != nil {
-			addr, cerr := d.ensureFilterContainer(sandbox, declared)
-			if cerr != nil {
-				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", err, cerr)
-			}
+		if filter != nil {
+			proxyHost, stat = filterAlias, filter.stat
 
-			proxyHost, stat = filterAlias, addr
+			// The alias by /etc/hosts as well as by docker's DNS: gVisor's netstack does not
+			// use the embedded DNS server, so under --isolation gvisor the alias alone never
+			// resolved. The address is fixed (filterIP), so a replaced filter keeps it.
+			args = append(args, "--add-host", filterAlias+":"+filter.ip)
 		}
 
 		proxy := "http://" + net.JoinHostPort(proxyHost, strconv.Itoa(EgressProxyPort))
@@ -664,7 +721,12 @@ func (d *dockerProvider) Healthy(ctx context.Context, ref string) (bool, bool) {
 // about 150ms, and the command is the one the spec declared - so this is faster without
 // being a different question.
 func (d *dockerProvider) Probe(ctx context.Context, ref string) (bool, bool) {
-	cmd, ok := d.api.healthCommand(ctx, ref)
+	cmd, ok, err := d.api.healthCommand(ctx, ref)
+	if err != nil {
+		// Could not ask, which is not the same as nothing to ask: see healthCommand.
+		return false, true
+	}
+
 	if !ok {
 		return false, false
 	}
@@ -736,7 +798,68 @@ func (d *dockerProvider) podman(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// ErrCheckpointNeedsLinux is the refusal for a memory checkpoint on a VM-backed engine.
+//
+// Colima with experimental on accepts `docker checkpoint create` - the dump succeeds - and then
+// every restore fails inside the VM on a network-namespace bind mount. A checkpoint that can
+// never be resumed is worse than none, because the service was frozen to take it. So it is
+// refused before anything is dumped, whatever the daemon reports about itself.
+var ErrCheckpointNeedsLinux = errors.New("memory checkpoint needs a Linux host: on macOS the " +
+	"container engine runs in a VM (Colima, Docker Desktop, podman machine), where a checkpoint " +
+	"can be taken but never restored. Filesystem snapshot works here: sbx snapshot <sandbox> " +
+	"<name>, then sbx fork. sbx doctor reports this as `docker checkpoint`")
+
+// CheckpointHostOK reports whether the docker engine this machine would use can resume a
+// memory checkpoint at all, before the engine is asked. `sbx doctor` shows the same answer.
+func CheckpointHostOK() error {
+	ep, err := resolveDockerHost("")
+	if err != nil {
+		return nil // no engine to judge; whatever asks next reports that better
+	}
+
+	return checkpointHost(ep)
+}
+
+// checkpointHost refuses an engine that runs in a VM on this Mac or Windows machine.
+//
+// It is the engine's kernel that matters, not the CLI's. A macOS CLI driving a Linux daemon
+// over tcp:// has CRIU and a real network namespace under its containers, so it is left to that
+// daemon's own experimental/CRIU checks. A unix socket off Linux is a local VM (Colima, Docker
+// Desktop, podman machine) - an ssh-forwarded socket to a remote Linux looks the same, and is
+// refused too, which is the safe direction. So is a loopback tcp port, which is how Docker
+// Desktop and colima expose the same VM over tcp.
+func checkpointHost(ep dockerEndpoint) error {
+	if hostOS == "linux" {
+		return nil
+	}
+
+	if ep.Network == "tcp" && !isLoopbackHost(ep.Address) {
+		return nil
+	}
+
+	return ErrCheckpointNeedsLinux
+}
+
+func isLoopbackHost(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+
+	if host == "localhost" || host == "" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+
+	return ip != nil && ip.IsLoopback()
+}
+
 func (d *dockerProvider) checkpointReady() error {
+	if err := checkpointHost(d.endpoint); err != nil {
+		return err
+	}
+
 	// podman needs no experimental flag; it needs CRIU on the host and its own CLI here, and
 	// says so clearly itself if CRIU is missing. This is the path that actually restores.
 	if d.isPodman() {
@@ -756,8 +879,7 @@ func (d *dockerProvider) checkpointReady() error {
 
 	if exp != "true" {
 		return fmt.Errorf("memory checkpoint needs docker's experimental checkpoint/restore " +
-			"API (CRIU), and this daemon reports experimental=false - Docker Desktop and Colima " +
-			"on macOS do not enable it. Filesystem snapshot (sbx snapshot / fork) works here; a " +
+			"API (CRIU), and this daemon reports experimental=false. Filesystem snapshot (sbx snapshot / fork) works here; a " +
 			"memory checkpoint needs a Linux host with a daemon started --experimental (or a " +
 			"podman runtime, whose restore is the reliable one). sbx doctor reports this as " +
 			"`docker checkpoint`")
@@ -797,6 +919,20 @@ func (d *dockerProvider) Checkpoint(_ context.Context, ref, name string, leaveRu
 }
 
 func (d *dockerProvider) Restore(ctx context.Context, ref, name string) error {
+	// Before anything else, and on every runtime. `docker start --checkpoint` on a running
+	// container exits 0 and restores nothing, so `sbx resume` reported "memory and processes
+	// intact" about a process that was never touched. A service that is running now was
+	// woken after the checkpoint - by traffic, or by hand - so its checkpoint describes a
+	// past it has already moved on from; stopping it to restore would throw away whatever
+	// happened since, which is a decision for the user, not for resume.
+	if c, ok, err := d.api.inspect(ctx, ref); err != nil {
+		return err
+	} else if ok && (c.State == "running" || c.State == "paused") {
+		return fmt.Errorf("%s is %s: it was woken after the checkpoint, so resuming would restore "+
+			"a stale memory image over live state, and docker would do nothing and report success. "+
+			"Stop it first if you want the checkpoint back: sbx sleep <sandbox>, then sbx resume", ref, c.State)
+	}
+
 	if err := d.checkpointReady(); err != nil {
 		return err
 	}
@@ -859,6 +995,13 @@ func (d *dockerProvider) Checkpoints(_ context.Context, ref string) ([]string, e
 	return names, nil
 }
 
+// ImageLabel reads one label off an image; "" when the image has no such label.
+func (d *dockerProvider) ImageLabel(_ context.Context, image, key string) (string, error) {
+	return d.docker("image", "inspect", "--format", label(key), image)
+}
+
+var _ ImageLabeler = (*dockerProvider)(nil)
+
 func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, error) {
 	out, err := d.docker("images", "--format", "{{.Repository}}:{{.Tag}}", "--filter",
 		"reference="+prefix+"*")
@@ -877,13 +1020,39 @@ func (d *dockerProvider) Images(_ context.Context, prefix string) ([]string, err
 	return names, nil
 }
 
+// VolumeCopyImage is the throwaway image CopyVolume runs `cp -a` in. It is a helper no spec
+// names, so `sbx prewarm` fetches it through HelperImages, and a fork does not pull it cold.
+const VolumeCopyImage = "alpine:3"
+
+// HelperImages implements HelperImager.
+func (d *dockerProvider) HelperImages(needs HelperNeeds) []Helper {
+	var out []Helper
+
+	if needs.Volumes {
+		out = append(out, Helper{VolumeCopyImage, "snapshot and fork copy volumes with it"})
+	}
+
+	// Both, although a machine whose daemon can bind the sandbox gateway runs the filter in the
+	// daemon and never builds this image: whether it can is decided per sandbox at create, from
+	// a gateway that does not exist yet at prewarm. Pulling on a machine that did not need it
+	// costs a download; not pulling on one that did (colima, Docker Desktop) is the cold build.
+	if needs.Egress {
+		out = append(out, Helper{filterBuilderImage, "the egress filter is built with it"},
+			Helper{filterRuntimeImage, "the egress filter runs on it"})
+	}
+
+	return out
+}
+
+var _ HelperImager = (*dockerProvider)(nil)
+
 // CopyVolume copies volume to volume through a throwaway container.
 //
 // `cp -a` inside a small image is docker's own recipe for this and it is the right one:
 // it stays in docker's storage, needs no host path (which colima would not share anyway),
 // preserves ownership and permissions - postgres refuses to start on a data directory it
 // does not own - and never streams the bytes through this process.
-func (d *dockerProvider) CopyVolume(_ context.Context, src, dst string) error {
+func (d *dockerProvider) CopyVolume(ctx context.Context, src, dst string) error {
 	// Two things this deliberately does, both learned the hard way.
 	//
 	// It REPLACES rather than merges. `cp -a /from/.` on its own lands the snapshot on top of
@@ -915,10 +1084,16 @@ find /to -mindepth 1 -delete
 cp -a /from/. /to/
 echo "SBXCOUNT $(find /from -mindepth 1 | wc -l) $(find /to -mindepth 1 | wc -l)"`
 
+	// Asked before the run, because `-v name:` creates a missing volume and afterwards there is
+	// no telling which of the two this call made. Only those are removed on a refusal: a
+	// destination that was already there belongs to whoever made it.
+	srcExisted, _ := d.VolumeExists(ctx, src)
+	dstExisted, _ := d.VolumeExists(ctx, dst)
+
 	out, err := d.docker("run", "--rm",
 		"-v", src+":/from:ro",
 		"-v", dst+":/to",
-		"alpine:3", "sh", "-c", script)
+		VolumeCopyImage, "sh", "-c", script)
 	if err != nil {
 		return fmt.Errorf("copying volume %s to %s: %w: %s", src, dst, err, lastLines(out, 8))
 	}
@@ -927,9 +1102,20 @@ echo "SBXCOUNT $(find /from -mindepth 1 | wc -l) $(find /to -mindepth 1 | wc -l)
 	// "the source has nothing in it" and "the source is not there" look identical from here.
 	// Both are refused, because neither is a snapshot worth restoring and the alternative is
 	// a fork with a working server and an empty database.
+	//
+	// "Nothing was changed" is only true once the volumes the mount just created are gone
+	// again - it used to leave an empty source and destination behind, which is how a failed
+	// snapshot left a stray volume and a later fork found something to copy from.
 	if strings.Contains(out, "SBXEMPTY") {
-		return fmt.Errorf("copying volume %s to %s: the source is empty or does not exist - "+
-			"nothing was changed", src, dst)
+		if !dstExisted {
+			_, _ = d.docker("volume", "rm", dst)
+		}
+
+		if !srcExisted {
+			_, _ = d.docker("volume", "rm", src)
+		}
+
+		return fmt.Errorf("copying volume %s to %s: %w - nothing was changed", src, dst, ErrEmptyVolume)
 	}
 
 	// The copy is asserted, not assumed.
@@ -1031,6 +1217,39 @@ func isTerminal(f *os.File) bool {
 	}
 
 	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// ExecStream is `docker exec`, with -i only when there is stdin to give it: without -i docker
+// never reads ours, which is how `echo hi | sbx exec b svc cat` used to print nothing. Never
+// -t - a terminal is ExecTTY's job, and -t merges stderr into stdout.
+func (d *dockerProvider) ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	args := []string{"exec"}
+	if stdin != nil {
+		args = append(args, "-i")
+	}
+
+	cmd := exec.CommandContext(ctx, "docker", append(append(args, ref), argv...)...)
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+d.endpoint.String())
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+
+	return exitStatus(cmd.Run())
+}
+
+// exitStatus separates "the command ran and exited N" from "it could not be run". docker exec
+// and kubectl exec both exit with the workload's own status, so an *exec.ExitError here is the
+// workload's answer. One with no status (-1: killed by a signal, usually our cancelled ctx) is
+// not, and stays an error.
+func exitStatus(err error) (int, error) {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() >= 0 {
+		return ee.ExitCode(), nil
+	}
+
+	if err != nil {
+		return -1, err
+	}
+
+	return 0, nil
 }
 
 func (d *dockerProvider) Exec(_ context.Context, ref string, argv []string) (string, error) {
@@ -1167,15 +1386,24 @@ func unitOf(c container) (Unit, bool) {
 
 	u.EgressPolicy = c.Labels[labelEgressPolicy]
 	u.OSB = c.Labels[labelOSB]
+	u.Isolation = Isolation(c.Labels[labelIsolation])
 
 	if dep := c.Labels[labelDependsOn]; dep != "" {
 		u.DependsOn = strings.Split(dep, ",")
+	}
+
+	inside := map[int]int{} // backing host port -> the port inside the container
+	for _, cp := range c.Ports {
+		if cp.Type == "tcp" && cp.PublicPort != 0 {
+			inside[cp.PublicPort] = cp.PrivatePort
+		}
 	}
 
 	for _, pr := range pairs {
 		u.Client = append(u.Client, Endpoint{Host: "127.0.0.1", Port: pr.Public})
 		u.Listen = append(u.Listen, pr.Public)
 		u.Upstream = append(u.Upstream, Endpoint{Host: "127.0.0.1", Port: pr.Backing})
+		u.Private = append(u.Private, inside[pr.Backing])
 	}
 
 	return u, true
@@ -1220,6 +1448,15 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	}
 
 	return nil
+}
+
+// RemoveUnit removes one container the way Remove removes each of a sandbox's: -f because it
+// may be running, -v for its anonymous volumes (see Remove). The sandbox's named volume for the
+// service is left, since it is where the service's data lives and a re-create mounts it again.
+func (d *dockerProvider) RemoveUnit(_ context.Context, ref string) error {
+	_, err := d.docker("rm", "-f", "-v", ref)
+
+	return err
 }
 
 // slotPortsFree reports whether both halves of a slot can be bound: the backing ports docker
@@ -1448,3 +1685,14 @@ func (d *dockerProvider) UnitOf(ctx context.Context, sandbox, service string) (U
 func (d *dockerProvider) ExitOf(ctx context.Context, ref string) (ExitState, error) {
 	return d.api.exitState(ctx, ref)
 }
+
+// hostOS is runtime.GOOS, as a variable so a test can stand on a Mac from a Linux CI runner.
+var hostOS = runtime.GOOS
+
+// ErrEmptyVolume is CopyVolume refusing a source that is empty or absent.
+var ErrEmptyVolume = errors.New("the source volume is empty or does not exist")
+
+// Where implements Locator: the engine this provider talks to.
+func (d *dockerProvider) Where() string { return d.endpoint.String() }
+
+var _ Locator = (*dockerProvider)(nil)

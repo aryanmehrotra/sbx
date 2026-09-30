@@ -141,6 +141,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		declared egress.Policy
 		policy   egress.Policy
 		savedAt  time.Time
+		ports    []egress.PortGrant
 	}
 
 	next := map[string]desired{}
@@ -148,7 +149,14 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 	for gw, w := range wants {
 		declared := provider.DeclaredPolicy(w.units)
 		p, at := d.effectivePolicy(w.sandbox, declared)
-		next[gw] = desired{sandbox: w.sandbox, bridge: w.bridge, declared: declared, policy: p, savedAt: at}
+
+		var allow []string
+		for _, u := range w.units {
+			allow = append(allow, u.EgressAllow...)
+		}
+
+		next[gw] = desired{sandbox: w.sandbox, bridge: w.bridge, declared: declared, policy: p, savedAt: at,
+			ports: egress.PortGrantsFromAllowList(allow)}
 	}
 
 	d.mu.Lock()
@@ -167,6 +175,10 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		}
 
 		p.declared, p.savedAt = want.declared, want.savedAt
+
+		// Grants are the declaration's. A sandbox recreated under the same name with a different
+		// port list keeps its gateway, and so this filter, which must not keep the old ports.
+		p.filter.SetPorts(want.ports)
 
 		if p.filter.Policy().Hash() != want.policy.Hash() {
 			if err := p.filter.SetPolicy(want.policy); err == nil {
@@ -200,6 +212,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		}
 
 		filter := egress.NewPolicy(want.policy)
+		filter.SetPorts(want.ports)
 		filter.OnActivity = func() { d.touchEgress(gw) }
 
 		// On an sbx-owned bridge the filter runs on the host its guests are kept off, so it

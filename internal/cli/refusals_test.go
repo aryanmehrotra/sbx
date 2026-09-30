@@ -88,7 +88,7 @@ func TestCommandsRefuseWhenTheProviderCannot(t *testing.T) {
 		t.Error("gc succeeded against a provider that cannot collect")
 	}
 
-	if err := Prewarm(context.Background(), p, &out, []string{"nginx"}); err == nil {
+	if err := Prewarm(context.Background(), p, &out, []string{"nginx"}, provider.HelperNeeds{}); err == nil {
 		t.Error("prewarm succeeded against a provider that cannot pull")
 	}
 }

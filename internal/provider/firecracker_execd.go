@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/osbclient"
@@ -217,6 +218,81 @@ func (p *fcProvider) copyOut(ctx context.Context, e *osbclient.Execd, src, dst s
 // protocol an OpenSandbox terminal client speaks.
 func (p *fcProvider) ExecTTY(ctx context.Context, ref string, argv []string) error {
 	return p.execTTY(ctx, ref, argv, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// ExecStream runs argv through execd's pipe-mode session - the same one ExecTTY uses for a
+// non-terminal - because it carries stdout and stderr byte for byte and the exit status. The
+// SSE command stream Exec reads re-cuts output into lines, which would corrupt `tar c`.
+//
+// Stdin is the one thing it cannot carry: execd's session protocol has no end-of-input
+// signal, so `cat` fed from a pipe would never see EOF and never exit. Rather than hang, or
+// run the command and silently drop the input, a stdin that turns out to hold data is refused
+// before anything runs. An empty one (`</dev/null`, a closed pipe) is fine.
+func (p *fcProvider) ExecStream(ctx context.Context, ref string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if stdin != nil {
+		if err := refuseStdinData(stdin, stdinGrace, stderr); err != nil {
+			return -1, err
+		}
+	}
+
+	err := p.execTTY(ctx, ref, argv, strings.NewReader(""), stdout, stderr)
+
+	var ee *ExitError
+	if errors.As(err, &ee) {
+		return ee.Code, nil
+	}
+
+	if err != nil {
+		return -1, err
+	}
+
+	return 0, nil
+}
+
+// stdinGrace is how long ExecStream waits to learn whether piped stdin has anything in it. A
+// producer on the left of a pipe has written by then in every case that matters (`echo`, `cat
+// file`); one that has not is treated as empty, and warned about if it writes later.
+var stdinGrace = 250 * time.Millisecond
+
+// errStdinUnsupported says what to do instead, because "not supported" alone leaves the reader
+// with a pipe they cannot use and no next step.
+var errStdinUnsupported = errors.New("the firecracker provider cannot pass stdin to `sbx exec` " +
+	"(the in-VM agent has no end-of-input signal, so the command would never see EOF).\n" +
+	"     Copy the input in and redirect inside instead:\n" +
+	"       sbx cp <sandbox> <service> ./input :/tmp/input\n" +
+	"       sbx exec <sandbox> <service> sh -c '<command> < /tmp/input'\n" +
+	"     or use `sbx exec -t` to type into it")
+
+// refuseStdinData reads one byte of in: data is refused, EOF is fine, and silence past grace
+// counts as empty. The read that outlives grace keeps going and says so on stderr if data does
+// arrive, so late input is reported rather than lost without a word.
+func refuseStdinData(in io.Reader, grace time.Duration, stderr io.Writer) error {
+	got := make(chan int, 1)
+
+	go func() {
+		var b [1]byte
+
+		n, _ := io.ReadAtLeast(in, b[:], 1)
+		got <- n
+	}()
+
+	select {
+	case n := <-got:
+		if n > 0 {
+			return errStdinUnsupported
+		}
+
+		return nil
+	case <-time.After(grace):
+		go func() {
+			if <-got > 0 {
+				fmt.Fprintln(stderr, "sbx: stdin arrived after the command started and was not passed to it: "+
+					"the firecracker provider cannot forward stdin")
+			}
+		}()
+
+		return nil
+	}
 }
 
 // PTY frame tags, execd's (internal/execd/pty.go).

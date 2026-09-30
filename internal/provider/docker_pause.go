@@ -96,10 +96,17 @@ func (d *dockerProvider) VolumeRuns(ctx context.Context, volume, name, image str
 // SeedFile copies through a container that is created and never started: `docker cp` writes
 // into a stopped container's volumes, so the image needs no shell, no cp and no tar - which is
 // what makes this work for a distroless image as well as for python:3.11-slim.
-func (d *dockerProvider) SeedFile(ctx context.Context, volume, name, hostPath, image string) error {
-	if _, err := d.dockerCtx(ctx, "volume", "create", volume); err != nil {
+func (d *dockerProvider) SeedFile(ctx context.Context, volume, name, hostPath, image string) (err error) {
+	undo, err := d.seedVolume(ctx, volume)
+	if err != nil {
 		return err
 	}
+
+	defer func() {
+		if err != nil {
+			undo()
+		}
+	}()
 
 	helper := "sbx-seed-" + randHex(6)
 
@@ -121,14 +128,23 @@ func (d *dockerProvider) SeedFile(ctx context.Context, volume, name, hostPath, i
 // image already has is filled with that directory's contents when the container is created.
 // So creating (not starting) one container is the whole copy, and it works from an image that
 // has nothing in it but the binary.
-func (d *dockerProvider) SeedFromImage(ctx context.Context, volume, image, dir string) error {
-	if _, err := d.dockerCtx(ctx, "volume", "create", volume); err != nil {
-		return err
-	}
-
+func (d *dockerProvider) SeedFromImage(ctx context.Context, volume, image, dir string) (err error) {
+	// Pulled before the volume exists: a pull is the step most likely to fail (a tag that was
+	// never published, a reference docker cannot parse), and failing it first leaves nothing.
 	if _, err := d.dockerCtx(ctx, "pull", image); err != nil {
 		return err
 	}
+
+	undo, err := d.seedVolume(ctx, volume)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			undo()
+		}
+	}()
 
 	helper := "sbx-seed-" + randHex(6)
 
@@ -139,6 +155,24 @@ func (d *dockerProvider) SeedFromImage(ctx context.Context, volume, image, dir s
 	_, _ = d.dockerCtx(context.WithoutCancel(ctx), "rm", "-f", helper)
 
 	return nil
+}
+
+// seedVolume creates volume for a seed and returns how to take it back if the seed fails.
+//
+// A failed placement used to leave its volume behind, empty: a dev build's pull died on its
+// '+' and sbx-execd-v0.15.1-dev-ffd872d stayed on the machine with nothing in it, where no
+// `sbx gc` looks. Only a volume this call created is removed - one that was already there
+// belongs to somebody, possibly a sandbox that mounts it.
+func (d *dockerProvider) seedVolume(ctx context.Context, volume string) (undo func(), err error) {
+	if _, err := d.dockerCtx(ctx, "volume", "inspect", volume); err == nil {
+		return func() {}, nil
+	}
+
+	if _, err := d.dockerCtx(ctx, "volume", "create", volume); err != nil {
+		return nil, err
+	}
+
+	return func() { _, _ = d.dockerCtx(context.WithoutCancel(ctx), "volume", "rm", volume) }, nil
 }
 
 func randHex(n int) string {

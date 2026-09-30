@@ -4,7 +4,8 @@ Find what you see, then apply the fix. Point a stuck agent here too. Run `sbx do
 it reports a missing tool or runtime, `sbx install` installs it: `sbx install gvisor`,
 `sbx install checkpoint`, or no name for all it can. It shows each command and asks first;
 `--dry-run` only prints. On Docker Desktop or colima, the VM that runs docker owns its config, and
-`sbx install` says so instead.
+`sbx install` says so instead. Checkpoint needs a Linux host, so on a Mac it is refused with that
+reason. A name you asked for that cannot be installed makes `sbx install` exit non-zero.
 
 ## Install and doctor
 
@@ -16,6 +17,13 @@ The runtime's socket is missing. Start it with `colima start`, `open -a Docker` 
 Your sandboxes survive, and the first connection after the runtime returns wakes them. sbx never
 starts or stops the runtime. If colima stopped on its own, `~/.colima/_lima/colima/ha.stderr.log`
 shows whether something ran `colima stop`.
+
+### `sbx doctor` lists kata, but a Kata sandbox has no network or will not restart
+
+The `isolation kata` row checks only that dockerd has `kata-runtime` registered. doctor never
+runs a Kata container. Kata boots a VM per container, which can fail on a nested or VM host.
+Create one sandbox with `--isolation kata` and connect to it before relying on it. Otherwise use
+`--isolation gvisor`, or the microVM provider if doctor's `microVM` row allows it.
 
 ### "docker did not answer in time"
 
@@ -46,6 +54,28 @@ Almost always, no `sbx serve` is running, and the daemon owns those ports. Check
 - A running daemon finds new sandboxes every `--refresh` (15 s by default). `sbx ready <name>` waits.
 - A daemon started with `--only PREFIX` fronts only matching sandboxes. `sbx doctor` shows
   `scoped only: pid N --only osb-`. Start an unscoped daemon, or one whose `--only` covers it.
+- Up to v0.15.1, `sbx rm x` then `sbx create x` inside one `--refresh` window could leave the
+  daemon serving x's old ports, when the recreate landed on a new slot. `sbx list` shows the new
+  ports; `lsof -nP -iTCP -sTCP:LISTEN | grep sbx` shows the old ones. Restart `sbx serve`.
+  Fixed after v0.15.1: the daemon notices the new container and serves its ports.
+
+### Other sandboxes went to sleep during `sbx selftest`
+
+Up to v0.15.1, the daemon `sbx selftest` runs in-process adopted every sandbox on the engine,
+not just its own. It fought `sbx serve` for their ports ("address already in use" in its log) and
+slept them after 3 s idle. They wake on the next connection. If a port stays refused, restart
+`sbx serve`. Fixed after v0.15.1: selftest touches only its own `selftest-<pid>` sandbox.
+
+Up to v0.15.1, `sbx serve` itself also adopted `selftest-<pid>` and logged "address already in
+use" for it on every run. Fixed after v0.15.1: selftest registers as an `--only` daemon for its
+own sandbox while it runs, so `sbx serve` leaves it alone.
+
+### "address already in use" beside an `--only` daemon
+
+Up to v0.15.1, the unscoped `sbx serve` also adopted sandboxes a running `--only` daemon
+covered. Both bound the same ports; whichever lost logged "address already in use" every
+`--refresh`. Fixed after v0.15.1: the unscoped daemon leaves them to the live `--only` daemon
+and fronts them again within one `--refresh` after it stops.
 
 ### `sbx serve` says it is already running
 
@@ -58,7 +88,42 @@ clears the stale record. If it is alive, you already have one; pass `--only PREF
   Start the daemon and use the sandbox in one step, or install the unit from [`deploy/`](../deploy/).
 - Jobs on one runner share the daemon. They get different ports, but `sbx rm` in one job can
   remove another's sandbox. Name sandboxes after branch and job.
-- `sbx with` removes its sandbox even on failure, which keeps a runner clean.
+- `sbx with` removes its sandbox even on failure, including a create that fails partway, which
+  keeps a runner clean.
+
+### `sbx with` says the sandbox "already exists"
+
+`sbx with` removes the sandbox it ran against, so it refuses a name that is in use and changes
+nothing. Pick an unused name, or run against the existing sandbox without removing it:
+`eval "$(sbx env <sandbox>)" && <command>`, or `sbx exec <sandbox> <service> <command>`.
+
+Up to v0.15.1, `sbx with` reused an existing sandbox and then removed it with its volumes, and a
+create that failed partway was left behind. Fixed after v0.15.1.
+
+### `sbx with` says the sandbox "is being created or changed by another sbx"
+
+Another `sbx create`, `sbx add` or `sbx with` holds that name right now. `sbx with` does not wait
+for it, because it would refuse the name once it exists. Pick another name. If the pid in the
+error is not an sbx (`ps -p <pid>`), remove the lock file the error names.
+
+Up to v0.15.1, two `sbx with` of one name started together shared one sandbox, and the first to
+finish removed it while the other still ran. Fixed after v0.15.1: the second is refused, and a
+teardown removes only the containers its own run made.
+
+### `sbx create`, `sbx add` or `sbx rm` says "is an ephemeral sandbox of `sbx with`"
+
+A running `sbx with` owns that name and removes the sandbox when its command ends. Use another
+name. Before this was refused, a create during the command reported the sandbox ready moments
+before `sbx with` deleted it. To remove the sandbox now, stop that `sbx with` (`kill <pid>`, the
+pid the error names): it removes the sandbox on the way out. Before `sbx rm` was refused too, it
+pulled the sandbox out from under the running command, and `sbx with` still exited 0.
+
+### `sbx with` left its sandbox after Ctrl-C or SIGTERM
+
+Up to v0.15.1, SIGINT or SIGTERM ended `sbx with` at once, with status 130 or 143, and left the
+sandbox. Remove it with `sbx rm <sandbox>`. Fixed after v0.15.1: the signal is passed on to the
+command, the sandbox is removed, and the status is still 130 or 143. A third interrupt leaves the
+sandbox, for when you would rather not wait.
 
 ## Create
 
@@ -69,6 +134,11 @@ The service started but its `health` command never passed.
   Check with `docker run --rm --entrypoint sh <image> -c 'command -v pg_isready curl wget'`.
 - Otherwise the workload is not coming up. Read `sbx logs <sandbox> <service> --tail 50`, which
   does not wake anything.
+- If it ends with "its container is not running: state exited", the workload exited. Its logs
+  say why.
+- If it says "the runtime could not be asked", docker was not answering, not the service. See
+  ["docker did not answer in time"](#docker-did-not-answer-in-time).
+- `sbx with --timeout` sets this wait. `sbx create` and `sbx add` wait two minutes.
 
 ### The service's config file is a directory inside the container
 
@@ -76,10 +146,36 @@ The runtime could not reach the host path in `files`, so docker created an empty
 VM-backed docker (colima, Docker Desktop) shares `$HOME` but usually not `/var/folders` on macOS.
 Move the file under your home directory. sbx checks for this after create and says so.
 
+The check removes that service's container, because every start would mount the same wrong path.
+The error lists the services it kept and those it did not reach. Fix the path and re-run the same
+`sbx create` to finish the sandbox. A
+backend that cannot remove one service stops it instead; then `sbx rm` the sandbox and create it
+again.
+
 Up to v0.15.0 that check also fired, wrongly, when `sbx create` was re-run over a sandbox that
 was asleep: it could not look inside a stopped container and reported the file as a directory.
 If the same path is a regular file once awake (`sbx exec <sandbox> <service> stat -c %F <path>`),
 the mount was fine. Fixed after v0.15.0: an asleep service is left as it is, and create says so.
+
+### A spec that validated before is refused at load
+
+From v0.16.0 `sbx validate` and every command that reads a spec refuse, at load, values that used
+to fail only at create, reach the container as written, or grant more than a spec should:
+
+- `cap_add "NOT_A_CAP" is not a Linux capability` - use a name from `man 7 capabilities`.
+- `cap_add "ALL" grants every capability, and sbx has no privileged option` - list the
+  capabilities the workload needs, like `["SYS_PTRACE", "NET_ADMIN"]`.
+- `cap_add has a blank entry` - remove the `""`, or fix the template that produced it.
+- `env values use ${...} forms sbx does not expand: a.PW uses "${X:-y}"` - only plain `${NAME}`
+  is substituted; compute a default in your shell and reference it as `${NAME}`. For a value
+  that really contains `${`, write `$${`. Unset variables are listed in the same error, after
+  `; and these environment variables are referenced but not set`.
+- `memory "lots" is not a size`, `cpu "-1" is not a number of cores`, `gpus "..." is not ...` -
+  use `"512m"`, `"0.5"`, `"all"` or `"device=0"`.
+- `services depend on each other in a cycle: a → b → a` - remove one `depends_on` edge.
+
+`$${NAME}` also changed meaning in v0.16.0: it is now the literal text `${NAME}`, where v0.15
+expanded it to a `$` followed by the value. Put the `$` in the variable's value if you need it.
 
 ### Two `sbx create` at the same moment fail on a port conflict
 
@@ -87,6 +183,45 @@ Two racing creates can pick the same block of ports. A lock under `~/.sbx` makes
 two machines sharing one remote `DOCKER_HOST` share no lock. Retry, and the retry takes the next
 block. On colima or Docker Desktop a port forward can outlive its container for a few seconds
 after `sbx rm`, so wait a moment first.
+
+When a new sandbox's first `docker run` fails with "port is already allocated", create removes
+the container it left and tries the next free slot once. If there is none, re-run. Up to v0.15.1
+the container stayed in `Created`, and `sbx wake` reported it serving with no network: remove it
+with `sbx rm <sandbox>`.
+
+### `sbx create` says the slot lock, or a sandbox, "is still held by pid N"
+
+For 10 minutes another create has either been making its first container (the slot lock) or
+creating or changing the same sandbox (its name lock). `ps -p N -o pid,etime,command` shows what
+it is doing. If it is not an sbx, remove the lock file the error names and re-run. A lock whose
+holder has exited, or whose pid now belongs to another process, is cleared on its own; `sbx gc`
+lists such leftovers and `sbx gc --force` removes them.
+A lock file written by an older sbx holds only a pid, with no start time; if that pid now
+belongs to an unrelated live process, the name stays blocked and `sbx gc` does not list the lock
+as stale. Delete it by hand: `rm ~/.sbx/locks/<sandbox>.lock`.
+
+Up to v0.15.1 the slot wait gave up after 90 seconds and went ahead without the lock, so creates
+queued behind a slow health check could take one slot and fail on its ports. Fixed after v0.15.1.
+
+### `sbx env` says there is no sandbox.json after a create that failed
+
+Up to v0.15.1 a create recorded its spec only when it succeeded, so one that failed after
+making containers left `sbx env <sandbox>` and `sbx ready <sandbox>` from another directory
+with no spec, or the wrong one. Pass `--spec` with the path. Fixed after v0.15.1: the spec is
+recorded as soon as the first container exists.
+
+### `sbx create` says a service "would take" a port "held by this sandbox's" other service
+
+The sandbox was created from a different spec, and one of its old services still holds the port
+this spec gives a new service. Run `sbx rm <sandbox>` and create it again, or keep the old
+service names in the spec.
+
+### `sbx create` warns that a volume "already existed before this create"
+
+A service's data volume is named after its sandbox and service, so a new sandbox takes over one
+an earlier sandbox of that name left behind, for example after a fork that failed. The service
+starts on that data. To start clean: `sbx rm <sandbox>`, then `docker volume rm <volume>` if it is
+still listed, and create again.
 
 ### `sbx list` shows nothing, or a sandbox you cannot remove
 
@@ -96,6 +231,42 @@ is skipped, so `list` and `rm` cannot see it. Find it with
 `docker rm -f <name>`.
 
 ## Wake
+
+### `sbx ready` or `sbx wake` says a service "is not running"
+
+The container exited, or never started. The message gives the runtime's state and exit code.
+Read `sbx logs <sandbox> <service> --tail 50` for the reason.
+
+Up to v0.15.1, `sbx ready` could report such a service as serving when it had no health check or
+docker was slow to answer. Fixed after v0.15.1.
+
+### `sbx ready`, `sbx wake` or `sbx create` says a service "is not serving"
+
+sbx asks inside each container whether something listens on the declared port where outside can
+reach it, and whether the container has a network interface besides loopback. The message names
+the one that failed:
+
+- "nothing listens on 6379 inside the container": the process has not bound the port, or bound
+  another one. When it listens elsewhere the message adds "it listens on 9090": declare that port
+  in the spec, or move the workload to the declared one. Otherwise read
+  `sbx logs <sandbox> <service>`.
+- "listens on 6379 only on 127.0.0.1": the process serves only the container itself. Configure it
+  to bind `0.0.0.0` (redis: `--bind 0.0.0.0`).
+- "no network interface but loopback": the runtime gave the container no network, seen with Kata
+  inside a nested colima VM. Clients see `Server closed the connection`. Try `--isolation container`
+  to rule out the runtime.
+- "could not ask its container": the exec failed, for example because the container is paused.
+  sbx keeps asking until `--timeout` and never passes a service it could not ask.
+
+On docker, an image with no `cat` (distroless, scratch) is asked through a throwaway `alpine:3`
+helper that shares its network namespace. Under gVisor or Kata, and in a microVM, the container
+cannot be asked this way: the workload's sockets live in its own kernel. sbx dials the port from
+the host instead, as it also does if the helper cannot run. That dial judges a listener that
+accepts and closes without sending a byte as not serving, by design: from outside it looks the
+same as nothing there.
+
+Up to v0.15.1, `sbx ready` and `sbx wake` checked only the daemon's port and reported such a
+service as serving. Fixed after v0.15.1.
 
 ### The first query after an idle period fails, but the next one works
 
@@ -110,6 +281,14 @@ seconds for a cold browser. Raise the connect timeout:
 | Playwright / Puppeteer | the launch/connect timeout, not the navigation one |
 
 A connection pool must also survive a server-side close, because sleeping closes connections.
+
+### After `sbx sleep`, a service wakes but its `depends_on` service stays stopped
+
+In v0.16.0-rc2, the first connection after `sbx sleep` woke the service you dialled but not the
+services it `depends_on`. The daemon still believed those awake, and nothing dials them to prove
+otherwise. The dependent then failed on `no such host` until the next discovery tick and a new
+connection. Fixed after v0.16.0-rc2: when a service has to start, the daemon asks the runtime whether
+its dependencies are running and starts the ones that are not.
 
 ### Wakes are slower than the numbers in BENCHMARKS.md
 
@@ -128,33 +307,152 @@ none. Set `egress_allow` (its calls out count as activity), a longer `idle`, or 
 
 ### A fork is missing the write I just made
 
-`sbx snapshot` does not stop the service, so it takes a crash-consistent copy. Under heavy load
-the last write before the snapshot can be missing. If the snapshot must be exact, stop writing
-first, or run `docker stop sbx-<sandbox>-<service>` before `sbx snapshot`. The usual seed,
+`sbx snapshot` pauses the service rather than stopping it, so it takes a crash-consistent copy.
+A write the service still held in memory when it was paused is not in it. If the snapshot must
+be exact, stop writing first, or run `sbx sleep <sandbox>` before `sbx snapshot`. The usual seed,
 snapshot, fork flow has nothing writing at snapshot time.
+
+### `sbx snapshot` fails: "can't stat ... No such file or directory" or "the copy was incomplete"
+
+Up to v0.15.1, snapshot copied a running service's volume while it wrote. A database that
+rewrites its files in the background, such as ClickHouse merging parts, removed files mid-copy,
+and snapshot failed and removed what it wrote. Run `sbx sleep <sandbox>` first, then snapshot
+it. Fixed after v0.15.1: snapshot pauses running services for the copy and thaws them after.
+
+### `sbx snapshot --rm` says "no snapshot" but `sbx-snapvol-<name>-*` volumes are there
+
+A snapshot killed mid-copy (`kill -9`, a lost machine) copies volumes before it commits any
+image, so it leaves volumes with no image. Up to v0.15.1, `--rm` looked a snapshot up by its
+images and found none. Remove them with `docker volume rm sbx-snapvol-<name>-<service>`. Fixed
+after v0.15.1: a snapshot volume carries its snapshot's name as a label, `--rm` finds it by that,
+and `sbx gc --snapshots` lists it as "no image" with the command that removes it. A volume made
+before the label, whose service part has a dash, may be another snapshot's: `--rm` leaves it
+alone and gc prints `docker volume rm` for it.
 
 ### `sbx snapshot` fails: "the source is empty or does not exist"
 
-On docker in v0.14.0, snapshot fails when any service in the sandbox has no `volume`. That
-includes the `web-stack` template's Redis and services added with `sbx add`. Snapshot only
-sandboxes whose services all declare a `volume`.
+Up to v0.15.1 on docker, snapshot fails when any service in the sandbox has no `volume`. That
+includes the `web-stack` template's Redis and services added with `sbx add`. The failed snapshot
+leaves an image `sbx-snap-<name>-<service>` and empty `sbx-snapvol-*` volumes behind, although
+the message says nothing was changed. Snapshot only sandboxes whose services all declare a
+`volume`, and delete the leftovers with `sbx snapshot --rm <name>` (or `sbx gc --snapshots --force`).
+Fixed after v0.15.1: such a service is saved as its image alone, and a snapshot that fails removes
+what it wrote.
+
+### `sbx fork` says "the spec has no service" for a snapshot that forked before
+
+Up to v0.15.1, `sbx snapshot <sandbox> <name>` under a name that already existed wrote over it and
+kept the old images beside the new ones. Taken from a sandbox with other services, the snapshot
+became a mix of both, and a fork failed on the service its spec lacks. `docker images 'sbx-snap-<name>-*'`
+shows the mix. Delete it with `sbx snapshot --rm <name>` and take it again. Fixed after v0.15.1:
+a taken name is refused, and `sbx snapshot --replace <sandbox> <name>` removes the old snapshot whole first.
+
+### `sbx gc --snapshots` lists a snapshot a fork still uses
+
+Up to v0.15.1, gc offered every snapshot image, including the ones a fork's containers run from,
+and `--force` deleted what docker let go and failed on the rest. Do not run `--force` while a fork
+exists; `docker ps -a --format '{{.Names}} {{.Image}}'` shows which containers run from a
+`sbx-snap-*` image. Fixed after v0.15.1: gc skips a snapshot any container uses, its images and
+volumes alike, and prints how many it skipped.
+
+### The first `sbx fork` or filtered `sbx create` after `sbx prewarm` is still slow
+
+Up to v0.15.1 on docker, prewarm pulled only the images a spec names. The first fork then pulled
+`alpine:3`, which snapshot and fork copy volumes with. The first create of a service with
+`egress_allow`, `egress_policy` or `egress: "allow"` on colima or Docker Desktop pulled
+`golang:1.26-alpine` and `alpine:3.20` to build the egress filter. Run `docker pull` for those in
+the same step. Fixed after v0.15.1: prewarm pulls each one the spec would run.
+
+### `sbx create` again keeps running the old build
+
+Up to v0.15.1, re-running `sbx create` after editing a `build` context built the new image
+`sbx-build-<hash>`, found the container already there, and kept it on the old image while printing
+a check mark. `docker inspect --format '{{.Config.Image}}' sbx-<sandbox>-<service>` shows the old
+tag. Run `sbx rm` then `sbx create`, which loses the volume's data. Fixed after v0.15.1: create
+prints `<service> recreated (image changed)` and keeps the volume.
+
+### `sbx add` put a service on runc in a gVisor or Kata sandbox
+
+Up to v0.15.1, `sbx add` used `--isolation`'s default, `container`, whatever the sandbox was
+created with. Fixed after v0.15.1: an added service joins on the sandbox's own tier, and a
+different `--isolation` is refused. A sandbox created before then has no record of its tier and
+is read as `container`, so pass nothing to `sbx add` there, or recreate the sandbox.
 
 ### `sbx checkpoint` works but `sbx resume` fails
 
 You are on docker, whose checkpoint restore is unmaintained. Errors look like
 `bind-mount /proc/0/ns/net -> …: no such file or directory` or `content … already exists`, even
 though `criu check` passes. Use podman: set `DOCKER_HOST=unix:///run/podman/podman.sock` and sbx
-routes checkpoint and resume through it. macOS refuses checkpoint. `sbx snapshot` and `fork` work
-on any runtime.
+routes checkpoint and resume through it. `sbx snapshot` and `fork` work on any runtime.
+
+On macOS a local engine (a unix socket or a loopback port) runs in a VM, where a checkpoint can
+be taken but never restored, so `sbx checkpoint` refuses up front. A Linux daemon reached over
+`tcp://` is checked like any other. Up to v0.15.1 it only refused when docker reported
+experimental=false. Colima with experimental on took the checkpoint, froze the service, and
+failed at resume with the bind-mount error above. `sbx sleep` then `sbx wake` brings such a
+service back, cold.
+
+### `sbx resume` says a service was woken after the checkpoint
+
+The service is running, so its checkpoint describes a past it has moved on from. Run
+`sbx sleep <sandbox>`, then `sbx resume` again. Up to v0.15.1 on docker, resume reported
+"memory and processes intact" here without restoring anything.
 
 ## Networking and egress
 
 ### A service with `egress_allow` cannot reach a host
 
 Only listed hosts and their subdomains are reachable, and only through `HTTP_PROXY`/`HTTPS_PROXY`.
-A client that ignores those variables has no route, and raw TCP (`git://`, SSH, a remote
-database) never passes. Add the host with `sbx egress <sandbox> --allow <host>`, make the client
-use the proxy, or switch to HTTPS ([SPEC.md](SPEC.md#egress-the-network-a-service-may-reach)).
+A client that ignores those variables has no route. Add the host with `sbx egress <sandbox>
+--allow <host>`, make the client use the proxy, or switch to HTTPS
+([SPEC.md](SPEC.md#egress-the-network-a-service-may-reach)).
+
+### The filter answers 403 "port N of HOST: the egress filter carries ports 80 and 443 only"
+
+**Symptom:** SSH, a database or any other port through the proxy gets 403, even under
+`"egress": "allow"`.
+
+**Cause:** the filter carries ports 80 and 443 only. After v0.15.0 that is enforced; before, a
+`CONNECT` to any port was tunnelled.
+
+**Fix:** add the port to `egress_allow` as `host:port` (`"github.com:22"`) and run `sbx create`
+again. `egress_policy` and `sbx egress` have no port field, so a sandbox that needs another port
+uses `egress_allow`. A 403 that ends "(port N is not carried either)" is the policy denying the
+host: allow the host first.
+
+### 403 "the machine the egress filter runs on, or one behind it"
+
+**Symptom:** a request to `host.docker.internal`, `host.lima.internal`, `172.17.0.1`, another
+docker gateway, or the filter itself (`sbx-egress`) gets 403 although a rule allows it, on any port.
+
+**Cause:** on colima and Docker Desktop those addresses are the VM and your Mac. No policy opens
+them ([SECURITY.md](../SECURITY.md#containers)).
+
+**Fix:** run what the sandbox needs as a service in the sandbox instead, and reach it by its
+service name.
+
+### Under `--isolation gvisor`, `bad address 'sbx-egress:20999'`
+
+**Symptom:** every request from a filtered service fails with `bad address 'sbx-egress:20999'`.
+
+**Cause:** gVisor does not use docker's DNS server on the sandbox's network, and services found
+the filter by DNS name.
+
+**Fix:** fixed after v0.15.0: the filter has a fixed address and services find it through
+`/etc/hosts`. Recreate the sandbox (`sbx rm`, then `sbx create`): the services need the hosts
+entry, which only a new container gets. Service names still do not
+resolve under gVisor.
+
+### An edit to `egress_allow` or `egress_policy` did not take effect
+
+**Symptom:** after editing the spec and running `sbx create` again, the old hosts are still
+reachable.
+
+**Cause:** up to v0.15.0 the filter was only created with a service's container, so an existing
+sandbox kept its old filter.
+
+**Fix:** fixed after v0.15.0: `sbx create` replaces the filter and says so. On an older version,
+`sbx rm` the sandbox and create it again.
 
 ### An allowed host answers 502 "lookup ...: operation was canceled"
 
@@ -168,7 +466,8 @@ context, so the lookup was cancelled before it answered.
 **Fix:** fixed after v0.15.0 - the filter now resolves and dials on a context detached from the
 client's read side, bounded at 30 s. On an older version, use a client that keeps its connection
 open (`curl`, or any language's HTTP library). The filter image is rebuilt from the new source
-on the next `sbx create` that needs it; an existing sandbox keeps its old filter until recreated.
+on the next `sbx create` that needs it. Run `sbx create` again over an existing sandbox and its
+filter is replaced with the new build, keeping live changes.
 
 ### `sbx egress` says there is no filter to change
 
@@ -219,6 +518,18 @@ If the message says "the 3 sleeps in a row it has not" or "the re-key that would
 unsealed failed too", the VM was stopped instead. Its next wake is a cold boot with the disk kept.
 Check `sbx doctor` for memory and swap, keep fewer sandboxes awake, or lower `memory` per microVM.
 
+### `sbx exec` on a microVM: "cannot pass stdin"
+
+The in-VM agent has no way to signal end of input, so a command reading piped stdin would never
+exit. sbx refuses before running anything. Copy the input in and redirect inside the VM:
+
+```sh
+sbx cp my-branch app ./input.sql :/tmp/input.sql
+sbx exec my-branch app sh -c 'psql -U app < /tmp/input.sql'
+```
+
+Empty stdin (`</dev/null`, a closed pipe) is fine, and `sbx exec -t` types into a command.
+
 ### `sbx serve --provider firecracker --osb-addr` on a Mac will not start
 
 On an M3+ Mac or Windows the API runs in the helper VM and is fronted here. The front says which
@@ -264,6 +575,25 @@ state, exit code, `OOMKilled` and the start error. Exit 137 with no output is SI
 memory (host or `resourceLimits.memory`) or a `docker kill`. 143 is SIGTERM from outside. Raise
 `resourceLimits.memory` or free host memory. The daemon log and `sbx history <id>` show the same.
 
+### An API sandbox is `Failed` with `slot_lock_timeout`
+
+Another create on this machine held the slot lock for 10 minutes, so this one placed nothing
+rather than choose a slot without it. `status.message` names the holding pid; `ps -p <pid>` shows
+what it is doing. If it is not an sbx, remove the lock file the message names and create again.
+
+### An API create on a source build fails with "invalid reference format"
+
+Up to v0.15.1, a build whose version is not a release tag (`v0.15.1-dev+ffd872d`) asked docker for
+an activator image of that version, which was never published and is not a valid tag. It also left
+an empty `sbx-execd-<version>` volume; remove it with `docker volume rm`. Fixed after v0.15.1: such a
+build compiles the agent from its checkout, or asks you to set `SBX_EXECD_BINARY`.
+
+The compile starts with `sbx serve --osb-addr`, so the first create does not wait inside its
+ready timeout. The log says `building the sandbox agent` and then `built the sandbox agent ... in`.
+If there is nothing to build from, the start log has a WARN, `the OpenSandbox API cannot find the
+sandbox agent`, with the reason. Set `SBX_EXECD_BINARY` or `SBX_SOURCE_DIR`, or run a release
+build, then restart `sbx serve`.
+
 ## Remote deployments
 
 ### `sbx connect` cannot reach a deployment the platform calls healthy
@@ -276,7 +606,7 @@ The platform's health check is not the tunnel. Work down this list:
 | "the handshake was answered by something that is not this endpoint" | something else answers the URL; `curl -sS https://<url>/healthz` answers only if sbx is there |
 | "active" but nothing answers | the container died at start; read its logs. Pin the sbx version as `sbx pack` does |
 | "... is http, so SBX_CONNECT_TOKEN would cross the network in the clear" | use `https://`, or `SBX_CONNECT_INSECURE=1` on a trusted network |
-| "... came after a flag, where it would have been ignored" | put flags last; the message prints the working line |
+| "... came after a flag, where it would have been ignored" | up to v0.15.1: put flags last. Fixed after v0.15.1: flags go anywhere |
 | "db and replica both want 127.0.0.1:5432" | `--port-offset replica=1000` |
 | "cannot open 127.0.0.1:<port>" | your local `sbx serve` owns that port; `--port-offset 1000` |
 | "the sandbox behind this port was recreated" | restart `sbx connect` |

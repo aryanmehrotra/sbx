@@ -8,6 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,28 +49,49 @@ type Filter struct {
 	// which would let a second answer (DNS rebinding) walk around the first check.
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 
-	// Refuse is what this filter will never dial, whatever the policy says. It is for a filter
-	// that runs on the very host its sandbox is kept off: a microVM's filter is a listener on that
-	// host's bridge, so "CONNECT 10.231.5.1:22" through it would reach the host's sshd, 127.0.0.1
-	// the host's own loopback services, and 10.231.7.2 another sandbox's guest - none of which the
-	// guest can reach on its own.
+	// Refuse is what this filter will never dial, whatever the policy says. Every filter sbx runs
+	// sits somewhere its sandbox is kept off: a microVM's filter is a listener on the host's bridge,
+	// so "CONNECT 10.231.5.1:22" through it would reach the host's sshd, 127.0.0.1 the host's own
+	// loopback services, and 10.231.7.2 another sandbox's guest. A container filter on colima or
+	// Docker Desktop is one hop from the VM and, through host.lima.internal, from the Mac's
+	// loopback (Doors). None of that is reachable from the workload on its own.
 	//
 	// No allow rule opens it. The policy is the sandbox's - its caller writes it through the API -
-	// and a sandbox must not be able to write itself a door onto the host that runs its filter as
-	// root; widening this set is the operator's (sbx serve), never the policy's. Nil refuses
-	// nothing beyond the policy's own host-local default (hostLocal, which an allow rule does open,
-	// because a filter in its own container has only its own loopback behind it).
+	// and a sandbox must not be able to write itself a door onto the machine that runs its filter;
+	// widening this set is the operator's (sbx serve), never the policy's. Nil refuses nothing
+	// beyond the policy's own host-local default (hostLocal, which an allow rule does open): that
+	// is right only for a filter whose loopback is its own and that has nothing else behind it,
+	// which today is only a test.
 	Refuse func(netip.Addr) bool
 
+	// SelfNames are the names this filter itself answers to - the alias services reach it by, its
+	// hostname, its container name. Its own addresses are always refused (Doors), so a request to
+	// one of these is a request to a door, and is answered as one by name: on a port the filter
+	// does not carry without a lookup, and on one it does without trusting whatever the resolver
+	// says. Nil outside the container filter.
+	SelfNames []string
+
 	pol atomic.Pointer[compiled]
+
+	// ports are the ports this filter carries beyond DefaultPorts (80 and 443), each for one
+	// target, from egress_allow entries written as host:port (SetPorts). Nothing else crosses: a
+	// proxy that tunnels a CONNECT to any port is a raw TCP relay, and under a default of allow
+	// that is a way to SSH, SMTP or a database anywhere, which SPEC.md has always said it is not.
+	ports atomic.Pointer[[]PortGrant]
 
 	once      sync.Once
 	transport *http.Transport
 }
 
-// New builds a filter from egress_allow entries, each a host or host:port (the port is
-// ignored). A host permits itself and its subdomains, as the field always has.
-func New(allow []string) *Filter { return NewPolicy(FromAllowList(allow)) }
+// New builds a filter from egress_allow entries, each a host or host:port. A host permits itself
+// and its subdomains, as the field always has, on ports 80 and 443; a port on an entry adds that
+// port for that host.
+func New(allow []string) *Filter {
+	f := NewPolicy(FromAllowList(allow))
+	f.SetPorts(PortGrantsFromAllowList(allow))
+
+	return f
+}
 
 // NewPolicy builds a filter enforcing p. p is expected to be normalized (ParsePolicy or
 // Normalize); a policy that is not is enforced as written, which for a malformed target means a
@@ -88,6 +112,18 @@ func (f *Filter) SetPolicy(p Policy) error {
 	}
 
 	f.pol.Store(compile(n))
+
+	return nil
+}
+
+// SetPorts replaces the ports carried beyond 80 and 443, atomically like SetPolicy.
+func (f *Filter) SetPorts(g []PortGrant) { f.ports.Store(&g) }
+
+// Ports returns the ports carried beyond 80 and 443.
+func (f *Filter) Ports() []PortGrant {
+	if g := f.ports.Load(); g != nil {
+		return *g
+	}
 
 	return nil
 }
@@ -118,16 +154,61 @@ func (f *Filter) refused(a netip.Addr) bool {
 }
 
 // errDenied is a destination the policy refuses, as opposed to one that could not be reached.
-type errDenied struct{ why string }
+type errDenied struct {
+	why string
+
+	// door is a refusal Refuse made: no policy or grant opens it, so nothing may suggest one.
+	door bool
+}
 
 func (e *errDenied) Error() string { return "egress not allowed: " + e.why }
+
+// carries refuses a port this filter does not carry for host. It is asked before any lookup, so a
+// refused port costs no DNS query and opens no socket; check decides which refusal is given.
+//
+// host is what the client named. A grant for a name is matched against the name, never against
+// an address it resolved to, so "github.com:22" does not open port 22 on whatever else shares
+// github.com's addresses.
+func (f *Filter) carries(host, port string) error {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return &errDenied{why: fmt.Sprintf("%q is not a port", port)}
+	}
+
+	if slices.Contains(DefaultPorts, uint16(n)) {
+		return nil
+	}
+
+	for _, g := range f.Ports() {
+		if int(g.Port) == n && g.covers(host) {
+			return nil
+		}
+	}
+
+	return &errDenied{why: fmt.Sprintf("port %d of %s: the egress filter carries ports 80 and 443 "+
+		"only. To reach this port, list %q in the service's egress_allow and recreate the sandbox "+
+		"(egress_policy and sbx egress have no port field)", n, host,
+		PortGrant{Target: strings.ToLower(host), Port: uint16(n)}.String())}
+}
+
+// closedOff says why an address Refuse keeps out is refused, so a person reading the 403 does not
+// go looking for the rule that denies it: there is none, and no rule would open it.
+const closedOff = " - the machine the egress filter runs on, or one behind it, which no policy opens"
 
 // admit decides one destination and returns the addresses it may be dialled at.
 func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 	c := f.pol.Load()
 
+	if f.isSelfName(host) {
+		return nil, &errDenied{why: host + closedOff, door: true}
+	}
+
 	if a, err := netip.ParseAddr(host); err == nil {
-		if !c.allowsAddr(a) || f.refused(a) {
+		if f.refused(a) {
+			return nil, &errDenied{why: host + closedOff, door: true}
+		}
+
+		if !c.allowsAddr(a) {
 			return nil, &errDenied{why: host}
 		}
 
@@ -146,7 +227,11 @@ func (f *Filter) admit(ctx context.Context, host string) ([]netip.Addr, error) {
 	// Every address, not the first: a name whose answer set includes one denied address is a
 	// name that can be steered to it, and which one a client dials is not ours to choose.
 	for _, a := range addrs {
-		if c.deniesResolved(a) || f.refused(a) {
+		if f.refused(a) {
+			return nil, &errDenied{why: fmt.Sprintf("%s resolves to %s%s", host, a, closedOff), door: true}
+		}
+
+		if c.deniesResolved(a) {
 			return nil, &errDenied{why: fmt.Sprintf("%s resolves to %s, which the policy denies", host, a)}
 		}
 	}
@@ -162,9 +247,80 @@ func (f *Filter) resolve(ctx context.Context, host string) ([]netip.Addr, error)
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
+// check decides one request: the port, the destination, and which refusal to give when both
+// fail. It returns the addresses host:port may be dialled at.
+//
+// The refusal has to be advice that works. The port used to be checked first, so a request to a
+// door on an uncarried port - GET http://host.lima.internal:28777/ - was told to list
+// host.lima.internal:28777 in egress_allow, which would then have been refused as a door. So an
+// uncarried port still asks about the destination: a door says it is one, a host the policy
+// denies says that, and only a host that would otherwise be let through gets the port hint.
+//
+// It asks only what it can answer without a lookup, because a refused port must cost no DNS
+// query (TestDefaultAllowRefusesPortsOtherThanHTTPAndHTTPS): an address literal is judged in
+// full, a name by the policy's name rules and by whether it is one of HostDoorNames. A name that
+// resolves to a door only through some other record still gets the port hint; with the port
+// granted, its next request is refused as a door, by address, and says so.
+func (f *Filter) check(ctx context.Context, host, port string) ([]netip.Addr, error) {
+	perr := f.carries(host, port)
+	if perr == nil {
+		return f.admit(ctx, host)
+	}
+
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return nil, perr // not a port at all: nothing about the host would change the answer
+	}
+
+	var err error
+
+	switch _, lerr := netip.ParseAddr(host); {
+	case lerr == nil:
+		_, err = f.admit(ctx, host) // a literal: no lookup
+	case f.isDoorName(host):
+		err = &errDenied{why: host + closedOff, door: true}
+	case !f.pol.Load().allowsName(host):
+		err = &errDenied{why: host}
+	}
+
+	var d *errDenied
+	if errors.As(err, &d) {
+		if d.door {
+			return nil, d
+		}
+
+		return nil, &errDenied{why: d.why + fmt.Sprintf(" (port %s is not carried either)", port)}
+	}
+
+	return nil, perr
+}
+
+// isDoorName reports a name that is a door whatever it resolves to: one of HostDoorNames, which
+// name the machine behind a container filter, or one of the filter's own names.
+func (f *Filter) isDoorName(host string) bool {
+	return slices.Contains(HostDoorNames, canonicalName(host)) || f.isSelfName(host)
+}
+
+// isSelfName reports one of SelfNames.
+func (f *Filter) isSelfName(host string) bool {
+	host = canonicalName(host)
+
+	for _, n := range f.SelfNames {
+		if n = canonicalName(n); n != "" && n == host {
+			return true
+		}
+	}
+
+	return false
+}
+
+// canonicalName is a hostname as names compare: lower case, no trailing dot.
+func canonicalName(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
 // dial opens a connection to host:port, admitted and at a checked address.
 func (f *Filter) dial(ctx context.Context, host, port string) (net.Conn, error) {
-	addrs, err := f.admit(ctx, host)
+	addrs, err := f.check(ctx, host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -274,10 +430,19 @@ func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A proxied request names its port in the URL; with none it is the scheme's.
+	port := r.URL.Port()
+	if port == "" {
+		port = "80"
+		if r.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+
 	// Checked per request, not only at dial: the transport pools connections, and one opened
 	// under an older, looser policy must not carry a request the current policy refuses.
 	admitCtx, cancel := context.WithTimeout(detach(r), setupTimeout)
-	_, err := f.admit(admitCtx, host)
+	_, err := f.check(admitCtx, host, port)
 	cancel()
 
 	if err != nil {

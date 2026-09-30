@@ -3,8 +3,15 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
 // The guarantee `sbx with` exists for: the ephemeral sandbox is removed on every path after a
@@ -61,18 +68,178 @@ func TestScopedRunRemovesWhenReadyNeverServes(t *testing.T) {
 	}
 }
 
-func TestScopedRunDoesNotRemoveWhenCreateFails(t *testing.T) {
+// A create that fails partway has usually made something: a container whose health never
+// passed, or one docker left in "Created" after `docker run` failed. `sbx with` only ever
+// creates a sandbox it just checked did not exist, so everything under that name is its own and
+// is removed - the create's error is what surfaces, not the teardown's.
+func TestScopedRunRemovesWhenCreateFails(t *testing.T) {
 	var log []string
+	createErr := errors.New(`service "redis": never became ready within 20s`)
+
 	err := runScoped(
-		rec(&log, "create", errors.New("out of slots")), rec(&log, "ready", nil),
+		rec(&log, "create", createErr), rec(&log, "ready", nil),
 		envOK(&log), runRec(&log, nil), rec(&log, "remove", nil), false,
 	)
-	if err == nil {
-		t.Fatal("expected the create failure to surface")
+	if !errors.Is(err, createErr) {
+		t.Fatalf("want the create failure to surface, got %v", err)
 	}
 
+	assertOrder(t, log, "create", "remove")
+}
+
+// If the teardown after a failed create also fails, the create's error is still the one that
+// explains what happened, and the leftover is named so it can be removed by hand.
+func TestScopedRunKeepsTheCreateErrorWhenTeardownAlsoFails(t *testing.T) {
+	var log []string
+	createErr := errors.New("docker run failed")
+
+	err := runScoped(
+		rec(&log, "create", createErr), rec(&log, "ready", nil),
+		envOK(&log), runRec(&log, nil), rec(&log, "remove", errors.New("daemon busy")), false,
+	)
+	if !errors.Is(err, createErr) {
+		t.Fatalf("the create failure was replaced: %v", err)
+	}
+
+	if !strings.Contains(err.Error(), "daemon busy") {
+		t.Errorf("the failed teardown was not reported, so a leftover goes unmentioned: %v", err)
+	}
+}
+
+func TestScopedRunKeepLeavesAFailedCreate(t *testing.T) {
+	var log []string
+	_ = runScoped(
+		rec(&log, "create", errors.New("never became ready")), rec(&log, "ready", nil),
+		envOK(&log), runRec(&log, nil), rec(&log, "remove", nil), true, // keep
+	)
+
 	if contains(log, "remove") {
-		t.Errorf("remove ran though nothing was created: %v", log)
+		t.Errorf("--keep asks to inspect a failure, but remove ran: %v", log)
+	}
+}
+
+// withStub is a Provider that records the lifecycle calls `sbx with` makes. It holds the units
+// of an existing sandbox when given some, and otherwise creates a redis whose health check
+// never passes.
+type withStub struct {
+	provider.Provider
+
+	existing []provider.Unit
+	created  bool
+	removed  bool
+}
+
+func (s *withStub) Name() string { return "stub" }
+
+func (s *withStub) AllocSlot(context.Context, string) (int, error) { return 0, nil }
+
+func (s *withStub) Endpoints(_, _ string, _, _ int, ports []int) []provider.Endpoint {
+	eps := make([]provider.Endpoint, 0, len(ports))
+	for _, p := range ports {
+		eps = append(eps, provider.Endpoint{Host: "127.0.0.1", Port: 20000 + p})
+	}
+
+	return eps
+}
+
+func (s *withStub) Create(context.Context, string, int, int, string, spec.Service,
+	[]provider.Endpoint, string, provider.Isolation,
+) error {
+	s.created = true
+
+	return nil
+}
+
+func (s *withStub) List(_ context.Context, sandbox string) ([]provider.Unit, error) {
+	if s.existing != nil {
+		return s.existing, nil
+	}
+
+	if s.created && !s.removed {
+		return []provider.Unit{{Sandbox: sandbox, Service: "redis", Ref: "sbx-" + sandbox + "-redis", Running: true}}, nil
+	}
+
+	return nil, nil
+}
+
+func (s *withStub) Probe(context.Context, string) (bool, bool) { return false, true }
+
+func (s *withStub) Exec(context.Context, string, []string) (string, error) {
+	return "", errors.New("exit status 1")
+}
+
+func (s *withStub) Logs(context.Context, string, int, bool, io.Writer) error { return nil }
+
+func (s *withStub) Remove(context.Context, string) error {
+	s.removed = true
+
+	return nil
+}
+
+func redisSpec(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "sandbox.json")
+	body := `{"version": 1, "services": {"redis": {"image": "redis:7-alpine", "ports": [6379], "health": "redis-cli ping"}}}`
+
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+// `sbx with X` against a sandbox X that already exists used to reuse its services ("already
+// exists"), run the command, and then remove X - volumes and all - as if it were the ephemeral
+// fixture. Confirmed live: a redis key set in X was gone after `sbx with X -- true`. The name
+// has to be refused before anything is created or removed.
+func TestWithRefusesASandboxThatAlreadyExists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	p := &withStub{existing: []provider.Unit{{Sandbox: "mine", Service: "redis", Ref: "sbx-mine-redis", Running: true}}}
+
+	err := With(context.Background(), p, redisSpec(t), "mine", false, provider.IsolationContainer,
+		time.Second, false, []string{"true"})
+	if err == nil {
+		t.Fatal("sbx with ran against a sandbox that already exists")
+	}
+
+	if p.created || p.removed {
+		t.Errorf("an existing sandbox was touched: created=%v removed=%v", p.created, p.removed)
+	}
+
+	for _, want := range []string{`"mine"`, "already exists", "sbx env mine"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q: %v", want, err)
+		}
+	}
+}
+
+// --timeout is the whole budget for services to serve. The create's own health wait was a fixed
+// two minutes, so `sbx with --timeout 20s` against a redis that never answered waited 2m and
+// then left the unhealthy sandbox behind.
+func TestWithHonoursItsTimeoutAndRemovesAFailedCreate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	p := &withStub{}
+	began := time.Now()
+
+	err := With(context.Background(), p, redisSpec(t), "fx-with-timeout", false,
+		provider.IsolationContainer, 300*time.Millisecond, false, []string{"true"})
+	if err == nil {
+		t.Fatal("a redis that never served was reported as ready")
+	}
+
+	if took := time.Since(began); took > 10*time.Second {
+		t.Errorf("--timeout 300ms waited %s: the create's health wait ignored it", took)
+	}
+
+	if !strings.Contains(err.Error(), "300ms") {
+		t.Errorf("the error does not name the timeout that was used: %v", err)
+	}
+
+	if !p.removed {
+		t.Error("a create that failed partway was left behind")
 	}
 }
 

@@ -27,7 +27,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 	},
 	"env": {
 		"sbx env <sandbox> [--shell posix|fish|powershell|cmd|json]",
-		"Print the addresses of a sandbox's services, ready to eval into your shell.\n" +
+		"Print the addresses of a sandbox's services, ready to eval into your shell: each\n" +
+			"export, and <SERVICE>_HOST/_PORT for a service no export names (one from sbx add).\n" +
 			"--shell json is for anything that parses rather than sources.",
 		`eval "$(sbx env feature-x)"`,
 	},
@@ -78,7 +79,11 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"on a failing test, or on an interrupt. The Testcontainers shape: the fixture lives\n" +
 			"exactly as long as the command and cleans up even when the command is killed, which a\n" +
 			"create/env/rm script does not guarantee. The command's own exit status is sbx's.\n" +
-			"`--keep` leaves the sandbox for inspection after a failure.",
+			"SIGINT and SIGTERM are passed on to the command, then the sandbox is removed and sbx\n" +
+			"exits 130 or 143. It refuses a sandbox name already in use, or one another sbx is\n" +
+			"creating, since it removes the sandbox afterwards - and it removes only what it made.\n" +
+			"A create that fails is removed too. `--timeout` bounds each wait for a service.\n" +
+			"`--keep` leaves the sandbox for inspection and says how to remove it.",
 		"sbx with test-db --template postgres -- go test ./...",
 	},
 	"add": {
@@ -97,9 +102,13 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx egress agent-1 --deny '*.pastebin.com' --deny 10.0.0.0/8 --default allow",
 	},
 	"snapshot": {
-		"sbx snapshot <sandbox> <name>",
+		"sbx snapshot [--replace] <sandbox> <name> | sbx snapshot --rm <name>",
 		"Save every service's filesystem under a name. Data only: processes start cold when\n" +
-			"a fork of it is woken.",
+			"a fork of it is woken. Running services are paused for the copy and thawed after, so\n" +
+			"a database is saved at one instant. A failed snapshot removes what it wrote. A name\n" +
+			"that is taken is refused; --replace removes that snapshot whole, then takes a fresh\n" +
+			"one. --rm deletes one snapshot's images and volumes; both refuse while a fork still\n" +
+			"runs from it.",
 		"sbx snapshot main golden",
 	},
 	"fork": {
@@ -115,19 +124,23 @@ var help = map[string]struct{ synopsis, about, example string }{
 			"start against a warm disk. Needs CRIU on a Linux host. Verified on a **podman**\n" +
 			"runtime, whose CRIU restore is reliable; docker's own checkpoint restore is\n" +
 			"unmaintained and fails even where podman succeeds, so sbx routes through podman when\n" +
-			"it is the runtime. Refused with a reason on macOS. Filesystem-only is sbx snapshot.",
+			"it is the runtime. Refused against a local engine on macOS (a VM); a Linux daemon\n" +
+			"reached over tcp:// is checked like any other. Filesystem-only is sbx snapshot.",
 		"sbx checkpoint agent-42 mid-thought",
 	},
 	"resume": {
 		"sbx resume <sandbox> <name>",
 		"Restore a sandbox from a checkpoint, resuming its memory and processes where they were\n" +
-			"frozen. The pair to checkpoint.",
+			"frozen. The pair to checkpoint. A service running now was woken after the checkpoint,\n" +
+			"so resume refuses it: sbx sleep the sandbox first to go back to the checkpoint.",
 		"sbx resume agent-42 mid-thought",
 	},
 	"gc": {
 		"sbx gc [--older-than DURATION] [--snapshots] [--force]",
 		"Reclaim volumes and images that dead sandboxes left behind. Lists what it would\n" +
-			"remove and does nothing else unless you pass --force.",
+			"remove and does nothing else unless you pass --force. A snapshot a sandbox still\n" +
+			"runs from is never offered, with or without --force. Lock files left by a killed\n" +
+			"create (~/.sbx/locks) are listed and removed the same way.",
 		"sbx gc --older-than 168h --force",
 	},
 	"doctor": {
@@ -151,6 +164,9 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx prewarm [--provider firecracker] [--spec sandbox.json | IMAGE...]",
 		"Pull the images now, so the first create is not a download. On firecracker it also\n" +
 			"builds each image's root filesystem, which for a large image is most of a first create.\n" +
+			"On docker it also pulls the helpers the spec would run: alpine:3, which snapshot and\n" +
+			"fork copy volumes with, if a service declares a volume; the egress filter's builder\n" +
+			"and runtime images if a service is filtered. Named images get no helpers.\n" +
 			"Useful in a CI image or before a demo.",
 		"sbx prewarm --provider firecracker python:3.11-slim",
 	},
@@ -167,7 +183,8 @@ var help = map[string]struct{ synopsis, about, example string }{
 	},
 	"exec": {
 		"sbx exec [-t] <sandbox> <service> <command>...",
-		"Run a command inside a service. -t attaches a terminal, for a shell or a REPL.",
+		"Run a command inside a service. Piped stdin reaches it, and sbx exits with its status.\n" +
+			"-t attaches a terminal, for a shell or a REPL.",
 		"sbx exec main postgres psql -U app -d app",
 	},
 	"logs": {
@@ -182,14 +199,16 @@ var help = map[string]struct{ synopsis, about, example string }{
 		"sbx cp main postgres ./schema.sql :/tmp/schema.sql",
 	},
 	"pack": {
-		"sbx pack [service] [--spec sandbox.json] [--out DIR]",
+		"sbx pack [service] [--spec sandbox.json] [--out DIR] [--version vX.Y.Z]",
 		"Build contexts for a platform that takes one container and one HTTP port.\n\n" +
 			"A sandbox is normally a set of containers on a machine sbx controls. A PaaS gives\n" +
 			"neither, so this writes the image that fits it: the workload exactly as it was, plus\n" +
 			"sbx carrying its ports over the one port the platform routes. Deploy that image with\n" +
 			"SBX_CONNECT_TOKEN set, then `sbx connect` turns it back into ordinary local ports.\n\n" +
 			"The generated image starts the base image's own process, read out of the image rather\n" +
-			"than guessed - so it works for whatever you packed, not just for postgres.",
+			"than guessed - so it works for whatever you packed, not just for postgres.\n\n" +
+			"The image installs sbx at a release: this one, or --version. A source build has no\n" +
+			"published version to install, so it needs --version.",
 		"sbx pack db --spec sandbox.json",
 	},
 	"connect": {

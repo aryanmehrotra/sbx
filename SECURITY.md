@@ -40,6 +40,20 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
 - `egress: "deny"` puts the service on a bridge with IP masquerade disabled. It is not a
   filtering firewall, and docker enforces it, not sbx. On kubernetes it is refused, because a
   NetworkPolicy is enforced only by some CNIs.
+- A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out only through
+  sbx's egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. Where
+  the filter is a container (colima, Docker Desktop, rootless or remote docker) it refuses, whatever
+  the policy says, every docker network's gateway, the default bridge's subnet, its own routes'
+  gateways, its own interface addresses, and the `/24` around what `host.docker.internal`, `host.lima.internal` and
+  `gateway.docker.internal` resolve to. That closes the VM and, through it, your Mac's loopback.
+  A docker network created after the filter started is refused once `sbx serve` has run a
+  discovery pass (every `--refresh`, 15 s by default): the daemon lists the engine's gateways and
+  pushes them to each container filter over its token-guarded control port, and the filter keeps
+  the last push across a restart. With no daemon running, or with the filter on a remote docker
+  (whose control port the daemon cannot reach), a network created later stays reachable on ports
+  80 and 443 of its gateway until a daemon runs or the sandbox is removed and created again.
+- The filter's control port (`sbx-egress:20998`) is reachable from the workload, so every path
+  on it, the activity reading included, needs the per-filter token the daemon holds.
 - A spec is executable: it names images, commands (`health`, `init`) and host files to mount.
   Treat someone else's `sandbox.json` like their Makefile.
 - `${VAR}` keeps a secret out of a committed spec, but the value still reaches the container's
@@ -157,6 +171,33 @@ Anything that breaks a boundary sbx claims to hold:
   becomes.
 
 ## Advisories
+
+### v0.15.1 and earlier: the egress filter reaches the host on a VM-backed engine (fixed in v0.16.0)
+
+Affected: every version with a container egress filter, on colima and Docker Desktop, for a
+service with `egress: "allow"`, or an `egress_allow`/`egress_policy` that allowed the addresses
+below.
+
+- The filter runs as a container on the engine's VM. Through it, a workload could `CONNECT` to
+  `host.lima.internal`, `host.docker.internal` or `192.168.5.2`, which the VM forwards to the
+  Mac's own loopback - every service bound to `127.0.0.1` there, including other sandboxes'
+  published ports - and to the bridge gateway, which reached the VM's sshd.
+- `CONNECT` also tunnelled any port, so an allowed name opened raw TCP to that host, not only
+  HTTP and HTTPS.
+- A workload with no egress filter was not affected: it has no route to any of these.
+- Fixed in v0.16.0: the filter refuses every gateway of its networks, the default bridge's subnet
+  and the `/24` around each host alias, re-read every 30 s, whatever the policy says; and it
+  carries only ports 80 and 443 unless an `egress_allow` entry names another as `host:port`.
+- Also fixed in v0.16.0: a docker network created after the filter started (another sandbox's)
+  was not refused, and `CONNECT <its gateway>:443` reached the VM. `sbx serve` now pushes the
+  engine's gateways to every container filter on each discovery pass. That needs the daemon
+  running: a network created while none runs is reachable until one does.
+- The filter's activity endpoint, `GET sbx-egress:20998/last`, answered the workload. It needs
+  the control token since v0.16.0.
+- Upgrading is not enough for an existing sandbox: run `sbx create` again over it (with v0.16.0 it
+  replaces a filter built by an older sbx), or `sbx rm` and create it.
+- Workaround before upgrading: use `egress: "deny"`, or an allow-list, for any sandbox that runs
+  code you do not trust.
 
 ### v0.9.0: a keyless OpenSandbox API is reachable from every container (fixed in v0.9.1)
 
