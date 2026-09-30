@@ -44,9 +44,9 @@ func TestRememberRecordsWhichBackendTheSandboxIsOn(t *testing.T) {
 		t.Errorf("record provider = %q, want docker@unix:///a.sock (body %s)", o.Provider, body)
 	}
 
-	Inherit("src", "snap")
+	Inherit(&snapStub{}, "src", "snap")
 
-	if got, _ := Recall("snap"); got.Provider != o.Provider {
+	if got, _ := Recall(&snapStub{}, "snap"); got.Provider != o.Provider {
 		t.Errorf("an inherited record has provider %q, want its source's %q", got.Provider, o.Provider)
 	}
 }
@@ -173,5 +173,84 @@ func TestGCSummarisesALongListOfOrphanRecords(t *testing.T) {
 		if exists(path) {
 			t.Fatalf("--force left %s:\n%s", n, out.String())
 		}
+	}
+}
+
+// Recall is the default spec for env, fork, ready and the rest. Asked through docker, it must not
+// hand over the spec of a same-named sandbox on kubernetes, firecracker or another docker engine:
+// that record is not this sandbox's, and the command should ask for --spec as it would with none.
+// A record naming no provider is what every sandbox created before this has, so it is honoured.
+func TestRecallIgnoresAnotherBackendsRecordAndHonoursALegacyOne(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	p := &snapStub{}
+
+	for _, prov := range []string{"kubernetes/default@kind-a", "firecracker", "docker@unix:///other.sock"} {
+		name := "on-" + strings.NewReplacer("/", "-", "@", "-", ":", "-", ".", "-").Replace(prov)
+		writeOrigin(t, name, prov)
+
+		if o, ok := Recall(p, name); ok {
+			t.Errorf("Recall through docker handed over %s's record: %+v", prov, o)
+		}
+
+		// Nor may a snapshot taken here inherit it.
+		Inherit(p, name, name+"-snap")
+
+		if _, err := os.Stat(mustOriginPath(t, name+"-snap")); err == nil {
+			t.Errorf("a snapshot through docker inherited %s's record", prov)
+		}
+	}
+
+	writeOrigin(t, "old", "")
+
+	if o, ok := Recall(p, "old"); !ok || o.Template != "postgres" {
+		t.Errorf("a legacy record was not honoured: %+v, %v", o, ok)
+	}
+
+	origins(t, "mine")
+
+	if o, ok := Recall(p, "mine"); !ok || o.Template != "postgres" {
+		t.Errorf("this backend's own record was not honoured: %+v, %v", o, ok)
+	}
+}
+
+func mustOriginPath(t *testing.T, name string) string {
+	t.Helper()
+
+	p, err := originPath(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return p
+}
+
+// A snapshot of a sandbox whose record predates providers is taken HERE, so its copy names this
+// backend. Left blank it would stay a legacy record forever, honoured by every backend that asks.
+func TestInheritFromALegacyRecordNamesThisBackend(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	p := &snapStub{}
+	writeOrigin(t, "legacy", "")
+
+	Inherit(p, "legacy", "golden")
+
+	path, err := originPath("golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no record for the snapshot: %v", err)
+	}
+
+	var o Origin
+	if err := json.Unmarshal(body, &o); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := originKey(p); o.Provider != want || o.Template != "postgres" {
+		t.Errorf("inherited record = %+v, want template postgres on provider %q", o, want)
 	}
 }
