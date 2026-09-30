@@ -4,6 +4,7 @@ What changed in each sbx release, what it means for you, and how to upgrade. New
 
 | Version | Date | Headline |
 |---|---|---|
+| [v0.16.1](v0.16.1.md) | 2026-09-30 | `sbx env` uses only this backend's record of a sandbox |
 | [v0.16.0](v0.16.0.md) | 2026-09-30 | `sbx ready` and `sbx egress` you can trust on any engine |
 | [v0.15.1](v0.15.1.md) | 2026-09-29 | `sbx create` over an asleep sandbox no longer fails on `files` |
 | [v0.15.0](v0.15.0.md) | 2026-09-29 | `sbx install` adds what `sbx doctor` says is missing |

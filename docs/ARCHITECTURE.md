@@ -54,7 +54,7 @@ flowchart LR
 
 ## Platform status
 
-Every provider takes the same `sandbox.json`. What has actually been run where, at v0.16.0:
+Every provider takes the same `sandbox.json`. What has actually been run where, at v0.16.1:
 
 | Provider · host | Status |
 |---|---|
