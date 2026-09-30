@@ -22,13 +22,13 @@ amended entry carries a **Status:** line under its heading.
 | [Ask the workload, not the platform](#ask-the-workload-not-the-platform) | Lifecycle and wake | v0.1.0 | current |
 | [A published port is not readiness](#a-published-port-is-not-readiness) | Lifecycle and wake | v0.1.0 | current |
 | [A sandbox cannot sleep until it has been seen serving](#a-sandbox-cannot-sleep-until-it-has-been-seen-serving) | Lifecycle and wake | v0.1.0 | current |
-| [Stops run off the reaper, and a listing that contradicts the daemon is asked again](#stops-run-off-the-reaper-and-a-listing-that-contradicts-the-daemon-is-asked-again) | Lifecycle and wake | unreleased | current |
-| [The machine's daemon leaves a live `--only` daemon's sandboxes to it](#the-machines-daemon-leaves-a-live---only-daemons-sandboxes-to-it) | Lifecycle and wake | unreleased | current |
+| [Stops run off the reaper, and a listing that contradicts the daemon is asked again](#stops-run-off-the-reaper-and-a-listing-that-contradicts-the-daemon-is-asked-again) | Lifecycle and wake | v0.16.0 | current |
+| [The machine's daemon leaves a live `--only` daemon's sandboxes to it](#the-machines-daemon-leaves-a-live---only-daemons-sandboxes-to-it) | Lifecycle and wake | v0.16.0 | current |
 | [Slots are allocated, not hashed](#slots-are-allocated-not-hashed) | Addressing and slots | v0.1.0 | amended v0.10.0 |
 | [Optional services still reserve their ports](#optional-services-still-reserve-their-ports) | Addressing and slots | v0.1.0 | current |
 | [128 docker slots, bounded by the ephemeral range](#128-docker-slots-bounded-by-the-ephemeral-range) | Addressing and slots | v0.10.0 | current |
 | [The API's creates hold the slot lock for the choice only](#the-apis-creates-hold-the-slot-lock-for-the-choice-only) | Addressing and slots | v0.10.0 | current |
-| [A lock wait that runs out is an error, and a name has a lock too](#a-lock-wait-that-runs-out-is-an-error-and-a-name-has-a-lock-too) | Addressing and slots | unreleased | current |
+| [A lock wait that runs out is an error, and a name has a lock too](#a-lock-wait-that-runs-out-is-an-error-and-a-name-has-a-lock-too) | Addressing and slots | v0.16.0 | current |
 | [Three containers, not one image with everything in it](#three-containers-not-one-image-with-everything-in-it) | Spec, images and templates | v0.1.0 | current |
 | [A built image is keyed by its content, never by its age](#a-built-image-is-keyed-by-its-content-never-by-its-age) | Spec, images and templates | v0.1.0 | current |
 | [Adding an optional spec field does not bump `version`](#adding-an-optional-spec-field-does-not-bump-version) | Spec, images and templates | v0.1.0 | current |
@@ -37,11 +37,11 @@ amended entry carries a **Status:** line under its heading.
 | [sbx is a tool people run, not a service anyone offers](#sbx-is-a-tool-people-run-not-a-service-anyone-offers) | Scope, isolation and trust | v0.1.0 | current |
 | [Loopback is not a trust boundary on a VM-backed engine](#loopback-is-not-a-trust-boundary-on-a-vm-backed-engine) | Scope, isolation and trust | v0.10.0 | current |
 | [Isolation fails closed, and says why](#isolation-fails-closed-and-says-why) | Scope, isolation and trust | v0.1.0 | current |
-| [A sandbox has one isolation tier](#a-sandbox-has-one-isolation-tier) | Scope, isolation and trust | unreleased | current |
+| [A sandbox has one isolation tier](#a-sandbox-has-one-isolation-tier) | Scope, isolation and trust | v0.16.0 | current |
 | [Capabilities are negotiated, not stubbed - and sbx does not reach around a provider](#capabilities-are-negotiated-not-stubbed---and-sbx-does-not-reach-around-a-provider) | Scope, isolation and trust | v0.1.0 | current |
 | [Tunnels are shelled out, and the anonymous one is opt-in](#tunnels-are-shelled-out-and-the-anonymous-one-is-opt-in) | Scope, isolation and trust | v0.1.0 | current |
 | [A snapshot is the volume, not the container](#a-snapshot-is-the-volume-not-the-container) | Snapshots and checkpoints | v0.1.0 | current |
-| [A snapshot pauses what is running, and marks the pause for the daemon](#a-snapshot-pauses-what-is-running-and-marks-the-pause-for-the-daemon) | Snapshots and checkpoints | unreleased | current |
+| [A snapshot pauses what is running, and marks the pause for the daemon](#a-snapshot-pauses-what-is-running-and-marks-the-pause-for-the-daemon) | Snapshots and checkpoints | v0.16.0 | current |
 | [Memory checkpoint goes through podman, because docker's restore path doesn't work](#memory-checkpoint-goes-through-podman-because-dockers-restore-path-doesnt-work) | Snapshots and checkpoints | v0.7.0 | current |
 | [Egress is denied by a bridge without NAT, not by a firewall sbx writes](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes) | Egress | v0.1.0 | amended v0.7.0–v0.9.0 |
 | [Traffic through the egress filter counts as activity, stamped on bytes](#traffic-through-the-egress-filter-counts-as-activity-stamped-on-bytes) | Egress | v0.8.0 | current |
