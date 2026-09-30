@@ -54,7 +54,7 @@ flowchart LR
 
 ## Platform status
 
-Every provider takes the same `sandbox.json`. What has actually been run where, at v0.15.1:
+Every provider takes the same `sandbox.json`. What has actually been run where, at v0.16.0:
 
 | Provider · host | Status |
 |---|---|
@@ -62,7 +62,7 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | docker · macOS (colima, Docker Desktop) | **unit-tested** in CI on every PR and daily; **run by hand** on an M4 with colima (benchmarks) |
 | docker · Windows | inside WSL2 only; **not yet run end to end** on a Windows host |
 | docker `--isolation gvisor` | **verified in CI** (`isolation` job) |
-| docker `--isolation kata` | **run by hand** on a nested VM host at v0.15.1: the container got no network and could not restart. `sbx doctor` checks registration only |
+| docker `--isolation kata` | **run by hand** on a nested VM host at v0.16.0: the container gets no network, and `sbx create`, `ready` and `wake` now refuse it saying so. `sbx doctor` checks registration only |
 | kubernetes | **unit-tested**; **run by hand** on minikube (benchmarks); not in CI |
 | kubernetes `--isolation firecracker` (kata-fc) | **unit-tested**; **not yet run end to end** on a cluster |
 | firecracker · Linux with `/dev/kvm` | **verified in CI** (`microvm` job, nested KVM, jailer on) |
