@@ -103,7 +103,10 @@ type workloadDial struct {
 //
 // Remote units are left out for the same reason Ready leaves their daemon ports out: the address
 // a cluster's activator dials is not one this machine can reach, or conclude anything from.
-func workloadDials(p provider.Provider, units []provider.Unit) []workloadDial {
+//
+// since is when the command asking began: a container started at or after it that has exited
+// since is a verdict waiting cannot change (see diedSince).
+func workloadDials(p provider.Provider, units []provider.Unit, since time.Time) []workloadDial {
 	gd, _ := p.(provider.GuestDialer)
 
 	var out []workloadDial
@@ -132,7 +135,7 @@ func workloadDials(p provider.Provider, units []provider.Unit) []workloadDial {
 				if e.Host == "127.0.0.1" && u.Ref != "" {
 					sandbox, service, leg := u.Sandbox, u.Service, i
 					d.inside = func(ctx context.Context) insideAnswer {
-						return askInside(ctx, p, sandbox, service, leg)
+						return askInside(ctx, p, sandbox, service, leg, since)
 					}
 				}
 			}
@@ -147,6 +150,7 @@ func workloadDials(p provider.Provider, units []provider.Unit) []workloadDial {
 // insideAnswer is what a container said about one of its ports.
 type insideAnswer struct {
 	why      string // not serving, and why; "" when it is
+	final    bool   // why is a verdict waiting cannot change: stop asking
 	fallback bool   // cannot be asked this way at all: dial from the host instead
 	err      error  // could not ask this time: ask again, never pass
 }
@@ -166,7 +170,7 @@ type insideAnswer struct {
 //
 // Listed afresh rather than taken from the caller's units, because those were read before the
 // wake and a stopped container publishes no inside port.
-func askInside(ctx context.Context, p provider.Provider, sandbox, service string, leg int) insideAnswer {
+func askInside(ctx context.Context, p provider.Provider, sandbox, service string, leg int, since time.Time) insideAnswer {
 	units, err := p.List(ctx, sandbox)
 	if err != nil {
 		return insideAnswer{err: err}
@@ -184,6 +188,11 @@ func askInside(ctx context.Context, p provider.Provider, sandbox, service string
 	case u == nil:
 		return insideAnswer{err: fmt.Errorf("it is no longer listed")}
 	case !u.Running:
+		// Started during this command and exited since: nothing restarts it while this waits.
+		if why, died := diedSince(ctx, p, u.Ref, since); died {
+			return insideAnswer{why: why, final: true}
+		}
+
 		return insideAnswer{err: fmt.Errorf("its container is not running")}
 	case leg >= len(u.Private) || u.Private[leg] == 0:
 		return insideAnswer{fallback: true} // the runtime does not say which port to look for
@@ -227,10 +236,18 @@ func askInside(ctx context.Context, p provider.Provider, sandbox, service string
 	}
 
 	if !slices.ContainsFunc(ifaces, func(n string) bool { return n != "lo" }) {
+		// Final: a container's interfaces are set up before its process starts - by docker for
+		// runc and gVisor, by the Kata agent in the guest - so one with only loopback now will
+		// have only loopback for as long as this waits. The RC4 retest waited out a full timeout
+		// on it every time.
 		return insideAnswer{why: "its container has no network interface but loopback, so nothing outside " +
-			"can reach it (seen with Kata on a nested host)"}
+			"can reach it (seen with Kata on a nested host)", final: true}
 	}
 
+	// A listener on 127.0.0.1 only is NOT final, though it is usually a config error. An image's
+	// entrypoint may run its init against a private server bound there and then restart it on
+	// every address, and calling that final fails a sandbox that would serve a moment later -
+	// a wrong refusal, which costs a re-run, where a wrong wait costs only the timeout.
 	switch reach, local := listenersOn(tcp+"\n"+tcp6, port); {
 	case reach:
 		return insideAnswer{}
@@ -398,11 +415,16 @@ func procIP(s string) net.IP {
 // It polls because a woken container is running before its process listens. A port that has
 // passed is not asked again, and the ports of one poll are asked together: each is a few execs,
 // and a 14-service stack asked one by one would spend seconds on every look.
+//
+// It stops before the deadline on a verdict waiting cannot change (judgeWorkload's final): that
+// port will fail at the deadline too, so the wait would only delay the same answer. Ports still
+// failing a verdict that can change are named as not yet serving, not as broken.
 func waitWorkloads(ctx context.Context, sandbox string, dials []workloadDial, deadline time.Time) error {
 	passed := make([]bool, len(dials))
 
 	for {
 		why := make([]string, len(dials))
+		final := make([]bool, len(dials))
 
 		var wg sync.WaitGroup
 
@@ -411,12 +433,12 @@ func waitWorkloads(ctx context.Context, sandbox string, dials []workloadDial, de
 				continue
 			}
 
-			wg.Go(func() { why[i] = judgeWorkload(ctx, d) })
+			wg.Go(func() { why[i], final[i] = judgeWorkload(ctx, d) })
 		}
 
 		wg.Wait()
 
-		var failed []string
+		var failed, pending []string
 
 		for i, d := range dials {
 			if passed[i] {
@@ -428,32 +450,43 @@ func waitWorkloads(ctx context.Context, sandbox string, dials []workloadDial, de
 				continue
 			}
 
-			failed = append(failed, fmt.Sprintf("\n     %s: %s\n       see why: sbx logs %s %s",
-				d.service, why[i], sandbox, d.service))
+			line := fmt.Sprintf("\n     %s: %s\n       see why: sbx logs %s %s", d.service, why[i], sandbox, d.service)
+
+			if final[i] {
+				failed = append(failed, line)
+			} else {
+				pending = append(pending, line)
+			}
 		}
 
-		if len(failed) == 0 {
+		switch {
+		case len(failed) == 0 && len(pending) == 0:
 			return nil
-		}
+		case len(failed) > 0:
+			for _, line := range pending {
+				failed = append(failed, strings.Replace(line, ": ", ": not serving yet when this stopped - ", 1))
+			}
 
-		if !time.Now().Before(deadline) {
 			return fmt.Errorf("sandbox %q is not serving:%s", sandbox, strings.Join(failed, ""))
+		case !time.Now().Before(deadline):
+			return fmt.Errorf("sandbox %q is not serving:%s", sandbox, strings.Join(pending, ""))
 		}
 
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-// judgeWorkload is one look at one port: "" when it is serving, otherwise why not.
-func judgeWorkload(ctx context.Context, d workloadDial) string {
+// judgeWorkload is one look at one port: "" when it is serving, otherwise why not, and whether
+// that is final - a verdict no amount of waiting changes.
+func judgeWorkload(ctx context.Context, d workloadDial) (string, bool) {
 	if d.inside != nil {
 		a := d.inside(ctx)
 
 		switch {
 		case a.err != nil:
-			return "could not ask its container whether it is serving: " + firstLine(a.err.Error())
+			return "could not ask its container whether it is serving: " + firstLine(a.err.Error()), false
 		case !a.fallback:
-			return a.why
+			return a.why, a.final
 		}
 	}
 
@@ -461,10 +494,29 @@ func judgeWorkload(ctx context.Context, d workloadDial) string {
 	// that accepts and closes without a byte from nothing there, and on colima it cannot see
 	// past a forwarder holding the line - which is why it is the fallback, not the check.
 	if ok, observed := probeWorkload(ctx, d.dial); !ok {
-		return fmt.Sprintf("at %s (where `sbx serve` forwards it): %s", d.addr, observed)
+		return fmt.Sprintf("at %s (where `sbx serve` forwards it): %s", d.addr, observed), false
 	}
 
-	return ""
+	return "", false
+}
+
+// diedSince is the runtime's account of a container that was started at or after since and is
+// not running now, as one clause for an error - a verdict waiting cannot change, because nothing
+// in the command asking will start it again. False where the runtime cannot say (no
+// provider.ExitReporter, or it could not be asked), and for a container last started before
+// since: that one is asleep, and the wake this command asked for may not have reached it yet.
+func diedSince(ctx context.Context, p provider.Provider, ref string, since time.Time) (string, bool) {
+	er, ok := p.(provider.ExitReporter)
+	if !ok {
+		return "", false
+	}
+
+	st, err := er.ExitOf(ctx, ref)
+	if err != nil || st.Status == "running" || st.StartedAt.IsZero() || st.StartedAt.Before(since) {
+		return "", false
+	}
+
+	return "its container is not running: " + st.String(), true
 }
 
 // checkCreatedWorkloads is the workload check for the services a create just made. Create used to
@@ -497,23 +549,20 @@ func checkCreatedWorkloads(ctx context.Context, p provider.Provider, sandbox str
 		exited []string
 	)
 
-	er, _ := p.(provider.ExitReporter)
-
 	for _, u := range units {
 		switch {
 		case !want[u.Service]:
 		case u.Running:
 			check = append(check, u)
-		case er != nil:
-			st, err := er.ExitOf(ctx, u.Ref)
-			if err == nil && st.Status != "running" && !st.StartedAt.IsZero() && !st.StartedAt.Before(began) {
-				exited = append(exited, fmt.Sprintf("\n     %s: its container is not running: %s\n       see why: sbx logs %s %s",
-					u.Service, st, sandbox, u.Service))
+		default:
+			if why, died := diedSince(ctx, p, u.Ref, began); died {
+				exited = append(exited, fmt.Sprintf("\n     %s: %s\n       see why: sbx logs %s %s",
+					u.Service, why, sandbox, u.Service))
 			}
 		}
 	}
 
-	err = waitWorkloads(ctx, sandbox, workloadDials(p, check), deadline)
+	err = waitWorkloads(ctx, sandbox, workloadDials(p, check, began), deadline)
 
 	switch {
 	case len(exited) == 0:

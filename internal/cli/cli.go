@@ -197,6 +197,11 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 
 	var done []string // the services this create got through, for the report when one fails
 
+	var (
+		ticked     []string // the services of done that served when they were made
+		notServing []string // why each of the others does not: lines for the error
+	)
+
 	for i, name := range order {
 		svc := sp.Services[name]
 
@@ -283,18 +288,32 @@ func createWithin(ctx context.Context, p provider.Provider, path, sandbox string
 			}
 		}
 
-		if err != nil {
+		var ns *serviceNotServing
+		if errors.As(err, &ns) {
+			notServing = append(notServing, strings.TrimPrefix(ns.err.Error(), fmt.Sprintf("sandbox %q is not serving:", sandbox)))
+			err = nil
+		} else if err != nil {
 			return createProgress(err, done, notAttempted(sp, order[i+1:], withOptional))
+		} else {
+			ticked = append(ticked, name)
 		}
 
 		done = append(done, name)
 		created = append(created, p.Endpoints(sandbox, name, slot, start, svc.Ports)...)
 	}
 
-	// Healthy inside the container is not serving from outside it: ask what sbx ready asks before
-	// saying "ready". Thirty seconds covers a process still binding its port after its health check.
-	if err := checkCreatedWorkloads(ctx, p, sandbox, done, began, time.Now().Add(createServeWait)); err != nil {
-		return &notServingError{err: err, sandbox: sandbox}
+	// Each tick above was printed once its service served. Asked again here, for all of them at
+	// once, because a service can stop while the ones after it are made: that is a change since its
+	// tick, and the error says so rather than contradicting the line above without a word.
+	if err := checkCreatedWorkloads(ctx, p, sandbox, ticked, began, time.Now().Add(createServeWait)); err != nil {
+		notServing = append(notServing,
+			strings.TrimPrefix(err.Error(), fmt.Sprintf("sandbox %q is not serving:", sandbox))+
+				"\n     (served when its line above was printed, and has stopped since)")
+	}
+
+	if len(notServing) > 0 {
+		return &notServingError{err: fmt.Errorf("sandbox %q is not serving:%s", sandbox, strings.Join(notServing, "")),
+			sandbox: sandbox}
 	}
 
 	fmt.Println()
@@ -431,6 +450,8 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 		return err
 	}
 
+	began := time.Now()
+
 	if err := p.Create(ctx, sandbox, slot, start, name, svc, eps, specDir, iso); err != nil {
 		return fmt.Errorf("service %q: %w%s", name, err, discardFailedRun(ctx, p, sandbox, name, prior, existed))
 	}
@@ -469,7 +490,7 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 	}
 
 	if svc.Health != "" {
-		if err := waitHealthy(ctx, p, ref, svc.Health, healthTimeout); err != nil {
+		if err := waitHealthy(ctx, p, ref, svc.Health, healthTimeout, began); err != nil {
 			return fmt.Errorf("service %q: %w", name, err)
 		}
 	}
@@ -487,9 +508,39 @@ func createOneWithin(ctx context.Context, p provider.Provider, sandbox string, s
 		return err
 	}
 
+	// The tick says the service serves, so it is printed only once the question `sbx ready` asks
+	// has been answered for it. It used to follow the health check alone, which runs inside the
+	// container: a guest with no network passed it, printed "redis ✓", and the same create then
+	// failed redis in its final check. A service that does not serve gets a cross here, and the
+	// create goes on to the rest - it fails at the end, with the sandbox made, as it did before.
+	if err := checkCreatedWorkloads(ctx, p, sandbox, []string{name}, began, time.Now().Add(createServeWait)); err != nil {
+		fmt.Printf("  %-12s ✗ not serving - %s\n", name, verdictOf(err, name))
+
+		return &serviceNotServing{err: err}
+	}
+
 	fmt.Printf("  %-12s ✓ %s\n", name, joinEndpoints(eps))
 
 	return nil
+}
+
+// serviceNotServing is a service create made, whose health check passed, and which does not
+// serve: its container is there, so create keeps going and fails once every service is made.
+type serviceNotServing struct{ err error }
+
+func (e *serviceNotServing) Error() string { return e.err.Error() }
+func (e *serviceNotServing) Unwrap() error { return e.err }
+
+// verdictOf is the reason a workload check gave for one service, for its line in create's output:
+// the first line after "<service>: " in the check's error, or the error's first line.
+func verdictOf(err error, service string) string {
+	for line := range strings.SplitSeq(err.Error(), "\n") {
+		if why, ok := strings.CutPrefix(strings.TrimSpace(line), service+": "); ok {
+			return why
+		}
+	}
+
+	return firstLine(err.Error())
 }
 
 // discardBrokenMount takes the container whose mount check failed out of service, and says how.
@@ -768,9 +819,17 @@ func unitFor(ctx context.Context, p provider.Provider, sandbox, service string) 
 // would report a clean run against a database that never came up.
 // It asks Probe, not Healthy, for the same reason the wake path does: the platform
 // republishes health on its own interval and that lag was 98% of the time spent here.
-func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, timeout time.Duration) error {
+//
+// since is when the command waiting began. A container started at or after it that has exited
+// since fails the wait at once (see diedSince): it will not become healthy by being waited on,
+// and waiting out two minutes to say so was the whole of the k3s report below.
+func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, timeout time.Duration,
+	since time.Time,
+) error {
 	deadline := time.Now().Add(timeout)
 	checked := false
+
+	var lastExitLook time.Time
 
 	for time.Now().Before(deadline) {
 		// An interrupted `sbx with` cancels ctx, and waiting out the rest of the budget before
@@ -802,6 +861,15 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 			}
 		}
 
+		// An inspect, so not on every 100ms poll.
+		if time.Since(lastExitLook) >= exitLookEvery {
+			lastExitLook = time.Now()
+
+			if why, died := diedSince(ctx, p, ref, since); died {
+				return fmt.Errorf("%s stopped before it became ready - %s%s", ref, why, lastLines(ctx, p, ref, 5))
+			}
+		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -829,6 +897,10 @@ func waitHealthy(ctx context.Context, p provider.Provider, ref, command string, 
 
 	return fmt.Errorf("%s never became ready within %s%s", ref, timeout, last)
 }
+
+// exitLookEvery is how often a wait asks the runtime whether a container it is waiting on has
+// exited. Each look is an inspect; a wake of a whole stack polls every service at once.
+const exitLookEvery = 500 * time.Millisecond
 
 // runtimeState is the runtime's own account of a workload that never served, as one clause for
 // an error, or "" when it is running or the backend cannot say.
@@ -1320,9 +1392,10 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 		return UnknownSandbox(ctx, p, sandbox)
 	}
 
-	var unverifiable []string
+	var unverifiable, healthy []string
 
-	deadline := time.Now().Add(timeout)
+	began := time.Now()
+	deadline := began.Add(timeout)
 
 	for _, u := range units {
 		// Locally, connecting is the wake signal and the daemon owns the port. Elsewhere
@@ -1349,11 +1422,14 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 
 		// No health command in hand here - Ready works from what the provider reports, not
 		// from a spec - so the fast-fail check is skipped and this behaves as it always did.
-		if err := waitHealthy(ctx, p, u.Ref, "", timeout); err != nil {
+		if err := waitHealthy(ctx, p, u.Ref, "", timeout, began); err != nil {
 			return err
 		}
 
-		fmt.Printf("  %-24s serving\n", u.Service)
+		// Printed at the end, once every check below has passed. Printed here, it followed the
+		// health check alone - which runs inside the container and passes on a guest with no
+		// network - and `sbx wake` said "redis serving" before failing redis and exiting 1.
+		healthy = append(healthy, u.Service)
 	}
 
 	// A service with no health check has nothing to wait on, and one whose engine could not be
@@ -1370,13 +1446,13 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 		settle = unverifiedSettle
 	}
 
-	if err := waitRunning(ctx, p, sandbox, deadline, settle); err != nil {
+	if err := waitRunning(ctx, p, sandbox, deadline, settle, began); err != nil {
 		return err
 	}
 
 	// Running and healthy is still not serving. The health check runs INSIDE the container, so it
 	// passes on a workload no host connection can reach - see waitWorkloads.
-	if err := waitWorkloads(ctx, sandbox, workloadDials(p, units), deadline); err != nil {
+	if err := waitWorkloads(ctx, sandbox, workloadDials(p, units, began), deadline); err != nil {
 		return err
 	}
 
@@ -1413,6 +1489,10 @@ func Ready(ctx context.Context, p provider.Provider, sandbox string, timeout tim
 			sandbox, strings.Join(unreachable, ", "))
 	}
 
+	for _, s := range healthy {
+		fmt.Printf("  %-24s serving\n", s)
+	}
+
 	fmt.Printf("sandbox %q is serving\n", sandbox)
 
 	return nil
@@ -1431,8 +1511,16 @@ const unverifiedSettle = 2 * time.Second
 // that exits on startup is running for a moment after every start - and with a daemon in front
 // it is started again and again, so two looks a settle apart can both land on one. Measured
 // live: one `sbx ready` in three passed that way before this polled through the window.
-func waitRunning(ctx context.Context, p provider.Provider, sandbox string, deadline time.Time, settle time.Duration) error {
-	var upSince time.Time // when every unit was first seen running in this unbroken stretch
+//
+// A unit started at or after since that has exited again stops the wait at once (see diedSince):
+// the knock that woke it is spent, and nothing here will start it again.
+func waitRunning(ctx context.Context, p provider.Provider, sandbox string, deadline time.Time, settle time.Duration,
+	since time.Time,
+) error {
+	var (
+		upSince      time.Time // when every unit was first seen running in this unbroken stretch
+		lastExitLook time.Time
+	)
 
 	for {
 		units, err := p.List(ctx, sandbox)
@@ -1458,6 +1546,23 @@ func waitRunning(ctx context.Context, p provider.Provider, sandbox string, deadl
 			}
 		} else {
 			upSince = time.Time{}
+
+			if time.Since(lastExitLook) >= exitLookEvery {
+				lastExitLook = time.Now()
+
+				var b strings.Builder
+
+				for _, u := range down {
+					if why, died := diedSince(ctx, p, u.Ref, since); died {
+						fmt.Fprintf(&b, "\n     %s is not running\n       %s\n       see why: sbx logs %s %s",
+							u.Service, why, sandbox, u.Service)
+					}
+				}
+
+				if b.Len() > 0 {
+					return fmt.Errorf("sandbox %q is not serving:%s", sandbox, b.String())
+				}
+			}
 
 			if !time.Now().Before(deadline) {
 				var b strings.Builder
@@ -1738,7 +1843,7 @@ func serviceRef(ctx context.Context, p provider.Provider, sandbox, service, by s
 
 				err := p.Start(ctx, u.Ref)
 				if err == nil {
-					err = waitHealthy(ctx, p, u.Ref, "", 90*time.Second)
+					err = waitHealthy(ctx, p, u.Ref, "", 90*time.Second, began)
 				}
 
 				if err != nil {

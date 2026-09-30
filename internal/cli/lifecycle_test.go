@@ -154,7 +154,7 @@ func (s *probeStub) ExitOf(context.Context, string) (provider.ExitState, error) 
 func TestAHealthWaitOnAnExitedContainerSaysItExited(t *testing.T) {
 	p := &probeStub{state: provider.ExitState{Status: "exited", ExitCode: 137}}
 
-	err := waitHealthy(context.Background(), p, "sbx-x-redis", "", 50*time.Millisecond)
+	err := waitHealthy(context.Background(), p, "sbx-x-redis", "", 50*time.Millisecond, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "state exited, exit code 137") {
 		t.Errorf("want the container's state in the error, got %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAHealthWaitOnAnExitedContainerSaysItExited(t *testing.T) {
 func TestAHealthWaitThatCouldNotAskTheRuntimeSaysSo(t *testing.T) {
 	p := &probeStub{exitErr: errors.New("docker GET /containers/sbx-x-redis/json: context deadline exceeded")}
 
-	err := waitHealthy(context.Background(), p, "sbx-x-redis", "", 50*time.Millisecond)
+	err := waitHealthy(context.Background(), p, "sbx-x-redis", "", 50*time.Millisecond, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Errorf("want the runtime's own error in the message, got %v", err)
 	}
@@ -192,7 +192,7 @@ func (s *flappingStub) List(ctx context.Context, sandbox string) ([]provider.Uni
 func TestWaitRunningDoesNotPassAContainerThatExitsOnStartup(t *testing.T) {
 	p := &flappingStub{exitedStub: exitedStub{port: listening(t)}}
 
-	err := waitRunning(context.Background(), p, "x", time.Now().Add(300*time.Millisecond), 100*time.Millisecond)
+	err := waitRunning(context.Background(), p, "x", time.Now().Add(300*time.Millisecond), 100*time.Millisecond, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Errorf("a container that was running for a moment and then exited passed: %v", err)
 	}
@@ -220,7 +220,7 @@ func (s *cyclingStub) List(ctx context.Context, sandbox string) ([]provider.Unit
 func TestWaitRunningDoesNotPassAContainerTheDaemonKeepsRestarting(t *testing.T) {
 	p := &cyclingStub{exitedStub: exitedStub{port: listening(t)}}
 
-	err := waitRunning(context.Background(), p, "x", time.Now().Add(time.Second), 250*time.Millisecond)
+	err := waitRunning(context.Background(), p, "x", time.Now().Add(time.Second), 250*time.Millisecond, time.Now())
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Errorf("a container that keeps exiting passed because two looks both caught it up: %v", err)
 	}
