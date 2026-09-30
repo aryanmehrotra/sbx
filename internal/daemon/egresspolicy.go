@@ -12,11 +12,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/provider"
+	"github.com/aryanmehrotra/sbx/internal/slotlock"
 )
 
 // Changing a sandbox's egress policy while it runs.
@@ -51,8 +51,6 @@ type EgressControl struct {
 	// hook, when set, is called at named points inside a write or a Sync, so a test can run
 	// another writer exactly there. Nil outside tests.
 	hook func(point string)
-
-	mu sync.Mutex
 }
 
 // NewEgressControl returns the API over p's sandboxes. dir is where live policies are kept on the
@@ -154,13 +152,16 @@ func (c *EgressControl) SetDefault(ctx context.Context, sandbox, service, action
 
 // ResetPolicy returns the sandbox to the policy its spec declared and forgets the live one.
 func (c *EgressControl) ResetPolicy(ctx context.Context, sandbox, service string) (egress.Status, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	f, err := c.locate(ctx, sandbox, service, true)
 	if err != nil {
 		return egress.Status{}, err
 	}
+
+	release, err := c.lock(ctx, sandbox, writeLockWait)
+	if err != nil {
+		return egress.Status{}, err
+	}
+	defer release()
 
 	if err := c.push(ctx, f, f.Declared, ""); err != nil {
 		return egress.Status{}, err
@@ -176,22 +177,30 @@ func (c *EgressControl) ResetPolicy(ctx context.Context, sandbox, service string
 
 // Forget drops the saved live policy of a sandbox that has been removed, so a new sandbox that
 // reuses the name starts from its own spec rather than inheriting a stranger's exceptions.
-func (c *EgressControl) Forget(sandbox string) error { return c.forget(sandbox) }
+func (c *EgressControl) Forget(sandbox string) error {
+	release, err := c.lock(context.Background(), sandbox, writeLockWait)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	return c.forget(sandbox)
+}
 
 // Sync pushes a sandbox's saved live policy to its container filter if the filter is enforcing
 // something else - a container that was replaced, or one that restarted from an older copy. A
 // sandbox with no saved policy is left alone: its filter is already running what it was created
 // with.
+//
+// It runs on every discovery tick, so it never waits long for the lock: a writer holding it
+// past syncLockWait is left to finish, and the sandbox is synced on the next tick. The error
+// then satisfies errors.Is(err, errSyncDeferred).
 func (c *EgressControl) Sync(ctx context.Context, sandbox string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	saved, ok := c.load(sandbox)
-	if !ok {
+	// A first look without the lock, so a sandbox nobody has changed live costs no lock and no
+	// provider call. It decides nothing else: the copy that is pushed is re-read under the lock.
+	if _, ok := c.load(sandbox); !ok {
 		return nil
 	}
-
-	c.at("sync-loaded")
 
 	f, err := c.locate(ctx, sandbox, "", false)
 	if err != nil {
@@ -201,6 +210,24 @@ func (c *EgressControl) Sync(ctx context.Context, sandbox string) error {
 	if f.Control == "" {
 		return nil // hosted by the daemon, which reads the saved copy itself
 	}
+
+	release, err := c.lock(ctx, sandbox, syncLockWait)
+	if err != nil {
+		var held *slotlock.HeldError
+		if errors.As(err, &held) {
+			return fmt.Errorf("%w: %w", errSyncDeferred, err)
+		}
+
+		return err
+	}
+	defer release()
+
+	saved, ok := c.load(sandbox)
+	if !ok {
+		return nil // reset or forgotten while this waited
+	}
+
+	c.at("sync-loaded")
 
 	if saved.Declared != f.Declared.Hash() {
 		// Made against a different declaration - the spec changed and the sandbox was
@@ -225,13 +252,16 @@ func (c *EgressControl) Sync(ctx context.Context, sandbox string) error {
 func (c *EgressControl) mutate(ctx context.Context, sandbox, service string,
 	next func(egress.Policy) (egress.Policy, error),
 ) (egress.Status, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	f, err := c.locate(ctx, sandbox, service, true)
 	if err != nil {
 		return egress.Status{}, err
 	}
+
+	release, err := c.lock(ctx, sandbox, writeLockWait)
+	if err != nil {
+		return egress.Status{}, err
+	}
+	defer release()
 
 	for range 3 {
 		cur, etag, err := c.current(ctx, f)
@@ -265,6 +295,49 @@ func (c *EgressControl) mutate(ctx context.Context, sandbox, service string,
 
 	return egress.Status{}, fmt.Errorf("the policy of %q kept changing underneath this update; "+
 		"try again", sandbox)
+}
+
+// The lock between everything that writes a sandbox's policy - the filter's copy or the saved
+// one - and the daemon's Sync, which is the other writer.
+//
+// A mutex is not enough, because the writers are in different processes: `sbx egress` runs
+// mutate in the CLI, and the daemon runs Sync on every tick. Unserialised, Sync can run between
+// the CLI's push and its save - it loads the old saved copy, reads the new policy in force with a
+// fresh tag, and pushes the old one back - or load the old copy before the CLI saves and read
+// what is in force after it pushes, which reordering the CLI's push and save does not close.
+// Either way the filter enforces the policy the user just replaced, until the next tick. So the
+// lock is held across the whole read-push-save of a write and the whole load-read-push of a Sync.
+//
+// It is a slotlock file beside the saved policy: pid and start time, cleared when its holder is
+// gone, so a writer killed mid-write does not wedge the sandbox, and the same on all eight
+// platforms without build tags.
+var (
+	// writeLockWait bounds a writer's wait. The longest a live holder keeps the lock is a
+	// mutate's three attempts of a GET and a PUT, each bounded by the client's 5s timeout, so
+	// 30s; a writer outwaits that rather than failing on a holder that is making progress.
+	writeLockWait = 35 * time.Second
+
+	// syncLockWait bounds the daemon tick's wait. A healthy write holds the lock for two
+	// loopback round trips and a rename, milliseconds; a second is room for a slow one, and far
+	// under a tick (--refresh, 15s by default). Past it the sandbox waits for the next tick.
+	syncLockWait = time.Second
+)
+
+// errSyncDeferred is a Sync that found another writer holding the lock and left the sandbox for
+// the next tick. That writer pushes and saves one policy, so nothing is lost by not syncing now.
+var errSyncDeferred = errors.New("egress policy sync deferred to the next tick")
+
+func (c *EgressControl) lock(ctx context.Context, sandbox string, wait time.Duration) (func(), error) {
+	p, err := c.path(sandbox)
+	if err != nil {
+		return nil, err
+	}
+
+	// 0700 as save makes it: created here first, slotlock would make it 0755.
+	_ = os.MkdirAll(c.dir, 0o700)
+
+	return slotlock.AcquireFile(ctx, fmt.Sprintf("the egress policy of %q", sandbox),
+		strings.TrimSuffix(p, ".json")+".lock", wait)
 }
 
 func (c *EgressControl) locate(ctx context.Context, sandbox, service string, write bool) (provider.EgressFilter, error) {
