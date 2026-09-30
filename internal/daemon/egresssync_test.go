@@ -73,6 +73,12 @@ func TestSyncBetweenACLIPushAndItsSaveDoesNotRevertTheWrite(t *testing.T) {
 	cli, daemon, f := twoWriters(t)
 	ctx := context.Background()
 
+	// Sync must outwait the CLI's write, which is held here for during's one second. At the
+	// production second the two timeouts tie, and under load Sync defers to the next tick - correct,
+	// but then this test never sees Sync run after the write, which is what it is here to check.
+	defer func(w time.Duration) { syncLockWait = w }(syncLockWait)
+	syncLockWait = 10 * time.Second
+
 	var wait func()
 
 	cli.hook = func(point string) {
