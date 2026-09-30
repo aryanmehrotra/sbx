@@ -87,3 +87,13 @@ func TestACreateInterruptedBeforeAnythingExistedSaysSo(t *testing.T) {
 		t.Errorf("want it to say nothing was created, not advise removing:\n%s", out)
 	}
 }
+
+// The signal is named as a shell names it. os.Signal's own String is "interrupt" for SIGINT, and
+// "stopped waiting for health: interrupted by interrupt" is what a Ctrl-C used to print.
+func TestInterruptedNamesTheSignal(t *testing.T) {
+	for sig, want := range map[os.Signal]string{syscall.SIGINT: "interrupted by SIGINT", syscall.SIGTERM: "interrupted by SIGTERM"} {
+		if got := (&Interrupted{Signal: sig}).Error(); got != want {
+			t.Errorf("%v: got %q, want %q", sig, got, want)
+		}
+	}
+}
