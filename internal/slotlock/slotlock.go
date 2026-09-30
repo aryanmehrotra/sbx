@@ -170,6 +170,29 @@ func ClaimEphemeral(sandbox string) (func(), error) {
 	return take(context.Background(), nameLock(sandbox, 0, kindWith), nil)
 }
 
+// AcquireFile waits up to wait for the lock file at path - the same pid-and-start-time lock as
+// the slot and name locks, with the same stale detection, for a caller that keeps its own lock
+// beside its own state. what names it in a *HeldError. A wait of 0 tries once. The in-process
+// half is keyed by path, so two callers in one process over one path are serialised too.
+func AcquireFile(ctx context.Context, what, path string, wait time.Duration) (func(), error) {
+	return take(ctx, lock{what: what, path: path, local: fileLocal(path), wait: wait}, nil)
+}
+
+var fileLocals = map[string]chan struct{}{} // guarded by namesMu
+
+func fileLocal(path string) chan struct{} {
+	namesMu.Lock()
+	defer namesMu.Unlock()
+
+	c, ok := fileLocals[path]
+	if !ok {
+		c = make(chan struct{}, 1)
+		fileLocals[path] = c
+	}
+
+	return c
+}
+
 func nameLock(sandbox string, wait time.Duration, kind string) lock {
 	path, err := NamePath(sandbox)
 
