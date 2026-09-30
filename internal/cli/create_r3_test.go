@@ -184,7 +184,7 @@ func TestAPartialCreateStillRecordsItsSpec(t *testing.T) {
 		t.Errorf("the placed hook ran %d times, want once, when the first container existed", placed)
 	}
 
-	o, ok := Recall("half")
+	o, ok := Recall(nil, "half")
 	if !ok || o.Spec != path {
 		t.Errorf("Recall(half) = %+v, %v; want the spec %s", o, ok, path)
 	}
@@ -198,7 +198,7 @@ func TestAPartialCreateStillRecordsItsSpec(t *testing.T) {
 			func() { Remember(nil, "none", "", "x.json") })
 	})
 
-	if _, ok := Recall("none"); ok {
+	if _, ok := Recall(nil, "none"); ok {
 		t.Error("a create that left nothing recorded a spec")
 	}
 }

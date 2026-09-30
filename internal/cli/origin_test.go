@@ -17,7 +17,7 @@ func TestRemembersATemplate(t *testing.T) {
 
 	Remember(nil, "branch-x", "postgres", "sandbox.json")
 
-	o, ok := Recall("branch-x")
+	o, ok := Recall(nil, "branch-x")
 	if !ok {
 		t.Fatal("nothing recalled for a sandbox that was just remembered")
 	}
@@ -48,7 +48,7 @@ func TestASpecPathIsRecordedAbsolute(t *testing.T) {
 	t.Chdir(dir)
 	Remember(nil, "branch-y", "", "sandbox.json")
 
-	o, ok := Recall("branch-y")
+	o, ok := Recall(nil, "branch-y")
 	if !ok {
 		t.Fatal("nothing recalled")
 	}
@@ -73,7 +73,7 @@ func TestAVanishedSpecIsNotRecalled(t *testing.T) {
 
 	Remember(nil, "branch-z", "", spec)
 
-	if _, ok := Recall("branch-z"); !ok {
+	if _, ok := Recall(nil, "branch-z"); !ok {
 		t.Fatal("not recalled while the spec still existed")
 	}
 
@@ -81,7 +81,7 @@ func TestAVanishedSpecIsNotRecalled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if o, ok := Recall("branch-z"); ok {
+	if o, ok := Recall(nil, "branch-z"); ok {
 		t.Errorf("recalled a spec that no longer exists: %q", o.Spec)
 	}
 }
@@ -93,7 +93,7 @@ func TestForgetDropsIt(t *testing.T) {
 
 	Forget("gone")
 
-	if _, ok := Recall("gone"); ok {
+	if _, ok := Recall(nil, "gone"); ok {
 		t.Error("still recalled after Forget - the directory would accumulate one file per " +
 			"sandbox anybody ever made")
 	}
@@ -104,7 +104,7 @@ func TestForgetDropsIt(t *testing.T) {
 func TestAnUnknownSandboxRecallsNothing(t *testing.T) {
 	withHome(t)
 
-	if _, ok := Recall("never-created"); ok {
+	if _, ok := Recall(nil, "never-created"); ok {
 		t.Error("recalled something for a sandbox that was never remembered")
 	}
 }
@@ -122,7 +122,7 @@ func TestRememberDoesNotFailOnAnUnwritableHome(t *testing.T) {
 
 	Remember(nil, "x", "postgres", "") // must not panic, and must not be reported as an error
 
-	if _, ok := Recall("x"); ok {
+	if _, ok := Recall(nil, "x"); ok {
 		t.Error("recalled something that could not have been written")
 	}
 }
@@ -136,9 +136,9 @@ func TestASnapshotInheritsItsSandboxsOrigin(t *testing.T) {
 
 	Remember(nil, "main", "postgres", "")
 
-	Inherit("main", "golden") // sbx snapshot main golden
+	Inherit(nil, "main", "golden") // sbx snapshot main golden
 
-	o, ok := Recall("golden")
+	o, ok := Recall(nil, "golden")
 	if !ok {
 		t.Fatal("a snapshot did not inherit its sandbox's origin - `sbx fork golden x` would " +
 			"fall back to ./sandbox.json and fail")
@@ -149,9 +149,9 @@ func TestASnapshotInheritsItsSandboxsOrigin(t *testing.T) {
 	}
 
 	// And the fork inherits it in turn.
-	Inherit("golden", "agent-1")
+	Inherit(nil, "golden", "agent-1")
 
-	if o, ok := Recall("agent-1"); !ok || o.Template != "postgres" {
+	if o, ok := Recall(nil, "agent-1"); !ok || o.Template != "postgres" {
 		t.Errorf("a fork did not inherit the snapshot's origin: %+v ok=%v", o, ok)
 	}
 }
@@ -161,9 +161,9 @@ func TestASnapshotInheritsItsSandboxsOrigin(t *testing.T) {
 func TestInheritingFromNothingRecordsNothing(t *testing.T) {
 	withHome(t)
 
-	Inherit("never-existed", "child")
+	Inherit(nil, "never-existed", "child")
 
-	if _, ok := Recall("child"); ok {
+	if _, ok := Recall(nil, "child"); ok {
 		t.Error("inherited a record from a name that had none")
 	}
 }

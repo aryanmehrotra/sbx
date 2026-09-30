@@ -89,8 +89,17 @@ func rememberAs(sandbox string, o Origin) {
 	_ = os.WriteFile(path, body, 0o644)
 }
 
-// Recall reports what a sandbox was created from, if sbx wrote it down.
-func Recall(sandbox string) (Origin, bool) {
+// Recall reports what a sandbox was created from, if sbx wrote it down on this backend.
+//
+// A record another backend wrote (its Provider is not originKey(p)) is not this sandbox's: a
+// same-named sandbox on kubernetes, firecracker or another docker engine would otherwise hand its
+// spec to this one, and `sbx env` would print that spec's ports. It reads as no record, so the
+// command falls back to --spec as it always did without one.
+//
+// A record naming no provider - every one written before records said - is honoured. It is what
+// every existing sandbox has, and refusing it would make `sbx env` ask for --spec for all of them
+// after an upgrade; on a single-backend machine, which is nearly all of them, it is right.
+func Recall(p provider.Provider, sandbox string) (Origin, bool) {
 	path, err := originPath(sandbox)
 	if err != nil {
 		return Origin{}, false
@@ -107,6 +116,10 @@ func Recall(sandbox string) (Origin, bool) {
 	}
 
 	if o.Template == "" && o.Spec == "" {
+		return Origin{}, false
+	}
+
+	if o.Provider != "" && o.Provider != originKey(p) {
 		return Origin{}, false
 	}
 
@@ -139,11 +152,16 @@ func Forget(sandbox string) {
 //
 // Best-effort, like everything else here: if the source has no record, the destination
 // simply has none either and the caller falls back to --spec.
-func Inherit(from, to string) {
-	o, ok := Recall(from)
+//
+// The copy names this backend - the snapshot was just taken here - including when the source
+// was a legacy record naming none.
+func Inherit(p provider.Provider, from, to string) {
+	o, ok := Recall(p, from)
 	if !ok {
 		return
 	}
+
+	o.Provider = originKey(p)
 
 	rememberAs(to, o)
 }

@@ -73,7 +73,7 @@ func specPath(templateName, path string) (string, error) {
 // The fallback is why `--template postgres` no longer has to be repeated on every command
 // for the same sandbox. It is only ever a default: an explicit --template or --spec wins, and
 // if nothing was recorded this behaves exactly as it always did.
-func specFor(fs *flag.FlagSet, sandbox, templateName, path string) (string, error) {
+func specFor(p provider.Provider, fs *flag.FlagSet, sandbox, templateName, path string) (string, error) {
 	if templateName != "" {
 		return MaterializeTemplate(templateName)
 	}
@@ -86,7 +86,7 @@ func specFor(fs *flag.FlagSet, sandbox, templateName, path string) (string, erro
 		return path, nil
 	}
 
-	if o, ok := cli.Recall(sandbox); ok {
+	if o, ok := cli.Recall(p, sandbox); ok {
 		if o.Template != "" {
 			return MaterializeTemplate(o.Template)
 		}
@@ -358,7 +358,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specFor(fs, positional[0], *tmpl, *spec)
+		path, err := specFor(p, fs, positional[0], *tmpl, *spec)
 		if err != nil {
 			return err
 		}
@@ -477,7 +477,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		cli.Inherit(positional[0], positional[1])
+		cli.Inherit(p, positional[0], positional[1])
 
 		return nil
 
@@ -498,7 +498,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specFor(fs, positional[0], *tmpl, *spec)
+		path, err := specFor(p, fs, positional[0], *tmpl, *spec)
 		if err != nil {
 			return err
 		}
@@ -510,7 +510,7 @@ func dispatch(cmd string, args []string) error {
 		if *tmpl != "" || wasSet(fs, "spec") {
 			cli.Remember(p, positional[1], *tmpl, *spec)
 		} else {
-			cli.Inherit(positional[0], positional[1])
+			cli.Inherit(p, positional[0], positional[1])
 		}
 
 		return nil
@@ -542,7 +542,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specFor(fs, positional[0], *tmpl, *specPath)
+		path, err := specFor(p, fs, positional[0], *tmpl, *specPath)
 		if err != nil {
 			return err
 		}
@@ -821,7 +821,7 @@ func dispatch(cmd string, args []string) error {
 			return err
 		}
 
-		path, err := specFor(fs, positional[0], *templateName, *specPath)
+		path, err := specFor(p, fs, positional[0], *templateName, *specPath)
 		if err != nil {
 			return err
 		}
@@ -1126,7 +1126,7 @@ func runAdd(args []string) error {
 	// declared-but-not-yet-created services, and a sandbox made from --template has no
 	// sandbox.json to find - so without this the reservations are silently not seen, and a
 	// later `--optional` create can collide with the port this just took.
-	specPath, err := specFor(fs, sandbox, "", *spec)
+	specPath, err := specFor(p, fs, sandbox, "", *spec)
 	if err != nil {
 		return err
 	}

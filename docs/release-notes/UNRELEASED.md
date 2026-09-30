@@ -27,3 +27,5 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 ## Changed
 
 ## Fixed
+
+- `sbx env`, `sbx fork` and other commands that look up how a sandbox was created no longer use the spec of a same-named sandbox on another backend (kubernetes, firecracker or another docker engine).
