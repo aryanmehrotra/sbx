@@ -45,7 +45,7 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   ([DECISIONS.md](docs/DECISIONS.md#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does)).
   Use `egress_policy` or `egress_allow` there, where the filter decides per request. A create
   whose service declares deny is refused on such an engine rather than reported applied.
-- A credential vault (`credentialProxy`, a preview feature) holds a per-sandbox certificate
+- A credential vault (`credentialProxy` on the create) holds a per-sandbox certificate
   authority's private key and the plaintext of every credential in the daemon, never on disk, and
   only where `sbx serve` holds the sandbox's filter in its own process. The authority's own
   certificate IS written beside the sandbox's record, and mounted into the sandbox, because it is

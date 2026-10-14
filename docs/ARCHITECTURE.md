@@ -303,8 +303,8 @@ A sandbox's `egress` field is enforced by a component, `internal/egress`.
 An agent that calls an API needs a key, and a key in its environment is a key it can leak. The
 vault keeps the key in the daemon and the sandbox sends an unauthenticated request to a host its
 policy already permits. A binding says which hosts get which credential: hosts, schemes, methods,
-paths, and what to add. It is OpenSandbox's Credential Vault API, a preview feature
-(`SBX_FEATURES=credential-vault`), served beside `/policy` on the same per-sandbox endpoint.
+paths, and what to add. It is OpenSandbox's Credential Vault API,
+served beside `/policy` on the same per-sandbox endpoint.
 
 - The vault is `internal/credvault`, not `internal/egress`, because every file of that package is
   compiled into the container filter. It holds a certificate authority's private key and the

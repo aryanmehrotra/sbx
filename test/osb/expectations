@@ -22,9 +22,9 @@ tier v0.10.0 volume egress_env code_interpreter
 # volume needs no allowance: its three tests t.Skip only when the create fails, and the harness
 # allow-lists their host dir (--osb-host-paths) and lets sbx create the pvc volume.
 tier v0.11.0 isolated_session credential_vault pool
-# credential_vault is served - POST/GET/PATCH/DELETE /credential-vault and the metadata routes,
-# behind SBX_FEATURES=credential-vault - and the filter now terminates a tunnel to a bound host and
-# adds the credential. It still gets no skip allowance and stays out of the CI job
+# credential_vault is served - POST/GET/PATCH/DELETE /credential-vault and the metadata routes, with
+# no feature switch - and the filter terminates a tunnel to a bound host and adds the credential.
+# It still gets no skip allowance and stays out of the CI job
 # (.github/workflows/ci.yaml), because the tier has not been RUN against this: these tests drive a
 # request through the filter and assert the credential arrived at the target host, which also needs
 # the sandbox to trust the authority it was given, and an allowance written before a run would be a

@@ -35,7 +35,7 @@ you started by hand do not.
 
 ### "`<name>` is preview and off by default"
 
-The command is a preview feature (`ssh`, `devcontainer`, `waiting-page`, `credential-vault`). Turn
+The command is a preview feature (`ssh`, `devcontainer`, `waiting-page`). Turn
 it on per command, as in `SBX_FEATURES=ssh sbx ssh <sandbox>`. `sbx features` lists them.
 
 ### `sbx ui` says a newer version is available
@@ -659,11 +659,10 @@ build, then restart `sbx serve`.
 
 ### An API create with `credentialProxy` answers 501
 
-The credential vault is a preview feature. Start the daemon with
-`SBX_FEATURES=credential-vault sbx serve --osb-addr 127.0.0.1:8080`. It is off by default because
-it has not been measured against the upstream conformance tier yet, not because it does nothing:
-the filter terminates a tunnel to a bound host and adds the credential
-([ROADMAP.md](ROADMAP.md#not-built-yet-in-the-opensandbox-api)).
+This daemon has no credential vault to give the sandbox. There is no feature switch to turn on -
+`credentialProxy` on the create is the only opt-in, and it needs a daemon that holds the sandbox's
+egress filter in its own process. The two entries below are the usual reasons; `sbx doctor` reports
+the host's answer as `hosted egress filter`.
 
 ### An API create with `credentialProxy` answers 400 about this machine
 

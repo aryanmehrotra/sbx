@@ -26,7 +26,7 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Added
 
-- `credentialProxy` and the OpenSandbox Credential Vault API, as a preview feature: `SBX_FEATURES=credential-vault`. An agent can hold a placeholder, or nothing, and the filter adds the real credential on the way out.
+- `credentialProxy` and the OpenSandbox Credential Vault API. An agent can hold a placeholder, or nothing, and the filter adds the real credential on the way out. No feature switch: the field on the create is the opt-in.
 - `SBX_CREDENTIAL_VAULT_CA` names the authority a `credentialProxy` sandbox is given at `/etc/sbx/credential-vault-ca.pem`, for an entrypoint that adds it to the image's own trust store.
 - `credentialProxy` on a host that cannot hold a hosted egress filter is refused with a 400 before any sandbox is made.
 - `sbx doctor` reports `hosted egress filter`: whether `sbx serve` holds a sandbox's filter itself here, which is what `credentialProxy` needs.

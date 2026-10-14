@@ -67,7 +67,7 @@ approximated ([why](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-p
 | Refused feature | What it is | Size |
 |---|---|:---:|
 | Isolated sessions (`/v1/isolated/*`) | A command session with its own PID namespace, `/tmp` and overlay | not estimated |
-| `credentialProxy`, credential vault | Built, behind `SBX_FEATURES=credential-vault`, on a sandbox whose filter the daemon hosts itself: a tunnel to a bound host is terminated with the sandbox's own authority and the credential is added on the way out. Not yet measured against the upstream conformance tier, and a client that reads the trust store before the sandbox adds the authority to it needs `SBX_CREDENTIAL_VAULT_CA` | shipped; conformance unmeasured |
+| `credentialProxy`, credential vault | Built and on, no feature switch, on a sandbox whose filter the daemon hosts itself: a tunnel to a bound host is terminated with the sandbox's own authority and the credential is added on the way out. `credentialProxy` on the create is the opt-in. Not yet measured against the upstream conformance tier, and a client that reads the trust store before the sandbox adds the authority to it needs `SBX_CREDENTIAL_VAULT_CA` | shipped; conformance unmeasured |
 | Server-side pools (`extensions.poolRef`) | A pool the server owns, named at create. `--osb-pool` serves unnamed creates | not estimated |
 | `secureAccess`, signed endpoints (`?expires=`) | Endpoints that need a signature or token | not estimated |
 | Server-proxied endpoints (`use_server_proxy=true`) | The command server reached through the lifecycle server | not estimated |

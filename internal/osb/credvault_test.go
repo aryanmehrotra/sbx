@@ -51,11 +51,9 @@ func decorate(p *fakeDocker, ctx context.Context, sandbox, stat string) ([]provi
 }
 
 // withVault is a server that can serve the Credential Vault API, on a host whose filter the daemon
-// hosts, with the feature switched on.
+// hosts. No feature switch: the opt-in is credentialProxy on the create.
 func withVault(t *testing.T, reg *credvault.Registry) option {
 	t.Helper()
-	t.Setenv("SBX_FEATURES", featureCredentialVault)
-
 	return func(h *harness, o *Options) {
 		o.Provider = hostedFilter{h.p}
 		o.Credentials = reg
@@ -74,26 +72,28 @@ func credentialProxyCreate() map[string]any {
 	return body
 }
 
-// The gate is the default answer, and the default answer is the one docs/ROADMAP.md describes: the
-// vault records credentials and the filter does not add them to requests yet, so a sandbox that
-// got one silently would be a sandbox whose caller believes something that is not true.
-func TestCredentialProxyIsRefusedUntilTheFeatureIsOn(t *testing.T) {
+// credentialProxy needs no feature switch. It sat behind SBX_FEATURES=credential-vault while the
+// vault recorded bindings and the filter added nothing to a request; the filter adds the credential
+// now, so a finished feature must not still answer 501 until an operator finds an environment
+// variable. The opt-in is the field on the create, per sandbox.
+//
+// SBX_FEATURES is emptied deliberately: the point is that nothing in the environment is required.
+func TestCredentialProxyNeedsNoFeatureSwitch(t *testing.T) {
 	t.Setenv("SBX_FEATURES", "")
 
-	h := newHarness(t)
+	h := newHarness(t, withVault(t, credvault.NewRegistry()))
 
-	var out map[string]any
+	var sb sandboxJSON
 
-	resp := h.do("POST", "/v1/sandboxes", credentialProxyCreate(), &out)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("credentialProxy with the gate off = %d, want 501", resp.StatusCode)
+	resp := h.do("POST", "/v1/sandboxes", credentialProxyCreate(), &sb)
+	if resp.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("credentialProxy with no SBX_FEATURES = %d %s, want 202", resp.StatusCode, raw)
 	}
 
-	msg, _ := json.Marshal(out)
-	for _, want := range []string{"credential-vault", "SBX_FEATURES", "ROADMAP"} {
-		if !strings.Contains(string(msg), want) {
-			t.Errorf("the refusal does not say %q: %s", want, msg)
-		}
+	rec, ok := h.srv.snapshot(sb.ID)
+	if !ok || !rec.CredentialProxy {
+		t.Fatal("the sandbox was accepted but not recorded as having a credential proxy")
 	}
 }
 
@@ -130,8 +130,6 @@ func TestCredentialProxyOffIsAccepted(t *testing.T) {
 // feature must not have. Each of these is refused with the field named, rather than accepted and
 // quietly ignored.
 func TestACredentialProxyThisServerCannotReadIsRefused(t *testing.T) {
-	t.Setenv("SBX_FEATURES", featureCredentialVault)
-
 	h := newHarness(t)
 
 	for name, raw := range map[string]string{
@@ -184,8 +182,6 @@ func TestCredentialProxyNeedsANetworkPolicy(t *testing.T) {
 // has to create and then poll to be told it is Failed. The question is the provider's and it needs
 // no sandbox, so it is asked while the request can still be refused.
 func TestCredentialProxyIsRefusedBeforeTheSandboxIsCreated(t *testing.T) {
-	t.Setenv("SBX_FEATURES", featureCredentialVault)
-
 	h := newHarness(t, func(h *harness, o *Options) {
 		o.Provider = vmBackedDocker{containerFilter{h.p}}
 		o.Credentials = credvault.NewRegistry()
@@ -223,8 +219,6 @@ func TestCredentialProxyIsRefusedBeforeTheSandboxIsCreated(t *testing.T) {
 // Running with a credential proxy it can never have. This is the structural half - the provider
 // here cannot answer before a sandbox exists, so the refusal reads its report after one does.
 func TestCredentialProxyIsRefusedWhereTheFilterIsAContainer(t *testing.T) {
-	t.Setenv("SBX_FEATURES", featureCredentialVault)
-
 	h := newHarness(t, func(h *harness, o *Options) {
 		o.Provider = containerFilter{h.p}
 		o.Credentials = credvault.NewRegistry()
@@ -423,8 +417,6 @@ func TestAVaultIsRefusedForASandboxThatDidNotAskForOne(t *testing.T) {
 // A server whose daemon does not host egress filters cannot hold a key, and says so at both doors:
 // the create, and the vault routes.
 func TestWithoutARegistryTheVaultIsRefusedEverywhere(t *testing.T) {
-	t.Setenv("SBX_FEATURES", featureCredentialVault)
-
 	h := newHarness(t, func(h *harness, o *Options) { o.Provider = hostedFilter{h.p}; o.Key = "k" })
 	key := []string{"OPEN-SANDBOX-API-KEY", "k"}
 

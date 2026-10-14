@@ -17,7 +17,6 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execdctl"
-	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -307,8 +306,6 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 			"machine and omit them)", unbuilt)
 	case req.SecureAccess:
 		return later("secureAccess", unbuilt)
-	case credentialProxy && !features.Enabled(featureCredentialVault):
-		return later("credentialProxy and the credential vault", credentialVaultGate)
 	case present(req.Lifecycle):
 		return later("lifecycle hooks", unbuilt)
 	case req.Extensions["access.renew.extend.seconds"] != "":

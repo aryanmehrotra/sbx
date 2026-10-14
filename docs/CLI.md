@@ -104,7 +104,6 @@ A preview feature is off until named in `SBX_FEATURES` (comma-separated). `sbx f
 | `ssh` | `sbx ssh` |
 | `devcontainer` | `sbx init --from-devcontainer` |
 | `waiting-page` | a "waking up" page for a browser opening a sleeping `sbx url` link |
-| `credential-vault` | `credentialProxy` and the OpenSandbox Credential Vault API on a sandbox the daemon filters itself |
 
 ## sbx serve
 

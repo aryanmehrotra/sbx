@@ -30,17 +30,15 @@ import (
 	"github.com/aryanmehrotra/sbx/internal/credvault"
 )
 
-const (
-	// featureCredentialVault gates this whole surface. It is off by default because the vault
-	// records credentials and bindings and the filter does not yet add them to requests: a
-	// sandbox with a vault still needs its own credentials, and the honest default is the 501
-	// that says so (docs/ROADMAP.md).
-	featureCredentialVault = "credential-vault"
-
-	credentialVaultGate = "it is a preview feature - turn it on with " +
-		"SBX_FEATURES=credential-vault on `sbx serve`, and read docs/ROADMAP.md for what is " +
-		"still missing from it"
-)
+// This surface sat behind SBX_FEATURES=credential-vault while the vault recorded bindings and the
+// filter added nothing to a request. The filter adds the credential now, so the switch is gone.
+//
+// Nothing is turned on for anyone by removing it. The opt-in is `credentialProxy` on the create,
+// per sandbox: a sandbox that does not ask for one has no vault, is never decrypted, and is
+// unaffected either way. A daemon-wide switch on top of that only meant a finished feature
+// answered 501 until an operator found an environment variable. The two refusals above are
+// unchanged, and they are the ones that matter: no vault without credentialProxy, and no vault at
+// all where the filter runs as a container.
 
 // credentialVaultRoutes is the sidecar-shaped path these routes live on, for the authentication
 // check in authed: the per-sandbox egress credential is what the SDK sends here, not the API key.
