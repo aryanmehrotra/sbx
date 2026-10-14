@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/credvault"
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -111,6 +112,12 @@ type Options struct {
 	// EgressStatus maps an Egress error to its HTTP status (daemon.EgressHTTPStatus).
 	EgressStatus func(error) int
 
+	// Credentials is the credential vaults the daemon holds for the filters it hosts itself.
+	// Nil means this server cannot serve the Credential Vault API, which is the honest answer on
+	// a host where the filter runs as a container: the key would be in the wrong process
+	// (internal/credvault).
+	Credentials *credvault.Registry
+
 	// HostPaths are the roots a `host` volume may bind from (--osb-host-paths). Empty refuses
 	// every host volume: a bind mount is the sandbox writing to this machine's disk, and which
 	// part of it is the operator's call, never a default.
@@ -168,6 +175,11 @@ type Server struct {
 
 	egress       EgressAPI
 	egressStatus func(error) int
+
+	// credentials is the daemon's credential vaults, or nil for a server that has none - which
+	// is every server whose daemon does not host egress filters itself. Nil refuses
+	// credentialProxy at create and the /credential-vault routes with 412 (credvault.go).
+	credentials *credvault.Registry
 
 	// trace times each create phase when SBX_OSB_TRACE is set.
 	trace *tracer
@@ -289,6 +301,7 @@ func New(o Options) (*Server, error) {
 	}
 
 	s.egress, s.egressStatus = o.Egress, o.EgressStatus
+	s.credentials = o.Credentials
 	if s.egressStatus == nil {
 		s.egressStatus = func(error) int { return http.StatusInternalServerError }
 	}
@@ -515,6 +528,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
 	mux.HandleFunc("DELETE /v1/sandboxes/{id}/networkpolicy", s.networkPolicy)
 	mux.HandleFunc("/v1/sandboxes/{id}/egress/policy", s.sidecarPolicy)
+
+	mux.HandleFunc("/v1/sandboxes/{id}/egress/credential-vault", s.credentialVault)
+	mux.HandleFunc("GET /v1/sandboxes/{id}/egress/credential-vault/credentials", s.credentialVaultCredentials)
+	mux.HandleFunc("GET /v1/sandboxes/{id}/egress/credential-vault/credentials/{name}", s.credentialVaultCredentials)
+	mux.HandleFunc("GET /v1/sandboxes/{id}/egress/credential-vault/bindings", s.credentialVaultBindings)
+	mux.HandleFunc("GET /v1/sandboxes/{id}/egress/credential-vault/bindings/{name}", s.credentialVaultBindings)
 
 	mux.HandleFunc("POST /v1/sandboxes/{id}/snapshots", s.createSnapshot)
 	mux.HandleFunc("GET /v1/snapshots", s.listSnapshots)

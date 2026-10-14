@@ -71,6 +71,15 @@ type Filter struct {
 	// says. Nil outside the container filter.
 	SelfNames []string
 
+	// Credentials is the sandbox's credential vault, or nil for a filter that carries bytes and
+	// never looks inside them - which is every filter until one is given a vault.
+	//
+	// Nil is not a degraded mode: tunnel and forward do not consult this field at all, so a nil
+	// vault is the splice and the relay exactly as they have always been. What a non-nil vault
+	// buys is the one question the data path has to ask before it can terminate TLS for a host,
+	// and the answer has to come from outside this package - see CredentialSource.
+	Credentials CredentialSource
+
 	pol atomic.Pointer[compiled]
 
 	// ports are the ports this filter carries beyond DefaultPorts (80 and 443), each for one
@@ -81,6 +90,30 @@ type Filter struct {
 
 	once      sync.Once
 	transport *http.Transport
+}
+
+// CredentialSource is a sandbox's credential vault, as the data path sees it: one question, asked
+// per destination, answered without the filter holding a secret or a key.
+//
+// It is an interface and not a type of this package because of what this package IS. Every file
+// here is embedded verbatim into the container filter's build context (context.go), so anything
+// added here is compiled into a program that runs inside a container on the sandbox's own bridge.
+// A vault put here would put the per-sandbox certificate authority's private key and every real
+// secret in that container, reachable by anything that can exec into it, and carry them over
+// control.go's HTTP endpoint, which has no redaction. The vault lives in internal/credvault
+// instead, and reaches the filter through this field, so the container build keeps a nil one and
+// the key stays in the process that minted it.
+//
+// The shape is the shape Refuse and OnActivity already have: a small behaviour the daemon sets
+// from outside after NewPolicy, never a constructor argument, because the filter is also built by
+// New and by the container's own main with nothing to set.
+type CredentialSource interface {
+	// Bound reports whether a credential binding covers host:port - that is, whether this
+	// destination is one the filter must look inside rather than splice.
+	//
+	// Host is the name the client asked for, not an address: a binding names an FQDN, and the
+	// address it resolves to is the policy's business, not the vault's.
+	Bound(host, port string) bool
 }
 
 // New builds a filter from egress_allow entries, each a host or host:port. A host permits itself

@@ -35,8 +35,8 @@ you started by hand do not.
 
 ### "`<name>` is preview and off by default"
 
-The command is a preview feature (`ssh`, `devcontainer`, `waiting-page`). Turn it on per command,
-as in `SBX_FEATURES=ssh sbx ssh <sandbox>`. `sbx features` lists them.
+The command is a preview feature (`ssh`, `devcontainer`, `waiting-page`, `credential-vault`). Turn
+it on per command, as in `SBX_FEATURES=ssh sbx ssh <sandbox>`. `sbx features` lists them.
 
 ### `sbx ui` says a newer version is available
 
@@ -474,6 +474,69 @@ filter is replaced with the new build, keeping live changes.
 Only a sandbox created with `egress_policy`, `egress_allow` or `"egress": "allow"` has a filter.
 Add `"egress": "allow"` to the spec, recreate, then narrow it live.
 
+### The filter will not start: "user specified IP address is supported only when connecting to networks with user configured subnets"
+
+**Symptom:** a filtered create on Docker Desktop or colima fails and the filter container never
+runs, so the sandbox has no way out at all.
+
+**Cause:** the filter holds a fixed address on the sandbox's bridge, because a service is told it
+once in `/etc/hosts` when it is created. From Engine 28 docker refuses a fixed address on a bridge
+whose subnet docker chose for itself.
+
+**Fix:** fixed after v0.16.1 - sbx addresses each sandbox's bridge itself, a `/24` of
+`198.18.0.0/15`. A bridge an older sbx left is re-addressed by the next create, which says
+`replacing the egress bridge for <sandbox>`. A bridge that still has that sandbox's services on it
+is left alone, because re-creating a network strands a stopped container on the old one, and the
+filter's error then names `sbx rm <sandbox>`: remove the sandbox and create it again.
+`docker network inspect sbx-noegress-<sandbox> --format '{{(index .IPAM.Config 0).Subnet}}'` shows
+which subnet a bridge has.
+
+### A filtered create fails: its "no-NAT bridge could not be created"
+
+**Symptom:** `service declared egress deny and its no-NAT bridge could not be created`, usually
+with docker's `Pool overlaps with other one on this address space`.
+
+**Cause:** sbx asks for the `/24` of `198.18.0.0/15` that the sandbox's name picks, and the next
+few after it. Every one it tried is held by another network.
+
+**Fix:** `docker network ls --filter name=sbx-noegress-` lists the ones sbx holds, and
+`docker network rm <name>` frees one no sandbox still uses. A network of your own inside
+`198.18.0.0/15` does the same thing, so move or remove that instead.
+
+### A create that failed left an `sbx-egressfilter-` container or an `sbx-noegress-` network
+
+**Symptom:** after a create that failed, `docker ps -a` shows `sbx-egressfilter-<sandbox>` running
+with no service container beside it, and `docker network ls` shows its bridge.
+
+**Cause:** a sandbox with no service container has no units, and both `sbx rm` and `sbx gc` went by
+units, so neither could see either artifact.
+
+**Fix:** fixed after v0.16.1. A create that returns an error takes back the filter and the bridge
+it made. A create that was killed runs nothing, and `sbx gc` lists both fifteen minutes on;
+`sbx gc --force` removes them. The wait is deliberate, so that gc cannot take the filter of a
+create that is still building its image. `sbx rm` of a name with no services asks the backend to
+reclaim them too, and still reports that there was no sandbox - having cleaned up leftovers is not
+a sandbox destroyed.
+
+### A create is refused: "declares egress deny, which this machine's docker cannot enforce"
+
+**Symptom:** `service "app" declares egress deny, which this machine's docker cannot enforce: the
+bridge's gateway 198.18.x.1 is not an address it holds`. Before this was refused, the symptom was
+worse and silent: the service came up, reported healthy, and reached the internet anyway - `ping
+8.8.8.8` from inside it answered, and so did an HTTP request to an address no rule allowed.
+
+**Cause:** `egress: "deny"` is a bridge with IP masquerade off, and docker does apply that. On an
+engine that runs in a VM the NAT belongs to the VM boundary, outside the VM's iptables, so no
+option docker accepts turns it off. Measured on Docker Desktop 28.5.1
+([DECISIONS.md](DECISIONS.md#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does)).
+
+**Fix:** use `egress_policy` or `egress_allow` there, where sbx's filter decides per request and a
+denied host gets 403. `egress: "deny"` keeps a sandbox off every host address and is a route-level
+control on native Linux docker and on `--provider firecracker`, and it is refused - rather than
+reported applied - on an engine whose bridge gateway this machine does not hold. Check which kind
+you have with `docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'` and
+`ifconfig | grep` that address; `sbx doctor` reports the same boundary as `hosted egress filter`.
+
 ## MicroVMs
 
 For `--provider firecracker` ([GUIDES.md](GUIDES.md#stronger-isolation-with-microvms)).
@@ -593,6 +656,57 @@ ready timeout. The log says `building the sandbox agent` and then `built the san
 If there is nothing to build from, the start log has a WARN, `the OpenSandbox API cannot find the
 sandbox agent`, with the reason. Set `SBX_EXECD_BINARY` or `SBX_SOURCE_DIR`, or run a release
 build, then restart `sbx serve`.
+
+### An API create with `credentialProxy` answers 501
+
+The credential vault is a preview feature. Start the daemon with
+`SBX_FEATURES=credential-vault sbx serve --osb-addr 127.0.0.1:8080`. It is off by default because
+the vault records the credentials and the filter does not yet add them to requests, so a sandbox
+with a vault still needs its own credentials ([ROADMAP.md](ROADMAP.md#not-built-yet-in-the-opensandbox-api)).
+
+### An API create with `credentialProxy` answers 400 about this machine
+
+`sbx serve` cannot hold a sandbox's egress filter in its own process here, so a vault would keep
+the private key and every secret in a container on the sandbox's own bridge. That is what a
+VM-backed docker looks like: colima and Docker Desktop keep docker's bridges inside the VM while
+`sbx serve` runs outside it.
+
+The message names the bridge gateway it probed, so check that address with
+`ifconfig | grep 172.17.0.1`. `sbx doctor` gives the same answer as `hosted egress filter`. Use
+credentialProxy on a host whose docker is native, or create the sandbox without it.
+
+### An API create with `credentialProxy` is `Failed` with `credential_proxy_unavailable`
+
+The same refusal as the one above, read off the sandbox the backend created rather than predicted
+before it existed. A backend that settles the form of filter only while creating one answers here
+instead of at the create. The cause and the fix are the same.
+
+This message names the sandbox's own bridge gateway, not docker's, so the address to check is in
+`198.18.0.0/15`: `ifconfig | grep 198.18`.
+
+### An API create with `credentialProxy` answers 400 about `networkPolicy`
+
+The credential is added by the egress filter, and a sandbox created without a policy has no
+filter. Send one with the create:
+
+```json
+{"credentialProxy": {"enabled": true},
+ "networkPolicy": {"defaultAction": "deny",
+                   "egress": [{"action": "allow", "target": "api.example.com"}]}}
+```
+
+### `/credential-vault` answers 412
+
+The sandbox exists and the request is well formed, and something it needs is not there. The
+message says which: the sandbox was created without `credentialProxy`, its filter is a container,
+it has no filter at all, or `sbx serve` was restarted. A vault is held in memory and does not
+survive a restart, which is also what stops a private key reaching a disk. Send the `POST` again.
+
+### `/credential-vault` answers 400 about a host the policy denies
+
+A binding may only name a host the sandbox can reach, because the filter would answer the request
+with 403 before any credential was added. Allow the host first with `PATCH
+/v1/sandboxes/{id}/networkpolicy`, or drop it from the binding.
 
 ## Remote deployments
 

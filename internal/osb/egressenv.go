@@ -68,11 +68,61 @@ func splitEgressEnv(env map[string]string) (sandbox, egressEnv map[string]string
 	return sandbox, egressEnv, nil
 }
 
-// credentialProxyEnabled reads {"enabled": true} out of the raw credentialProxy field.
+// credentialProxyEnabled reports whether the create asked for a credential proxy. A field that
+// does not say is off, which is what the schema's default says it is; a field that cannot be read
+// is a refusal, from credentialProxyRequest.
 func credentialProxyEnabled(raw json.RawMessage) bool {
-	var cp struct {
-		Enabled bool `json:"enabled"`
+	on, _ := credentialProxyRequest(raw)
+
+	return on
+}
+
+// credentialProxyRequest reads the create request's credentialProxy, or says why it cannot.
+//
+//	absent, null, {}, {"enabled": false}   off
+//	{"enabled": true}                      on
+//	anything else                          refused
+//
+// The last line is the point. CredentialProxyConfig is `additionalProperties: false` with
+// `enabled` defaulting to false (specs/sandbox-lifecycle.yml at the pinned commit), so a
+// misspelled field or a quoted boolean is a request the reference server rejects - and reading it
+// as "off" instead would hand somebody who wrote {"enabled": "true"} a sandbox with no credential
+// protection and a 202 saying it worked. A security feature may be off, but not by accident.
+//
+// An empty object is NOT refused, however much it looks like one: the schema gives `enabled` a
+// default of false, so {} is a legal way to say off and upstream's own server reads it that way
+// (server/opensandbox_server/services/validators.py at the pinned commit). Refusing it would
+// refuse a request that works against the reference implementation.
+func credentialProxyRequest(raw json.RawMessage) (enabled bool, err error) {
+	t := strings.TrimSpace(string(raw))
+	if t == "" || t == "null" {
+		return false, nil
 	}
 
-	return present(raw) && json.Unmarshal(raw, &cp) == nil && cp.Enabled
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false, fmt.Errorf("credentialProxy is an object with one field, enabled: "+
+			"{\"credentialProxy\": {\"enabled\": true}}, not %s", t)
+	}
+
+	for k := range fields {
+		if k != "enabled" {
+			return false, fmt.Errorf("credentialProxy has no %q field - its only field is "+
+				"enabled, and a sandbox created with a field this server ignores would have no "+
+				"credential protection and no error saying so. Send "+
+				"{\"credentialProxy\": {\"enabled\": true}}", k)
+		}
+	}
+
+	got, ok := fields["enabled"]
+	if !ok {
+		return false, nil
+	}
+
+	if err := json.Unmarshal(got, &enabled); err != nil {
+		return false, fmt.Errorf("credentialProxy.enabled is %s, which is not true or false: a "+
+			"quoted boolean would be read as off, so it is refused instead", got)
+	}
+
+	return enabled, nil
 }

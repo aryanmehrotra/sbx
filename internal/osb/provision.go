@@ -17,6 +17,7 @@ import (
 
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/execdctl"
+	"github.com/aryanmehrotra/sbx/internal/features"
 	"github.com/aryanmehrotra/sbx/internal/history"
 	"github.com/aryanmehrotra/sbx/internal/logs"
 	"github.com/aryanmehrotra/sbx/internal/provider"
@@ -44,6 +45,10 @@ type plan struct {
 	// egressEnv are the OPENSANDBOX_EGRESS_* the caller set for the sidecar: accepted and
 	// recorded, not applied - see egressenv.go.
 	egressEnv map[string]string
+
+	// credentialProxy is credentialProxy.enabled: this sandbox may hold a credential vault, and
+	// its filter has to be one this daemon hosts (credvault.go).
+	credentialProxy bool
 
 	// volumes are the caller's `volumes`, already allowed; claims are the pvc ones, which the
 	// create call makes exist before answering.
@@ -187,9 +192,10 @@ func (s *Server) answerCreate(w http.ResponseWriter, r *http.Request, accepted r
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
-// validate turns a request into a plan, or into the refusal the spec prescribes. Everything
-// that can be known without docker is known here, so a bad request is a 400 now rather than a
-// Failed sandbox a poll later.
+// validate turns a request into a plan, or into the refusal the spec prescribes. Everything that
+// can be known before anything is created is known here, so a bad request is a 400 now rather
+// than a Failed sandbox a poll later. That includes the one host fact a provider can answer
+// without a sandbox (credentialProxy, below); it creates nothing either way.
 func (s *Server) validate(req createRequest) (plan, int, string, string) {
 	bad := func(msg string, args ...any) (plan, int, string, string) {
 		return plan{}, http.StatusBadRequest, "SANDBOX::INVALID_PARAMETER", fmt.Sprintf(msg, args...)
@@ -212,7 +218,12 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		return bad("%v", err)
 	}
 
-	if credentialProxyEnabled(req.CredentialProxy) && egressEnv[egressSSLInsecure] != "" {
+	credentialProxy, err := credentialProxyRequest(req.CredentialProxy)
+	if err != nil {
+		return bad("%v", err)
+	}
+
+	if credentialProxy && egressEnv[egressSSLInsecure] != "" {
 		return bad("%s cannot be set when credentialProxy is enabled: the credential proxy "+
 			"terminates TLS, and turning off upstream certificate checks there would hand "+
 			"injected credentials to any server that answers", egressSSLInsecure)
@@ -296,8 +307,8 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 			"machine and omit them)", unbuilt)
 	case req.SecureAccess:
 		return later("secureAccess", unbuilt)
-	case present(req.CredentialProxy):
-		return later("credentialProxy", unbuilt)
+	case credentialProxy && !features.Enabled(featureCredentialVault):
+		return later("credentialProxy and the credential vault", credentialVaultGate)
 	case present(req.Lifecycle):
 		return later("lifecycle hooks", unbuilt)
 	case req.Extensions["access.renew.extend.seconds"] != "":
@@ -316,6 +327,40 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 
 	if policy != nil && s.egress == nil {
 		return later("networkPolicy (this sbx serve has no egress control)", "it needs a daemon with egress control")
+	}
+
+	if credentialProxy {
+		// Upstream refuses this too (api/schema.py: "credentialProxy.enabled requires
+		// networkPolicy"), and for the same reason: the credential is added by the egress filter,
+		// and the filter is what a policy creates. Without one there is nothing in the path to
+		// add anything, so the sandbox would run with no credential protection at all.
+		if policy == nil {
+			return bad("credentialProxy needs a networkPolicy: the credential is added by the " +
+				"egress filter, and a sandbox created without a policy has no filter. Create it " +
+				"with one - \"networkPolicy\": {\"defaultAction\": \"deny\", \"egress\": " +
+				"[{\"action\": \"allow\", \"target\": \"api.example.com\"}]} - naming the hosts " +
+				"the bindings will cover")
+		}
+
+		if s.credentials == nil {
+			return later("credentialProxy (this sbx serve has no credential vault)",
+				"it needs a daemon that hosts egress filters itself")
+		}
+
+		// The one host question a vault turns on, asked of the provider rather than probed from
+		// here (DECISIONS, "Capabilities are negotiated, not stubbed"): which form of filter this
+		// machine gives a sandbox is the provider's to say, and a provider that can say it
+		// without a sandbox can say it now. So a host that can never honour credentialProxy is a
+		// 400 on the create, not a create the caller has to burn to be told.
+		//
+		// refuseWithoutAHostedFilter still runs after the provider has chosen a form, and that
+		// is the guarantee - a vault is only ever opened where the daemon hosts the filter. This
+		// is the error, not a replacement for it.
+		if h, ok := s.p.(provider.FilterHoster); ok {
+			if err := h.HostsEgressFilters(); err != nil {
+				return bad("credentialProxy cannot be honoured on this machine: %v", err)
+			}
+		}
 	}
 
 	mounts, claims, verr := s.parseVolumes(req.Volumes)
@@ -364,7 +409,7 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 	}
 
 	pl := plan{onIdle: spec.OnIdleFreeze, egressPolicy: policy, volumes: mounts, claims: claims,
-		localImage: from.local}
+		localImage: from.local, credentialProxy: credentialProxy}
 
 	for k, v := range req.ResourceLimits {
 		switch k {
@@ -440,6 +485,7 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 		SnapshotID:       from.snapshotID,
 		TemplateID:       from.templateID,
 		CreatedAt:        now,
+		CredentialProxy:  credentialProxy,
 		State:            statePending,
 		Reason:           "provisioning",
 		Message:          "pulling the image and starting the sandbox",
@@ -637,6 +683,16 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 	}
 
 	s.trace.mark(id, "container created")
+
+	// Which form of egress filter the sandbox got is decided by the provider, in the create
+	// above, so this is the first moment it can be asked - and the last moment before the
+	// sandbox is reported Running. A credentialProxy that can never be honoured here is refused
+	// by name now rather than left to surface as a 412 the first time somebody posts a vault
+	// into a sandbox they were told was ready.
+	if err := s.refuseWithoutAHostedFilter(ctx, pl); err != nil {
+		fail("credential_proxy_unavailable", err.Error())
+		return
+	}
 
 	// The server's context, not this create's: the daemon derives the new sandbox's listeners
 	// from the context it is refreshed with, and this create's is cancelled the moment it

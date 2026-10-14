@@ -12,11 +12,14 @@ import (
 	"time"
 )
 
-// Orphans lists sbx volumes and snapshot images whose sandbox is gone.
+// Orphans lists sbx volumes, snapshot images, and the egress filters and bridges a
+// half-finished create left, whose sandbox is gone.
 //
-// "Gone" means no container carries the sandbox label - not "stopped". A sleeping sandbox
-// has no running container and every byte of its data still matters, which is the whole
-// design; treating stopped as garbage would delete the branch somebody returns to.
+// "Gone" means no SERVICE container carries the sandbox label - not "stopped". A sleeping
+// sandbox has no running container and every byte of its data still matters, which is the whole
+// design; treating stopped as garbage would delete the branch somebody returns to. A service
+// container rather than any container, because the egress filter carries that label too and a
+// sandbox that is nothing but a leftover filter is exactly what this is looking for.
 func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {
 	live, err := d.liveSandboxes()
 	if err != nil {
@@ -39,6 +42,12 @@ func (d *dockerProvider) Orphans(ctx context.Context) ([]Artifact, error) {
 		a.Age = d.ageOfVolume(ctx, name)
 		out = append(out, a)
 	}
+
+	// What a half-finished create left: its egress filter and its bridge. Listed here because
+	// gc is the only thing that can reach them when the create was killed rather than returning -
+	// Create takes them back itself on an error (undoHalfCreate), and `sbx rm` on the way to
+	// reporting there was no sandbox, but neither runs for a process that was killed.
+	out = append(out, d.egressOrphans(live, egressOrphanGrace)...)
 
 	imgs, err := d.docker("images", "--format", "{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}",
 		"--filter", "reference=sbx-snap-*")
@@ -108,16 +117,30 @@ func (d *dockerProvider) Reclaim(_ context.Context, a Artifact) error {
 		_, err = d.docker("volume", "rm", a.Name)
 	case "image":
 		_, err = d.docker("rmi", a.Name)
+	case "container":
+		_, err = d.docker("rm", "-f", a.Name)
+	case "network":
+		_, err = d.docker("network", "rm", a.Name)
 	}
 
 	return err
 }
 
-// liveSandboxes is every sandbox with a container, running or not.
-func (d *dockerProvider) liveSandboxes() (map[string]bool, error) {
-	format := "{{.Label \"" + labelSandbox + "\"}}"
+// liveSandboxArgs is what liveSandboxes asks docker. Separated so a test can pin the one thing
+// about it that matters.
+func liveSandboxArgs() []string {
+	return []string{"ps", "-a", "--format", "{{.Label \"" + labelSandbox + "\"}}",
+		"--filter", "label=" + labelSandbox, "--filter", "label=" + labelService}
+}
 
-	out, err := d.docker("ps", "-a", "--format", format, "--filter", "label="+labelSandbox)
+// liveSandboxes is every sandbox with a SERVICE container, running or not.
+//
+// A service container, not merely a container carrying the sandbox label: the egress filter
+// carries that label too, and counting it made an ORPHANED filter mark its own sandbox live -
+// the one sandbox whose leftovers this exists to find. It also kept that sandbox's data volume
+// uncollectable. The filter has no sbx.service label, which is the same distinction slotOf makes.
+func (d *dockerProvider) liveSandboxes() (map[string]bool, error) {
+	out, err := d.docker(liveSandboxArgs()...)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +229,83 @@ func classifyVolume(name string, live map[string]bool) (Artifact, bool) {
 	}
 
 	return a, true
+}
+
+// egressOrphanGrace is how long a leftover egress filter or bridge has to sit before gc will
+// offer it.
+//
+// A create that is still running looks exactly like one that died: the filter is up and the
+// sandbox has no service container yet, because the container is what comes next. The difference
+// is only time, and the first create on a machine builds the filter image, which is a compiler
+// image to pull and a Go build to run. So an orphan waits, which costs nothing - it is an orphan
+// forever - rather than `sbx gc --force` killing a filter a create two minutes in still needs.
+const egressOrphanGrace = 15 * time.Minute
+
+// classifyEgressOrphan decides whether a sandbox's egress filter or no-NAT bridge is an orphan:
+// what a create that failed after making them leaves behind, which nothing else reclaims.
+//
+// Unambiguous, unlike a volume name (see classifyVolume): the prefix is fixed and everything
+// after it is the whole sandbox name, dashes and all. The direction to be careful in is the same
+// one - a live sandbox's filter must never be offered, asleep or awake.
+func classifyEgressOrphan(name string, live map[string]bool) (Artifact, bool) {
+	var kind, sandbox string
+
+	switch {
+	case strings.HasPrefix(name, filterContainer("")):
+		kind, sandbox = "container", strings.TrimPrefix(name, filterContainer(""))
+	case strings.HasPrefix(name, egressNetwork("")):
+		kind, sandbox = "network", strings.TrimPrefix(name, egressNetwork(""))
+	default:
+		return Artifact{}, false
+	}
+
+	if sandbox == "" || live[sandbox] {
+		return Artifact{}, false
+	}
+
+	return Artifact{Kind: kind, Name: name, Sandbox: sandbox}, true
+}
+
+// egressOrphans lists the filters and bridges of sandboxes that are gone and have waited out
+// grace (egressOrphanGrace; a parameter so a test can pin both sides of it).
+//
+// A listing that fails is not evidence of an orphan, so it contributes nothing rather than
+// failing the whole sweep: the volumes and images beside it are still worth reporting.
+func (d *dockerProvider) egressOrphans(live map[string]bool, grace time.Duration) []Artifact {
+	var out []Artifact
+
+	add := func(name, created string) {
+		a, orphan := classifyEgressOrphan(strings.TrimSpace(name), live)
+		if !orphan {
+			return
+		}
+
+		if a.Age = sinceDockerTime(created); a.Age < grace {
+			return
+		}
+
+		out = append(out, a)
+	}
+
+	if cs, err := d.docker("ps", "-a", "--format", "{{.Names}}\t{{.CreatedAt}}",
+		"--filter", "name=^"+filterContainer("")); err == nil {
+		for _, l := range lines(cs) {
+			if name, created, ok := strings.Cut(l, "\t"); ok {
+				add(name, created)
+			}
+		}
+	}
+
+	if ns, err := d.docker("network", "ls", "--format", "{{.Name}}\t{{.CreatedAt}}",
+		"--filter", "name=^"+egressNetwork("")); err == nil {
+		for _, l := range lines(ns) {
+			if name, created, ok := strings.Cut(l, "\t"); ok {
+				add(name, created)
+			}
+		}
+	}
+
+	return out
 }
 
 // Labels a snapshot writes on its images; internal/cli writes them, this reads them to keep a

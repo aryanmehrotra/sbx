@@ -9,7 +9,6 @@ package osb
 // doors lead to the same EgressControl. Neither holds a copy of the policy: the filter does.
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +29,12 @@ const (
 
 var sidecarPath = regexp.MustCompile(`^/v1/sandboxes/[^/]+/egress/policy$`)
 
-func isSidecarPath(p string) bool { return sidecarPath.MatchString(p) }
+// isSidecarPath reports a route that carries the per-sandbox egress credential instead of the API
+// key. The Credential Vault routes are reached the same way - the SDK builds them from the same
+// endpoint and sends the same header - so they authenticate the same way (credvault.go).
+func isSidecarPath(p string) bool {
+	return sidecarPath.MatchString(p) || credentialVaultRoutes.MatchString(p)
+}
 
 // createPolicy turns a create request's networkPolicy into the policy the sandbox starts with.
 //
@@ -133,22 +137,8 @@ func (s *Server) egressErr(w http.ResponseWriter, id string, err error) {
 // token, which the workload holds - or, with no such header, the API key check in authed already
 // passed, because the operator can do the same through /networkpolicy.
 func (s *Server) sidecarPolicy(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	rec, ok := s.snapshot(id)
-
-	if got := r.Header.Get(egressAuthHeader); got != "" {
-		// One answer for "no such sandbox" and "wrong credential": this path skipped the API key,
-		// so a 404 here would let anybody enumerate sandbox ids.
-		if !ok || rec.EgressToken == "" ||
-			subtle.ConstantTimeCompare([]byte(got), []byte(rec.EgressToken)) != 1 {
-			http.Error(w, "invalid "+egressAuthHeader+": fetch it from GET /v1/sandboxes/{id}/endpoints/18080 with the API key", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	if !validID(id) || !ok {
-		http.Error(w, "no such sandbox", http.StatusNotFound)
+	rec, ok := s.egressAuthed(w, r)
+	if !ok {
 		return
 	}
 

@@ -964,6 +964,23 @@ type EgressPreflighter interface {
 	EgressPreflight(ctx context.Context, sandbox string) error
 }
 
+// FilterHoster says whether the egress filter this backend would give a sandbox is one the daemon
+// holds in its own process, rather than a container on the sandbox's bridge. Only the first can
+// hold a credential vault, so this is the one host fact `credentialProxy` turns on.
+//
+// Named for what the caller wants - a filter this daemon can keep a private key in - not for how
+// docker decides it (a bind on a bridge gateway), and asked of the provider rather than probed
+// around it (DECISIONS, "Capabilities are negotiated, not stubbed").
+//
+// Optional, and in the other direction from EgressPreflighter: this one needs no sandbox, so it
+// answers while a create can still be refused with a 400. A provider that does not implement it
+// is one where the form of filter is only known once a sandbox exists, and the refusal that runs
+// after the provider has chosen one still applies. Nil means a hosted filter. The docker answer
+// and its refusal are in filterhost.go.
+type FilterHoster interface {
+	HostsEgressFilters() error
+}
+
 // FirecrackerRuntimeClassEnv names the RuntimeClass `--isolation firecracker` asks a cluster
 // for, when it was installed under something other than kata-deploy's default.
 const FirecrackerRuntimeClassEnv = "SBX_KATA_FC_RUNTIMECLASS"

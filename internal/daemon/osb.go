@@ -82,6 +82,7 @@ func (d *daemon) openSandboxAPI(addr, key string, hostPaths []string, scope Scop
 		ReadyTimeout: d.ready + 30*time.Second,
 		Egress:       d.Egress(),
 		EgressStatus: EgressHTTPStatus,
+		Credentials:  d.Credentials(),
 		HostPaths:    hostPaths,
 		Pools:        specs,
 		PoolFreeze:   poolFreeze,

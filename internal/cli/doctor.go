@@ -197,8 +197,20 @@ func Doctor(ctx context.Context) Report {
 
 	// Checkpoint/restore, which is what a memory-preserving sleep would need. Two things
 	// have to be true and they fail differently, so both are reported.
-	exp, _ := dockerInfo(ctx, "{{.ExperimentalBuild}}")
+	exp, engine := dockerInfo(ctx, "{{.ExperimentalBuild}}")
 	rep.Capabilities = append(rep.Capabilities, checkpointCapability(exp, provider.CheckpointHostOK()))
+
+	// The other thing a VM-backed engine decides, and the one nothing reported: which form of
+	// egress filter a sandbox gets here. Both enforce an allow-list; only the one `sbx serve`
+	// holds itself can carry a credential vault, so an API create with `credentialProxy` is
+	// refused on the wrong host - and reading that off a refused create is what this command
+	// exists to spare people. Asked only of an engine that answered: it shells out.
+	var filterErr error
+	if engine {
+		filterErr = provider.EgressFilterHostOK()
+	}
+
+	rep.Capabilities = append(rep.Capabilities, filterHostCapability(engine, filterErr))
 
 	kubectlOK, kubectlWhere := have("kubectl")
 	rep.Capabilities = append(rep.Capabilities, Capability{
@@ -238,10 +250,11 @@ func PrintReport(w io.Writer, rep Report, asJSON bool) error {
 			mark = "✓"
 		}
 
-		fmt.Fprintf(w, "  %s %-18s %s\n", mark, c.Name, c.Detail)
+		// Wide enough for the longest row name, so a detail never starts in the name column.
+		fmt.Fprintf(w, "  %s %-20s %s\n", mark, c.Name, c.Detail)
 
 		if !c.Have && c.Meaning != "" {
-			fmt.Fprintf(w, "    %-18s %s\n", "", c.Meaning)
+			fmt.Fprintf(w, "    %-20s %s\n", "", c.Meaning)
 		}
 	}
 
@@ -369,6 +382,28 @@ func checkpointCapability(exp string, hostErr error) Capability {
 
 	if hostErr != nil {
 		c.Detail += "; the engine runs in a VM here, and a restore needs a Linux host"
+	}
+
+	return c
+}
+
+// filterHostCapability is the `hosted egress filter` row: whether `sbx serve` here opens the
+// egress filter on the sandbox's bridge gateway itself, or runs it as a container on that bridge.
+// The absence costs one feature, not egress control, and the row says so - a reader who sees a
+// cross next to "egress" and stops reading would conclude the wrong thing.
+func filterHostCapability(engine bool, hostErr error) Capability {
+	c := Capability{
+		Name: "hosted egress filter", Have: engine && hostErr == nil,
+		Detail: "sbx serve binds the sandbox's bridge gateway and holds the filter itself",
+		Meaning: "allow-lists still work, through a filter container on the sandbox's own bridge; " +
+			"an API create with credentialProxy is refused here",
+	}
+
+	switch {
+	case !engine:
+		c.Detail = "no engine answered, so this cannot be decided yet"
+	case hostErr != nil:
+		c.Detail = "docker's bridges are not addresses this machine holds, so the filter runs as a container"
 	}
 
 	return c

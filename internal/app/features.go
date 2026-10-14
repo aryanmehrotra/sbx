@@ -28,18 +28,27 @@ func showFeatures(w io.Writer) {
 		return
 	}
 
-	fmt.Fprintf(w, "%-14s %-14s %s\n", "FEATURE", "STATE", "WHAT IT IS")
+	// Both columns fit the widest thing in them, so one long name or stability does not push
+	// every other row out of line.
+	wide, state := len("FEATURE"), len("off (experimental)")
+	for _, f := range all {
+		if len(f.Name) > wide {
+			wide = len(f.Name)
+		}
+	}
+
+	fmt.Fprintf(w, "%-*s %-*s %s\n", wide, "FEATURE", state, "STATE", "WHAT IT IS")
 
 	for _, f := range all {
-		state := "off"
+		on := "off"
 		if features.Enabled(f.Name) {
-			state = "on"
+			on = "on"
 		}
 
-		fmt.Fprintf(w, "%-14s %-14s %s\n", f.Name, state+" ("+string(f.Stability)+")", f.Summary)
+		fmt.Fprintf(w, "%-*s %-*s %s\n", wide, f.Name, state, on+" ("+string(f.Stability)+")", f.Summary)
 
 		if f.Caveat != "" {
-			fmt.Fprintf(w, "%-29s unproven: %s\n", "", f.Caveat)
+			fmt.Fprintf(w, "%-*s unproven: %s\n", wide+state+1, "", f.Caveat)
 		}
 	}
 
@@ -59,6 +68,15 @@ func init() {
 		Name:      "devcontainer",
 		Stability: features.Preview,
 		Summary:   "`sbx init --from-devcontainer` - a spec from the .devcontainer a repo already has",
+	})
+}
+
+func init() {
+	features.Register(features.Feature{
+		Name:      "credential-vault",
+		Stability: features.Experimental,
+		Summary:   "`credentialProxy` and the OpenSandbox Credential Vault API on a sandbox the daemon filters itself",
+		Caveat:    "the vault holds the credentials and the certificate authority, and the filter does not add them to requests yet, so a sandbox still needs its own credentials (docs/ROADMAP.md)",
 	})
 }
 

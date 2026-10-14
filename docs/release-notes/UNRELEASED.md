@@ -22,8 +22,17 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Breaking
 
+- `egress: "deny"` is refused on Docker Desktop and colima, where the engine's VM routes the bridge out whatever masquerade says. Use `egress_policy` or `egress_allow`, which are enforced there.
+
 ## Added
+
+- `credentialProxy` and the OpenSandbox Credential Vault API, as a preview feature: `SBX_FEATURES=credential-vault`. It records bindings and does not add credentials to requests yet.
+- `credentialProxy` on a host that cannot hold a hosted egress filter is refused with a 400 before any sandbox is made.
+- `sbx doctor` reports `hosted egress filter`: whether `sbx serve` holds a sandbox's filter itself here, which is what `credentialProxy` needs.
 
 ## Changed
 
 ## Fixed
+
+- `egress_allow`, `egress_policy` and `"egress": "allow"` work again on Docker Desktop and colima, where docker 28 refused the filter's fixed address.
+- A create that fails now takes back the egress filter and bridge it made; `sbx rm` reclaims the ones left behind a sandbox that has no services, and `sbx gc` lists the ones a killed create left.

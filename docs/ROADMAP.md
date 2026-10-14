@@ -67,7 +67,7 @@ approximated ([why](DECISIONS.md#the-opensandbox-api-on-a-microvm-the-agent-is-p
 | Refused feature | What it is | Size |
 |---|---|:---:|
 | Isolated sessions (`/v1/isolated/*`) | A command session with its own PID namespace, `/tmp` and overlay | not estimated |
-| `credentialProxy`, credential vault | Credentials added to matching outbound requests | L, on the secrets work above |
+| `credentialProxy`, credential vault | Credentials added to matching outbound requests. The field and the API are served behind `SBX_FEATURES=credential-vault`, on a sandbox whose filter the daemon hosts itself, and record the binding. Nothing is added to a request yet, because the filter does not read inside a tunnel | L, on the secrets work above |
 | Server-side pools (`extensions.poolRef`) | A pool the server owns, named at create. `--osb-pool` serves unnamed creates | not estimated |
 | `secureAccess`, signed endpoints (`?expires=`) | Endpoints that need a signature or token | not estimated |
 | Server-proxied endpoints (`use_server_proxy=true`) | The command server reached through the lifecycle server | not estimated |

@@ -69,7 +69,7 @@ names are the command, and its own flags stay its own.
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
 | `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |
 | `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
-| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left, and lock files whose holder is gone, and origin records (`~/.sbx/origins`) this backend wrote with no sandbox or snapshot of their name (a long list is counted, with the first ten named). Records naming another backend are left to it; records naming none are counted and never removed. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
+| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left, the egress filter container and no-NAT bridge a half-finished create left (offered fifteen minutes on, so a create still building its filter image keeps it), and lock files whose holder is gone, and origin records (`~/.sbx/origins`) this backend wrote with no sandbox or snapshot of their name (a long list is counted, with the first ten named). Records naming another backend are left to it; records naming none are counted and never removed. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 
 ### Finding out
 
@@ -104,6 +104,7 @@ A preview feature is off until named in `SBX_FEATURES` (comma-separated). `sbx f
 | `ssh` | `sbx ssh` |
 | `devcontainer` | `sbx init --from-devcontainer` |
 | `waiting-page` | a "waking up" page for a browser opening a sleeping `sbx url` link |
+| `credential-vault` | `credentialProxy` and the OpenSandbox Credential Vault API on a sandbox the daemon filters itself |
 
 ## sbx serve
 

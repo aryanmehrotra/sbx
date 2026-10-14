@@ -61,6 +61,7 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | docker · Linux | **verified in CI** on every change (`selftest`, `usecases`, `osb-conformance`) |
 | docker · macOS (colima, Docker Desktop) | **unit-tested** in CI on every PR and daily; **run by hand** on an M4 with colima (benchmarks) |
 | docker · Windows | inside WSL2 only; **not yet run end to end** on a Windows host |
+| the egress filter as a container (Docker Desktop, colima) | **run by hand** on Docker Desktop 28.5.1, an M4 on macOS 15.6.1: the bridge is addressed by sbx, the filter holds the top of it, an allowed host answered 200 and a denied one 403. A direct dial that goes around the filter still leaves that host |
 | docker `--isolation gvisor` | **verified in CI** (`isolation` job) |
 | docker `--isolation kata` | **run by hand** on a nested VM host at v0.16.0: the container gets no network, and `sbx create`, `ready` and `wake` now refuse it saying so. `sbx doctor` checks registration only |
 | kubernetes | **unit-tested**; **run by hand** on minikube (benchmarks); not in CI |
@@ -70,6 +71,7 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | firecracker · Mac, OpenSandbox API through the helper VM | **unit-tested**; **not yet run end to end** on a Mac |
 | firecracker · Windows 11, via a WSL2 helper VM | **unit-tested**; **not yet run end to end** on a Windows host |
 | `sbx checkpoint` / `resume` | **run by hand** on Linux with podman (v0.7.0); not in CI |
+| `credentialProxy`, the credential vault | **unit-tested**, including the certificate authority's name constraints; **not yet run end to end** against a real sandbox. It needs a host whose filter the daemon hosts itself, and is refused by name elsewhere |
 
 `sbx doctor` reports which of these applies to the machine you're on.
 
@@ -266,14 +268,22 @@ Where it runs is one decision, `fchost.HostBackend` (`provider.DecideHost`), use
 
 A sandbox's `egress` field is enforced by a component, `internal/egress`.
 
-- A filtered service sits on a bridge with no NAT. The only host address it reaches is the bridge
-  gateway, where the filter listens.
+- A filtered service sits on a bridge sbx addresses itself: a `/24` of `198.18.0.0/15` that the
+  sandbox's name picks, the gateway at the bottom of it and the filter's fixed address at the top.
+  Explicit, because docker 28 refuses a fixed address on a subnet it chose
+  ([why](DECISIONS.md#a-sandboxs-no-egress-bridge-gets-a-24-of-sbxs-own-and-its-name-only-picks-which-one)).
+  The only host address the service reaches is that gateway, where a hosted filter listens.
+- The bridge carries no NAT, so on native Linux docker and on firecracker the filter is the only
+  way out. On Docker Desktop and colima the engine's VM boundary routes the bridge out anyway, so
+  there the filter is the whole control and `egress: "deny"` is not a route-level one - and a
+  service that declares it is refused at the create rather than reported applied
+  ([measured](DECISIONS.md#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does)).
 - The filter is an HTTP `CONNECT` and plain-HTTP proxy (`egress.Filter`). `HTTP(S)_PROXY` points
   clients at it. A refused destination gets 403, and no socket is opened to it.
 - On native Linux docker and on firecracker it runs inside `sbx serve`. Where the gateway is inside
   an engine's VM (Docker Desktop, colima), it runs as a container on the bridge
-  (`internal/provider/egress_container.go`), at the last address of the bridge's subnet, which
-  services find through `/etc/hosts`. It refuses the engine's gateways, the default bridge and the
+  (`internal/provider/egress_container.go`), at the top address named above, which services find
+  through `/etc/hosts`. It refuses the engine's gateways, the default bridge and the
   host behind the VM (`egress.Doors`), whatever the policy says. The daemon lists the engine's
   gateways on every discovery pass and pushes them to each container filter (`PUT /refuse`), so a
   network created later is refused too. The filter also refuses its own interface addresses, so
@@ -284,7 +294,37 @@ A sandbox's `egress` field is enforced by a component, `internal/egress`.
 - `sbx egress` swaps the policy in place without cutting open tunnels.
 - A permitted request counts as activity, so an agent that only calls an API stays awake.
 - A microVM's filter refuses private ranges and host subnets unless `--vm-egress-allow` names
-  them. On kubernetes, `egress: "deny"` is refused up front.
+  them. `egress: "deny"` is refused up front wherever it cannot be enforced: on kubernetes, whose
+  answer is a NetworkPolicy only some CNIs apply, and on a docker engine whose bridges are inside
+  a VM that routes them out.
+
+### The credential vault
+
+An agent that calls an API needs a key, and a key in its environment is a key it can leak. The
+vault keeps the key in the daemon and the sandbox sends an unauthenticated request to a host its
+policy already permits. A binding says which hosts get which credential: hosts, schemes, methods,
+paths, and what to add. It is OpenSandbox's Credential Vault API, a preview feature
+(`SBX_FEATURES=credential-vault`), served beside `/policy` on the same per-sandbox endpoint.
+
+- The vault is `internal/credvault`, not `internal/egress`, because every file of that package is
+  compiled into the container filter. It holds a certificate authority's private key and the
+  plaintext of every credential, and neither belongs in a container on a sandbox's own bridge. The
+  filter reaches it through one interface field, `egress.Filter.Credentials`, set by the daemon
+  beside `OnActivity` and `Refuse`.
+- So only a filter the daemon hosts itself can have a vault. A sandbox asking for one where the
+  filter runs as a container is refused by name: with a 400 on the create, where the backend can
+  say before anything is created that this machine holds no bridge of its own, and again on the
+  backend's own report of the sandbox it made. `sbx doctor` reports it as `hosted egress filter`.
+- Each sandbox gets its own authority, minted in memory, constrained by critical X.509 name
+  constraints to the hosts its own bindings name, with every IP range excluded. It is destroyed
+  with the sandbox's filter, and nothing about it is written to disk.
+- Credential values are write-only: no route returns one, and the type that holds one redacts
+  itself in logs, errors and JSON.
+- A binding may only name a host the policy permits. One that names a denied host is refused,
+  because the filter would answer that request with 403 before any credential was added.
+- What is left is the data path: the filter does not read inside a tunnel yet, so a binding records
+  the intent and the request still goes out as the sandbox sent it
+  ([ROADMAP](ROADMAP.md#not-built-yet-in-the-opensandbox-api)).
 
 ## Remote access: `sbx connect` and `sbx pack`
 

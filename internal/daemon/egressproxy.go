@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/credvault"
 	"github.com/aryanmehrotra/sbx/internal/egress"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -25,6 +26,13 @@ type egressProxy struct {
 	sandbox string
 	ln      net.Listener
 	filter  *egress.Filter
+
+	// vault is this sandbox's credential vault, opened beside the filter and destroyed with it.
+	// Only a filter the daemon hosts gets one: the vault holds a certificate authority's private
+	// key, and a container filter would hold it in a container on the sandbox's own bridge
+	// (internal/credvault). So the custody rule is enforced by where vaults are made rather than
+	// by a check somewhere that could be forgotten.
+	vault *credvault.Vault
 
 	// declared is the policy the sandbox's spec gives it, and savedAt the modification time of
 	// the live copy last read from disk - how watchEgress notices a change the CLI made.
@@ -43,6 +51,15 @@ type egressProxy struct {
 // Egress is the daemon's egress policy API. Writes through it reach the filters this daemon
 // hosts at once, and container filters over their control endpoint.
 func (d *daemon) Egress() *EgressControl { return d.egressControl() }
+
+// Credentials is the credential vaults of the filters this daemon hosts, for the OpenSandbox
+// Credential Vault API to serve. Built on first use, like egressControl, so a daemon constructed
+// as a literal gets one too.
+func (d *daemon) Credentials() *credvault.Registry {
+	d.credvaultOnce.Do(func() { d.credvaults = credvault.NewRegistry() })
+
+	return d.credvaults
+}
 
 func (d *daemon) egressControl() *EgressControl {
 	d.egressOnce.Do(func() {
@@ -171,6 +188,11 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 			_ = p.ln.Close()
 			delete(d.egress, gw)
 
+			// The key dies with the filter, and this is also where a recreated sandbox is told
+			// apart from the one that held the gateway before it: closing by the OLD proxy's
+			// sandbox name is what stops a new sandbox inheriting a stranger's credentials.
+			d.Credentials().Close(p.sandbox)
+
 			continue
 		}
 
@@ -215,6 +237,15 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		filter.SetPorts(want.ports)
 		filter.OnActivity = func() { d.touchEgress(gw) }
 
+		// The vault is opened beside the filter, and reached through the filter's one interface
+		// field, the way OnActivity and Refuse are set here. The policy it checks bindings
+		// against is read off the filter itself rather than through the daemon, so a write to
+		// the vault never waits on the lock this loop holds.
+		vault := d.Credentials().Open(want.sandbox, func() (egress.Policy, bool) {
+			return filter.Policy(), true
+		})
+		filter.Credentials = vault
+
 		// On an sbx-owned bridge the filter runs on the host its guests are kept off, so it
 		// must not carry them back onto it: not to the gateway's other ports, not to the host's
 		// other addresses, not to another sandbox's guests (DECISIONS.md, "A microVM's only
@@ -231,7 +262,7 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 		srv := &http.Server{Handler: filter}
 		go func() { _ = srv.Serve(ln) }()
 
-		d.egress[gw] = &egressProxy{sandbox: want.sandbox, ln: ln, filter: filter,
+		d.egress[gw] = &egressProxy{sandbox: want.sandbox, ln: ln, filter: filter, vault: vault,
 			declared: want.declared, savedAt: want.savedAt}
 		logs.Default.Info(want.sandbox, "", "egress filter on %s: %s (%s)", addr, want.policy.Mode(), want.policy.Hash())
 	}

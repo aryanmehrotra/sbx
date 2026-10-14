@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aryanmehrotra/sbx/internal/credvault"
 	"github.com/aryanmehrotra/sbx/internal/fc"
 	"github.com/aryanmehrotra/sbx/internal/fc/hostcap"
 	"github.com/aryanmehrotra/sbx/internal/logs"
@@ -130,6 +131,13 @@ type daemon struct {
 	egressOnce sync.Once
 	egressCtl  *EgressControl
 	egressDir  string
+
+	// credvaults are the credential vaults of the filters this daemon hosts itself, built on
+	// first use like egressCtl. A vault exists only beside a hosted filter, which is what keeps
+	// a certificate authority's private key out of a container on a sandbox's own bridge
+	// (internal/credvault).
+	credvaultOnce sync.Once
+	credvaults    *credvault.Registry
 
 	// egressPort is where hosted filters listen; 0 is provider.EgressProxyPort. A field so a
 	// test can host one without contending for the real port.
