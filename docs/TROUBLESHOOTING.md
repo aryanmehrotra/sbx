@@ -661,8 +661,9 @@ build, then restart `sbx serve`.
 
 The credential vault is a preview feature. Start the daemon with
 `SBX_FEATURES=credential-vault sbx serve --osb-addr 127.0.0.1:8080`. It is off by default because
-the vault records the credentials and the filter does not yet add them to requests, so a sandbox
-with a vault still needs its own credentials ([ROADMAP.md](ROADMAP.md#not-built-yet-in-the-opensandbox-api)).
+it has not been measured against the upstream conformance tier yet, not because it does nothing:
+the filter terminates a tunnel to a bound host and adds the credential
+([ROADMAP.md](ROADMAP.md#not-built-yet-in-the-opensandbox-api)).
 
 ### An API create with `credentialProxy` answers 400 about this machine
 
@@ -683,6 +684,40 @@ instead of at the create. The cause and the fix are the same.
 
 This message names the sandbox's own bridge gateway, not docker's, so the address to check is in
 `198.18.0.0/15`: `ifconfig | grep 198.18`.
+
+### A request to a bound host fails its TLS handshake, or the agent reports an unknown authority
+
+**Symptom:** a sandbox with `credentialProxy` reaches hosts its policy allows, but a request to a
+host a *binding* names fails to connect at all - `x509: certificate signed by unknown authority`,
+`SELF_SIGNED_CERT_IN_CHAIN`, `unable to get local issuer certificate`. Hosts with no binding are
+fine.
+
+**Cause:** a bound host is the one case the filter terminates the tunnel, so it answers with a
+certificate from the sandbox's own authority rather than the host's. Whatever made the request does
+not trust that authority. The sandbox is given it at `/etc/sbx/credential-vault-ca.pem`, and
+`SBX_CREDENTIAL_VAULT_CA` names that path, but only `NODE_EXTRA_CA_CERTS` is set for you - the
+variables that would cover Python, Go and curl (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`) *replace* the
+root set rather than adding to it, so setting them to this one certificate would stop the sandbox
+verifying every other host.
+
+**Fix:** add it to the image's own trust store, once, in the entrypoint - then every client in
+there trusts it:
+
+```sh
+cp "$SBX_CREDENTIAL_VAULT_CA" /usr/local/share/ca-certificates/sbx-credential-vault.crt
+update-ca-certificates                      # Debian, Ubuntu, Alpine (ca-certificates installed)
+```
+
+On Fedora or RHEL it is `/etc/pki/ca-trust/source/anchors/` and `update-ca-trust`. For one tool
+rather than the image, build a bundle instead of replacing the roots:
+
+```sh
+cat /etc/ssl/certs/ca-certificates.crt "$SBX_CREDENTIAL_VAULT_CA" > /tmp/bundle.pem
+export SSL_CERT_FILE=/tmp/bundle.pem REQUESTS_CA_BUNDLE=/tmp/bundle.pem
+```
+
+If `$SBX_CREDENTIAL_VAULT_CA` is unset, the sandbox was not created with `credentialProxy`, or its
+policy allows no host names at all - there is then nothing to terminate and nothing to trust.
 
 ### An API create with `credentialProxy` answers 400 about `networkPolicy`
 

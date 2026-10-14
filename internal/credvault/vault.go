@@ -16,6 +16,7 @@ package credvault
 // weakly: the create is refused, with the reason and the fix.
 
 import (
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -32,10 +33,58 @@ import (
 type Registry struct {
 	mu     sync.Mutex
 	vaults map[string]*Vault
+
+	// cas are authorities minted before their vault exists, by Certificate, so that a sandbox's
+	// trust store can be delivered when the sandbox is created. Open adopts one rather than
+	// minting its own, because the certificate already in the sandbox has to be the one the
+	// filter signs with.
+	cas map[string]*CA
 }
 
 // NewRegistry makes an empty registry.
-func NewRegistry() *Registry { return &Registry{vaults: map[string]*Vault{}} }
+func NewRegistry() *Registry {
+	return &Registry{vaults: map[string]*Vault{}, cas: map[string]*CA{}}
+}
+
+// Certificate is the PEM of the authority this sandbox's filter will sign with, minted now if it
+// does not exist yet.
+//
+// It is called while the sandbox is being created, before any filter or vault does, because the
+// certificate has to be in the image's trust store from the first process that reads it - and that
+// is read once, at startup, by Node, Python and Go alike. The authority is constrained to the
+// hosts the policy allows, which a binding can never exceed, so the same certificate stays correct
+// for every binding the sandbox goes on to make.
+//
+// An empty PEM and no error is a policy with no names of its own: there is nothing to terminate
+// TLS for, so there is nothing to trust.
+func (r *Registry) Certificate(sandbox string, pol egress.Policy) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if v, ok := r.vaults[sandbox]; ok {
+		if ca := v.CA(); ca != nil {
+			return ca.PEM(), nil
+		}
+	}
+
+	if ca, ok := r.cas[sandbox]; ok {
+		return ca.PEM(), nil
+	}
+
+	hosts := hostsOf(pol)
+	if len(hosts) == 0 {
+		return nil, nil
+	}
+
+	ca, err := NewCA(hosts)
+	if err != nil {
+		return nil, err
+	}
+
+	r.cas[sandbox] = ca
+
+	return ca.PEM(), nil
+}
 
 // Open returns the sandbox's vault, making an empty one if it has none.
 //
@@ -52,6 +101,22 @@ func (r *Registry) Open(sandbox string, policy func() (egress.Policy, bool)) *Va
 
 	v := &Vault{sandbox: sandbox, policy: policy,
 		credentials: map[string]record{}, bindings: map[string]Binding{}}
+
+	// The authority the sandbox was already given, if its trust store was delivered at create.
+	// Minting a second one here would leave the filter signing with a certificate nothing in the
+	// sandbox trusts, which is the failure this whole arrangement exists to avoid.
+	if ca, ok := r.cas[sandbox]; ok {
+		v.ca = ca
+
+		delete(r.cas, sandbox)
+	}
+
+	// Otherwise minted here, before anything is written to the vault: a vault whose sandbox was
+	// created without a trust store still needs an authority for its own first write. An error is
+	// dropped rather than returned, because a policy with no names of its own is the ordinary
+	// reason and a write that needs the authority finds out from ensureCA itself.
+	_ = v.ensureCA()
+
 	r.vaults[sandbox] = v
 
 	return v
@@ -74,6 +139,14 @@ func (r *Registry) Close(sandbox string) {
 	r.mu.Lock()
 	v, ok := r.vaults[sandbox]
 	delete(r.vaults, sandbox)
+
+	// A certificate minted for a sandbox whose filter never came up, so its key does not outlive
+	// the sandbox either.
+	if ca, pre := r.cas[sandbox]; pre {
+		ca.Destroy()
+		delete(r.cas, sandbox)
+	}
+
 	r.mu.Unlock()
 
 	if ok {
@@ -144,7 +217,7 @@ func (v *Vault) Create(req CreateRequest) (State, error) {
 		return State{}, err
 	}
 
-	if err := v.remintCA(bindings); err != nil {
+	if err := v.ensureCA(); err != nil {
 		return State{}, err
 	}
 
@@ -194,7 +267,7 @@ func (v *Vault) Patch(req MutationRequest) (State, error) {
 		return State{}, err
 	}
 
-	if err := v.remintCA(bindings); err != nil {
+	if err := v.ensureCA(); err != nil {
 		return State{}, err
 	}
 
@@ -360,25 +433,33 @@ func (v *Vault) check(credentials map[string]record, bindings map[string]Binding
 	return validateCandidate(credentials, bindings, pol, hasPolicy)
 }
 
-// remintCA gives the vault an authority constrained to exactly the hosts its bindings name.
+// ensureCA gives the vault one authority for the life of the sandbox, constrained to the hosts its
+// egress policy allows.
 //
-// It mints a new one only when that host set changes, and not on every revision. A new authority
-// is a new certificate for the sandbox's trust store, so re-minting when nothing about the hosts
-// moved would break every open client to rotate a secret - and rotating a secret without touching
-// the hosts is the common case.
-func (v *Vault) remintCA(bindings map[string]Binding) error {
-	hosts := boundHosts(bindings)
-
-	if len(hosts) == 0 {
-		if v.ca != nil {
-			v.ca.Destroy()
-			v.ca = nil
-		}
-
+// The constraints come from the POLICY and not from the bindings, which is what makes the
+// authority stable. A new authority is a new certificate for the sandbox's trust store, and the
+// trust store is read once by whatever runs in there - Node, Python and Go all cache it at
+// startup - so an authority that changed when a binding was added would leave a long-running
+// agent trusting one that no longer exists, and every swap after that would fail its handshake
+// with nothing to say why. Minting from the binding set did exactly that: adding a host to a
+// binding replaced the authority.
+//
+// It is not wider than it needs to be, because a binding cannot name a host the policy does not
+// already allow - validateCandidate refuses that with pol.AllowsName, at write time, every time.
+// So the policy's hosts are a superset of the bindings' hosts by construction, which means these
+// constraints always cover every leaf this vault could ever be asked to mint, and never cover a
+// host the sandbox is not allowed to reach anyway. The exclusion of every IP range is unchanged:
+// an authority that could certify an address rather than a name would be a general-purpose one.
+//
+// A policy with no DNS names of its own - all addresses and CIDRs - gets no authority, because
+// there is no name to terminate TLS for.
+func (v *Vault) ensureCA() error {
+	if v.ca != nil {
 		return nil
 	}
 
-	if v.ca != nil && sameHosts(v.ca.Hosts(), dnsFor(hosts)) {
+	hosts := v.policyHosts()
+	if len(hosts) == 0 {
 		return nil
 	}
 
@@ -387,28 +468,47 @@ func (v *Vault) remintCA(bindings map[string]Binding) error {
 		return err
 	}
 
-	if v.ca != nil {
-		v.ca.Destroy()
-	}
-
 	v.ca = ca
 
 	return nil
 }
 
-// boundHosts is every host the bindings name, sorted and deduplicated.
-func boundHosts(bindings map[string]Binding) []string {
+// policyHosts is every DNS name the sandbox's egress policy allows, which is what the authority is
+// constrained to. Callers must hold v.mu, or call before the vault is shared.
+//
+// An address or a CIDR target is skipped rather than refused: a policy may hold both, and only the
+// names can ever be the subject of a leaf.
+func (v *Vault) policyHosts() []string {
+	if v.policy == nil {
+		return nil
+	}
+
+	pol, ok := v.policy()
+	if !ok {
+		return nil
+	}
+
+	return hostsOf(pol)
+}
+
+// hostsOf is every DNS name a policy allows, sorted and deduplicated.
+func hostsOf(pol egress.Policy) []string {
 	seen := map[string]bool{}
 
 	var out []string
 
-	for _, b := range bindings {
-		for _, h := range b.Match.Hosts {
-			if !seen[h] {
-				seen[h] = true
-				out = append(out, h)
-			}
+	for _, rule := range pol.Egress {
+		if !strings.EqualFold(rule.Action, "allow") {
+			continue
 		}
+
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(rule.Target)), ".")
+		if host == "" || seen[host] || !isDNSTarget(host) {
+			continue
+		}
+
+		seen[host] = true
+		out = append(out, host)
 	}
 
 	sort.Strings(out)
@@ -416,33 +516,15 @@ func boundHosts(bindings map[string]Binding) []string {
 	return out
 }
 
-// dnsFor is what NewCA would make of these hosts, so a host set can be compared with an existing
-// authority's constraints without minting one to find out.
-func dnsFor(hosts []string) []string {
-	got, err := dnsConstraints(hosts)
-	if err != nil {
-		return nil
-	}
-
-	return got
-}
-
-func sameHosts(a, b []string) bool {
-	if len(a) != len(b) || len(a) == 0 {
+// isDNSTarget reports whether a policy target is a name rather than an address or a CIDR.
+func isDNSTarget(target string) bool {
+	if strings.Contains(target, "/") {
 		return false
 	}
 
-	x, y := append([]string(nil), a...), append([]string(nil), b...)
-	sort.Strings(x)
-	sort.Strings(y)
+	probe := strings.TrimPrefix(target, "*.")
 
-	for i := range x {
-		if x[i] != y[i] {
-			return false
-		}
-	}
-
-	return true
+	return net.ParseIP(probe) == nil
 }
 
 // stateLocked is the sanitized state. Callers hold the lock.

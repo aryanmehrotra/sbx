@@ -50,6 +50,9 @@ amended entry carries a **Status:** line under its heading.
 | [Default-allow is enforced by the same door, and it costs raw TCP](#default-allow-is-enforced-by-the-same-door-and-it-costs-raw-tcp) | Egress | v0.9.0 | current |
 | [On a VM-backed engine a bridge without NAT does not stop egress, and only the filter does](#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does) | Egress | unreleased | current |
 | [A half-finished create's filter and bridge are reclaimable, and a live sandbox's never are](#a-half-finished-creates-filter-and-bridge-are-reclaimable-and-a-live-sandboxs-never-are) | Egress | unreleased | current |
+| [A credential vault exists only where the daemon hosts the filter itself](#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself) | Egress | unreleased | current |
+| [The credential is added inside a terminated tunnel, and the authority is the policy's](#the-credential-is-added-inside-a-terminated-tunnel-and-the-authority-is-the-policys) | Egress | unreleased | current |
+| [The authority is minted once per sandbox, constrained to the hosts its policy allows](#the-authority-is-minted-once-per-sandbox-constrained-to-the-hosts-its-policy-allows) | Egress | unreleased | current |
 | [An API snapshot is the container, because that is where its state is](#an-api-snapshot-is-the-container-because-that-is-where-its-state-is) | OpenSandbox API | v0.10.0 | current |
 | [Volumes on the API: host paths are the operator's to allow, and claims are namespaced](#volumes-on-the-api-host-paths-are-the-operators-to-allow-and-claims-are-namespaced) | OpenSandbox API | v0.10.0 | current |
 | [Warm-pool members wait pinned running, and every claim re-keys](#warm-pool-members-wait-pinned-running-and-every-claim-re-keys) | OpenSandbox API | v0.10.0 | current |
@@ -1034,6 +1037,87 @@ is the one failure a control like this must not have.
 ---
 
 ## OpenSandbox API
+
+### The credential is added inside a terminated tunnel, and the authority is the policy's
+
+**Status:** current, 2026-10-14.
+
+An agent that calls an API needs a key, and a key in its environment is a key it can leak. So the
+agent is given a placeholder, or nothing at all, and the real credential is added outside the
+sandbox on the way out. Everything below follows from the fact that the request is inside TLS.
+
+**The tunnel is terminated only for a destination a binding covers.** Every other CONNECT is
+spliced as it always was. Terminating all of them would make the filter a man in the middle of
+traffic it has no business reading, and would need the sandbox to trust this authority for hosts no
+binding names - which the authority's own name constraints refuse to certify anyway.
+
+**The termination is in `internal/credvault`, not in the filter.** Same reason the vault is
+([above](#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself)): every file of
+`internal/egress` is compiled verbatim into the container filter, so a TLS stack there would be one
+in a container on the sandbox's own bridge, and a test forbids `crypto/tls` in that package.
+`Intercept` wraps the filter as an `http.Handler` - which is all it needs of it - and the daemon
+serves that instead.
+
+**A decrypted request is handed back to the filter rather than relayed here.** The filter resolves
+it, checks it against the policy in force, adds the credentials and relays it. There is
+deliberately no second policy check in the interception: a second answer is a second thing to
+drift. So a binding can only ever change what a *permitted* request carries, never where the
+sandbox may reach.
+
+**The request goes to the vault; a value never comes back.** `egress.CredentialSource.Apply` takes
+the request and writes into it, so no secret crosses into the package that is compiled into the
+container. The filter learns that a destination is bound. It never learns what with.
+
+**A credential that cannot be added means the request is not sent** - 502, and nothing dialled.
+Relaying it anyway would reach the real host as the agent's own unauthenticated call, which fails
+there in a way that reads as the agent's bug rather than the filter's.
+
+**The header is set, not added.** A placeholder the agent wrote must not survive beside the real
+one: two `Authorization` headers are one header with two values on the wire, and upstream reads the
+first.
+
+**Bindings are applied in binding-name order.** Two bindings can write one header, and map
+iteration would make which one wins differ between two identical requests.
+
+### The authority is minted once per sandbox, constrained to the hosts its policy allows
+
+**Status:** current, 2026-10-14.
+
+The authority was first constrained to the hosts the *bindings* named, and re-minted when that set
+changed. That cannot work, and the reason is not cryptographic.
+
+A trust store is read once, at startup, by whatever runs in the sandbox - Node, Python and Go all
+cache it. An authority that changed when a binding was added would leave a long-running agent
+trusting one that no longer exists, and every swap after that would fail its handshake with nothing
+to say why. Adding a host to a binding did exactly that.
+
+**So the constraints come from the egress policy, which does not move.** It is not wider than it
+needs to be, because a binding cannot name a host the policy does not already allow -
+`validateCandidate` refuses that with `pol.AllowsName`, at write time, every time. The policy's
+names are therefore a superset of the bindings' names *by construction*, which means these
+constraints always cover every leaf this vault could ever be asked to mint, and never cover a host
+the sandbox is not allowed to reach anyway. The exclusion of every IP range is unchanged: an
+authority that could certify an address rather than a name would be a general-purpose one.
+
+A policy with no DNS names of its own - all addresses and CIDRs - gets no authority, because there
+is no name for a leaf to be the subject of.
+
+**The certificate is delivered when the sandbox is created, which is before a vault can exist.**
+The API can only create a vault on a sandbox that is already running, and by then the trust store
+has been read. So `Registry.Certificate` mints the authority during the create, the create mounts
+it read-only at `/etc/sbx/credential-vault-ca.pem`, and `Registry.Open` later adopts that same one
+rather than minting a second - a filter signing with a certificate nothing in the sandbox trusts is
+the failure the whole arrangement exists to avoid.
+
+**Only additive trust variables are set.** `NODE_EXTRA_CA_CERTS` adds to the root set.
+`SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` replace it, so pointing either at this one certificate
+would leave the sandbox unable to verify any *other* host - a worse break than the one this fixes.
+`SBX_CREDENTIAL_VAULT_CA` names the path instead, for an entrypoint that adds it to the image's own
+trust store, which is what makes every client in there trust it rather than only the ones that read
+an environment variable.
+
+The certificate is written beside the sandbox's record and removed with it. It is public material;
+the private key is never written at all.
 
 ### An API snapshot is the container, because that is where its state is
 

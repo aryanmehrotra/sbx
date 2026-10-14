@@ -159,6 +159,7 @@ small Linux VM that sbx starts. There the API key is always on, and only these f
 | `SBX_HISTORY` | `~/.sbx/history.jsonl` | Where `sbx history` reads and writes the journal |
 | `SBX_UI_PLAIN` | unset | Any value: `sbx ui` drops colour and styling |
 | `SBX_NO_UPDATE_CHECK` | unset | Any value: turn off the update check (see below) |
+| `SBX_CREDENTIAL_VAULT_CA` | unset | Set IN a `credentialProxy` sandbox, not by you: the path its credential authority is mounted at, for an entrypoint that adds it to the image's own trust store |
 
 `sbx env` also prints `SBX_SANDBOX` and `SBX_PROVIDER` for your shell. sbx does not read them.
 

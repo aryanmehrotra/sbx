@@ -1,9 +1,11 @@
 package credvault
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -427,10 +429,15 @@ func TestBoundAnswersOnTheNameAndThePort(t *testing.T) {
 	}
 }
 
-// The authority is constrained to the bound hosts, so it is re-minted when those change - and not
-// when they do not, because a new authority is a new certificate for the sandbox's trust store and
-// rotating a secret must not invalidate it.
-func TestTheAuthorityFollowsTheBoundHosts(t *testing.T) {
+// The authority is constrained to the hosts the POLICY allows, and never re-minted while the
+// sandbox lives. That is what makes a delivered trust store stay true: it is read once by whatever
+// runs in the sandbox - Node, Python and Go all cache it at startup - so an authority that moved
+// when a binding was added would leave a long-running agent trusting one that no longer exists,
+// and every swap after that would fail its handshake with nothing to say why.
+//
+// It is not wider than it needs to be: a binding cannot name a host the policy does not already
+// allow, so the policy's names are a superset of the bindings' names by construction.
+func TestTheAuthorityIsStableAndCoversEveryHostThePolicyAllows(t *testing.T) {
 	v := newVault(t, "api.example.com", "other.example.com")
 
 	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
@@ -442,8 +449,10 @@ func TestTheAuthorityFollowsTheBoundHosts(t *testing.T) {
 		t.Fatal("a vault with a binding has no authority")
 	}
 
-	if got := strings.Join(first.Hosts(), ","); got != "api.example.com" {
-		t.Fatalf("constraints = %q, want the bound host", got)
+	// Both policy hosts, although only one is bound: the second may be bound later, and that
+	// must not need a new certificate.
+	if got := strings.Join(first.Hosts(), ","); got != "api.example.com,other.example.com" {
+		t.Fatalf("constraints = %q, want every host the policy allows", got)
 	}
 
 	// Rotating the value leaves the authority alone.
@@ -458,7 +467,7 @@ func TestTheAuthorityFollowsTheBoundHosts(t *testing.T) {
 			"the sandbox already trusts")
 	}
 
-	// Adding a host moves it.
+	// Adding a host does NOT move it, which is the whole point. Before this, it did.
 	if _, err := v.Patch(MutationRequest{Bindings: &BindingMutations{Add: []Binding{{
 		Name:  "other",
 		Match: Match{Hosts: []string{"other.example.com"}},
@@ -467,19 +476,58 @@ func TestTheAuthorityFollowsTheBoundHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second := v.CA()
-	if second == first {
-		t.Fatal("a new bound host did not re-mint the authority, so it cannot sign for that host")
+	if v.CA() != first {
+		t.Fatal("binding a new host re-minted the authority: the sandbox's trust store now names " +
+			"a certificate that has been destroyed, and every swap after this fails its handshake")
 	}
 
-	if got := strings.Join(second.Hosts(), ","); got != "api.example.com,other.example.com" {
-		t.Fatalf("constraints = %q, want both bound hosts", got)
+	// And it can sign for the host that was bound second, because the policy already covered it.
+	if _, err := first.Leaf("other.example.com"); err != nil {
+		t.Fatalf("the authority cannot sign for a host bound after it was minted: %v", err)
+	}
+}
+
+// The certificate exists as soon as the vault is opened, before anything is written to it. The
+// sandbox's trust store is delivered when the sandbox is created, and the API can only create a
+// vault afterwards - so an authority that waited for the first write would have nothing to deliver.
+func TestTheAuthorityExistsBeforeAnythingIsWrittenToTheVault(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	ca := v.CA()
+	if ca == nil {
+		t.Fatal("a freshly opened vault has no authority, so there is no certificate to put in " +
+			"the sandbox's trust store at create")
 	}
 
-	// And the one it replaced is dead, not merely unreferenced.
-	if _, err := first.Leaf("api.example.com"); !errors.Is(err, ErrDestroyed) {
-		t.Fatalf("the replaced authority can still sign (%v): its key outlived the revision that "+
-			"created it", err)
+	if len(ca.PEM()) == 0 {
+		t.Fatal("the authority has no PEM to deliver")
+	}
+
+	// Nothing is bound yet, so nothing is terminated: the certificate existing is not the filter
+	// reading anything.
+	if v.Bound("api.example.com", "443") {
+		t.Error("a vault with no bindings claimed a destination")
+	}
+}
+
+// A policy with no names of its own has nothing to terminate TLS for, so there is no authority
+// rather than one constrained to nothing.
+func TestAPolicyOfAddressesAloneGetsNoAuthority(t *testing.T) {
+	p := egress.Policy{DefaultAction: "deny", Egress: []egress.Rule{
+		{Action: "allow", Target: "10.0.0.0/8"},
+		{Action: "allow", Target: "192.0.2.7"},
+	}}
+
+	norm, err := p.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewRegistry().Open("osb-000000000002", func() (egress.Policy, bool) { return norm, true })
+
+	if v.CA() != nil {
+		t.Error("a policy that allows only addresses got a certificate authority: there is no " +
+			"name for a leaf to be the subject of")
 	}
 }
 
@@ -563,5 +611,274 @@ func TestAVaultIsSafeUnderConcurrentReadsAndWrites(t *testing.T) {
 
 	if st.Revision != 9 {
 		t.Fatalf("revision = %d, want 9: every patch has to land exactly once", st.Revision)
+	}
+}
+
+// httpsTo is a request as the filter hands one over after terminating a tunnel: absolute-form URL,
+// https scheme, the CONNECT target as the host.
+func httpsTo(t *testing.T, method, rawurl string, body io.Reader) *http.Request {
+	t.Helper()
+
+	r, err := http.NewRequest(method, rawurl, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return r
+}
+
+// This is the feature. An agent holds a fake token, or no token at all; the real one is added by
+// the filter, outside the sandbox, on its way to a host a binding names. Everything else in this
+// package exists to make this one call safe.
+func TestApplyAddsTheRealCredentialToAMatchingRequest(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httpsTo(t, http.MethodPost, "https://api.example.com/v1/messages", nil)
+
+	// What the agent wrote: a placeholder it was given instead of the key.
+	r.Header.Set("Authorization", "Bearer sk-placeholder-not-real")
+
+	if err := v.Apply(r); err != nil {
+		t.Fatalf("Apply refused a matching request: %v", err)
+	}
+
+	if got := r.Header.Get("Authorization"); got != "Bearer sk-live-secret" {
+		t.Errorf("Authorization is %q, want the real credential: the swap is what this feature "+
+			"is, and a request that leaves with the placeholder reaches the host as a bad call "+
+			"by the agent", got)
+	}
+}
+
+// Set, not added. A placeholder the agent wrote must not survive beside the real one: two
+// Authorization headers are one header with two values on the wire, and upstream reads the first.
+func TestApplyReplacesTheAgentsOwnHeaderRatherThanAppending(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
+	r.Header.Add("Authorization", "Bearer sk-placeholder-not-real")
+
+	if err := v.Apply(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := len(r.Header.Values("Authorization")); n != 1 {
+		t.Fatalf("the request carries %d Authorization values, want 1: %v", n,
+			r.Header.Values("Authorization"))
+	}
+}
+
+// A request the bindings do not cover leaves exactly as it arrived. The vault decides what a
+// permitted request carries, and a host no binding names is not its business.
+func TestApplyLeavesAnUnmatchedRequestAlone(t *testing.T) {
+	v := newVault(t, "api.example.com", "other.example.com")
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct{ name, method, url string }{
+		{"another host", http.MethodGet, "https://other.example.com/v1/models"},
+		{"a method the match does not list", "TRACE", "https://api.example.com/v1/models"},
+		{"plain http, when the binding defaults to https", http.MethodGet, "http://api.example.com/v1/models"},
+	} {
+		r := httpsTo(t, c.method, c.url, nil)
+		r.Header.Set("Authorization", "Bearer sk-placeholder-not-real")
+
+		if err := v.Apply(r); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-placeholder-not-real" {
+			t.Errorf("%s: Apply rewrote a request no binding covers (%q)", c.name, got)
+		}
+	}
+}
+
+// Every auth type the API accepts has an arm here. A type the vault stores and cannot apply is a
+// binding that looks configured and adds nothing.
+func TestApplyHandlesEveryAuthType(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		auth   Auth
+		header string
+		want   string
+	}{
+		{"bearer", Auth{Type: authBearer, Credential: "api"}, "Authorization", "Bearer sk-live-secret"},
+		{"apiKey", Auth{Type: authAPIKey, Credential: "api", Name: "X-Api-Key"}, "X-Api-Key", "sk-live-secret"},
+		{
+			"customHeaders",
+			Auth{Type: authCustomHeaders, Headers: []HeaderEntry{{Name: "X-Token", Credential: "api"}}},
+			"X-Token", "sk-live-secret",
+		},
+		{
+			// RFC 7617: base64 of user:password, encoded here, which is the only thing that
+			// makes basic different from bearer.
+			"basic",
+			Auth{Type: authBasic, Credential: "pair"},
+			"Authorization", "Basic " + base64.StdEncoding.EncodeToString([]byte("user:pw")),
+		},
+	} {
+		v := newVault(t, "api.example.com")
+
+		if _, err := v.Create(CreateRequest{
+			Credentials: []Credential{
+				{Name: "api", Source: InlineSource{Type: "inline", Value: "sk-live-secret"}},
+				{Name: "pair", Source: InlineSource{Type: "inline", Value: "user:pw"}},
+			},
+			Bindings: []Binding{{Name: "b", Match: Match{Hosts: []string{"api.example.com"}}, Auth: c.auth}},
+		}); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+
+		r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
+
+		if err := v.Apply(r); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+
+		if got := r.Header.Get(c.header); got != c.want {
+			t.Errorf("%s: %s is %q, want %q", c.name, c.header, got, c.want)
+		}
+	}
+}
+
+// The placeholder model, on every surface the spec defines. This is how an agent that writes the
+// credential into a URL or a JSON body - not only a header - still never holds the real one.
+func TestApplySubstitutesThePlaceholderOnEverySurface(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	if _, err := v.Create(CreateRequest{
+		Credentials: []Credential{{Name: "api", Source: InlineSource{Type: "inline", Value: "sk-live-secret"}}},
+		Bindings: []Binding{{
+			Name:  "b",
+			Match: Match{Hosts: []string{"api.example.com"}},
+			Auth: Auth{Type: authPassthrough, Substitutions: []Substitution{{
+				Credential:  "api",
+				Placeholder: "__TOKEN__",
+				In:          []string{"path", "query", "header", "body"},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httpsTo(t, http.MethodPost,
+		"https://api.example.com/v1/__TOKEN__/send?key=__TOKEN__",
+		strings.NewReader(`{"token":"__TOKEN__"}`))
+	r.Header.Set("X-Custom", "pre-__TOKEN__-post")
+
+	if err := v.Apply(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if r.URL.Path != "/v1/sk-live-secret/send" {
+		t.Errorf("path is %q, want the placeholder replaced", r.URL.Path)
+	}
+
+	if r.URL.RawQuery != "key=sk-live-secret" {
+		t.Errorf("query is %q, want the placeholder replaced", r.URL.RawQuery)
+	}
+
+	if got := r.Header.Get("X-Custom"); got != "pre-sk-live-secret-post" {
+		t.Errorf("header is %q, want the placeholder replaced in place", got)
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(body) != `{"token":"sk-live-secret"}` {
+		t.Errorf("body is %q, want the placeholder replaced", body)
+	}
+
+	// The length has to follow the body: a credential is almost never as long as its placeholder,
+	// and a body that disagrees with Content-Length is truncated upstream or hangs it.
+	if r.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength is %d, want %d", r.ContentLength, len(body))
+	}
+}
+
+// A binding whose credential is gone is refused, not skipped. Sending the request anyway would
+// reach the real host as the agent's own unauthenticated call, which reads as the agent's bug.
+func TestApplyRefusesABindingWhoseCredentialIsMissing(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reach past the API, which will not let a binding lose its credential, to the state the
+	// data path has to survive.
+	v.mu.Lock()
+	delete(v.credentials, "api")
+	v.mu.Unlock()
+
+	r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
+
+	err := v.Apply(r)
+	if !errors.Is(err, ErrNoSuchCredential) {
+		t.Fatalf("Apply returned %v, want ErrNoSuchCredential: a request must not be sent "+
+			"without the credential it was supposed to carry", err)
+	}
+}
+
+// Two bindings can write one header, so which one wins cannot depend on map iteration: the same
+// request would carry different credentials on different runs.
+func TestApplyIsDeterministicWhenTwoBindingsWriteOneHeader(t *testing.T) {
+	const runs = 20
+
+	for range runs {
+		v := newVault(t, "api.example.com")
+
+		if _, err := v.Create(CreateRequest{
+			Credentials: []Credential{
+				{Name: "first", Source: InlineSource{Type: "inline", Value: "sk-first"}},
+				{Name: "second", Source: InlineSource{Type: "inline", Value: "sk-second"}},
+			},
+			Bindings: []Binding{
+				{Name: "a-first", Match: Match{Hosts: []string{"api.example.com"}},
+					Auth: Auth{Type: authBearer, Credential: "first"}},
+				{Name: "b-second", Match: Match{Hosts: []string{"api.example.com"}},
+					Auth: Auth{Type: authBearer, Credential: "second"}},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
+
+		if err := v.Apply(r); err != nil {
+			t.Fatal(err)
+		}
+
+		// Binding-name order, so the later name is the one that is left.
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-second" {
+			t.Fatalf("Authorization is %q, want the last binding by name to win every time", got)
+		}
+	}
+}
+
+// A vault nothing was ever written to adds nothing, rather than refusing. The filter only asks
+// about a destination Bound said yes to, but a DELETE between the two is a real race.
+func TestApplyOnAnEmptyVaultChangesNothing(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
+
+	if err := v.Apply(r); err != nil {
+		t.Fatalf("Apply on a vault with no revision refused: %v", err)
+	}
+
+	if r.Header.Get("Authorization") != "" {
+		t.Error("Apply added a header from a vault that holds nothing")
 	}
 }

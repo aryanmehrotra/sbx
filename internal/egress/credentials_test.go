@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,10 +12,15 @@ import (
 	"testing"
 )
 
-// claimsEverything is a credential source that says every destination is bound. It exists to prove
-// that the data path does not ask: the filter must behave identically with it and without it,
-// because reading inside a tunnel is the next piece of work and not this one.
-type claimsEverything struct{ asked int }
+// claimsEverything is a credential source that says every destination is bound and records what
+// the data path asked it.
+type claimsEverything struct {
+	asked   int
+	applied int
+
+	// refuse is what Apply returns, for the case where a credential cannot be added.
+	refuse error
+}
 
 func (c *claimsEverything) Bound(string, string) bool {
 	c.asked++
@@ -22,14 +28,27 @@ func (c *claimsEverything) Bound(string, string) bool {
 	return true
 }
 
-// A nil Credentials field is today's filter, byte for byte on the path: the splice and the relay
-// are unchanged, and nothing in tunnel or forward consults the field. A source that claims every
-// destination changes nothing either, and is never even asked.
+func (c *claimsEverything) Apply(r *http.Request) error {
+	c.applied++
+
+	if c.refuse != nil {
+		return c.refuse
+	}
+
+	r.Header.Set("Authorization", "Bearer the-real-one")
+
+	return nil
+}
+
+// A nil Credentials field is the container filter and every sandbox without a vault: the splice
+// and the relay are what they always were. A source that claims every destination does not change
+// where the sandbox may reach either - an allowed CONNECT still tunnels, a denied one is still 403
+// and still never dialled, and a permitted plain request still relays its body back.
 //
-// This is what makes the field safe to ship before the behaviour behind it: the container filter
-// compiles the same sources with a nil field, and a filter with a vault still carries exactly what
-// its policy permits and refuses the rest.
-func TestACredentialSourceDoesNotChangeTheDataPath(t *testing.T) {
+// What it does change is what a permitted request carries, which the tests below this one cover.
+// The filter itself never terminates a tunnel: that is credvault.Intercept's job, in the package
+// that holds the key, because this one is compiled into a container on the sandbox's own bridge.
+func TestACredentialSourceDoesNotChangeWhereASandboxMayReach(t *testing.T) {
 	echo, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -139,12 +158,102 @@ func TestACredentialSourceDoesNotChangeTheDataPath(t *testing.T) {
 		proxy.Close()
 	}
 
-	if source.asked != 0 {
-		t.Fatalf("the data path asked the credential source %d times: swapping a tunnel for a "+
-			"read is the next piece of work, and a field that is consulted now is behaviour "+
-			"shipped without the tests for it", source.asked)
+	// The relay asks, because that is where a plain request gets its credentials. The tunnel does
+	// not: the filter splices it, and only Intercept reads inside one.
+	if source.asked == 0 {
+		t.Error("the relay never asked the credential source whether the destination was bound")
 	}
 }
+
+// The relay adds the credentials, after the policy check and before the wire. This is the plain
+// HTTP half of the swap; the tunnel half is credvault.Intercept.
+func TestTheRelayAddsCredentialsToAPermittedRequest(t *testing.T) {
+	var carried string
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		carried = r.Header.Get("Authorization")
+
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+
+	f := New([]string{host + ":" + port})
+	source := &claimsEverything{}
+	f.Credentials = source
+
+	proxy := httptest.NewServer(f)
+	defer proxy.Close()
+
+	tr := &http.Transport{Proxy: fixedProxy(t, proxy.URL)}
+	defer tr.CloseIdleConnections()
+
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	req.Header.Set("Authorization", "Bearer sk-placeholder-not-real")
+
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer resp.Body.Close()
+
+	if source.applied != 1 {
+		t.Fatalf("Apply was called %d times, want once", source.applied)
+	}
+
+	if carried != "Bearer the-real-one" {
+		t.Errorf("upstream received %q, want the real credential: the agent's placeholder "+
+			"reached the host", carried)
+	}
+}
+
+// A credential that cannot be added means the request is not sent. Relaying it without the
+// credential reaches the real host as the agent's own unauthenticated call, which fails there in a
+// way that reads as the agent's bug rather than the filter's.
+func TestTheRelayRefusesARequestWhoseCredentialsCouldNotBeAdded(t *testing.T) {
+	var reached int
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached++
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+
+	f := New([]string{host + ":" + port})
+	f.Credentials = &claimsEverything{refuse: errNoCredential}
+
+	proxy := httptest.NewServer(f)
+	defer proxy.Close()
+
+	tr := &http.Transport{Proxy: fixedProxy(t, proxy.URL)}
+	defer tr.CloseIdleConnections()
+
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
+
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("a request whose credentials could not be added got %d, want 502",
+			resp.StatusCode)
+	}
+
+	if reached != 0 {
+		t.Error("the request was relayed anyway, without the credential it was supposed to carry")
+	}
+}
+
+// errNoCredential stands in for whatever the vault could not do.
+var errNoCredential = errors.New("no such credential")
 
 // The container filter is built from a fixed list of this package's files, so a change here reaches
 // a program running on a sandbox's own bridge. The seam must not take anything with it: no new

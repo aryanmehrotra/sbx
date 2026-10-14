@@ -114,6 +114,27 @@ type CredentialSource interface {
 	// Host is the name the client asked for, not an address: a binding names an FQDN, and the
 	// address it resolves to is the policy's business, not the vault's.
 	Bound(host, port string) bool
+
+	// Apply adds the sandbox's credentials to a request the filter has read, in place.
+	//
+	// The request goes to the vault rather than a value coming back, which is the whole custody
+	// argument in one method signature: this package is compiled into the container filter, so a
+	// value returned here would be a secret in that container. The filter learns that a
+	// destination is bound; it never learns what with.
+	//
+	// An error means the request must not be sent. Forwarding one that lost its credential
+	// reaches the real host as the agent's own unauthenticated call, which fails there in a way
+	// that reads as the agent's bug rather than the filter's.
+	Apply(r *http.Request) error
+}
+
+// ServeCredentials is the filter's own view of whether it can swap credentials at all: a source
+// is set, and this destination is one a binding covers.
+//
+// A nil source is the container filter and every sandbox without a vault, which is why the swap is
+// only ever reached where `sbx serve` holds the filter itself.
+func (f *Filter) ServeCredentials(host, port string) bool {
+	return f.Credentials != nil && f.Credentials.Bound(host, port)
 }
 
 // New builds a filter from egress_allow entries, each a host or host:port. A host permits itself
@@ -489,6 +510,18 @@ func (f *Filter) forward(w http.ResponseWriter, r *http.Request) {
 	// the transport bounds its own dial and TLS handshake.
 	r = r.WithContext(detach(r))
 	r.RequestURI = ""
+
+	// After the policy check and before the wire. A credential is only ever added to a request
+	// the policy already permits, so a binding can never widen where the sandbox may reach - it
+	// decides what a permitted request carries, never whether it is allowed.
+	if f.ServeCredentials(host, port) {
+		if err := f.Credentials.Apply(r); err != nil {
+			refuse(w, fmt.Errorf("this request's credentials could not be added, so it was not "+
+				"sent: %w", err))
+
+			return
+		}
+	}
 
 	resp, err := f.roundTripper().RoundTrip(r)
 	if err != nil {

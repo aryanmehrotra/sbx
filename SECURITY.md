@@ -47,7 +47,12 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   whose service declares deny is refused on such an engine rather than reported applied.
 - A credential vault (`credentialProxy`, a preview feature) holds a per-sandbox certificate
   authority's private key and the plaintext of every credential in the daemon, never on disk, and
-  only where `sbx serve` holds the sandbox's filter in its own process. It is refused on a host
+  only where `sbx serve` holds the sandbox's filter in its own process. The authority's own
+  certificate IS written beside the sandbox's record, and mounted into the sandbox, because it is
+  public material and the sandbox has to trust it; the key is not written at all. The filter
+  terminates a tunnel only to a host a binding names, adds the credential there, and hands the
+  request to the filter's own relay so the policy still decides where the sandbox may reach - a
+  binding changes what a permitted request carries, never what is permitted. It is refused on a host
   whose filter is a container, which would put both on the sandbox's own network
   ([DECISIONS.md](docs/DECISIONS.md#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself)).
   `sbx doctor` reports that host answer as `hosted egress filter`.
@@ -169,6 +174,9 @@ Anything that breaks a boundary sbx claims to hold:
   the create rather than honoured in name - that is the advisory below, not a new finding.
 - A filtered service reaching a destination its policy denies, directly, through the filter or a
   name that resolves into a denied range, or rewriting its own policy.
+- A credential reaching a host no binding of that sandbox names, a sandbox reading a credential
+  value back out of the vault or out of its own environment, or a credential vault authority
+  certifying a host the sandbox's egress policy does not allow.
 - `--isolation gvisor|kata` reporting success under the default runtime.
 - A public port serving a different sandbox than `sbx env` named, including through a `sbx connect`
   tunnel to a recreated sandbox.

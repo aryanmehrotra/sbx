@@ -259,7 +259,12 @@ func (d *daemon) reconcileEgress(found []provider.Unit) {
 			filter.Refuse = egress.VMRefuse(fc.Plan, d.vmWiden)
 		}
 
-		srv := &http.Server{Handler: filter}
+		// Served through the vault's interception rather than the filter directly: a CONNECT to a
+		// destination a binding covers is terminated here so the request inside it can be read and
+		// have its credentials added, and every other request - which is all of them on a sandbox
+		// with no vault - goes to the filter untouched. The termination cannot live in the filter
+		// itself, because that package is compiled into the container filter and must hold no key.
+		srv := &http.Server{Handler: credvault.Intercept(filter, vault)}
 		go func() { _ = srv.Serve(ln) }()
 
 		d.egress[gw] = &egressProxy{sandbox: want.sandbox, ln: ln, filter: filter, vault: vault,

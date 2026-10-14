@@ -591,8 +591,35 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 
 	env[tokenEnv] = pl.rec.Token
 
+	// The authority its filter will sign with, mounted read-only and named in the environment, so
+	// that the first process in there can trust a terminated tunnel. Delivered now because a trust
+	// store is read once at startup: a certificate that arrived later would be one a long-running
+	// agent never picks up.
+	caPath, caEnv, err := s.credentialVaultCA(id, pl.credentialProxy, pl.egressPolicy)
+	if err != nil {
+		fail("credential_vault_unavailable", err.Error())
+
+		return
+	}
+
+	files := map[string]string{}
+
+	if caPath != "" {
+		files[caPath] = vaultCAPath
+
+		for k, v := range caEnv {
+			// Never over a value the caller set. Someone who passed NODE_EXTRA_CA_CERTS meant
+			// their own bundle, and replacing it would break whatever they added it for; the
+			// mount and SBX_CREDENTIAL_VAULT_CA still tell them where this one is.
+			if _, taken := env[k]; !taken {
+				env[k] = v
+			}
+		}
+	}
+
 	svc := spec.Service{
 		Image: pl.rec.Image,
+		Files: files,
 		Ports: pl.rec.Ports,
 		Env:   env,
 
