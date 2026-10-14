@@ -182,6 +182,23 @@ func (c *CA) Hosts() []string {
 // It refuses a host outside the constraints instead of signing one the sandbox would then reject
 // in a handshake: the refusal names the host and what the authority covers, which is the
 // difference between "that binding does not cover this host" and an unexplained TLS failure.
+// Covers reports whether this authority may sign for a host - the same question Leaf answers by
+// refusing, asked before a binding is accepted rather than when a request arrives.
+//
+// A destroyed authority covers nothing: it can sign nothing.
+func (c *CA) Covers(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.destroyed {
+		return false
+	}
+
+	return coveredBy(c.hosts, host)
+}
+
 func (c *CA) Leaf(host string) (*tls.Certificate, error) {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 

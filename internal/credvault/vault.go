@@ -430,7 +430,49 @@ func (v *Vault) check(credentials map[string]record, bindings map[string]Binding
 		pol, hasPolicy = v.policy()
 	}
 
-	return validateCandidate(credentials, bindings, pol, hasPolicy)
+	if err := validateCandidate(credentials, bindings, pol, hasPolicy); err != nil {
+		return err
+	}
+
+	return v.certifiable(bindings)
+}
+
+// certifiable refuses a binding whose host this sandbox's authority may not sign for.
+//
+// The authority is minted once, when the sandbox is created, from the policy as it stood then -
+// that is what makes the certificate in the sandbox's trust store stay true. A policy widened
+// afterwards does not widen it, so a host allowed later and then bound would be accepted here and
+// fail at the first request, when Leaf refuses to sign: a 502 on a tunnel, far from the PATCH that
+// caused it. Refused at the write instead, which is where the caller can still do something about
+// it.
+func (v *Vault) certifiable(bindings map[string]Binding) error {
+	if v.ca == nil {
+		return nil
+	}
+
+	for _, b := range bindings {
+		for _, host := range b.Match.Hosts {
+			// A wildcard is tested through a name under it, the way the policy check tests one.
+			probe := host
+			if strings.HasPrefix(host, "*.") {
+				probe = "probe" + host[1:]
+			}
+
+			if v.ca.Covers(probe) {
+				continue
+			}
+
+			return invalid("binding %q names the host %q, which this sandbox's credential "+
+				"authority may not sign for: it was minted when the sandbox was created, from "+
+				"the egress policy as it stood then, and it is constrained to %s. That is "+
+				"deliberate - the certificate in the sandbox's trust store is read once, so the "+
+				"authority cannot be replaced under a running agent. Create the sandbox with "+
+				"%q already in its networkPolicy to bind it",
+				b.Name, host, strings.Join(v.ca.Hosts(), ", "), host)
+		}
+	}
+
+	return nil
 }
 
 // ensureCA gives the vault one authority for the life of the sandbox, constrained to the hosts its

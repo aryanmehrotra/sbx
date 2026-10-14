@@ -1102,6 +1102,14 @@ authority that could certify an address rather than a name would be a general-pu
 A policy with no DNS names of its own - all addresses and CIDRs - gets no authority, because there
 is no name for a leaf to be the subject of.
 
+**A binding the authority cannot sign for is refused at the write.** The policy can be widened
+after the sandbox exists, and that does not widen the authority - so a host allowed later and then
+bound would be accepted and fail at the first request, as a 502 on a tunnel far from the PATCH that
+caused it. `Vault.certifiable` asks `CA.Covers` for every binding host at write time instead, and
+says that the authority was minted from the policy as it stood at create and that the host has to
+be in the policy from the start. Measured: before this, such a binding was accepted and the request
+got `CONNECT tunnel failed, response 502` with nothing to connect it to the patch.
+
 **The certificate is delivered when the sandbox is created, which is before a vault can exist.**
 The API can only create a vault on a sandbox that is already running, and by then the trust store
 has been read. So `Registry.Certificate` mints the authority during the create, the create mounts

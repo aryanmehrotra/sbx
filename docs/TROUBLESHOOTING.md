@@ -685,6 +685,30 @@ instead of at the create. The cause and the fix are the same.
 This message names the sandbox's own bridge gateway, not docker's, so the address to check is in
 `198.18.0.0/15`: `ifconfig | grep 198.18`.
 
+### A binding is refused: "this sandbox's credential authority may not sign for"
+
+**Symptom:** `PATCH .../egress/credential-vault` adding a binding is refused, naming a host the
+sandbox's `networkPolicy` **does** allow.
+
+**Cause:** the authority is minted once, when the sandbox is created, from the policy as it stood
+then - that is what keeps the certificate in the sandbox's trust store true, because a trust store
+is read once at startup and cannot be replaced under a running agent. A policy widened afterwards
+does not widen the authority. Without this refusal the binding would be accepted and then fail at
+the first request, as a 502 on a tunnel far from the PATCH that caused it.
+
+**Fix:** put the host in the sandbox's `networkPolicy` at create, and bind it afterwards:
+
+```json
+{"credentialProxy": {"enabled": true},
+ "networkPolicy": {"defaultAction": "deny",
+                   "egress": [{"action": "allow", "target": "api.example.com"},
+                              {"action": "allow", "target": "api.other.com"}]}}
+```
+
+Every host that may ever carry a credential has to be in the policy from the start. A host added to
+the policy later still works for ordinary egress - it just cannot be bound to a credential on that
+sandbox.
+
 ### A request to a bound host fails its TLS handshake, or the agent reports an unknown authority
 
 **Symptom:** a sandbox with `credentialProxy` reaches hosts its policy allows, but a request to a

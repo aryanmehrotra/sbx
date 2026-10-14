@@ -882,3 +882,91 @@ func TestApplyOnAnEmptyVaultChangesNothing(t *testing.T) {
 		t.Error("Apply added a header from a vault that holds nothing")
 	}
 }
+
+// A policy widened after the sandbox was created does not widen the authority, which was minted
+// from the policy as it stood then. So a binding on a host allowed later is refused at the write
+// rather than accepted and then failing at the first request, when the authority declines to sign
+// and the caller gets a 502 on a tunnel far from the PATCH that caused it.
+func TestABindingTheAuthorityCannotSignForIsRefusedAtTheWrite(t *testing.T) {
+	// The policy the vault reads is swapped under it, exactly as a PUT /networkpolicy does.
+	live := policyFunc(t, "api.example.com")
+
+	v := NewRegistry().Open("osb-000000000003", live.read)
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	minted := v.CA()
+	if minted == nil {
+		t.Fatal("no authority to constrain")
+	}
+
+	// Widened after the authority was minted.
+	live.set(t, "api.example.com", "late.example.com")
+
+	_, err := v.Patch(MutationRequest{Bindings: &BindingMutations{Add: []Binding{{
+		Name:  "late",
+		Match: Match{Hosts: []string{"late.example.com"}},
+		Auth:  Auth{Type: authBearer, Credential: "api"},
+	}}}})
+
+	if err == nil {
+		t.Fatal("a binding on a host the authority cannot sign for was accepted: it would fail " +
+			"at the first request instead, as a 502 on a tunnel")
+	}
+
+	if !strings.Contains(err.Error(), "may not sign for") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+
+	// And the authority is untouched by the attempt: the sandbox still trusts what it was given.
+	if v.CA() != minted {
+		t.Error("the refused patch moved the authority")
+	}
+
+	// The host that was always allowed still works.
+	if _, err := minted.Leaf("api.example.com"); err != nil {
+		t.Errorf("the authority stopped signing for its own host: %v", err)
+	}
+}
+
+// policyFunc is a policy the test can change, as PUT /networkpolicy changes one under a vault.
+type policy struct {
+	mu  sync.RWMutex
+	pol egress.Policy
+}
+
+func policyFunc(t *testing.T, hosts ...string) *policy {
+	t.Helper()
+
+	p := &policy{}
+	p.set(t, hosts...)
+
+	return p
+}
+
+func (p *policy) set(t *testing.T, hosts ...string) {
+	t.Helper()
+
+	pol := egress.Policy{DefaultAction: "deny"}
+	for _, h := range hosts {
+		pol.Egress = append(pol.Egress, egress.Rule{Action: "allow", Target: h})
+	}
+
+	norm, err := pol.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p.mu.Lock()
+	p.pol = norm
+	p.mu.Unlock()
+}
+
+func (p *policy) read() (egress.Policy, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.pol, true
+}
