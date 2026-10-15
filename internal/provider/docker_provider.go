@@ -306,18 +306,56 @@ func label(name string) string { return "{{index .Config.Labels \"" + name + "\"
 
 func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, service string,
 	svc spec.Service, eps []Endpoint, specDir string, iso Isolation,
-) error {
+) (err error) {
 	if err := dockerRefuses(iso); err != nil {
 		return err
 	}
 
 	cn := containerName(sandbox, service)
 
+	// What this call made, for undoHalfCreate. A create that fails after the filter is up must
+	// not leave it running: nothing reclaims it, because a sandbox with no service container has
+	// no units, and both `sbx rm` and `sbx gc` go by units.
+	var madeNetwork, startedFilter bool
+
+	defer func() {
+		if err != nil {
+			d.undoHalfCreate(sandbox, madeNetwork, startedFilter)
+		}
+	}()
+
 	// Before the container joins it, and only when something asks. Fails closed: a service
 	// that declared "deny" and could not get the network must not start with egress open.
 	if svc.Egress == spec.EgressDeny || svc.Filtered() {
-		if err := d.ensureEgressNetwork(sandbox); err != nil {
+		made, err := d.ensureEgressNetwork(sandbox)
+		if err != nil {
 			return err
+		}
+
+		madeNetwork = made
+	}
+
+	// A bridge with masquerade off stops egress only where its gateway is an interface of this
+	// machine. On a VM-backed docker - colima, Docker Desktop - the NAT is the VM boundary's,
+	// outside the VM's iptables, and a measured bridge with masquerade off still reached the
+	// internet. Refused rather than honoured in name: a service that declared deny and would
+	// get a route out anyway must not start, which is the same call `egress: "deny"` on
+	// kubernetes and `--isolation gvisor|kata` already make. A filtered service is exempt
+	// because its filter, not the bridge, is what denies.
+	if svc.Egress == spec.EgressDeny && !svc.Filtered() {
+		if gw, err := d.egressGateway(sandbox); err == nil {
+			if routed := bindGateway(gw); routed != nil {
+				return fmt.Errorf("service %q declares egress deny, which this machine's docker "+
+					"cannot enforce: the bridge's gateway %s is not an address it holds (%v), so "+
+					"docker's bridges live inside a VM and that VM routes them out whatever "+
+					"masquerade says. sbx will not report a service denied egress while it has a "+
+					"route out. Use `egress_policy` or `egress_allow` for traffic that honours "+
+					"HTTP_PROXY, which is what the sandbox is given and what the filter then "+
+					"decides per request - a client here that goes around the proxy still has the "+
+					"VM's route out. For a denial at the route, run on a host whose docker is "+
+					"native",
+					service, gw, routed)
+			}
 		}
 	}
 
@@ -355,6 +393,9 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 		if hosted = bindable(gw); hosted != nil {
 			fs, err := d.ensureFilterContainer(sandbox, svc.DeclaredPolicy(),
 				egress.PortGrantsFromAllowList(svc.EgressAllow))
+
+			startedFilter = fs.started
+
 			if err != nil {
 				return fmt.Errorf("%w\n\nthe filter could not be run as a container either: %v", hosted, err)
 			}
@@ -611,7 +652,7 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 
 	args = append(args, svc.Args...)
 
-	_, err := d.docker(args...)
+	_, err = d.docker(args...)
 
 	return err
 }
@@ -644,25 +685,125 @@ func (d *dockerProvider) egressGateway(sandbox string) (string, error) {
 //
 // Measured 2026-08-15: published port answered 200, external fetch blocked, docker's
 // embedded DNS still resolved - it sits on the bridge and needs no route out.
-func (d *dockerProvider) ensureEgressNetwork(sandbox string) error {
+//
+// It reports whether THIS call created the bridge, so a create that fails later can take back
+// what it made and leave alone what it found (undoHalfCreate).
+func (d *dockerProvider) ensureEgressNetwork(sandbox string) (created bool, err error) {
 	name := egressNetwork(sandbox)
 
-	if _, err := d.docker("network", "inspect", name); err == nil {
-		return nil
-	}
-
-	if _, err := d.docker("network", "create",
-		"-o", "com.docker.network.bridge.enable_ip_masquerade=false",
-		"--label", labelSandbox+"="+sandbox, name); err != nil {
-		// Racing another service of the same sandbox is not a failure.
-		if _, e := d.docker("network", "inspect", name); e == nil {
-			return nil
+	// The subnet, not just whether the bridge is there: one an older sbx let docker's IPAM
+	// address is one docker 28 refuses the filter's `--ip` on, and re-addressing it means
+	// creating it again. Which is safe only while nothing is attached, running or not: a network
+	// is recreated with a new id, and a container that was on the old one no longer starts
+	// ("failed to set up container networking: network <old id> not found", measured on Docker
+	// Desktop 28.5.1) - which is every service of a sleeping sandbox. `network rm` is no guard
+	// here: it refuses a network with a RUNNING container and removes one under a stopped one.
+	//
+	// So a bridge with containers on it is left as it is. Nothing regresses - that is what the
+	// sandbox has been running all along - and ensureFilterContainer says what to do about it
+	// when the filter turns out to need an address on it.
+	if out, e := d.docker("network", "inspect", name,
+		"--format", "{{(index .IPAM.Config 0).Subnet}}"); e == nil {
+		if inEgressBlock(out) {
+			return false, nil
 		}
 
-		return fmt.Errorf("service declared egress deny and the network could not be created: %w", err)
+		if on, e := d.docker("ps", "-aq", "--filter", "network="+name); e != nil || on != "" {
+			return false, nil
+		}
+
+		if _, e := d.docker("network", "rm", name); e != nil {
+			return false, nil
+		}
+
+		fmt.Printf("  replacing the egress bridge for %s: its subnet was docker's own, and "+
+			"docker 28 refuses the filter's fixed address on one\n", sandbox)
 	}
 
-	return nil
+	// Read once, before any slice is tried: the host may already route part of sbx's block
+	// somewhere else, and a bridge inside that route collides with it silently (hostRoutes).
+	routes := hostRoutes()
+
+	var collided []string
+
+	// A /24 of sbx's own block (see egressSubnetBlock). Docker refuses one another network
+	// already holds ("Pool overlaps with other one on this address space"), so the slice this
+	// sandbox's name picks is tried first and the next few after it - for a second sandbox that
+	// hashed to the same slice, or an operator's network sitting in the block.
+	for try := range egressSubnetTries {
+		subnet := egressSubnet(sandbox, try)
+
+		// Skipped rather than asked about: docker would create it happily, because the clash is
+		// with the host's table and not with another of its networks.
+		if where := routedElsewhere(routes, subnet); where != "" {
+			collided = append(collided, subnet.String()+" against "+where)
+
+			continue
+		}
+
+		if _, err = d.docker("network", "create",
+			"-o", "com.docker.network.bridge.enable_ip_masquerade=false",
+			"--subnet", subnet.String(),
+			"--gateway", egressBridgeGateway(subnet),
+			"--label", labelSandbox+"="+sandbox, name); err == nil {
+			return true, nil
+		}
+
+		// Racing another service of the same sandbox is not a failure - and the bridge is
+		// theirs, not ours, so a failure here must not take it.
+		if _, e := d.docker("network", "inspect", name); e == nil {
+			return false, nil
+		}
+
+		// Anything but a taken subnet is a failure the next slice would hit too.
+		if !strings.Contains(err.Error(), "overlap") {
+			break
+		}
+	}
+
+	// Nothing was asked of docker, because every slice was already routed on this host.
+	if err == nil {
+		return false, routeConflict(sandbox, collided)
+	}
+
+	return false, fmt.Errorf("service declared egress deny and its no-NAT bridge could not be "+
+		"created: %w. sbx gives each sandbox a /24 of %s. `docker network ls --filter "+
+		"name=sbx-noegress-` lists the ones it holds, and `docker network rm <name>` frees one "+
+		"no sandbox still uses", err, egressSubnetBlock)
+}
+
+// undoHalfCreate takes back the egress filter and the bridge when a create that made them fails.
+//
+// Without it a create that got as far as the filter and then could not start the service it was
+// for left a container running with `--restart unless-stopped`, a published loopback port, a
+// route out off the default bridge, and the filter's control token on a label - owned by a
+// sandbox that does not exist. Nothing reclaimed it: a sandbox with no service container has no
+// units, so `sbx rm` answered "no sandbox", and `sbx gc` listed only volumes and images.
+//
+// Only what this call made, and only while nothing is left to use it. A filter this create
+// REUSED belongs to the sandbox, not to this create; one it replaced is serving whatever
+// services are already up. So the sandbox's own service containers are the gate - the filter
+// carries no sbx.service label, which is how it is told apart from them (the same distinction
+// slotOf makes) - and a listing that fails leaves everything alone.
+func (d *dockerProvider) undoHalfCreate(sandbox string, madeNetwork, startedFilter bool) {
+	if !madeNetwork && !startedFilter {
+		return
+	}
+
+	if out, err := d.docker("ps", "-aq", "--filter", "label="+labelSandbox+"="+sandbox,
+		"--filter", "label="+labelService); err != nil || out != "" {
+		return
+	}
+
+	if startedFilter {
+		d.removeFilterContainer(sandbox)
+	}
+
+	if madeNetwork {
+		if _, err := d.docker("network", "rm", egressNetwork(sandbox)); err == nil {
+			fmt.Printf("  removed network %s, which this create had made\n", egressNetwork(sandbox))
+		}
+	}
 }
 
 // dockerRefuses is the isolation docker cannot provide at all. A microVM per container is not a
@@ -1415,10 +1556,6 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 		return err
 	}
 
-	if len(units) == 0 {
-		return fmt.Errorf("no sandbox %q", sandbox)
-	}
-
 	for _, u := range units {
 		// -v takes the container's ANONYMOUS volumes with it - the ones an image's VOLUME
 		// instruction makes (redis /data, postgres PGDATA). Without it every rm left one behind
@@ -1438,13 +1575,31 @@ func (d *dockerProvider) Remove(ctx context.Context, sandbox string) error {
 	// Before the network: the filter sits on it, and docker will not remove a network that
 	// still has a container attached. A filter that outlived its sandbox would be a container
 	// nothing owns, holding a published port, which is the failure sandboxes exist to avoid.
-	d.removeFilterContainer(sandbox)
+	//
+	// Reached even when there were no units, which is exactly when it matters: a create that
+	// failed after starting the filter leaves one with no service container beside it, and
+	// stopping at "no sandbox" before this line meant raw docker was the only way to reclaim it.
+	cleaned := d.removeFilterContainer(sandbox)
 
 	// After the containers: docker refuses to remove a network still in use. A sandbox that
 	// never declared egress deny has none, and the failure is ignored - this is cleanup, and
 	// reporting "no such network" would make every ordinary rm look like it went wrong.
 	if _, err := d.docker("network", "rm", egressNetwork(sandbox)); err == nil {
 		fmt.Printf("  removed network %s\n", egressNetwork(sandbox))
+
+		cleaned = true
+	}
+
+	// Said after the cleanup, not instead of it. `sbx rm typo-name` still has to fail rather
+	// than report a sandbox destroyed, so having removed leftovers is not success.
+	if len(units) == 0 {
+		if cleaned {
+			return fmt.Errorf("no sandbox %q: it had no services, and the egress filter and "+
+				"bridge a half-finished create left have been removed. `sbx list` names the "+
+				"sandboxes that do exist", sandbox)
+		}
+
+		return fmt.Errorf("no sandbox %q", sandbox)
 	}
 
 	return nil
@@ -1603,7 +1758,7 @@ func (d *dockerProvider) Stats(ctx context.Context, refs []string) (map[string]U
 // Mac - the same filter runs as a container on the bridge, which needs nothing of this machine.
 // So the refusal that used to be the whole answer now applies only where neither works.
 func (d *dockerProvider) EgressPreflight(_ context.Context, sandbox string) error {
-	if err := d.ensureEgressNetwork(sandbox); err != nil {
+	if _, err := d.ensureEgressNetwork(sandbox); err != nil {
 		return err
 	}
 
@@ -1649,17 +1804,32 @@ func (d *dockerProvider) EgressPreflight(_ context.Context, sandbox string) erro
 // this machine holds, and asking about 20999 would refuse whenever the daemon legitimately
 // holds it already for a sibling service on the same gateway.
 func bindable(gw string) error {
-	probe, err := net.Listen("tcp", net.JoinHostPort(gw, "0"))
-	if err != nil {
+	if err := bindGateway(gw); err != nil {
 		return fmt.Errorf(
 			"declares egress_allow, and the filtering proxy that enforces it cannot be "+
 				"started: the sandbox's gateway %s is not an address this machine can "+
 				"bind (%v).\n"+
 				"That is what a VM-backed docker looks like - colima and Docker Desktop "+
-				"keep the bridge inside the VM, while `sbx serve` runs out here. Use "+
-				"`egress: \"deny\"` for no egress at all, which needs no proxy, or run "+
-				"the daemon on a host whose docker is native.",
+				"keep the bridge inside the VM, while `sbx serve` runs out here. Run the "+
+				"daemon on a host whose docker is native, or drop the service's egress rules "+
+				"and give it no network at all. Not `egress: \"deny\"`: this is the one kind "+
+				"of machine where a bridge without NAT does not stop egress either, and it is "+
+				"refused here for that reason.",
 			gw, err)
+	}
+
+	return nil
+}
+
+// bindGateway is the probe itself, with the net error and nothing else: its callers ask one
+// question - is this bridge an interface of this machine, or is it inside a VM - and each words
+// its own refusal from the answer. bindable is answering "this service declares an allow-list";
+// filterHost is answering "this machine can hold a credential vault"; Create asks it again for a
+// service that declared deny, because that is the same boundary and the same refusal is due.
+func bindGateway(gw string) error {
+	probe, err := net.Listen("tcp", net.JoinHostPort(gw, "0"))
+	if err != nil {
+		return err
 	}
 
 	return probe.Close()

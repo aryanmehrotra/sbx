@@ -137,16 +137,19 @@ var help = map[string]struct{ synopsis, about, example string }{
 	},
 	"gc": {
 		"sbx gc [--older-than DURATION] [--snapshots] [--force]",
-		"Reclaim volumes and images that dead sandboxes left behind. Lists what it would\n" +
-			"remove and does nothing else unless you pass --force. A snapshot a sandbox still\n" +
-			"runs from is never offered, with or without --force. Lock files left by a killed\n" +
-			"create (~/.sbx/locks) are listed and removed the same way.",
+		"Reclaim volumes and images that dead sandboxes left behind, and the egress filter and\n" +
+			"bridge a half-finished create left. Lists what it would remove and does nothing else\n" +
+			"unless you pass --force. A snapshot a sandbox still runs from is never offered, with\n" +
+			"or without --force, and a filter is left alone for fifteen minutes so a create still\n" +
+			"building its image keeps it. Lock files left by a killed create (~/.sbx/locks) are\n" +
+			"listed and removed the same way.",
 		"sbx gc --older-than 168h --force",
 	},
 	"doctor": {
 		"sbx doctor [--json]",
 		"What this machine can and cannot do: docker or kubernetes, whether a daemon is\n" +
-			"running, which isolation runtimes exist. Run it first when something is wrong.",
+			"running, which isolation runtimes exist, and whether `sbx serve` holds a sandbox's\n" +
+			"egress filter itself or runs it as a container. Run it first when something is wrong.",
 		"sbx doctor",
 	},
 	"install": {

@@ -13,7 +13,7 @@ via `CLAUDE.md`): the rules, the docs contract and the writing style. What sbx i
 | `internal/daemon/` | `sbx serve`: wake/sleep state machine, byte proxy, freeze, egress proxy, `sbx connect` server, OpenSandbox front. Flags in `serve.go`. |
 | `internal/provider/`, `internal/fc*` | Backends (`docker_*.go`, `kubernetes*.go`, `firecracker*.go`, warm pool). Firecracker: pinned VMM/kernel, jailer, rootfs, bridge guard, helper VM (`sbx fc`), vsock. |
 | `internal/osb/`, `internal/execd*/`, `internal/osbclient/` | OpenSandbox lifecycle API, in-sandbox execd agent, its host-side control, and a client. |
-| `internal/mcp/`, `internal/spec/`, `internal/egress/` | MCP server (tools in `tools.go`; `internal/app/mcp.go` only registers them); `sandbox.json` parsing and validation; the egress filter. |
+| `internal/mcp/`, `internal/spec/`, `internal/egress/`, `internal/credvault/` | MCP server (tools in `tools.go`; `internal/app/mcp.go` only registers them); `sandbox.json` parsing and validation; the egress filter; the credential vault and its per-sandbox certificate authority, kept out of `egress` because that package is copied into the container filter. |
 | `internal/tui`, `ui`, `tunnel`, `ws*`, `history`... | Dashboard, public links, WebSocket halves, audit history. Each package opens with a doc comment. |
 | `scripts/`, `test/osb/`, `console/` | e2e suites, benchmarks, linters, release helpers; OpenSandbox conformance harness and log console (own Go modules). |
 | `deploy/`, `examples/`, `docs/` | Activator image and service files; built-in specs (embedded); the [doc map](#doc-map) pages, `docs/design/` records, one release note per tag. |
@@ -161,3 +161,15 @@ Never edit or delete earlier lines. Past about 25, move the oldest to [CONTRIBUT
 - 2026-09-27 · Docs written by agents in committee read as AI-generated: bold lead-ins, tables for
   prose, slogans. One voice, plain bullets, a README of about 100 lines.
 - 2026-09-27 · Read the vendor's unit, not just its price. Modal bills a "physical core (2 vCPU equivalent)"; a cost example priced 1 vCPU as a core and overstated Modal by 60% (SELF-HOSTING, COMPARISON).
+- 2026-10-14 · A docker option can be honoured and still not hold. Docker Desktop 28.5.1 wrote no
+  MASQUERADE rule for a bridge with `enable_ip_masquerade=false`, and the bridge reached `1.1.1.1`
+  anyway, because the NAT is the VM boundary's. Verify a control from inside the sandbox, not from
+  the rule you asked for (DECISIONS, "On a VM-backed engine a bridge without NAT does not stop egress").
+- 2026-10-15 · `http.Serve` on a one-connection listener returns only when `Accept` fails, so the
+  connection it is handed has to close the listener. Twenty terminated tunnels left twenty
+  goroutines parked in `(*oneConn).Accept` (`internal/credvault/intercept.go`); counted in a test,
+  because a parked goroutine breaks nothing a request can see.
+- 2026-10-15 · A key held only in memory makes a restart a re-create, not a retry. The vault minted
+  a second authority when its registry had none, so the filter signed with a certificate the
+  sandbox had never been given and every bound host failed `unknown authority` after a 201
+  (`Registry.Open`). Refuse what cannot work; never mint a second one.

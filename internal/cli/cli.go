@@ -2181,6 +2181,14 @@ func Rm(ctx context.Context, p provider.Provider, sandbox string) error {
 	// A failed create can leave an origin record, and a killed one its name lock, with no
 	// sandbox behind either; rm clears both rather than answering "no such sandbox" forever.
 	if units, err := p.List(ctx, sandbox); err == nil && len(units) == 0 {
+		// The backend first, for leftovers of its own. A create that failed after starting the
+		// egress filter leaves it and its bridge behind with no service container beside them -
+		// which is precisely a sandbox with no units, so this branch is the one that has to
+		// reclaim them. Remove reports each thing it took as it goes, and its error here is
+		// always "no sandbox", which RemoveMissing says better and with the origin record in
+		// hand: discarded for the message, called for the cleanup.
+		_ = p.Remove(ctx, sandbox)
+
 		err := RemoveMissing(ctx, p, sandbox)
 
 		if path, ok := slotlock.ClearStaleName(sandbox); ok {

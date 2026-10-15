@@ -67,6 +67,12 @@ type record struct {
 	// for.
 	EgressToken string `json:"egressToken,omitempty"`
 
+	// CredentialProxy is credentialProxy.enabled from the create request: whether this sandbox
+	// may hold a credential vault. The flag is here; the vault is NOT - it holds credential
+	// plaintext and a private key, and this file is 0600 on disk and survives a restart, which
+	// is exactly what a private key must not do (internal/credvault).
+	CredentialProxy bool `json:"credentialProxy,omitempty"`
+
 	CreatedAt time.Time  `json:"createdAt"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 

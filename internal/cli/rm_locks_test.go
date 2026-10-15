@@ -161,3 +161,31 @@ func TestRmOfAMissingSandboxClearsItsRecordAndStaleLock(t *testing.T) {
 		t.Errorf("sbx rm left the stale name lock %s", lock)
 	}
 }
+
+// A create that failed after starting the egress filter leaves the filter and its bridge with no
+// service container beside them, which is a sandbox with no units - and rm's missing-sandbox path
+// returned before it ever reached the backend, so the one case the backend's reclaim was written
+// for was the one case that never called it. The filter kept a published port and a route out,
+// and `sbx gc` was the only way to it.
+func TestRmOfASandboxWithNoUnitsStillAsksTheBackendToReclaimItsLeftovers(t *testing.T) {
+	paths := origins(t, "half-finished")
+	p := &snapStub{}
+
+	var err error
+
+	out := captureOutput(t, func() { err = Rm(context.Background(), p, "half-finished") })
+	if err != nil {
+		t.Fatalf("rm of a leftover record failed: %v\n%s", err, out)
+	}
+
+	if !p.tookRemoveOf("half-finished") {
+		t.Error("rm returned without asking the backend to reclaim the sandbox's leftovers, " +
+			"so a half-finished create's egress filter and bridge are left behind")
+	}
+
+	// The backend's "no sandbox" is for the cleanup's sake, not the person's: rm still clears the
+	// record and reports what the missing-sandbox path reports.
+	if exists(paths["half-finished"]) {
+		t.Error("the leftover origin record is still there")
+	}
+}

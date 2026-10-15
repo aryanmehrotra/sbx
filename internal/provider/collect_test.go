@@ -1,6 +1,9 @@
 package provider
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // Which volume belongs to which sandbox, which is the only thing standing between
 // `sbx gc --force` and somebody's branch database.
@@ -105,5 +108,76 @@ func TestAPIClaimVolumesAreNeverOrphans(t *testing.T) {
 
 	if a, orphan := classifyVolume("sbx-gone-db-data", live); !orphan || a.Sandbox != "" {
 		t.Errorf("a dead sandbox's data volume is no longer collected: %+v %v", a, orphan)
+	}
+}
+
+// The egress filter and the no-NAT bridge a half-finished create leaves behind. `sbx gc` could
+// not see either, so a create that failed after starting the filter left a container with a
+// published port, a route out and its control token on a label, and nothing on the machine could
+// reclaim it.
+//
+// Unambiguous, unlike a volume name: the prefix is fixed and everything after it is the whole
+// sandbox name, dashes and all. So the dangerous direction here is not a mis-split - it is
+// offering something a live sandbox is using, and that is what this pins.
+func TestClassifyEgressOrphan(t *testing.T) {
+	live := map[string]bool{"feature-x": true, "main": true}
+
+	cases := []struct {
+		name    string
+		kind    string // "" for "not an orphan"
+		sandbox string
+	}{
+		// A live sandbox's filter and bridge are never offered, whatever state it is in:
+		// asleep is the normal state here, and a sleeping sandbox still needs both.
+		{"sbx-egressfilter-feature-x", "", ""},
+		{"sbx-noegress-feature-x", "", ""},
+		{"sbx-egressfilter-main", "", ""},
+
+		// Nothing of that sandbox is left, so both are garbage.
+		{"sbx-egressfilter-gone-branch", "container", "gone-branch"},
+		{"sbx-noegress-gone-branch", "network", "gone-branch"},
+
+		// Dashes in the sandbox name resolve exactly, because the prefix is fixed.
+		{"sbx-egressfilter-a-b-c", "container", "a-b-c"},
+
+		// Not ours to judge.
+		{"sbx-main-postgres", "", ""},
+		{"sbx-egressfilter-", "", ""},
+		{"egressfilter-main", "", ""},
+		{"bridge", "", ""},
+		{"", "", ""},
+	}
+
+	for _, c := range cases {
+		a, orphan := classifyEgressOrphan(c.name, live)
+
+		if orphan != (c.kind != "") {
+			t.Errorf("classifyEgressOrphan(%q) orphan = %v, want %v", c.name, orphan, c.kind != "")
+			continue
+		}
+
+		if !orphan {
+			continue
+		}
+
+		if a.Kind != c.kind || a.Name != c.name || a.Sandbox != c.sandbox {
+			t.Errorf("classifyEgressOrphan(%q) = %+v, want kind %q sandbox %q",
+				c.name, a, c.kind, c.sandbox)
+		}
+	}
+}
+
+// A sandbox is live when it has a SERVICE container, not merely a container carrying its label.
+// Its egress filter carries that label too and no sbx.service, so counting it made every
+// orphaned filter mark its own sandbox live - which is precisely the sandbox whose leftovers gc
+// exists to find, and it also kept that sandbox's data volume uncollectable.
+func TestALiveSandboxIsOneWithAService(t *testing.T) {
+	// What liveSandboxes asks docker for. The filter is excluded by the second filter rather
+	// than by name, which is the same distinction slotOf makes.
+	args := liveSandboxArgs()
+
+	if !slices.Contains(args, "label="+labelService) {
+		t.Fatalf("liveSandboxes does not exclude containers without a service label, so an "+
+			"orphaned egress filter marks its own sandbox live: %v", args)
 	}
 }

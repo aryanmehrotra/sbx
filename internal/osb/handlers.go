@@ -397,6 +397,12 @@ func (s *Server) remove(ctx context.Context, id, actor string) error {
 	if err := s.store.remove(id); err != nil {
 		logs.Default.Error(id, "", "osb: could not delete the sandbox record: %v", err)
 	}
+
+	// The public half of this sandbox's credential authority. Its key goes with the filter that
+	// held it; this is the certificate the sandbox was given, and one file per sandbox ever
+	// created would otherwise accumulate beside the records.
+	s.removeCredentialVaultCA(id)
+
 	plk.Unlock()
 
 	history.Append(history.Record{Kind: "event", Sandbox: id, Event: "removed", Actor: actor,

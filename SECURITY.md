@@ -39,9 +39,29 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   silently downgraded.
 - `egress: "deny"` puts the service on a bridge with IP masquerade disabled. It is not a
   filtering firewall, and docker enforces it, not sbx. On kubernetes it is refused, because a
-  NetworkPolicy is enforced only by some CNIs.
-- A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out only through
-  sbx's egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. Where
+  NetworkPolicy is enforced only by some CNIs. Where the engine runs in a VM (Docker Desktop,
+  colima) it does not hold: the NAT is the VM boundary's, outside the VM's iptables, and a
+  measured bridge with masquerade off still reached the internet
+  ([DECISIONS.md](docs/DECISIONS.md#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does)).
+  Use `egress_policy` or `egress_allow` there, where the filter decides per request for traffic
+  that honours `HTTP_PROXY`; a client that goes around the proxy still has the VM's route out. A
+  create whose service declares deny is refused on such an engine rather than reported applied.
+- A credential vault (`credentialProxy` on the create) holds a per-sandbox certificate
+  authority's private key and the plaintext of every credential in the daemon, never on disk, and
+  only where `sbx serve` holds the sandbox's filter in its own process. The authority's own
+  certificate IS written beside the sandbox's record, and mounted into the sandbox, because it is
+  public material and the sandbox has to trust it; the key is not written at all. The filter
+  terminates a tunnel only to a host a binding names, adds the credential there, and hands the
+  request to the filter's own relay so the policy still decides where the sandbox may reach - a
+  binding changes what a permitted request carries, never what is permitted. It is refused on a host
+  whose filter is a container, which would put both on the sandbox's own network
+  ([DECISIONS.md](docs/DECISIONS.md#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself)).
+  `sbx doctor` reports that host answer as `hosted egress filter`.
+- A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out through sbx's
+  egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. It is the only
+  door where docker's bridge is an interface of the host, and on firecracker. On a VM-backed engine
+  the bridge has the VM's route out, so there the filter decides for traffic that honours
+  `HTTP_PROXY` and a client that ignores it is not held to the policy. Where
   the filter is a container (colima, Docker Desktop, rootless or remote docker) it refuses, whatever
   the policy says, every docker network's gateway, the default bridge's subnet, its own routes'
   gateways, its own interface addresses, and the `/24` around what `host.docker.internal`, `host.lima.internal` and
@@ -153,9 +173,14 @@ Anything that breaks a boundary sbx claims to hold:
   ([DECISIONS.md](docs/DECISIONS.md#volumes-on-the-api-host-paths-are-the-operators-to-allow-and-claims-are-namespaced)).
 - A container reaching the OpenSandbox API without the key, or getting a credential that works
   beyond its own execd.
-- `egress: "deny"` permitting routed egress on docker.
+- `egress: "deny"` permitting routed egress on docker, where the engine is native to the host.
+  On a VM-backed engine it is the VM that routes, which is known, documented and now refused at
+  the create rather than honoured in name - that is the advisory below, not a new finding.
 - A filtered service reaching a destination its policy denies, directly, through the filter or a
   name that resolves into a denied range, or rewriting its own policy.
+- A credential reaching a host no binding of that sandbox names, a sandbox reading a credential
+  value back out of the vault or out of its own environment, or a credential vault authority
+  certifying a host the sandbox's egress policy does not allow.
 - `--isolation gvisor|kata` reporting success under the default runtime.
 - A public port serving a different sandbox than `sbx env` named, including through a `sbx connect`
   tunnel to a recreated sandbox.
@@ -171,6 +196,35 @@ Anything that breaks a boundary sbx claims to hold:
   becomes.
 
 ## Advisories
+
+### v0.16.1 and earlier: `egress: "deny"` does not stop egress on a VM-backed engine (refused since the next release)
+
+Affected: every version, on colima and Docker Desktop, for a service with `egress: "deny"` and no
+egress filter. Also any `egress_policy` whose `defaultAction` is `allow`, whose deny rules are a
+filter concern and were never route-level - the bridge was not holding those either.
+
+- `egress: "deny"` puts the service on a bridge created with
+  `com.docker.network.bridge.enable_ip_masquerade=false`, and docker enforces that, not sbx. Where
+  docker runs inside a VM, the NAT that matters is the VM boundary's, outside the VM's iptables.
+  Measured on Docker Desktop 28.5.1 (macOS 15.6.1): a bridge with masquerade off reached `1.1.1.1`
+  over HTTP and `8.8.8.8` by ICMP, while `iptables-save -t nat` in the VM carried no MASQUERADE
+  rule for its subnet - so docker honoured the option and the route out was not docker's to remove.
+  Measured the other way on native Linux docker (Ubuntu 22.04, Engine 29.9.0): the same bridge
+  could not route out, and the guarantee holds there.
+- A service that declared deny therefore came up, reported healthy, and had unrestricted egress.
+  Nothing said so.
+- A sandbox with an egress filter was not affected: the filter, not the bridge, is what denies
+  there, and it is on the right side of the VM boundary by construction.
+- Fixed in the next release, by refusing rather than repairing: there is nothing on that platform
+  for sbx to enforce deny with, so a create whose service declares deny on an engine whose bridge
+  gateway this machine does not hold is refused, the way `egress: "deny"` on kubernetes and a
+  missing `--isolation` runtime already were. It names `egress_policy`/`egress_allow`, which are
+  enforced there.
+- Upgrading refuses the spec rather than securing it. For a sandbox that must be contained on a
+  Mac, use `egress_policy` or `egress_allow`, where the filter decides per request; or run on a
+  host whose docker is native.
+- This also made the v0.15.1 advisory below recommend `egress: "deny"` as a workaround on exactly
+  the platforms it did not work on. That line is corrected above.
 
 ### v0.15.1 and earlier: the egress filter reaches the host on a VM-backed engine (fixed in v0.16.0)
 
@@ -196,8 +250,10 @@ below.
   the control token since v0.16.0.
 - Upgrading is not enough for an existing sandbox: run `sbx create` again over it (with v0.16.0 it
   replaces a filter built by an older sbx), or `sbx rm` and create it.
-- Workaround before upgrading: use `egress: "deny"`, or an allow-list, for any sandbox that runs
-  code you do not trust.
+- Workaround before upgrading: use an allow-list (`egress_allow`, `egress_policy`) for any sandbox
+  that runs code you do not trust. **Not `egress: "deny"`**, which this advisory originally named:
+  on colima and Docker Desktop - the platforms this advisory is about - a bridge without NAT does
+  not stop egress either (see the advisory below), so that workaround was no workaround there.
 
 ### v0.9.0: a keyless OpenSandbox API is reachable from every container (fixed in v0.9.1)
 

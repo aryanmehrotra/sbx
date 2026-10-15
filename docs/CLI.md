@@ -69,7 +69,7 @@ names are the command, and its own flags stay its own.
 | `sbx fork <snapshot> <new-sandbox>` | New sandbox from a snapshot. Writes its spec to `sandbox.<new-sandbox>.json` beside the original. (B) | `--spec`, `--template`, `--optional` |
 | `sbx checkpoint <sandbox> <name>` | Save memory and processes with CRIU. Linux with a podman runtime only; refused against a local engine on macOS, which runs in a VM. (B) | none |
 | `sbx resume <sandbox> <name>` | Restore from a checkpoint. Refuses a service that is running: `sbx sleep` first. (B) | none |
-| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left, and lock files whose holder is gone, and origin records (`~/.sbx/origins`) this backend wrote with no sandbox or snapshot of their name (a long list is counted, with the first ten named). Records naming another backend are left to it; records naming none are counted and never removed. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
+| `sbx gc` | List (or with `--force`, delete) volumes and images dead sandboxes left, the egress filter container and no-NAT bridge a half-finished create left (offered fifteen minutes on, so a create still building its filter image keeps it), and lock files whose holder is gone, and origin records (`~/.sbx/origins`) this backend wrote with no sandbox or snapshot of their name (a long list is counted, with the first ten named). Records naming another backend are left to it; records naming none are counted and never removed. A snapshot a sandbox still runs from is never offered; the count of those skipped is printed. (B) | `--older-than DURATION`, `--snapshots`, `--force` |
 
 ### Finding out
 
@@ -158,6 +158,7 @@ small Linux VM that sbx starts. There the API key is always on, and only these f
 | `SBX_HISTORY` | `~/.sbx/history.jsonl` | Where `sbx history` reads and writes the journal |
 | `SBX_UI_PLAIN` | unset | Any value: `sbx ui` drops colour and styling |
 | `SBX_NO_UPDATE_CHECK` | unset | Any value: turn off the update check (see below) |
+| `SBX_CREDENTIAL_VAULT_CA` | unset | Set IN a `credentialProxy` sandbox, not by you: the path its credential authority is mounted at, for an entrypoint that adds it to the image's own trust store |
 
 `sbx env` also prints `SBX_SANDBOX` and `SBX_PROVIDER` for your shell. sbx does not read them.
 

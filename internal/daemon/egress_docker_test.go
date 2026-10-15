@@ -22,8 +22,9 @@ import (
 //
 // Three claims, each checked from inside the container:
 //
-//   - a CIDR deny holds for a direct dial as well as through the proxy - the direct dial has no
-//     route at all, because the bridge has no NAT, so the proxy is the only way out;
+//   - a CIDR deny holds through the proxy, and - where docker's bridge is an interface of this
+//     host - for a direct dial too, which has no route at all because the bridge has no NAT. On a
+//     VM-backed engine that second half is not true of the platform, so it is not asked for there;
 //   - a policy changed through EgressControl is in force on the next request;
 //   - nothing was restarted to get there: the service and its filter keep their container IDs
 //     and start times.
@@ -120,19 +121,27 @@ func TestLiveEgressPolicyOnARealSandbox(t *testing.T) {
 	}
 
 	// 1. A direct dial, ignoring the proxy, to an address in the denied range: no route.
-	direct := execIn(t, ctx, ref, `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; `+
-		`if nc -w 4 1.1.1.1 80 </dev/null; then echo DIRECT-OK; else echo DIRECT-FAILED; fi`)
-	if !strings.Contains(direct, "DIRECT-FAILED") {
-		t.Fatalf("a client that ignored the proxy reached 1.1.1.1 directly - the bridge routes "+
-			"out, and no CIDR rule can be enforced on it:\n%s", direct)
-	}
+	//
+	// Only where docker's bridge is an interface of this host, which is the same question that
+	// decided which form of filter this sandbox got. On a VM-backed engine the NAT belongs to the
+	// VM boundary and the bridge reaches out whatever masquerade says, measured and recorded
+	// (DECISIONS.md, "On a VM-backed engine a bridge without NAT does not stop egress, and only
+	// the filter does"). What the filter refuses is checked either way, below.
+	if !containerFilter {
+		direct := execIn(t, ctx, ref, `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; `+
+			`if nc -w 4 1.1.1.1 80 </dev/null; then echo DIRECT-OK; else echo DIRECT-FAILED; fi`)
+		if !strings.Contains(direct, "DIRECT-FAILED") {
+			t.Fatalf("a client that ignored the proxy reached 1.1.1.1 directly - the bridge routes "+
+				"out, and no CIDR rule can be enforced on it:\n%s", direct)
+		}
 
-	// And an address the policy does NOT deny is equally unreachable directly: the failure
-	// above is the missing route, not luck with one address.
-	if out := execIn(t, ctx, ref, `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; `+
-		`if nc -w 4 8.8.8.8 53 </dev/null; then echo DIRECT-OK; else echo DIRECT-FAILED; fi`); !strings.Contains(out, "DIRECT-FAILED") {
-		t.Fatalf("a direct dial to an address no rule mentions got out, so the bridge has a "+
-			"route and the proxy is not the only door:\n%s", out)
+		// And an address the policy does NOT deny is equally unreachable directly: the failure
+		// above is the missing route, not luck with one address.
+		if out := execIn(t, ctx, ref, `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; `+
+			`if nc -w 4 8.8.8.8 53 </dev/null; then echo DIRECT-OK; else echo DIRECT-FAILED; fi`); !strings.Contains(out, "DIRECT-FAILED") {
+			t.Fatalf("a direct dial to an address no rule mentions got out, so the bridge has a "+
+				"route and the proxy is not the only door:\n%s", out)
+		}
 	}
 
 	// 2. Through the proxy, the denied range is refused by the filter, and one outside it is not.

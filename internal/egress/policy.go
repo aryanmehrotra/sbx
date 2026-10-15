@@ -305,6 +305,20 @@ func (p Policy) Mode() string {
 	}
 }
 
+// AllowsName reports whether this policy permits a hostname, by the same first-match-in-list-order
+// rule the filter itself applies. A name no rule mentions gets the default action.
+//
+// It answers a name and not an address, so it says what the policy permits rather than where that
+// name happens to point today. A caller that needs the address checked too is the filter, which
+// resolves and checks every answer on the way to dialling one.
+//
+// Exported for the credential vault, which refuses a binding on a host this policy denies: such a
+// binding is a credential that can never be sent, and a vault that accepts one reports protection
+// for a request the filter will answer with 403. Kept here rather than reimplemented there because
+// "does this policy permit this name" has one home, and a second copy of the matching rules is a
+// second answer waiting to disagree with the filter's.
+func (p Policy) AllowsName(host string) bool { return compile(p).allowsName(host) }
+
 // Hash identifies a policy's content, so two copies can be compared without comparing lists -
 // the daemon uses it to notice that a filter is enforcing something other than what it should.
 func (p Policy) Hash() string {

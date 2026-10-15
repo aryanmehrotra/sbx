@@ -42,7 +42,7 @@ func colimaDocker(t *testing.T, serviceExists bool, filterLabels string) (calls 
 		"case \"$*\" in\n" +
 		"  'network ls -q') echo n1; echo n2; exit 0 ;;\n" +
 		"  *'network inspect --format'*Gateway*' n1 n2') echo '172.17.0.1 172.17.0.0/16 '; echo '172.30.0.1 '; exit 0 ;;\n" +
-		"  *'network inspect sbx-noegress-'*Subnet*) echo '172.30.0.0/16'; exit 0 ;;\n" +
+		"  *'network inspect sbx-noegress-'*Subnet*) echo '" + fxSubnet() + "'; exit 0 ;;\n" +
 		"  *'network inspect sbx-noegress-'*Gateway*) echo '192.0.2.1'; exit 0 ;;\n" +
 		"  'network inspect '*) exit 0 ;;\n" +
 		"  'inspect --format'*sbx-egressfilter-*) " + filter + " ;;\n" +
@@ -61,6 +61,25 @@ func colimaDocker(t *testing.T, serviceExists bool, filterLabels string) (calls 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	return calls
+}
+
+// fxSubnet is the no-NAT bridge sbx asks docker for on behalf of "fx", the sandbox every test in
+// this file uses, and fxFilterIP the filter's fixed address on it.
+//
+// Computed rather than written down. The subnet and that address are the two things that have to
+// agree - `network create --subnet` on one side, `docker run --ip` on the other - and a test that
+// spelled either out would go on passing if they stopped agreeing.
+func fxSubnet() string { return egressSubnet("fx", 0).String() }
+
+func fxFilterIP(t *testing.T) string {
+	t.Helper()
+
+	ip, err := lastUsable(fxSubnet())
+	if err != nil {
+		t.Fatalf("the sandbox bridge sbx asks for has no room for a filter: %v", err)
+	}
+
+	return ip
 }
 
 func callLog(t *testing.T, path string) []string {
@@ -86,7 +105,7 @@ func calledWith(calls []string, prefix string) (string, bool) {
 // that already existed nothing asked, and a host just removed from the spec stayed reachable.
 func TestCreateOverAnExistingSandboxReplacesAFilterWhoseDeclarationChanged(t *testing.T) {
 	old := `{"defaultAction":"deny","egress":[{"action":"allow","target":"old.example"},{"action":"allow","target":"*.old.example"}]}`
-	calls := colimaDocker(t, true, old+"\x1f\x1f172.30.255.254")
+	calls := colimaDocker(t, true, old+"\x1f\x1f"+fxFilterIP(t))
 
 	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
 
@@ -122,7 +141,7 @@ func TestCreateOverAnExistingSandboxKeepsAnUnchangedFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	calls := colimaDocker(t, true, withGitHub+"\x1fgithub.com:22\x1f172.30.255.254\x1f"+tag)
+	calls := colimaDocker(t, true, withGitHub+"\x1fgithub.com:22\x1f"+fxFilterIP(t)+"\x1f"+tag)
 
 	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
 
@@ -143,7 +162,7 @@ func TestCreateOverAnExistingSandboxKeepsAnUnchangedFilter(t *testing.T) {
 // fixed for its life.
 func TestAChangedPortGrantReplacesTheFilter(t *testing.T) {
 	same := `{"defaultAction":"deny","egress":[{"action":"allow","target":"new.example"},{"action":"allow","target":"*.new.example"}]}`
-	calls := colimaDocker(t, true, same+"\x1f\x1f172.30.255.254")
+	calls := colimaDocker(t, true, same+"\x1f\x1f"+fxFilterIP(t))
 
 	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
 
@@ -185,14 +204,14 @@ func TestANewFilterContainerIsAddressedAndClosedOffTheEngine(t *testing.T) {
 		t.Fatalf("no filter container:\n%s", strings.Join(log, "\n"))
 	}
 
-	for _, want := range []string{"--ip 172.30.255.254", "-refuse 172.17.0.1,172.17.0.0/16,172.30.0.1,192.0.2.1", "-names sbx-egressfilter-fx"} {
+	for _, want := range []string{"--ip " + fxFilterIP(t), "-refuse 172.17.0.1,172.17.0.0/16,172.30.0.1,192.0.2.1", "-names sbx-egressfilter-fx"} {
 		if !strings.Contains(filter, want) {
 			t.Errorf("the filter was started without %q:\n%s", want, filter)
 		}
 	}
 
 	service, ok := calledWith(log, "run -d --name sbx-fx-app")
-	if !ok || !strings.Contains(service, "--add-host sbx-egress:172.30.255.254") {
+	if !ok || !strings.Contains(service, "--add-host sbx-egress:"+fxFilterIP(t)) {
 		t.Errorf("the service cannot find its filter without docker's DNS:\n%s", service)
 	}
 }
@@ -266,7 +285,7 @@ func TestFirecrackerRefusesAnAllowEntryWithAPort(t *testing.T) {
 // does not claim they were dropped.
 func TestAFilterBuiltByAnOlderSbxIsReplacedKeepingItsDeclaration(t *testing.T) {
 	same := `{"defaultAction":"deny","egress":[{"action":"allow","target":"new.example"},{"action":"allow","target":"*.new.example"}]}`
-	calls := colimaDocker(t, true, same+"\x1f\x1f172.30.255.254\x1fsbx-egress-filter:0123456789abcdef")
+	calls := colimaDocker(t, true, same+"\x1f\x1f"+fxFilterIP(t)+"\x1fsbx-egress-filter:0123456789abcdef")
 
 	d := newDocker(dockerEndpoint{Network: "unix", Address: "/var/run/docker.sock"})
 

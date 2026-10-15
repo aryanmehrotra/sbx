@@ -29,6 +29,7 @@ amended entry carries a **Status:** line under its heading.
 | [128 docker slots, bounded by the ephemeral range](#128-docker-slots-bounded-by-the-ephemeral-range) | Addressing and slots | v0.10.0 | current |
 | [The API's creates hold the slot lock for the choice only](#the-apis-creates-hold-the-slot-lock-for-the-choice-only) | Addressing and slots | v0.10.0 | current |
 | [A lock wait that runs out is an error, and a name has a lock too](#a-lock-wait-that-runs-out-is-an-error-and-a-name-has-a-lock-too) | Addressing and slots | v0.16.0 | current |
+| [A sandbox's no-egress bridge gets a `/24` of sbx's own, and its name only picks which one](#a-sandboxs-no-egress-bridge-gets-a-24-of-sbxs-own-and-its-name-only-picks-which-one) | Addressing and slots | unreleased | current |
 | [Three containers, not one image with everything in it](#three-containers-not-one-image-with-everything-in-it) | Spec, images and templates | v0.1.0 | current |
 | [A built image is keyed by its content, never by its age](#a-built-image-is-keyed-by-its-content-never-by-its-age) | Spec, images and templates | v0.1.0 | current |
 | [Adding an optional spec field does not bump `version`](#adding-an-optional-spec-field-does-not-bump-version) | Spec, images and templates | v0.1.0 | current |
@@ -43,10 +44,16 @@ amended entry carries a **Status:** line under its heading.
 | [A snapshot is the volume, not the container](#a-snapshot-is-the-volume-not-the-container) | Snapshots and checkpoints | v0.1.0 | current |
 | [A snapshot pauses what is running, and marks the pause for the daemon](#a-snapshot-pauses-what-is-running-and-marks-the-pause-for-the-daemon) | Snapshots and checkpoints | v0.16.0 | current |
 | [Memory checkpoint goes through podman, because docker's restore path doesn't work](#memory-checkpoint-goes-through-podman-because-dockers-restore-path-doesnt-work) | Snapshots and checkpoints | v0.7.0 | current |
-| [Egress is denied by a bridge without NAT, not by a firewall sbx writes](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes) | Egress | v0.1.0 | amended v0.7.0–v0.9.0 |
+| [Egress is denied by a bridge without NAT, not by a firewall sbx writes](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes) | Egress | v0.1.0 | amended v0.7.0–v0.9.0, unreleased |
 | [Traffic through the egress filter counts as activity, stamped on bytes](#traffic-through-the-egress-filter-counts-as-activity-stamped-on-bytes) | Egress | v0.8.0 | current |
 | [A live egress policy is held by the filter and pushed to it](#a-live-egress-policy-is-held-by-the-filter-and-pushed-to-it) | Egress | v0.9.0 | current |
 | [Default-allow is enforced by the same door, and it costs raw TCP](#default-allow-is-enforced-by-the-same-door-and-it-costs-raw-tcp) | Egress | v0.9.0 | current |
+| [On a VM-backed engine a bridge without NAT does not stop egress, and only the filter does](#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does) | Egress | unreleased | current |
+| [A half-finished create's filter and bridge are reclaimable, and a live sandbox's never are](#a-half-finished-creates-filter-and-bridge-are-reclaimable-and-a-live-sandboxs-never-are) | Egress | unreleased | current |
+| [A sandbox bridge is not addressed over a route the host already has](#a-sandbox-bridge-is-not-addressed-over-a-route-the-host-already-has) | Egress | unreleased | current |
+| [A credential vault exists only where the daemon hosts the filter itself](#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself) | Egress | unreleased | current |
+| [The credential is added inside a terminated tunnel, and the authority is the policy's](#the-credential-is-added-inside-a-terminated-tunnel-and-the-authority-is-the-policys) | Egress | unreleased | current |
+| [The authority is minted once per sandbox, constrained to the hosts its policy allows](#the-authority-is-minted-once-per-sandbox-constrained-to-the-hosts-its-policy-allows) | Egress | unreleased | current |
 | [An API snapshot is the container, because that is where its state is](#an-api-snapshot-is-the-container-because-that-is-where-its-state-is) | OpenSandbox API | v0.10.0 | current |
 | [Volumes on the API: host paths are the operator's to allow, and claims are namespaced](#volumes-on-the-api-host-paths-are-the-operators-to-allow-and-claims-are-namespaced) | OpenSandbox API | v0.10.0 | current |
 | [Warm-pool members wait pinned running, and every claim re-keys](#warm-pool-members-wait-pinned-running-and-every-claim-re-keys) | OpenSandbox API | v0.10.0 | current |
@@ -208,6 +215,72 @@ BSDs, Windows) it is the pid alone. One machine only, as before.
 The OpenSandbox API takes the same error-returning lock: a create whose wait runs out is
 `Failed` with reason `slot_lock_timeout` and places no container.
 
+### A sandbox's no-egress bridge gets a `/24` of sbx's own, and its name only picks which one
+
+**Status:** current, 2026-10-14.
+
+Each sandbox's no-egress bridge is created with an explicit `--subnet` out of `198.18.0.0/15`
+and an explicit `--gateway`. The sandbox's name, hashed, picks which `/24` is asked for first.
+
+**An explicit subnet, because docker 28 refuses a fixed address on one it chose itself.** The
+filter's address on that bridge is fixed by construction: a service is told it once, in
+`/etc/hosts`, when it is created, because gVisor's netstack does not use docker's embedded DNS.
+From Engine 28 `docker run --ip` on a network docker addressed answers `user specified IP address
+is supported only when connecting to networks with user configured subnets`. Measured on Docker
+Desktop 28.5.1, Apple M4, macOS 15.6.1: refused on a bridge docker addressed `172.22.0.0/16`,
+accepted on one created with `--subnet 198.18.200.0/24`. Without a subnet of sbx's own the
+container filter cannot start at all on any engine from 28 on, which is every current Docker
+Desktop and colima, and so every Mac.
+
+**`198.18.0.0/15`, because every alternative is somebody's.** It is the RFC 2544 benchmarking
+range: reserved, not routed on the internet, and not a range anything hands addresses out of.
+`10.0.0.0/8` is VPNs and VPCs, `192.168.0.0/16` is home LANs, `172.16.0.0/12` and
+`192.168.0.0/16` are docker's own default address pools, where a bridge would compete with the
+networks docker assigns itself, and `100.64.0.0/10` is CGNAT and tailscale's, which sbx's own
+microVM filter refuses as private. Sitting outside docker's pools has a second effect: a filtered
+sandbox no longer spends one of the roughly thirty networks those pools hold.
+
+The gateway is passed explicitly because docker fills `IPAM.Config[0].Gateway` in only when it
+chose the subnet. Measured on the same machine, `--subnet 198.18.201.0/24` with no `--gateway`
+comes back `[{"Subnet":"198.18.201.0/24"}]`. That field is what `egressGateway` reads, and from it
+come a service's `HTTP_PROXY` on native docker and every filter's refuse list.
+
+**The hash is a starting point, not a registry, which is what ["Slots are allocated, not
+hashed"](#slots-are-allocated-not-hashed) rejected.** That entry turned down a hash that *was*
+the record: a slot derived from a branch name was the only statement of which sandbox held which
+ports, `auth-flow` and `naveen-reveiw` collided within the first six names tried, and two
+sandboxes then fought over ports with nothing in the way. Here docker is the registry, as docker
+labels are for slots. Docker refuses a `--subnet` another network already holds (`Pool overlaps
+with other one on this address space`), so two sandboxes cannot share one; the create steps to
+the next `/24` and asks again, eight in all. And nothing derived is trusted afterwards: `filterIP`
+reads the subnet back off the bridge docker actually holds and takes the top of that, rather than
+recomputing it from the name. There is no derived mapping to drift from, which was that entry's
+whole point.
+
+Collisions are not rare and do not need to be. At the 128-sandbox ceiling a hash into 512 `/24`s
+collides somewhere with near certainty; what has to be unlikely is eight consecutive `/24`s being
+taken, and at a quarter occupancy it is. A block with nothing free within eight of a sandbox's own
+slice fails the create, naming the block and the two commands that free a `/24`.
+
+**Rejected: the sandbox's slot instead of its name.** The slot is already allocated, so addressing
+would depend on a second allocator, and a stale label would name a subnet the bridge does not
+have - a derived mapping that can drift, exactly the thing being avoided. The bridge is also made
+before any service container carries a slot, and from paths that are given only a name
+(`EgressPreflight`, `ensureFilterContainer`). A name is what all of them hold, and a sandbox's
+name never changes.
+
+**Rejected: probing up from the bottom of the block, with no hash at all.** That is allocation in
+full, and it needs as many attempts as there are sandboxes, because every create starts at the
+same `/24`: 128 `docker network create` calls at the ceiling instead of eight. The hash buys a
+spread starting point and nothing else.
+
+A bridge an older sbx let docker address is re-addressed, and only while nothing is attached. A
+network is recreated with a new id, and a container that was on the old one no longer starts
+(`failed to set up container networking: network <old id> not found`, measured on Docker Desktop
+28.5.1) - which is every service of a sleeping sandbox. `network rm` is no guard here: it refuses
+a network with a running container and removes one under a stopped one. So a bridge with
+containers on it is left as it is, nothing regresses, and the filter's own failure says to
+recreate the sandbox.
 
 ---
 
@@ -803,10 +876,300 @@ sees it, and a filter on a remote docker, whose control port is that machine's l
 older than this reads `/last` without the token and gets 401, so a new filter's traffic stops
 counting as activity under an old daemon until both are upgraded.
 
+### On a VM-backed engine a bridge without NAT does not stop egress, and only the filter does
+
+**Status:** current, 2026-10-14.
+
+[Egress is denied by a bridge without NAT, not by a firewall sbx
+writes](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes) records a bridge
+created with `com.docker.network.bridge.enable_ip_masquerade=false` and a measurement beside it:
+an outbound fetch blocked. That holds where docker's bridge is the whole path out. On Docker
+Desktop and colima it does not. The record keeps its wording; this entry carries the correction.
+
+Measured 2026-10-14 on Docker Desktop 28.5.1, Apple M4, macOS 15.6.1. From a container on a
+bridge created with masquerade off, an HTTP request to `1.1.1.1` was answered and `ping 8.8.8.8`
+came back, on a `198.18.200.0/24` bridge sbx addressed and on a `172.22.0.0/16` one docker
+addressed alike. From inside a real filtered sandbox, the same: a request that went around
+`HTTP_PROXY` reached `1.1.1.1`, while a denied host through the filter got 403 and an allowed one
+got 200.
+
+Docker did what it was asked. `iptables-save -t nat` inside the engine's VM carries no
+`MASQUERADE` rule for either subnet, while every masquerading network on the same engine has one
+(`-A POSTROUTING -s 172.21.0.0/16 ! -o br-... -j MASQUERADE`). The NAT belongs to the VM boundary,
+outside the VM's iptables, so no option docker accepts switches it off.
+
+What follows from that:
+
+- `egress: "deny"` is a route-level control on native Linux docker and on firecracker. On a
+  VM-backed engine it is a bridge with no host gateway and no filter, which is not the same as no
+  route. A sandbox that must not reach the internet there needs `egress_policy` or `egress_allow`,
+  where the filter decides per request.
+- A deny rule under `defaultAction: allow` carries the same caveat.
+  [Default-allow is enforced by the same door](#default-allow-is-enforced-by-the-same-door-and-it-costs-raw-tcp)
+  rests on nothing leaving except through the filter, and a client that ignores `HTTP_PROXY` is
+  not held to that on a VM-backed engine.
+- What the filter refuses is unchanged. It resolves and checks every address itself, and refuses
+  the engine's gateways, the default bridge and the host behind the VM whatever the policy says.
+- Native Linux docker was measured too, and holds. Ubuntu 22.04 LTS, Engine 29.9.0, a bridge
+  created the same way with masquerade off: `iptables-save -t nat` carried no `MASQUERADE` rule
+  for its subnet, and a container on it could not reach `1.1.1.1` - the request timed out. So the
+  two platforms bracket the fact rather than contradict it. The guarantee is real where the
+  bridge is an interface of the host, and absent where docker's bridges are inside a VM.
+
+**So it is refused there, not repaired.** There is nothing on that platform for sbx to enforce
+deny with: the route out is the VM's, and sbx does not own that networking. A create whose service
+declares `egress: "deny"` is refused on an engine whose bridge gateway this machine cannot bind -
+the same probe `bindable` and `filterHost` already make, and the same call `egress: "deny"` on
+kubernetes and a missing `--isolation` runtime already make. The alternative was a warning, and a
+warning still leaves a service running with a route out while its spec says deny, which
+the kubernetes refusal calls, in `internal/provider/kubernetes.go`, the one outcome a security
+control must never produce. A filtered service is exempt, because there the filter and
+not the bridge is what denies.
+
+It is a breaking change on the most common development platform, deliberately. The specs it
+refuses were not getting what they asked for, and they were not being told.
+
+[SECURITY.md](../SECURITY.md#what-would-be-a-real-vulnerability) lists `egress: "deny"` permitting
+routed egress on docker under what would be a real vulnerability. That line is now scoped to an
+engine native to its host, where it remains a hard claim, and this platform's behaviour is an
+advisory with the refusal as its fix - so a reader does not file a known, documented boundary as
+a new finding, and the native guarantee does not get softened by its exception.
+
+### A half-finished create's filter and bridge are reclaimable, and a live sandbox's never are
+
+**Status:** current, 2026-10-14.
+
+A create that got as far as the egress filter and then could not start the service it was for
+left a container running under `--restart unless-stopped`, holding a published loopback port, a
+route out off the default bridge and its control token on a label, owned by a sandbox that does
+not exist. Nothing reclaimed it: a sandbox with no service container has no units, so `sbx rm`
+answered "no sandbox" and `sbx gc` listed only volumes and images.
+
+A create ends three ways, so there are three places:
+
+- **Create takes back what it made** (`undoHalfCreate`), and only what it made. A filter it reused
+  belongs to the sandbox, one it replaced is serving services that are already up, and a bridge it
+  found is theirs as well.
+- **The backend's `Remove` reaches the filter and the bridge even when there were no units**, and
+  still returns an error rather than reporting a sandbox destroyed, because `sbx rm typo-name`
+  must not read as success. `internal/cli.Rm` answers a name with no units itself, for the origin
+  record and the stale name lock, and asks the backend to reclaim its leftovers before it does:
+  the backend's "no sandbox" is discarded there, because the missing-sandbox path says it better
+  and with the record in hand. Called for the cleanup, not for the message - and the one case
+  the reclaim exists for is a sandbox with no units, so a path that returned early was the one
+  path that had to reach it.
+- **`sbx gc` lists them**, because a create that was killed rather than returning runs neither of
+  the other two.
+
+**The gate is the sandbox's own service containers.** The filter carries the sandbox label and no
+`sbx.service` label, which is the distinction `slotOf` already makes. Counting it as a container
+made an orphaned filter mark its own sandbox live - the one sandbox whose leftovers this exists to
+find - and kept that sandbox's data volume uncollectable with it. A listing that fails leaves
+everything alone, because a listing that fails is not evidence of an orphan.
+
+**gc waits fifteen minutes.** A create still running looks exactly like one that died: the filter
+is up and there is no service container yet, because the container is what comes next. Only time
+separates them, and the first create on a machine builds the filter image, which is a compiler
+image to pull and a Go build to run. So an orphan waits, which costs nothing because it is an
+orphan for good, rather than `sbx gc --force` killing the filter a create two minutes in still
+needs. The obvious alternative, a label naming the create's pid, is true only on the machine that
+wrote it, and a create against a remote `DOCKER_HOST` runs where that pid means nothing.
+
+### A sandbox bridge is not addressed over a route the host already has
+
+**Status:** current, 2026-10-15.
+
+sbx carves each sandbox's no-NAT bridge out of `198.18.0.0/15`, one `/24` per sandbox, picked by
+the sandbox's name
+([above](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes)). The block is the
+RFC 2544 benchmarking range: reserved, never routed on the internet, and not a range anything hands
+addresses out of, which is why it is a better neighbour than docker's own pools.
+
+Reserved is not unused. It is also where a local proxy puts a fake-IP range, and such a tool
+installs a host route over the whole block on a tunnel interface. A bridge inside that route
+collides with it: the host then has two ways to the same addresses and takes the longer prefix, so
+the bridge's `/24` wins for its own addresses and whatever the tunnel was doing with them stops,
+with no error on either side.
+
+**So the host's table is read once per create, and a routed slice is never asked for.** The slices
+this sandbox would take are tried in order as before, a slice the host already routes is skipped
+like one docker says is taken, and the refusal names the route and the interface when none of the
+eight is free - there is one thing to do about it, and it is to remove that route.
+
+A route broader than the block is not a collision, which the default route makes worth stating:
+every machine has one, the block is reserved, and a bridge taking those addresses off it is the
+point. Only a route at least as specific as the block counts. Docker's own bridges are skipped too,
+because on native Linux a sandbox bridge *is* a host route once it exists, and docker's own overlap
+check is what answers a slice another sandbox holds.
+
+The table is read without a dependency - the root `go.mod` has no `require` - so it is
+`/proc/net/route` on Linux, `netstat -rn -f inet` on the BSDs, and on every platform the addresses
+the host's own interfaces hold, which is where a tunnel carrying a fake-IP range shows up. A table
+that cannot be read is not a refusal: a create stopped by an unparsed routing table is a worse
+outcome than the collision, which is what the platform did before this existed.
+
+### A credential vault exists only where the daemon hosts the filter itself
+
+**Status:** current, 2026-10-14.
+
+A credential vault holds a per-sandbox certificate authority's private key and the plaintext of
+every credential the sandbox is meant not to have. Where that key lives decided the rest.
+
+**The vault is `internal/credvault`, reached through one interface field on the filter.** Every
+file of `internal/egress` is copied verbatim into the container filter's build context, so a type
+added there is compiled into a program that runs in a container on the sandbox's own bridge,
+configured over an endpoint with no redaction. Putting the vault there would put the key in that
+process. The field follows `OnActivity` and `Refuse`: set by the daemon after `NewPolicy`, nil
+everywhere else, and nil is the splice and the relay exactly as they are today. The container
+filter compiles the same sources, links the same 198 packages, and gains 32 bytes of method name.
+
+**So a sandbox whose filter is a container cannot have a vault, and is refused by name.** That is
+not a check but the shape of the code: the daemon opens a vault beside the filter it binds on the
+sandbox's bridge gateway, and closes it there, at the site that already tells a recreated sandbox
+from the one that held the gateway before it. Where the daemon cannot bind that gateway no vault
+is ever opened, which is every VM-backed docker (ARCHITECTURE, "Egress filter").
+
+The refusal is said twice, in that order. A provider that can say which form of filter it gives
+before any sandbox exists (`provider.FilterHoster`) makes the whole host a 400 on the create, so
+nobody burns a sandbox to be told. `refuseWithoutAHostedFilter` then asks again once the provider
+has actually chosen, and fails the sandbox with `credential_proxy_unavailable`. The second is the
+guarantee rather than the error anyone should see: a prediction about a host is not a report about
+the sandbox it made. The vault routes answer 412 either way.
+
+A container filter is the wrong custodian twice over. It sits on the sandbox's own network and is
+configured over an endpoint with no redaction, and that bridge is not even a dead end on the
+engines where this arises
+([measured](#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does)).
+
+The cost is that credential injection cannot be used on a VM-backed docker at all. That is the
+honest answer rather than a weaker arrangement nobody was told about, and it is the same direction
+as refusing `egress_allow` on a machine that could not run the filter. `sbx doctor` reports the
+host's answer as `hosted egress filter`, so it is readable before a create rather than after one.
+
+**The authority is constrained, not merely minted.** It carries critical X.509 DNS name
+constraints covering the hosts its own bindings name, every IP range excluded, and a path length
+of zero so it cannot sign a second authority. A verifier enforces that even if the code signing
+with it is later wrong, which is why the constraint is in the certificate and not only in the
+minting path. A bare host becomes the suffix form, which also permits its subdomains: the
+extension has no "this name only" spelling. It does not widen what gets intercepted, because that
+is the binding match on every request. The authority is re-minted when the bound hosts change and
+not when a credential rotates, so rotating a secret does not invalidate the certificate the
+sandbox already trusts.
+
+**Nothing is persisted.** Not the key, not a credential, not the vault. A restart of `sbx serve`
+drops every vault and the API answers 404 until the caller posts again. The alternative is a
+private key on a filesystem, and the API's record file - which does carry the `credentialProxy`
+flag - is 0600 but survives upgrades, reboots and backups.
+
+**`{}` is accepted as off, and a field this server cannot read is refused.** `CredentialProxyConfig`
+gives `enabled` a default of false, so `{"credentialProxy": {}}` and an explicit false both mean
+off and the reference server reads them that way; refusing them would refuse a request that works
+against upstream. What is refused is anything this server would read as off when the caller meant
+on: a quoted boolean, a misspelled field, a field the schema does not have. Being off by accident
+is the one failure a control like this must not have.
 
 ---
 
 ## OpenSandbox API
+
+### The credential is added inside a terminated tunnel, and the authority is the policy's
+
+**Status:** current, 2026-10-14.
+
+An agent that calls an API needs a key, and a key in its environment is a key it can leak. So the
+agent is given a placeholder, or nothing at all, and the real credential is added outside the
+sandbox on the way out. Everything below follows from the fact that the request is inside TLS.
+
+**The tunnel is terminated only for a destination a binding covers.** Every other CONNECT is
+spliced as it always was. Terminating all of them would make the filter a man in the middle of
+traffic it has no business reading, and would need the sandbox to trust this authority for hosts no
+binding names - which the authority's own name constraints refuse to certify anyway.
+
+**The termination is in `internal/credvault`, not in the filter.** Same reason the vault is
+([above](#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself)): every file of
+`internal/egress` is compiled verbatim into the container filter, so a TLS stack there would be one
+in a container on the sandbox's own bridge, and a test forbids `crypto/tls` in that package.
+`Intercept` wraps the filter as an `http.Handler` - which is all it needs of it - and the daemon
+serves that instead.
+
+**A decrypted request is handed back to the filter rather than relayed here.** The filter resolves
+it, checks it against the policy in force, adds the credentials and relays it. There is
+deliberately no second policy check in the interception: a second answer is a second thing to
+drift. So a binding can only ever change what a *permitted* request carries, never where the
+sandbox may reach.
+
+**The request goes to the vault; a value never comes back.** `egress.CredentialSource.Apply` takes
+the request and writes into it, so no secret crosses into the package that is compiled into the
+container. The filter learns that a destination is bound. It never learns what with.
+
+**A credential that cannot be added means the request is not sent** - 502, and nothing dialled.
+Relaying it anyway would reach the real host as the agent's own unauthenticated call, which fails
+there in a way that reads as the agent's bug rather than the filter's.
+
+**The header is set, not added.** A placeholder the agent wrote must not survive beside the real
+one: two `Authorization` headers are one header with two values on the wire, and upstream reads the
+first.
+
+**Bindings are applied in binding-name order.** Two bindings can write one header, and map
+iteration would make which one wins differ between two identical requests.
+
+### The authority is minted once per sandbox, constrained to the hosts its policy allows
+
+**Status:** current, 2026-10-14.
+
+The authority was first constrained to the hosts the *bindings* named, and re-minted when that set
+changed. That cannot work, and the reason is not cryptographic.
+
+A trust store is read once, at startup, by whatever runs in the sandbox - Node, Python and Go all
+cache it. An authority that changed when a binding was added would leave a long-running agent
+trusting one that no longer exists, and every swap after that would fail its handshake with nothing
+to say why. Adding a host to a binding did exactly that.
+
+**So the constraints come from the egress policy, which does not move.** It is not wider than it
+needs to be, because a binding cannot name a host the policy does not already allow -
+`validateCandidate` refuses that with `pol.AllowsName`, at write time, every time. The policy's
+names are therefore a superset of the bindings' names *by construction*, which means these
+constraints always cover every leaf this vault could ever be asked to mint, and never cover a host
+the sandbox is not allowed to reach anyway. The exclusion of every IP range is unchanged: an
+authority that could certify an address rather than a name would be a general-purpose one.
+
+A policy with no DNS names of its own - all addresses and CIDRs - gets no authority, because there
+is no name for a leaf to be the subject of.
+
+**A binding the authority cannot sign for is refused at the write.** The policy can be widened
+after the sandbox exists, and that does not widen the authority - so a host allowed later and then
+bound would be accepted and fail at the first request, as a 502 on a tunnel far from the PATCH that
+caused it. `Vault.certifiable` asks `CA.Covers` for every binding host at write time instead, and
+says that the authority was minted from the policy as it stood at create and that the host has to
+be in the policy from the start. Measured: before this, such a binding was accepted and the request
+got `CONNECT tunnel failed, response 502` with nothing to connect it to the patch.
+
+**The certificate is delivered when the sandbox is created, which is before a vault can exist.**
+The API can only create a vault on a sandbox that is already running, and by then the trust store
+has been read. So `Registry.Certificate` mints the authority during the create, the create mounts
+it read-only at `/etc/sbx/credential-vault-ca.pem`, and `Registry.Open` later adopts that same one
+rather than minting a second - a filter signing with a certificate nothing in the sandbox trusts is
+the failure the whole arrangement exists to avoid.
+
+**A sandbox whose authority this daemon does not hold cannot have a vault at all.** The key lives
+in the daemon's memory and nowhere else, so `sbx serve` restarting loses the only authority that
+sandbox will accept while its trust store still names it. `Registry.Open` finds no authority to
+adopt and marks the vault unusable (`ErrAuthorityLost`, 412) instead of minting a second one: the
+request that mints is the request that breaks every bound host, and it answers 201 while doing it.
+There is nothing a caller can send to recover it, so the refusal says to create the sandbox again.
+`Vault.Delete` leaves the authority alone for the same reason - it belongs to the sandbox's trust
+store, not to a revision, so a POST after a DELETE keeps signing with the certificate the sandbox
+was given.
+
+**Only additive trust variables are set.** `NODE_EXTRA_CA_CERTS` adds to the root set.
+`SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` replace it, so pointing either at this one certificate
+would leave the sandbox unable to verify any *other* host - a worse break than the one this fixes.
+`SBX_CREDENTIAL_VAULT_CA` names the path instead, for an entrypoint that adds it to the image's own
+trust store, which is what makes every client in there trust it rather than only the ones that read
+an environment variable.
+
+The certificate is written beside the sandbox's record and removed with it. It is public material;
+the private key is never written at all.
 
 ### An API snapshot is the container, because that is where its state is
 

@@ -3,25 +3,43 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
-// snapStub lists fixed units and fixed snapshot images; nothing else of the provider is used.
+// snapStub lists fixed units and fixed snapshot images, and records the sandboxes Remove was
+// asked for; nothing else of the provider is used.
 type snapStub struct {
 	provider.Provider
 
 	units  []provider.Unit
 	images []string
+
+	removed []string
 }
 
 func (s *snapStub) Name() string  { return "docker" }
 func (s *snapStub) Where() string { return "unix:///a.sock" }
 
 func (s *snapStub) List(context.Context, string) ([]provider.Unit, error) { return s.units, nil }
+
+// Remove answers as a backend does for a name with no units: it reclaims whatever leftovers it
+// owns, then still reports that there was no sandbox, so having cleaned up is not success.
+func (s *snapStub) Remove(_ context.Context, sandbox string) error {
+	s.removed = append(s.removed, sandbox)
+
+	return fmt.Errorf("no sandbox %q", sandbox)
+}
+
+// tookRemoveOf reports whether Remove was asked for this sandbox.
+func (s *snapStub) tookRemoveOf(sandbox string) bool {
+	return slices.Contains(s.removed, sandbox)
+}
 
 func (s *snapStub) Images(_ context.Context, prefix string) ([]string, error) {
 	var out []string

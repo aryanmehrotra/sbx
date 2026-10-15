@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -138,6 +139,10 @@ type filterSetup struct {
 	// ip is the filter's address on the sandbox's bridge. Fixed (see filterIP), so a service can
 	// be told it once, at create, and it stays true when the filter is replaced.
 	ip string
+
+	// started is true when THIS call ran the container, rather than finding one already there
+	// and reusing it. What a failing create may take back with it (undoHalfCreate).
+	started bool
 }
 
 // ensureFilterContainer starts (or reuses) the sandbox's filter container.
@@ -153,7 +158,7 @@ type filterSetup struct {
 // A replaced declaration drops it: the daemon's copy was made against the old declaration, and
 // EgressControl.Sync forgets a copy whose declaration no longer matches.
 func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.Policy, ports []egress.PortGrant) (filterSetup, error) {
-	if err := d.ensureEgressNetwork(sandbox); err != nil {
+	if _, err := d.ensureEgressNetwork(sandbox); err != nil {
 		return filterSetup{}, err
 	}
 
@@ -271,6 +276,19 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 	)
 
 	if _, err := d.docker(args...); err != nil {
+		// The one failure that is not about this container at all: the bridge it is joining was
+		// addressed by docker rather than by sbx, so docker 28 refuses the fixed address the
+		// filter has to hold, and the bridge cannot be re-addressed under the sandbox's own
+		// containers (see ensureEgressNetwork).
+		if !inEgressBlock(ip) {
+			return filterSetup{}, fmt.Errorf("the egress filter for %s could not be started on "+
+				"%s, a bridge docker addressed rather than sbx: docker 28 refuses the filter's "+
+				"fixed address %s on it. `docker network inspect %s --format "+
+				"'{{(index .IPAM.Config 0).Subnet}}'` shows the subnet it has, which is not a "+
+				"/24 of %s. `sbx rm %s` and create the sandbox again gives it a bridge sbx "+
+				"addressed: %w", sandbox, network, ip, network, egressSubnetBlock, sandbox, err)
+		}
+
 		return filterSetup{}, fmt.Errorf("the egress filter container could not be started: %w", err)
 	}
 
@@ -292,7 +310,9 @@ func (d *dockerProvider) ensureFilterContainer(sandbox string, declared egress.P
 
 	stat, err := d.filterStatAddr(name)
 
-	return filterSetup{stat: stat, ip: ip}, err
+	// started even when stat failed: the container is up either way, and a create that gives up
+	// here must take it with it rather than leave it running for nobody (undoHalfCreate).
+	return filterSetup{stat: stat, ip: ip, started: true}, err
 }
 
 // filterIP is the filter's fixed address on the sandbox's bridge: the last usable address of the
@@ -317,6 +337,87 @@ func (d *dockerProvider) filterIP(sandbox string) (string, error) {
 	}
 
 	return ip, nil
+}
+
+// The no-NAT bridge's own address space.
+//
+// egressSubnetBlock is what sbx carves each sandbox's bridge out of, one /24 per sandbox, and
+// egressSubnetTries how many of those it will try before giving up.
+//
+// An explicit subnet rather than one of docker's: from Engine 28 docker refuses `--ip` on a
+// network whose subnet it chose itself - "user specified IP address is supported only when
+// connecting to networks with user configured subnets", measured on Docker Desktop 28.5.1 -
+// and the filter's address on that bridge is fixed by construction (see filterIP), because a
+// service is told it once, in /etc/hosts, when it is created. Without a subnet of sbx's own
+// the container filter cannot start at all on any engine from 28 on, which is every current
+// Docker Desktop and colima, and so every Mac.
+//
+// 198.18.0.0/15 is the RFC 2544 benchmarking range: reserved, never routed on the internet, and
+// not a range anything hands addresses out of. The alternatives all are. 10.0.0.0/8 is VPNs and
+// VPCs, 192.168.0.0/16 is home LANs, and both 172.16.0.0/12 and 192.168.0.0/16 are docker's own
+// default address pools - a bridge there would compete with the networks docker assigns itself.
+// 100.64.0.0/10 is CGNAT and tailscale's, which sbx's own microVM filter already refuses as
+// private (egress.Private), so putting sbx's bridges inside it would contradict that.
+//
+// Sitting outside docker's pools has a second effect: a filtered sandbox no longer spends one of
+// the roughly thirty networks those pools hold.
+//
+// 512 /24s against a 128-sandbox ceiling (maxSlots), so there is room for the name hash to miss;
+// a /24 another network already holds steps to the next (ensureEgressNetwork).
+const (
+	egressSubnetBlock = "198.18.0.0/15"
+	egressSubnetBits  = 24
+	egressSubnetTries = 8
+)
+
+// egressSubnet is the subnet sbx asks for when it creates a sandbox's no-NAT bridge: a slice of
+// egressSubnetBlock picked by the sandbox's name, so the same sandbox asks for the same one every
+// time and two sandboxes are unlikely to want the same. try steps to the next slice when that one
+// is taken.
+//
+// The filter's fixed address is the top of whatever this returns (lastUsable), which is the
+// invariant the two call sites share: `network create --subnet` here, `docker run --ip` there.
+func egressSubnet(sandbox string, try int) netip.Prefix {
+	block := netip.MustParsePrefix(egressSubnetBlock)
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sandbox))
+
+	span := uint32(1) << (egressSubnetBits - block.Bits())
+	i := (h.Sum32() + uint32(try)) % span //nolint:gosec // try is a loop index, never negative
+
+	b := block.Masked().Addr().As4()
+	binary.BigEndian.PutUint32(b[:], binary.BigEndian.Uint32(b[:])+i<<(32-egressSubnetBits))
+
+	return netip.PrefixFrom(netip.AddrFrom4(b), egressSubnetBits)
+}
+
+// egressBridgeGateway is the address docker puts on the bridge itself: the bottom of the subnet,
+// which is docker's own convention.
+//
+// Passed to `network create` explicitly, because docker fills IPAM.Config[0].Gateway in only when
+// it chose the subnet - give it one and that field comes back empty (measured, Docker Desktop
+// 28.5.1: `[{"Subnet":"198.18.9.0/24"}]`). That field is what egressGateway reads, and from it come
+// a service's HTTP_PROXY on native docker and every filter's -refuse list, so leaving it empty
+// fails the create with "the egress bridge for X has no gateway address".
+func egressBridgeGateway(subnet netip.Prefix) string {
+	return subnet.Masked().Addr().Next().String()
+}
+
+// inEgressBlock reports whether an address or a subnet is one sbx chose. A sandbox bridge from an
+// sbx that let docker's IPAM pick is not, and docker 28 refuses the filter's `--ip` on it.
+func inEgressBlock(addrOrSubnet string) bool {
+	block := netip.MustParsePrefix(egressSubnetBlock)
+
+	s := strings.TrimSpace(addrOrSubnet)
+
+	if a, err := netip.ParseAddr(s); err == nil {
+		return block.Contains(a)
+	}
+
+	p, err := netip.ParsePrefix(s)
+
+	return err == nil && block.Overlaps(p)
 }
 
 // lastUsable is the highest address of an IPv4 subnet below its broadcast address.
