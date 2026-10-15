@@ -73,15 +73,6 @@ func init() {
 
 func init() {
 	features.Register(features.Feature{
-		Name:      "credential-vault",
-		Stability: features.Experimental,
-		Summary:   "`credentialProxy` and the OpenSandbox Credential Vault API on a sandbox the daemon filters itself",
-		Caveat:    "the vault holds the credentials and the certificate authority, and the filter does not add them to requests yet, so a sandbox still needs its own credentials (docs/ROADMAP.md)",
-	})
-}
-
-func init() {
-	features.Register(features.Feature{
 		Name:      "waiting-page",
 		Stability: features.Preview,
 		Summary:   "a browser opening a sleeping `sbx url` gets a page saying so, instead of a spinner",

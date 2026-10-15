@@ -15,6 +15,10 @@ package osb
 //     and the fix (internal/credvault explains the custody argument in full) - at the create,
 //     with a 400, where the provider can say so before a sandbox exists (provider.FilterHoster),
 //     and again on the provider's own report once it has created one.
+//   - A sandbox created before this `sbx serve` started has no vault either. Its trust store holds
+//     an authority minted in the other daemon's memory, which is nowhere now, so nothing here can
+//     sign for it - and a vault that signed with a second authority would answer 201 and then fail
+//     every bound host's handshake. Refused by name, with the one fix: create the sandbox again.
 //   - A credential value is write-only. It goes in and never comes out, of any route here.
 
 import (
@@ -191,12 +195,20 @@ func (s *Server) vault(w http.ResponseWriter, r *http.Request) (*credvault.Vault
 		why := s.filterCanHoldAVault(r.Context(), rec.ID)
 		if why == nil {
 			why = fmt.Errorf("%s has no credential vault yet: its egress filter has not been "+
-				"started. Wait for the sandbox to reach Running and try again, and if `sbx serve` "+
-				"was restarted, send the POST again - a vault is held in memory and does not "+
-				"survive a restart", rec.ID)
+				"started. Wait for the sandbox to reach Running and try again", rec.ID)
 		}
 
 		notReady(w, why.Error())
+
+		return nil, false
+	}
+
+	// A vault this daemon opened for a sandbox created against an earlier one. Answered here
+	// rather than left to the write, so a GET says it too: the authority in that sandbox's trust
+	// store was minted in the other daemon's memory, nothing can replace it while the sandbox
+	// runs, and sending the POST again cannot help. The sandbox has to be created again.
+	if err := v.Authority(); err != nil {
+		notReady(w, fmt.Sprintf("%s: %v", rec.ID, err))
 
 		return nil, false
 	}

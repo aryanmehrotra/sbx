@@ -206,9 +206,9 @@ type BindingList struct {
 	Bindings []BindingMetadata `json:"bindings"`
 }
 
-// The four ways a call fails, told apart because each needs a different answer and a different
-// status: a request the vault cannot accept, a vault that is not there, one that is already there,
-// and a host that cannot run a credential proxy at all.
+// The ways a call fails, told apart because each needs a different answer and a different status: a
+// request the vault cannot accept, a vault that is not there, one that is already there, a host
+// that cannot run a credential proxy at all, and a sandbox whose authority this daemon lost.
 var (
 	// ErrNotFound is any call on a sandbox with no vault.
 	ErrNotFound = errors.New("this sandbox has no credential vault: create one with " +
@@ -218,6 +218,23 @@ var (
 	ErrExists = errors.New("this sandbox already has a credential vault: change it with " +
 		"PATCH /credential-vault, or remove it with DELETE first")
 )
+
+// ErrAuthorityLost is a vault whose sandbox trusts a certificate authority this daemon does not
+// hold: `sbx serve` was restarted since the sandbox was created.
+//
+// It is the one failure here that nothing a caller sends can fix. The authority is minted while the
+// sandbox is created and mounted into its trust store, and its private key lives in that daemon's
+// memory and nowhere else - which is the trade that keeps it off every disk. A restart therefore
+// loses the only authority that sandbox will accept, and a second one minted now would be an
+// authority nothing in there has ever seen. So the vault is refused rather than opened, and the
+// sandbox has to be created again.
+//
+// A NotReadyError, so it answers 412 beside every other prerequisite this host cannot meet.
+var ErrAuthorityLost = &NotReadyError{Message: "this sandbox's credential authority was minted by " +
+	"an `sbx serve` that is no longer running, so nothing here can sign for the hosts the sandbox " +
+	"trusts. Its private key was held in that daemon's memory and never written to disk, which is " +
+	"what stops it being read off one - so there is nothing to recover, and a new authority would " +
+	"be one this sandbox does not trust. Create the sandbox again to give it a vault on this daemon"}
 
 // Error is a request the vault refuses: a malformed binding, an unknown credential, a host the
 // egress policy denies. It carries the sentence a caller acts on.

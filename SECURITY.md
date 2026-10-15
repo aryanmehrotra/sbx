@@ -43,8 +43,9 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   colima) it does not hold: the NAT is the VM boundary's, outside the VM's iptables, and a
   measured bridge with masquerade off still reached the internet
   ([DECISIONS.md](docs/DECISIONS.md#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does)).
-  Use `egress_policy` or `egress_allow` there, where the filter decides per request. A create
-  whose service declares deny is refused on such an engine rather than reported applied.
+  Use `egress_policy` or `egress_allow` there, where the filter decides per request for traffic
+  that honours `HTTP_PROXY`; a client that goes around the proxy still has the VM's route out. A
+  create whose service declares deny is refused on such an engine rather than reported applied.
 - A credential vault (`credentialProxy` on the create) holds a per-sandbox certificate
   authority's private key and the plaintext of every credential in the daemon, never on disk, and
   only where `sbx serve` holds the sandbox's filter in its own process. The authority's own
@@ -56,8 +57,11 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   whose filter is a container, which would put both on the sandbox's own network
   ([DECISIONS.md](docs/DECISIONS.md#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself)).
   `sbx doctor` reports that host answer as `hosted egress filter`.
-- A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out only through
-  sbx's egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. Where
+- A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out through sbx's
+  egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. It is the only
+  door where docker's bridge is an interface of the host, and on firecracker. On a VM-backed engine
+  the bridge has the VM's route out, so there the filter decides for traffic that honours
+  `HTTP_PROXY` and a client that ignores it is not held to the policy. Where
   the filter is a container (colima, Docker Desktop, rootless or remote docker) it refuses, whatever
   the policy says, every docker network's gateway, the default bridge's subnet, its own routes'
   gateways, its own interface addresses, and the `/24` around what `host.docker.internal`, `host.lima.internal` and

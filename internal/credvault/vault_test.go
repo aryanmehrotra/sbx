@@ -35,7 +35,22 @@ func allowing(t *testing.T, hosts ...string) func() (egress.Policy, bool) {
 func newVault(t *testing.T, hosts ...string) *Vault {
 	t.Helper()
 
-	return NewRegistry().Open("osb-000000000001", allowing(t, hosts...))
+	return openVault(t, NewRegistry(), "osb-000000000001", allowing(t, hosts...))
+}
+
+// openVault is the order the daemon works in, which a vault's own rules depend on: the authority is
+// minted while the sandbox is created, so that it reaches the trust store, and the vault adopts
+// that one when the filter comes up. A vault never mints its own.
+func openVault(t *testing.T, r *Registry, sandbox string, policy func() (egress.Policy, bool)) *Vault {
+	t.Helper()
+
+	pol, _ := policy()
+
+	if _, err := r.Certificate(sandbox, pol); err != nil {
+		t.Fatal(err)
+	}
+
+	return r.Open(sandbox, policy)
 }
 
 // bearerFor is a vault holding one credential and one bearer binding for host.
@@ -264,8 +279,21 @@ func TestASecondCreateIsAConflictAndDeleteMakesRoomForOne(t *testing.T) {
 		t.Fatalf("ErrNotFound maps to %d, want 404", got)
 	}
 
+	ca := v.CA()
+
 	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
 		t.Fatalf("a create after a delete was refused: %v", err)
+	}
+
+	// The same authority, because the sandbox's trust store still holds its certificate and
+	// nothing can replace that while the sandbox runs.
+	if v.CA() != ca {
+		t.Fatal("the create after a delete signs with a different authority: every bound host " +
+			"would fail its handshake against the certificate the sandbox was given")
+	}
+
+	if _, err := ca.Leaf("api.example.com"); err != nil {
+		t.Fatalf("the authority cannot sign after a delete and a create: %v", err)
 	}
 }
 
@@ -536,7 +564,7 @@ func TestAPolicyOfAddressesAloneGetsNoAuthority(t *testing.T) {
 // a stranger's credentials.
 func TestClosingAVaultDestroysItsKey(t *testing.T) {
 	r := NewRegistry()
-	v := r.Open("osb-000000000001", allowing(t, "api.example.com"))
+	v := openVault(t, r, "osb-000000000001", allowing(t, "api.example.com"))
 
 	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
 		t.Fatal(err)
@@ -561,7 +589,7 @@ func TestClosingAVaultDestroysItsKey(t *testing.T) {
 	}
 
 	// A fresh sandbox on the same name starts empty.
-	fresh := r.Open("osb-000000000001", allowing(t, "api.example.com"))
+	fresh := openVault(t, r, "osb-000000000001", allowing(t, "api.example.com"))
 	if _, err := fresh.State(); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a recreated sandbox inherited a vault: %v", err)
 	}
@@ -891,7 +919,7 @@ func TestABindingTheAuthorityCannotSignForIsRefusedAtTheWrite(t *testing.T) {
 	// The policy the vault reads is swapped under it, exactly as a PUT /networkpolicy does.
 	live := policyFunc(t, "api.example.com")
 
-	v := NewRegistry().Open("osb-000000000003", live.read)
+	v := openVault(t, NewRegistry(), "osb-000000000003", live.read)
 
 	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
 		t.Fatal(err)
@@ -969,4 +997,88 @@ func (p *policy) read() (egress.Policy, bool) {
 	defer p.mu.RUnlock()
 
 	return p.pol, true
+}
+
+// A vault whose authority this daemon does not hold must not mint one of its own.
+//
+// The authority is minted while the sandbox is created and mounted into its trust store, and the
+// registry holds it in memory alone. After `sbx serve` restarts that registry is empty while the
+// sandbox still trusts the certificate it was given, so a second mint would leave the filter
+// signing with an authority nothing in there has ever seen: every bound host fails its handshake
+// with `unknown authority`, after a write that answered 201.
+func TestAVaultWhoseAuthorityThisDaemonLostIsRefused(t *testing.T) {
+	// No Certificate call: this is the registry of a daemon started after the sandbox was created.
+	v := NewRegistry().Open("osb-000000000001", allowing(t, "api.example.com"))
+
+	if ca := v.CA(); ca != nil {
+		t.Fatalf("Open minted an authority for %v: the sandbox trusts the one it was given when it "+
+			"was created, and this is not it", ca.Hosts())
+	}
+
+	if err := v.Authority(); !errors.Is(err, ErrAuthorityLost) {
+		t.Fatalf("the vault reports %v, want ErrAuthorityLost: the API answers a call on it with "+
+			"this, rather than an empty 404", err)
+	}
+
+	_, err := v.Create(bearerFor("api.example.com"))
+	if err == nil {
+		t.Fatal("the create was accepted, so every request to the bound host would fail its " +
+			"handshake and the caller was told the vault was ready")
+	}
+
+	if !errors.Is(err, ErrAuthorityLost) {
+		t.Fatalf("the refusal is %v, want ErrAuthorityLost", err)
+	}
+
+	if got := HTTPStatus(err); got != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d (%v), want 412 - the same answer every other unmet prerequisite gets",
+			got, err)
+	}
+
+	// The operator can do exactly one thing about it, so the refusal has to say which.
+	if !strings.Contains(err.Error(), "Create the sandbox again") {
+		t.Errorf("the refusal does not say what to do next: %v", err)
+	}
+}
+
+// A sandbox whose policy named no host when it was created has no authority in its trust store at
+// all. Widening the policy afterwards does not put one there, so a binding on a host allowed later
+// is refused at the write rather than minted for and failing at the handshake.
+func TestABindingWithNoAuthorityAtAllIsRefusedAtTheWrite(t *testing.T) {
+	live := policyFunc(t, "10.0.0.0/8")
+
+	r := NewRegistry()
+
+	// What the create did: a policy of addresses alone has no name to terminate TLS for, so
+	// nothing was minted and nothing was mounted.
+	pol, _ := live.read()
+	if pem, err := r.Certificate("osb-000000000004", pol); err != nil || len(pem) != 0 {
+		t.Fatalf("Certificate gave %d bytes of PEM (%v), want none for a policy of addresses", len(pem), err)
+	}
+
+	v := r.Open("osb-000000000004", live.read)
+
+	live.set(t, "10.0.0.0/8", "late.example.com")
+
+	_, err := v.Create(CreateRequest{
+		Credentials: []Credential{{Name: "api", Source: InlineSource{Type: "inline", Value: "sk-live-secret"}}},
+		Bindings: []Binding{{
+			Name:  "late",
+			Match: Match{Hosts: []string{"late.example.com"}},
+			Auth:  Auth{Type: authBearer, Credential: "api"},
+		}},
+	})
+
+	if err == nil {
+		t.Fatal("a binding was accepted on a sandbox with no authority in its trust store: the " +
+			"vault would mint one for it and the sandbox would reject every leaf it signed")
+	}
+
+	if got := HTTPStatus(err); got != http.StatusBadRequest {
+		t.Fatalf("status = %d (%v), want 400: the request is the thing that cannot be honoured", got, err)
+	}
+
+	if !strings.Contains(err.Error(), "networkPolicy") {
+		t.Errorf("the refusal does not say how to get an authority: %v", err)
+	}
 }

@@ -742,6 +742,26 @@ export SSL_CERT_FILE=/tmp/bundle.pem REQUESTS_CA_BUNDLE=/tmp/bundle.pem
 If `$SBX_CREDENTIAL_VAULT_CA` is unset, the sandbox was not created with `credentialProxy`, or its
 policy allows no host names at all - there is then nothing to terminate and nothing to trust.
 
+### A create is refused because every bridge address it would use is already routed
+
+**Symptom:** a create with `egress_policy`, `egress_allow` or `egress: "deny"` is refused with "the
+egress bridge for ... cannot be addressed: every /24 of 198.18.0.0/15 it would take is already
+routed on this host", naming a route and an interface.
+
+**Cause:** sbx gives each sandbox a `/24` of `198.18.0.0/15`, and something on this machine already
+routes that range - usually a local proxy whose fake-IP range lives there, on a tunnel interface. A
+bridge inside that route would take those addresses off it, and the traffic that was using them
+would stop with no error anywhere.
+
+**Fix:** look at the route and take it away, or stop the tool holding it:
+
+```sh
+netstat -rn | grep 198.18          # macOS, BSD
+ip route | grep 198.18             # Linux
+```
+
+Then create the sandbox again.
+
 ### An API create with `credentialProxy` answers 400 about `networkPolicy`
 
 The credential is added by the egress filter, and a sandbox created without a policy has no
@@ -757,8 +777,12 @@ filter. Send one with the create:
 
 The sandbox exists and the request is well formed, and something it needs is not there. The
 message says which: the sandbox was created without `credentialProxy`, its filter is a container,
-it has no filter at all, or `sbx serve` was restarted. A vault is held in memory and does not
-survive a restart, which is also what stops a private key reaching a disk. Send the `POST` again.
+its filter has not started yet, or `sbx serve` was restarted since the sandbox was created.
+
+A filter that has not started yet is the only one to wait for. For the others, and for a restart in
+particular, sending the `POST` again cannot help: the authority the sandbox trusts was minted in the
+memory of the daemon that created it and is never written to disk, so a restart leaves nothing that
+can sign for the hosts that sandbox was given. Create the sandbox again.
 
 ### `/credential-vault` answers 400 about a host the policy denies
 

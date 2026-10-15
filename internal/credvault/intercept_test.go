@@ -2,6 +2,7 @@ package credvault
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // proxyTo dials the handler as a client would dial the egress filter, and issues the CONNECT.
@@ -216,5 +219,119 @@ func TestANilVaultIsTheFilterUntouched(t *testing.T) {
 
 	if got := <-reached; got != "CONNECT api.example.com:443" {
 		t.Errorf("with no vault the handler saw %q: it must hand every request to the filter", got)
+	}
+}
+
+// Every terminated tunnel gives its goroutine back.
+//
+// http.Serve returns only when Accept fails, and the listener serveTerminated hands it yields one
+// connection and then blocks until it is closed. Nothing closed it, so http.Serve never returned,
+// serveTerminated never returned, and one goroutine sat parked per terminated tunnel for the life
+// of the daemon. Counted rather than reasoned about: a leak is a number that does not come back
+// down.
+func TestATerminatedTunnelGivesItsGoroutineBack(t *testing.T) {
+	const tunnels = 20
+
+	v := newVault(t, "api.example.com")
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "upstream says hello")
+	})
+
+	srv := httptest.NewServer(Intercept(inner, v))
+	defer srv.Close()
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(v.CA().PEM()) {
+		t.Fatal("the vault's authority PEM did not parse: a sandbox could never trust it")
+	}
+
+	before := serving()
+
+	for range tunnels {
+		oneTerminatedTunnel(t, srv.URL, pool)
+	}
+
+	// Given a moment to come down rather than read once: the daemon's side of the last tunnel
+	// finishes on its own goroutine, after the client has its response.
+	deadline := time.Now().Add(10 * time.Second)
+
+	for {
+		got := serving()
+		if got <= before {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d terminated tunnels are still inside serveTerminated (%d were "+
+				"before they ran): each one parks a goroutine for the life of the daemon",
+				got-before, tunnels, before)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// oneTerminatedTunnel is a whole tunnel from the sandbox's side: CONNECT, handshake, one request,
+// and a close. The daemon's half must be finished by the time this returns, or soon after.
+func oneTerminatedTunnel(t *testing.T, proxy string, pool *x509.CertPool) {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer conn.Close()
+
+	fmt.Fprint(conn, "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n")
+
+	br := bufio.NewReader(conn)
+
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT got %d", resp.StatusCode)
+	}
+
+	client := tls.Client(conn, &tls.Config{ServerName: "api.example.com", RootCAs: pool})
+	if err := client.Handshake(); err != nil {
+		t.Fatalf("the sandbox's client would not complete the handshake: %v", err)
+	}
+
+	defer client.Close()
+
+	fmt.Fprint(client, "GET /v1/models HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n")
+
+	inside, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("reading the response inside the tunnel: %v", err)
+	}
+
+	defer inside.Body.Close()
+
+	_, _ = io.Copy(io.Discard, inside.Body)
+}
+
+// serving counts the goroutines still inside serveTerminated, which is one per tunnel that has
+// not finished. A stack dump rather than runtime.NumGoroutine: the test server has goroutines of
+// its own, and a count that includes them would be a count that cannot be compared.
+func serving() int {
+	buf := make([]byte, 1<<16)
+
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return bytes.Count(buf[:n], []byte("credvault.serveTerminated"))
+		}
+
+		buf = make([]byte, 2*len(buf))
 	}
 }

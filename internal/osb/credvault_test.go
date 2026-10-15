@@ -462,3 +462,52 @@ func TestACredentialProxyCreateIsNeverServedFromAPool(t *testing.T) {
 			"is not the one keeping it off the pool", why)
 	}
 }
+
+// A sandbox whose authority this daemon no longer holds is told so, on every route, rather than
+// given a vault that answers 201 and then fails every bound host's handshake.
+//
+// That is what `sbx serve` restarting looks like: the record on disk still says credentialProxy,
+// the certificate is still mounted in the sandbox, and the private key that signs for it was only
+// ever in the memory of the daemon that created it. Retrying the POST cannot help, so the refusal
+// says the one thing that can: create the sandbox again.
+func TestAVaultIsRefusedWhenThisDaemonLostTheAuthority(t *testing.T) {
+	reg := credvault.NewRegistry()
+	h := newHarness(t, withVault(t, reg), func(_ *harness, o *Options) { o.Key = "k" })
+	key := []string{"OPEN-SANDBOX-API-KEY", "k"}
+
+	var sb sandboxJSON
+	h.do("POST", "/v1/sandboxes", credentialProxyCreate(), &sb, key...)
+	h.waitStateKeyed(sb.ID, key)
+
+	// The authority minted at create goes, the way a restart loses it, and then the daemon opens
+	// the vault beside the filter it hosts - with nothing to adopt.
+	reg.Close(sb.ID)
+	reg.Open(sb.ID, func() (egress.Policy, bool) {
+		p, _ := egress.ParsePolicy([]byte(`{"defaultAction":"deny","egress":[{"action":"allow","target":"api.example.com"}]}`))
+
+		return p, true
+	})
+
+	vault := "/v1/sandboxes/" + sb.ID + "/egress/credential-vault"
+	create := `{"credentials":[{"name":"api","source":{"type":"inline","value":"sk-live-secret"}}],
+		"bindings":[{"name":"api","match":{"hosts":["api.example.com"]},
+		"auth":{"type":"bearer","credential":"api"}}]}`
+
+	for _, c := range []struct {
+		method string
+		body   any
+	}{{"GET", nil}, {"POST", create}, {"PATCH", `{"credentials":{"delete":["api"]}}`}} {
+		resp := h.do(c.method, vault, c.body, nil, key...)
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusPreconditionFailed {
+			t.Fatalf("%s = %d, want 412: %s", c.method, resp.StatusCode, body)
+		}
+
+		if !strings.Contains(string(body), "Create the sandbox again") {
+			t.Errorf("%s does not say what to do next: %s", c.method, body)
+		}
+	}
+}

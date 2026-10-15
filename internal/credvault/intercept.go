@@ -3,6 +3,7 @@ package credvault
 import (
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -108,9 +109,18 @@ func serveTerminated(client net.Conn, leaf *tls.Certificate, filter http.Handler
 	_ = inside.SetDeadline(time.Time{})
 
 	// http.Serve gives the decrypted stream a real HTTP server: keep-alive, pipelining, chunked
-	// bodies and correct response framing, none of which is worth reimplementing here. It serves
-	// exactly one connection and returns when that connection ends.
-	_ = http.Serve(&oneConn{conn: inside}, originForm(filter, host, port))
+	// bodies and correct response framing, none of which is worth reimplementing here.
+	//
+	// It returns when Accept fails and at no other time, so the connection it is handed closes
+	// the listener as well: http.Serve's own per-connection goroutine closes that connection once
+	// the last request on it is done, Accept comes back with net.ErrClosed, and Serve returns.
+	// Closing the connection alone is not enough - the defer above closes the connection, not the
+	// listener - and without the listener going too this goroutine parks in Accept for the life of
+	// the daemon, one per terminated tunnel.
+	ln := &oneConn{}
+	ln.conn = closesListener{Conn: inside, listener: ln}
+
+	_ = http.Serve(ln, originForm(filter, host, port))
 }
 
 // originForm turns each request inside the tunnel back into the absolute-form request the filter
@@ -172,11 +182,35 @@ func targetOf(target string) (string, string) {
 	return host, port
 }
 
+// closesListener is the connection as http.Serve sees it: closing it closes the listener too.
+//
+// That is the only thing that ends http.Serve here, because http.Serve returns when Accept fails,
+// Accept fails when the listener is closed, and the listener is a oneConn that nobody else ever
+// reaches. The wrapper rather than a close in serveTerminated: the connection ends on http.Serve's
+// own goroutine, whenever the last request on it is done, and that is the moment the listener has
+// to go.
+type closesListener struct {
+	net.Conn
+
+	listener io.Closer
+}
+
+// Close closes the connection first, so a listener that is already closed cannot leave Accept
+// handing over a connection that is gone. Both halves are idempotent.
+func (c closesListener) Close() error {
+	err := c.Conn.Close()
+
+	_ = c.listener.Close()
+
+	return err
+}
+
 // oneConn is a net.Listener that yields one already-accepted connection and then blocks until it
 // is closed, which is how http.Serve is pointed at a single stream.
 //
 // Close does not close the connection: serveTerminated owns it through its own defer, and closing
-// it twice would race the copy still draining it.
+// it twice would race the copy still draining it. The other direction does hold - the connection
+// this yields is wrapped in closesListener - and that is what lets http.Serve return.
 type oneConn struct {
 	conn net.Conn
 

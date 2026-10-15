@@ -165,3 +165,11 @@ Never edit or delete earlier lines. Past about 25, move the oldest to [CONTRIBUT
   MASQUERADE rule for a bridge with `enable_ip_masquerade=false`, and the bridge reached `1.1.1.1`
   anyway, because the NAT is the VM boundary's. Verify a control from inside the sandbox, not from
   the rule you asked for (DECISIONS, "On a VM-backed engine a bridge without NAT does not stop egress").
+- 2026-10-15 · `http.Serve` on a one-connection listener returns only when `Accept` fails, so the
+  connection it is handed has to close the listener. Twenty terminated tunnels left twenty
+  goroutines parked in `(*oneConn).Accept` (`internal/credvault/intercept.go`); counted in a test,
+  because a parked goroutine breaks nothing a request can see.
+- 2026-10-15 · A key held only in memory makes a restart a re-create, not a retry. The vault minted
+  a second authority when its registry had none, so the filter signed with a certificate the
+  sandbox had never been given and every bound host failed `unknown authority` after a 201
+  (`Registry.Open`). Refuse what cannot work; never mint a second one.

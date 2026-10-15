@@ -28,8 +28,13 @@ import (
 //
 // Nothing here is written to disk, so a vault does not survive `sbx serve` restarting. That is the
 // same trade the certificate authority makes, and it is the safe direction: a key that survives a
-// restart is a key on a filesystem. A caller whose daemon restarted gets 404 from the vault routes
-// and sends its POST again.
+// restart is a key on a filesystem.
+//
+// What a restart loses is not the vault's contents, which were never promised to survive one. It
+// is the only authority the sandbox will accept: the certificate was mounted into its trust store
+// when it was created and is read once by whatever runs in there. So a sandbox whose daemon
+// restarted cannot have a vault again at all, and is told that (ErrAuthorityLost) rather than
+// given one that signs with an authority nothing in there has ever seen.
 type Registry struct {
 	mu     sync.Mutex
 	vaults map[string]*Vault
@@ -57,6 +62,20 @@ func NewRegistry() *Registry {
 //
 // An empty PEM and no error is a policy with no names of its own: there is nothing to terminate
 // TLS for, so there is nothing to trust.
+//
+// This is the only place an authority is minted. The constraints come from the POLICY and not from
+// the bindings, which is what makes it stable: the trust store is read once by whatever runs in
+// there - Node, Python and Go all cache it at startup - so an authority that changed when a
+// binding was added would leave a long-running agent trusting one that no longer exists, and every
+// swap after that would fail its handshake with nothing to say why. Minting from the binding set
+// did exactly that.
+//
+// It is not wider than it needs to be either, because a binding cannot name a host the policy does
+// not already allow - validateCandidate refuses that with pol.AllowsName, at write time, every
+// time. So the policy's hosts are a superset of the bindings' hosts by construction: these
+// constraints cover every leaf the vault could ever be asked to mint, and never a host the sandbox
+// is not allowed to reach anyway. The exclusion of every IP range is unchanged - an authority that
+// could certify an address rather than a name would be a general-purpose one.
 func (r *Registry) Certificate(sandbox string, pol egress.Policy) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,20 +121,24 @@ func (r *Registry) Open(sandbox string, policy func() (egress.Policy, bool)) *Va
 	v := &Vault{sandbox: sandbox, policy: policy,
 		credentials: map[string]record{}, bindings: map[string]Binding{}}
 
-	// The authority the sandbox was already given, if its trust store was delivered at create.
-	// Minting a second one here would leave the filter signing with a certificate nothing in the
-	// sandbox trusts, which is the failure this whole arrangement exists to avoid.
-	if ca, ok := r.cas[sandbox]; ok {
+	// The authority the sandbox was already given, when its trust store was delivered at create -
+	// and nothing else. A vault never mints its own: the certificate the sandbox trusts is read
+	// once, at startup, by Node, Python and Go alike, so a second authority here would be one the
+	// sandbox has never seen and every bound host would fail its handshake with `unknown
+	// authority`, after a write that answered 201.
+	switch ca, ok := r.cas[sandbox]; {
+	case ok:
 		v.ca = ca
 
 		delete(r.cas, sandbox)
-	}
 
-	// Otherwise minted here, before anything is written to the vault: a vault whose sandbox was
-	// created without a trust store still needs an authority for its own first write. An error is
-	// dropped rather than returned, because a policy with no names of its own is the ordinary
-	// reason and a write that needs the authority finds out from ensureCA itself.
-	_ = v.ensureCA()
+	case len(v.policyHosts()) > 0:
+		// The policy names hosts, so this sandbox was given an authority when it was created and
+		// this registry is not the one that minted it - `sbx serve` was restarted since. There is
+		// nothing to recover, because the key was only ever in that process's memory, so the vault
+		// is marked unusable here and every write on it says so.
+		v.noAuthority = ErrAuthorityLost
+	}
 
 	r.vaults[sandbox] = v
 
@@ -168,6 +191,10 @@ type Vault struct {
 	credentials map[string]record
 	bindings    map[string]Binding
 	ca          *CA
+
+	// noAuthority is why this vault can never sign for anything, set once by Open and read-only
+	// after it. Nil is the ordinary case.
+	noAuthority error
 }
 
 // Sandbox is the sandbox this vault belongs to.
@@ -217,10 +244,6 @@ func (v *Vault) Create(req CreateRequest) (State, error) {
 		return State{}, err
 	}
 
-	if err := v.ensureCA(); err != nil {
-		return State{}, err
-	}
-
 	v.exists, v.revision, v.credentials, v.bindings = true, 1, credentials, bindings
 
 	return v.stateLocked(), nil
@@ -267,17 +290,19 @@ func (v *Vault) Patch(req MutationRequest) (State, error) {
 		return State{}, err
 	}
 
-	if err := v.ensureCA(); err != nil {
-		return State{}, err
-	}
-
 	v.revision, v.credentials, v.bindings = next, credentials, bindings
 
 	return v.stateLocked(), nil
 }
 
-// Delete removes the vault and destroys its authority. The sandbox keeps running; it just has no
+// Delete removes the vault's credentials and bindings. The sandbox keeps running; it just has no
 // credentials of its own any more.
+//
+// The authority is left alone, because it belongs to the sandbox rather than to this revision: its
+// certificate is in the sandbox's trust store, read once at startup, and nothing can replace it
+// there while the sandbox runs. Destroying the key here would make the next POST a vault signing
+// with an authority the sandbox has never seen - or, now that nothing re-mints, no vault at all.
+// The key still stops existing with the sandbox: Registry.Close destroys it when the filter goes.
 func (v *Vault) Delete() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -288,11 +313,6 @@ func (v *Vault) Delete() error {
 
 	v.exists, v.revision = false, 0
 	v.credentials, v.bindings = map[string]record{}, map[string]Binding{}
-
-	if v.ca != nil {
-		v.ca.Destroy()
-		v.ca = nil
-	}
 
 	return nil
 }
@@ -373,6 +393,17 @@ func (v *Vault) CA() *CA {
 	return v.ca
 }
 
+// Authority is why this vault can never sign for anything, or nil.
+//
+// The API asks before it answers a call on a sandbox whose authority this daemon lost, so the
+// caller gets the reason and the one thing that fixes it rather than an empty 404.
+func (v *Vault) Authority() error {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	return v.noAuthority
+}
+
 // Bound implements egress.CredentialSource: whether a binding covers this destination.
 //
 // The port decides the scheme rather than the other way round, because that is all a CONNECT
@@ -425,6 +456,12 @@ func (v *Vault) destroy() {
 
 // check validates a candidate vault against the policy in force.
 func (v *Vault) check(credentials map[string]record, bindings map[string]Binding) error {
+	// Before the request is looked at, because no request can be honoured: the sandbox trusts an
+	// authority this daemon does not hold, so a credential written here could never be sent.
+	if v.noAuthority != nil {
+		return v.noAuthority
+	}
+
 	pol, hasPolicy := egress.Policy{}, false
 	if v.policy != nil {
 		pol, hasPolicy = v.policy()
@@ -446,8 +483,19 @@ func (v *Vault) check(credentials map[string]record, bindings map[string]Binding
 // caused it. Refused at the write instead, which is where the caller can still do something about
 // it.
 func (v *Vault) certifiable(bindings map[string]Binding) error {
-	if v.ca == nil {
+	if len(bindings) == 0 {
 		return nil
+	}
+
+	// No authority at all, which is a policy that named no host when the sandbox was created: the
+	// trust store got nothing, so nothing can be signed for. Widening the policy afterwards does
+	// not change that - the certificate in there is read once - so this is refused at the write
+	// too, for the same reason a host added later is.
+	if v.ca == nil {
+		return invalid("this sandbox has no credential authority, so no binding on it could ever " +
+			"be signed for: its egress policy named no host when the sandbox was created, so " +
+			"there was nothing to put in its trust store. Create the sandbox with the host the " +
+			"binding names already in its networkPolicy")
 	}
 
 	for _, b := range bindings {
@@ -471,46 +519,6 @@ func (v *Vault) certifiable(bindings map[string]Binding) error {
 				b.Name, host, strings.Join(v.ca.Hosts(), ", "), host)
 		}
 	}
-
-	return nil
-}
-
-// ensureCA gives the vault one authority for the life of the sandbox, constrained to the hosts its
-// egress policy allows.
-//
-// The constraints come from the POLICY and not from the bindings, which is what makes the
-// authority stable. A new authority is a new certificate for the sandbox's trust store, and the
-// trust store is read once by whatever runs in there - Node, Python and Go all cache it at
-// startup - so an authority that changed when a binding was added would leave a long-running
-// agent trusting one that no longer exists, and every swap after that would fail its handshake
-// with nothing to say why. Minting from the binding set did exactly that: adding a host to a
-// binding replaced the authority.
-//
-// It is not wider than it needs to be, because a binding cannot name a host the policy does not
-// already allow - validateCandidate refuses that with pol.AllowsName, at write time, every time.
-// So the policy's hosts are a superset of the bindings' hosts by construction, which means these
-// constraints always cover every leaf this vault could ever be asked to mint, and never cover a
-// host the sandbox is not allowed to reach anyway. The exclusion of every IP range is unchanged:
-// an authority that could certify an address rather than a name would be a general-purpose one.
-//
-// A policy with no DNS names of its own - all addresses and CIDRs - gets no authority, because
-// there is no name to terminate TLS for.
-func (v *Vault) ensureCA() error {
-	if v.ca != nil {
-		return nil
-	}
-
-	hosts := v.policyHosts()
-	if len(hosts) == 0 {
-		return nil
-	}
-
-	ca, err := NewCA(hosts)
-	if err != nil {
-		return err
-	}
-
-	v.ca = ca
 
 	return nil
 }

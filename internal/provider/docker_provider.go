@@ -349,8 +349,11 @@ func (d *dockerProvider) Create(_ context.Context, sandbox string, slot, _ int, 
 					"cannot enforce: the bridge's gateway %s is not an address it holds (%v), so "+
 					"docker's bridges live inside a VM and that VM routes them out whatever "+
 					"masquerade says. sbx will not report a service denied egress while it has a "+
-					"route out. Use `egress_policy` or `egress_allow`, where the filter decides "+
-					"per request and is enforced here, or run on a host whose docker is native",
+					"route out. Use `egress_policy` or `egress_allow` for traffic that honours "+
+					"HTTP_PROXY, which is what the sandbox is given and what the filter then "+
+					"decides per request - a client here that goes around the proxy still has the "+
+					"VM's route out. For a denial at the route, run on a host whose docker is "+
+					"native",
 					service, gw, routed)
 			}
 		}
@@ -717,12 +720,26 @@ func (d *dockerProvider) ensureEgressNetwork(sandbox string) (created bool, err 
 			"docker 28 refuses the filter's fixed address on one\n", sandbox)
 	}
 
+	// Read once, before any slice is tried: the host may already route part of sbx's block
+	// somewhere else, and a bridge inside that route collides with it silently (hostRoutes).
+	routes := hostRoutes()
+
+	var collided []string
+
 	// A /24 of sbx's own block (see egressSubnetBlock). Docker refuses one another network
 	// already holds ("Pool overlaps with other one on this address space"), so the slice this
 	// sandbox's name picks is tried first and the next few after it - for a second sandbox that
 	// hashed to the same slice, or an operator's network sitting in the block.
 	for try := range egressSubnetTries {
 		subnet := egressSubnet(sandbox, try)
+
+		// Skipped rather than asked about: docker would create it happily, because the clash is
+		// with the host's table and not with another of its networks.
+		if where := routedElsewhere(routes, subnet); where != "" {
+			collided = append(collided, subnet.String()+" against "+where)
+
+			continue
+		}
 
 		if _, err = d.docker("network", "create",
 			"-o", "com.docker.network.bridge.enable_ip_masquerade=false",
@@ -742,6 +759,11 @@ func (d *dockerProvider) ensureEgressNetwork(sandbox string) (created bool, err 
 		if !strings.Contains(err.Error(), "overlap") {
 			break
 		}
+	}
+
+	// Nothing was asked of docker, because every slice was already routed on this host.
+	if err == nil {
+		return false, routeConflict(sandbox, collided)
 	}
 
 	return false, fmt.Errorf("service declared egress deny and its no-NAT bridge could not be "+

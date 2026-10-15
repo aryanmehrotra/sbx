@@ -50,6 +50,7 @@ amended entry carries a **Status:** line under its heading.
 | [Default-allow is enforced by the same door, and it costs raw TCP](#default-allow-is-enforced-by-the-same-door-and-it-costs-raw-tcp) | Egress | v0.9.0 | current |
 | [On a VM-backed engine a bridge without NAT does not stop egress, and only the filter does](#on-a-vm-backed-engine-a-bridge-without-nat-does-not-stop-egress-and-only-the-filter-does) | Egress | unreleased | current |
 | [A half-finished create's filter and bridge are reclaimable, and a live sandbox's never are](#a-half-finished-creates-filter-and-bridge-are-reclaimable-and-a-live-sandboxs-never-are) | Egress | unreleased | current |
+| [A sandbox bridge is not addressed over a route the host already has](#a-sandbox-bridge-is-not-addressed-over-a-route-the-host-already-has) | Egress | unreleased | current |
 | [A credential vault exists only where the daemon hosts the filter itself](#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself) | Egress | unreleased | current |
 | [The credential is added inside a terminated tunnel, and the authority is the policy's](#the-credential-is-added-inside-a-terminated-tunnel-and-the-authority-is-the-policys) | Egress | unreleased | current |
 | [The authority is minted once per sandbox, constrained to the hosts its policy allows](#the-authority-is-minted-once-per-sandbox-constrained-to-the-hosts-its-policy-allows) | Egress | unreleased | current |
@@ -974,6 +975,39 @@ orphan for good, rather than `sbx gc --force` killing the filter a create two mi
 needs. The obvious alternative, a label naming the create's pid, is true only on the machine that
 wrote it, and a create against a remote `DOCKER_HOST` runs where that pid means nothing.
 
+### A sandbox bridge is not addressed over a route the host already has
+
+**Status:** current, 2026-10-15.
+
+sbx carves each sandbox's no-NAT bridge out of `198.18.0.0/15`, one `/24` per sandbox, picked by
+the sandbox's name
+([above](#egress-is-denied-by-a-bridge-without-nat-not-by-a-firewall-sbx-writes)). The block is the
+RFC 2544 benchmarking range: reserved, never routed on the internet, and not a range anything hands
+addresses out of, which is why it is a better neighbour than docker's own pools.
+
+Reserved is not unused. It is also where a local proxy puts a fake-IP range, and such a tool
+installs a host route over the whole block on a tunnel interface. A bridge inside that route
+collides with it: the host then has two ways to the same addresses and takes the longer prefix, so
+the bridge's `/24` wins for its own addresses and whatever the tunnel was doing with them stops,
+with no error on either side.
+
+**So the host's table is read once per create, and a routed slice is never asked for.** The slices
+this sandbox would take are tried in order as before, a slice the host already routes is skipped
+like one docker says is taken, and the refusal names the route and the interface when none of the
+eight is free - there is one thing to do about it, and it is to remove that route.
+
+A route broader than the block is not a collision, which the default route makes worth stating:
+every machine has one, the block is reserved, and a bridge taking those addresses off it is the
+point. Only a route at least as specific as the block counts. Docker's own bridges are skipped too,
+because on native Linux a sandbox bridge *is* a host route once it exists, and docker's own overlap
+check is what answers a slice another sandbox holds.
+
+The table is read without a dependency - the root `go.mod` has no `require` - so it is
+`/proc/net/route` on Linux, `netstat -rn -f inet` on the BSDs, and on every platform the addresses
+the host's own interfaces hold, which is where a tunnel carrying a fake-IP range shows up. A table
+that cannot be read is not a refusal: a create stopped by an unparsed routing table is a worse
+outcome than the collision, which is what the platform did before this existed.
+
 ### A credential vault exists only where the daemon hosts the filter itself
 
 **Status:** current, 2026-10-14.
@@ -1116,6 +1150,16 @@ has been read. So `Registry.Certificate` mints the authority during the create, 
 it read-only at `/etc/sbx/credential-vault-ca.pem`, and `Registry.Open` later adopts that same one
 rather than minting a second - a filter signing with a certificate nothing in the sandbox trusts is
 the failure the whole arrangement exists to avoid.
+
+**A sandbox whose authority this daemon does not hold cannot have a vault at all.** The key lives
+in the daemon's memory and nowhere else, so `sbx serve` restarting loses the only authority that
+sandbox will accept while its trust store still names it. `Registry.Open` finds no authority to
+adopt and marks the vault unusable (`ErrAuthorityLost`, 412) instead of minting a second one: the
+request that mints is the request that breaks every bound host, and it answers 201 while doing it.
+There is nothing a caller can send to recover it, so the refusal says to create the sandbox again.
+`Vault.Delete` leaves the authority alone for the same reason - it belongs to the sandbox's trust
+store, not to a revision, so a POST after a DELETE keeps signing with the certificate the sandbox
+was given.
 
 **Only additive trust variables are set.** `NODE_EXTRA_CA_CERTS` adds to the root set.
 `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` replace it, so pointing either at this one certificate

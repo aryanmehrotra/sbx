@@ -799,3 +799,84 @@ func TestEgressDenyIsRefusedExactlyWhereTheBridgeCannotEnforceIt(t *testing.T) {
 			"not say which control was refused, so nobody can act on it: %v", err)
 	}
 }
+
+// 198.18.0.0/15 is reserved, which is why sbx addresses its bridges from it - and also why a local
+// proxy's fake-IP range tends to live there. Such a tool installs a host route over the whole
+// block, and a bridge inside that route collides with it: the host has two ways to the same
+// addresses, picks by prefix length, and whichever traffic takes the losing one fails with nothing
+// to say why. So the host's table is read once at create and a routed slice is never asked for.
+func TestABridgeIsNotAddressedOverAHostRoute(t *testing.T) {
+	routes := []hostRoute{
+		{prefix: netip.MustParsePrefix("198.18.0.0/16"), iface: "utun4"},
+		{prefix: netip.MustParsePrefix("192.168.1.0/24"), iface: "en0"},
+	}
+
+	for subnet, want := range map[string]bool{
+		"198.18.9.0/24":  true,  // inside the fake-IP range
+		"198.18.0.0/16":  true,  // the route itself
+		"198.19.44.0/24": false, // the other half of sbx's block, free
+		"172.22.0.0/16":  false, // docker's own, nothing to do with this
+	} {
+		got := routedElsewhere(routes, netip.MustParsePrefix(subnet))
+		if (got != "") != want {
+			t.Errorf("routedElsewhere(%s) = %q, want a conflict: %v", subnet, got, want)
+		}
+	}
+
+	// The operator can do exactly one thing about it, so the refusal has to name what to remove.
+	where := routedElsewhere(routes, netip.MustParsePrefix("198.18.9.0/24"))
+	if !strings.Contains(where, "198.18.0.0/16") || !strings.Contains(where, "utun4") {
+		t.Fatalf("the conflict is reported as %q, which does not name the route or its interface", where)
+	}
+
+	err := routeConflict("osb-000000000001", []string{where})
+	for _, want := range []string{"osb-000000000001", "utun4", egressSubnetBlock, "create the sandbox again"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// The two tables sbx reads, in the shapes the platforms really print, and only the part of them
+// this asks about: a route inside the egress block, named by its interface.
+func TestTheHostsRoutesAreReadOnBothPlatforms(t *testing.T) {
+	// `netstat -rn -f inet` on macOS: abbreviated destinations, a Netif column, and the host's
+	// ordinary routes mixed in. The sandbox bridge sbx made is docker's, and on a Mac is not here
+	// at all - the one on br-9f is the native-Linux shape, dropped because docker's overlap check
+	// is what answers a taken slice.
+	bsd := `Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+default            192.168.1.1        UGScg                 en0
+127                127.0.0.1          UCS                   lo0
+198.18/16          link#18            UCS                  utun4
+198.19.7.1         link#18            UHLWIi               utun4
+198.18.200.0/24    link#5             UC                    br-9f
+224.0.0/4          link#18            UmCS                 utun4
+`
+
+	got := netstatRoutes([]byte(bsd))
+	if len(got) != 2 {
+		t.Fatalf("read %v from the BSD table, want the two routes inside %s that are not docker's",
+			got, egressSubnetBlock)
+	}
+
+	if got[0].String() != "198.18.0.0/16 on utun4" || got[1].String() != "198.19.7.1/32 on utun4" {
+		t.Errorf("the BSD table read as %v: an abbreviated prefix is the route it stands for, and "+
+			"a bare address is a host route", got)
+	}
+
+	// /proc/net/route on Linux: little-endian hex of a network-order value, one line per route.
+	// 198.18.0.0/16 is destination 0000.12C6 -> 0012C600 little-endian, mask 0000FFFF.
+	linux := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"utun4\t000012C6\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n" +
+		"br-9f\t00C812C6\t00000000\t0001\t0\t0\t0\x0900FFFFFF\t0\t0\t0\n" +
+		"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+
+	got = procNetRoutes([]byte(linux))
+	if len(got) != 1 || got[0].String() != "198.18.0.0/16 on utun4" {
+		t.Fatalf("read %v from /proc/net/route, want 198.18.0.0/16 on utun4 alone: the default "+
+			"route is outside the block and br-9f is docker's own", got)
+	}
+}
