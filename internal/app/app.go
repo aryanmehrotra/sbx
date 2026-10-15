@@ -133,9 +133,9 @@ func backendFlags(fs *flag.FlagSet) (kind, socket, namespace, isolation *string)
 
 // resolve turns the backend flags into a provider and a validated isolation tier.
 func resolve(kind, socket, namespace, isolation string) (provider.Provider, provider.Isolation, error) {
-	iso := provider.Isolation(isolation)
-	if !iso.Valid() {
-		return nil, "", fmt.Errorf("unknown isolation %q (want container, gvisor, kata or firecracker)", isolation)
+	iso, err := provider.ParseIsolation(isolation)
+	if err != nil {
+		return nil, "", err
 	}
 
 	p, err := provider.For(kind, socket, namespace)

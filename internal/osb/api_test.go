@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/history"
+	"github.com/aryanmehrotra/sbx/internal/provider"
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
 
@@ -255,6 +256,7 @@ func TestCreateRefusesWhatItCannotDo(t *testing.T) {
 		{"control secret env", with("env", map[string]string{"EXECD_CONTROL_SECRET": "x"}), 400, "SANDBOX::INVALID_PARAMETER", "reserved"},
 		{"idle", with("extensions", map[string]string{"sbx.idle": "nap"}), 400, "SANDBOX::INVALID_PARAMETER", "sleep"},
 		{"ports", with("extensions", map[string]string{"sbx.ports": "80,x"}), 400, "SANDBOX::INVALID_PARAMETER", "sbx.ports"},
+		{"isolation", with("extensions", map[string]string{"sbx.isolation": "jail"}), 400, "SANDBOX::INVALID_PARAMETER", "gvisor"},
 		{"image auth", with("image", map[string]any{"uri": "x", "auth": map[string]string{"username": "u"}}), 501, "SANDBOX::API_NOT_SUPPORTED", "docker login"},
 		{"secure access", with("secureAccess", true), 501, "SANDBOX::API_NOT_SUPPORTED", "not built yet"},
 		{"windows", with("platform", map[string]string{"os": "windows", "arch": "amd64"}), 400, "SANDBOX::INVALID_PARAMETER", "linux"},
@@ -770,3 +772,117 @@ func TestCreateIsRefusedWithoutAnInjector(t *testing.T) {
 type bare struct{ *fakeDocker }
 
 func (bare) ImageInfo() {}
+
+func TestCreateRunsAtTheIsolationTierThatWasAskedFor(t *testing.T) {
+	h := newHarness(t)
+
+	// The tier the sandbox actually got, read from the provider rather than from the response:
+	// echoing the extension back proves only that the server can copy a map. Both OSB create
+	// paths used to hand the provider the literal "container" whatever the caller asked for, so
+	// a sandbox asked for as a microVM ran on the host kernel and said nothing.
+	for _, c := range []struct {
+		name string
+		ext  map[string]string
+		want provider.Isolation
+	}{
+		{"nothing asked", nil, provider.IsolationContainer},
+		{"container", map[string]string{"sbx.isolation": "container"}, provider.IsolationContainer},
+		{"gvisor", map[string]string{"sbx.isolation": "gvisor"}, provider.IsolationGVisor},
+		{"kata", map[string]string{"sbx.isolation": "kata"}, provider.IsolationKata},
+		{"firecracker", map[string]string{"sbx.isolation": "firecracker"}, provider.IsolationFirecracker},
+		{"padded", map[string]string{"sbx.isolation": " gvisor "}, provider.IsolationGVisor},
+	} {
+		body := minimalCreate()
+		if c.ext != nil {
+			body["extensions"] = c.ext
+		}
+
+		sb := h.create(body)
+		if sb.Status.State != stateRunning {
+			t.Fatalf("%s: state %s - %s", c.name, sb.Status.State, sb.Status.Message)
+		}
+
+		if got := h.p.tier(sb.ID); got != c.want {
+			t.Errorf("%s: provider was asked for isolation %q, want %q", c.name, got, c.want)
+		}
+
+		// And what the GET reports is the tier, not the default, for a caller who only ever
+		// reads the API.
+		var back sandboxJSON
+		h.do("GET", "/v1/sandboxes/"+sb.ID, nil, &back)
+
+		if c.ext != nil && back.Extensions["sbx.isolation"] != c.ext["sbx.isolation"] {
+			t.Errorf("%s: GET reports extensions %v", c.name, back.Extensions)
+		}
+	}
+}
+
+func TestCreateRefusesATierThisHostCannotGive(t *testing.T) {
+	h := newHarness(t)
+
+	// A silent downgrade to a container is the bug one layer deeper: the caller is told 202 and
+	// handed something weaker than it asked for. Refused by name instead, naming what is missing.
+	h.p.cannotProvide(provider.IsolationGVisor, "the runsc runtime")
+	h.p.cannotProvide(provider.IsolationFirecracker, "/dev/kvm")
+
+	for _, c := range []struct{ tier, missing string }{
+		{"gvisor", "runsc"},
+		{"firecracker", "/dev/kvm"},
+	} {
+		body := minimalCreate()
+		body["extensions"] = map[string]string{"sbx.isolation": c.tier}
+
+		resp := h.do("POST", "/v1/sandboxes", body, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: create = %d, want 400", c.tier, resp.StatusCode)
+			continue
+		}
+
+		e := h.errOf(resp)
+		if e.Code != "SANDBOX::INVALID_PARAMETER" || !strings.Contains(e.Message, c.tier) ||
+			!strings.Contains(e.Message, c.missing) {
+			t.Errorf("%s: %+v - want the tier and %q named", c.tier, e, c.missing)
+		}
+	}
+
+	// Nothing refused may have left a sandbox behind: the refusal is in validate, before the
+	// record is written or the container asked for.
+	var list listJSON
+	h.do("GET", "/v1/sandboxes", nil, &list)
+
+	if list.Pagination.TotalItems != 0 {
+		t.Fatalf("refused creates left %d sandboxes", list.Pagination.TotalItems)
+	}
+
+	if len(h.p.created) != 0 {
+		t.Fatalf("refused creates left %d containers", len(h.p.created))
+	}
+
+	// The tier this host does have is still created, so the refusal is about the host and not
+	// about asking at all.
+	sb := h.create(map[string]any{
+		"image": map[string]any{"uri": "python:3.11-slim"}, "entrypoint": []string{"tail", "-f", "/dev/null"},
+		"resourceLimits": map[string]string{"cpu": "500m", "memory": "512Mi"}, "timeout": 600,
+		"extensions": map[string]string{"sbx.isolation": "kata"},
+	})
+
+	if got := h.p.tier(sb.ID); got != provider.IsolationKata {
+		t.Fatalf("kata create got isolation %q", got)
+	}
+}
+
+func TestAWarmPoolMemberNeverServesACreateThatAskedForATier(t *testing.T) {
+	// Every member is pre-created, and nothing pre-creates one per tier: serving a gvisor create
+	// from the pool would hand back a container. poolExtensions is a whitelist, so an unlisted
+	// extension is already cold - this holds that, because the failure mode is silent.
+	req := createRequest{Extensions: map[string]string{"sbx.isolation": "gvisor"}}
+
+	why := poolBlocker([]byte(`{"extensions":{"sbx.isolation":"gvisor"}}`), req)
+	if why == "" {
+		t.Fatal("a create asking for a tier is poolable; a pool member is always a container")
+	}
+
+	if !strings.Contains(why, "sbx.isolation") {
+		t.Errorf("pool blocker %q does not name the extension", why)
+	}
+}

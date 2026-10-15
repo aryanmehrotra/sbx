@@ -265,6 +265,8 @@ sbx create untrusted --spec sandbox.json --provider firecracker
 - What is tested where: [platform status](ARCHITECTURE.md#platform-status).
 - Lighter options: `--isolation gvisor` (a user-space kernel) or `--isolation kata` (a lightweight
   VM per container). Each is refused with a reason when its runtime is missing.
+- Through the API, `extensions: {"sbx.isolation": "gvisor"}` on a create asks for the same tiers,
+  and a create that names none is a container. Such a create is never served from a warm pool.
 
 ## Kubernetes
 

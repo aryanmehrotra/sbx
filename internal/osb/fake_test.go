@@ -37,6 +37,15 @@ type fakeDocker struct {
 	// lists records the sandbox each List was filtered to ("" for all).
 	lists []string
 
+	// isolation is the tier each Create was handed, so a test can check the tier the API asked
+	// for rather than the extension it echoed back.
+	isolation map[string]provider.Isolation
+
+	// unavailable are the tiers this host cannot give, each with what is missing. Empty is a
+	// host that can run everything, which is what every test but the refusal wants. The real
+	// docker provider reads the daemon's registered runtimes for this.
+	unavailable map[provider.Isolation]string
+
 	exitOnStart bool                // new containers are not running: the entrypoint exited
 	exit        *provider.ExitState // what ExitOf reports; nil is a provider that cannot say
 	createErr   error               // Create fails with this
@@ -63,13 +72,13 @@ type fakeDocker struct {
 
 func newFakeDocker() *fakeDocker {
 	return &fakeDocker{units: map[string]*provider.Unit{}, created: map[string]spec.Service{},
-		logs: "hello from the container\n", arch: "arm64"}
+		isolation: map[string]provider.Isolation{}, logs: "hello from the container\n", arch: "arm64"}
 }
 
 func (f *fakeDocker) Name() string { return "fake" }
 
 func (f *fakeDocker) Create(_ context.Context, sandbox string, slot, _ int, svc string, s spec.Service,
-	eps []provider.Endpoint, _ string, _ provider.Isolation) error {
+	eps []provider.Endpoint, _ string, iso provider.Isolation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -78,8 +87,12 @@ func (f *fakeDocker) Create(_ context.Context, sandbox string, slot, _ int, svc 
 	}
 
 	f.created[sandbox] = s
+	f.isolation[sandbox] = iso
+
+	// On the unit too, which is where the tier is read back from in earnest: docker keeps it on
+	// the container's sbx.isolation label and List reports it from there.
 	u := &provider.Unit{Sandbox: sandbox, Service: svc, Slot: slot, Ref: "sbx-" + sandbox + "-" + svc,
-		Running: !f.exitOnStart, Client: eps, OnIdle: s.OnIdle}
+		Running: !f.exitOnStart, Client: eps, OnIdle: s.OnIdle, Isolation: iso}
 
 	for _, e := range eps {
 		u.Listen = append(u.Listen, e.Port)
@@ -209,6 +222,38 @@ func (f *fakeDocker) service(id string) spec.Service {
 	defer f.mu.Unlock()
 
 	return f.created[id]
+}
+
+// ProvidesIsolation implements provider.IsolationHost.
+func (f *fakeDocker) ProvidesIsolation(iso provider.Isolation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if missing, ok := f.unavailable[iso]; ok {
+		return fmt.Errorf("isolation %s needs %s, and this machine has none", iso, missing)
+	}
+
+	return nil
+}
+
+// tier is the isolation the API asked the provider to create a sandbox with.
+func (f *fakeDocker) tier(id string) provider.Isolation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.isolation[id]
+}
+
+// cannotProvide makes this host one that lacks what a tier needs.
+func (f *fakeDocker) cannotProvide(iso provider.Isolation, missing string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.unavailable == nil {
+		f.unavailable = map[provider.Isolation]string{}
+	}
+
+	f.unavailable[iso] = missing
 }
 
 // fakeRuntime stands in for the daemon.

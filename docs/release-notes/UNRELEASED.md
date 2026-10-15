@@ -24,6 +24,9 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Added
 
+- `extensions["sbx.isolation"]` creates an OpenSandbox sandbox under `gvisor`, `kata` or
+  `firecracker`, refused by name where the host cannot provide it.
+
 ## Changed
 
 ## Fixed

@@ -57,6 +57,12 @@ type plan struct {
 	// localImage is an image that only exists on this engine - a snapshot's commit - so a
 	// pull would ask a registry for something no registry has.
 	localImage bool
+
+	// iso is the tier the sandbox runs at, from extensions["sbx.isolation"], and container when
+	// nothing asked. Held here rather than read from the request again at the create, because
+	// the create happens in the background after the call has answered 202, and the request is
+	// the one thing that is not refusable by then.
+	iso provider.Isolation
 }
 
 // create validates synchronously and provisions in the background: 202 with Pending, then
@@ -193,8 +199,9 @@ func (s *Server) answerCreate(w http.ResponseWriter, r *http.Request, accepted r
 
 // validate turns a request into a plan, or into the refusal the spec prescribes. Everything that
 // can be known before anything is created is known here, so a bad request is a 400 now rather
-// than a Failed sandbox a poll later. That includes the one host fact a provider can answer
-// without a sandbox (credentialProxy, below); it creates nothing either way.
+// than a Failed sandbox a poll later. That includes the host facts a provider can answer without
+// a sandbox - whether it hosts its own egress filters (credentialProxy) and whether it can give
+// a sandbox the isolation tier that was asked for; it creates nothing either way.
 func (s *Server) validate(req createRequest) (plan, int, string, string) {
 	bad := func(msg string, args ...any) (plan, int, string, string) {
 		return plan{}, http.StatusBadRequest, "SANDBOX::INVALID_PARAMETER", fmt.Sprintf(msg, args...)
@@ -454,6 +461,28 @@ func (s *Server) validate(req createRequest) (plan, int, string, string) {
 			"or \"sleep\" (stopped to 0 B; background processes do not survive)", req.Extensions["sbx.idle"])
 	}
 
+	pl.iso, err = parseIsolation(req.Extensions["sbx.isolation"])
+	if err != nil {
+		return bad("%v", err)
+	}
+
+	// Asked before anything is created, and only of a caller who asked for a tier: whether this
+	// machine can run a sandbox at one is a property of the host, and finding out at `docker run`
+	// would leave a sandbox the caller was told was coming. A create that names no tier is not
+	// asking for anything, so there is nothing to refuse and nothing is probed - which is also
+	// what keeps every create that exists today exactly as fast as it was.
+	//
+	// Refused, never downgraded. Running the container on the host kernel instead would answer
+	// 202 and hand back a sandbox weaker than the one that was asked for, which is the whole
+	// failure this is here to stop.
+	if pl.iso != provider.IsolationContainer {
+		if h, ok := s.p.(provider.IsolationHost); ok {
+			if err := h.ProvidesIsolation(pl.iso); err != nil {
+				return bad("extensions[\"sbx.isolation\"]: %v", err)
+			}
+		}
+	}
+
 	// A provider that cannot pause still gets a sandbox: idle then stops it. That is the one
 	// place this degrades rather than refuses, because nothing was ASKED for - freeze is sbx's
 	// default here, not the caller's request.
@@ -684,7 +713,7 @@ func (s *Server) provision(ctx context.Context, pl plan) {
 		}
 	}
 
-	if err := s.createContainer(ctx, id, svc); err != nil {
+	if err := s.createContainer(ctx, id, svc, pl.iso); err != nil {
 		if errors.Is(err, errGone) {
 			return
 		}
@@ -735,7 +764,10 @@ func (e *hostPathChanged) Unwrap() error { return e.err }
 
 // createContainer allocates the slot and creates the container under the machine's slot lock,
 // then checks the sandbox was not deleted while that was happening.
-func (s *Server) createContainer(ctx context.Context, id string, svc spec.Service) error {
+//
+// iso is the tier validate settled on, carried down rather than read from the request again: by
+// here the create call has already answered 202 and nothing is refusable.
+func (s *Server) createContainer(ctx context.Context, id string, svc spec.Service, iso provider.Isolation) error {
 	// Labelled as the API's, so that a daemon which does not serve the API - the machine's own
 	// unscoped one - never fronts, sleeps, reaps or wakes it (daemon/scope.go). Before the
 	// slot-picker branch below, which returns early: every create path must carry it, pool
@@ -746,7 +778,7 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 	}
 
 	if picker, ok := s.p.(provider.SlotPicker); ok {
-		return s.createPicked(ctx, id, svc, picker)
+		return s.createPicked(ctx, id, svc, picker, iso)
 	}
 
 	// Released as soon as the container exists (it then holds the slot for everyone to see),
@@ -777,7 +809,7 @@ func (s *Server) createContainer(ctx context.Context, id string, svc spec.Servic
 		return err
 	}
 
-	if err := s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer); err != nil {
+	if err := s.p.Create(ctx, id, slot, 0, service, svc, eps, "", iso); err != nil {
 		return err
 	}
 

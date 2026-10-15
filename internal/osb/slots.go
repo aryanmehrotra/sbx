@@ -30,7 +30,9 @@ import (
 
 const slotGrace = time.Minute
 
-func (s *Server) createPicked(ctx context.Context, id string, svc spec.Service, picker provider.SlotPicker) error {
+func (s *Server) createPicked(ctx context.Context, id string, svc spec.Service, picker provider.SlotPicker,
+	iso provider.Isolation,
+) error {
 	select {
 	case s.dockerSem <- struct{}{}:
 	case <-ctx.Done():
@@ -85,7 +87,7 @@ func (s *Server) createPicked(ctx context.Context, id string, svc spec.Service, 
 
 	err = s.recheckHostMounts(svc)
 	if err == nil {
-		err = s.p.Create(ctx, id, slot, 0, service, svc, eps, "", provider.IsolationContainer)
+		err = s.p.Create(ctx, id, slot, 0, service, svc, eps, "", iso)
 	}
 
 	s.slotMu.Lock()

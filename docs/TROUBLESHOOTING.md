@@ -631,6 +631,15 @@ A create hits the pool only if it matches what the pool was built with
 ([rules](GUIDES.md#opensandbox-sdks)). Each miss is logged as `osb: pool miss for image ...` with
 the field that differed. Send the SDK defaults, or drop the custom entrypoint.
 
+### An API create is refused for `extensions["sbx.isolation"]`
+
+The tier was asked for and this host cannot give it, so the create is refused rather than served
+as a container on the host kernel. The message names the tier and what is missing: a docker
+runtime (`runsc` for `gvisor`, `kata-runtime` for `kata`), or docker itself, which cannot run a
+microVM per container. Register the runtime with `sbx install gvisor` and restart the daemon, or
+drop the extension to get a container. `sbx doctor` reports the same rows, and
+`docker info --format '{{json .Runtimes}}'` lists what the daemon has.
+
 ### An API sandbox is `Failed` with `runtime_error`
 
 The container stopped before sbx's in-sandbox agent answered. `status.message` gives the docker

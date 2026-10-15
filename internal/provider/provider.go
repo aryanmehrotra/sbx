@@ -192,6 +192,21 @@ func (i Isolation) Valid() bool {
 	}
 }
 
+// ParseIsolation reads a tier's name and refuses one it does not know.
+//
+// It is the only place a tier is spelled. `--isolation`, SBX_ISOLATION and the OpenSandbox API's
+// extensions["sbx.isolation"] all come through here, so a tier that works on the command line
+// works through the API under the same name - two parsers would be two features wearing one word,
+// and the one a caller reached for would be whichever they happened to try first.
+func ParseIsolation(s string) (Isolation, error) {
+	iso := Isolation(s)
+	if !iso.Valid() {
+		return "", fmt.Errorf("unknown isolation %q (want container, gvisor, kata or firecracker)", s)
+	}
+
+	return iso, nil
+}
+
 // Provider is the whole surface a sandbox backend has to implement.
 type Provider interface {
 	// Name is what appears in errors and in `sbx list`.

@@ -173,3 +173,8 @@ Never edit or delete earlier lines. Past about 25, move the oldest to [CONTRIBUT
   a second authority when its registry had none, so the filter signed with a certificate the
   sandbox had never been given and every bound host failed `unknown authority` after a 201
   (`Registry.Open`). Refuse what cannot work; never mint a second one.
+- 2026-10-15 · A constant passed where a caller's choice belongs is a promise the code cannot
+  keep. Both OpenSandbox create paths handed the provider `IsolationContainer` as a literal
+  (`internal/osb/slots.go`, `internal/osb/provision.go`), so every API sandbox ran on the host
+  kernel while DECISIONS said a tier never downgrades silently. A literal argument of an enum
+  type deserves the same look as a TODO.

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -108,5 +109,76 @@ func TestDockerRefusesFirecrackerIsolation(t *testing.T) {
 		if dockerRefuses(iso) != nil {
 			t.Errorf("%s refused", iso)
 		}
+	}
+}
+
+// One parser, so a tier named on `--isolation` is named the same through the OpenSandbox API.
+func TestParseIsolationTakesEveryTierAndRefusesTheRest(t *testing.T) {
+	for _, want := range []Isolation{IsolationContainer, IsolationGVisor, IsolationKata, IsolationFirecracker} {
+		got, err := ParseIsolation(string(want))
+		if err != nil || got != want {
+			t.Errorf("ParseIsolation(%q) = %q, %v", want, got, err)
+		}
+	}
+
+	for _, bad := range []string{"", "jail", "Container", "runsc", " gvisor"} {
+		if _, err := ParseIsolation(bad); err == nil {
+			t.Errorf("ParseIsolation(%q) accepted", bad)
+		} else if !strings.Contains(err.Error(), "gvisor") {
+			// The message lists the tiers, because the caller got the spelling wrong and the
+			// list is the fix.
+			t.Errorf("ParseIsolation(%q): %v - the refusal must list the tiers", bad, err)
+		}
+	}
+}
+
+// The tier a caller asks for is checked against the host before anything is created, and a tier
+// this docker cannot give is refused rather than quietly served as a container.
+func TestProvidesIsolationRefusesWhatDockerCannotRun(t *testing.T) {
+	// No engine behind it: the gvisor and kata branches below never get that far.
+	d := &dockerProvider{endpoint: dockerEndpoint{Network: "unix", Address: "/nonexistent/docker.sock"}}
+
+	var _ IsolationHost = d
+
+	// A container is the daemon's own runtime, so there is nothing to look for and no engine to
+	// ask - this must not refuse, because it is the default every existing create takes.
+	if err := d.ProvidesIsolation(IsolationContainer); err != nil {
+		t.Errorf("container refused: %v", err)
+	}
+
+	// A microVM per container is not a runtime docker can be handed, which is true whether or
+	// not an engine answers.
+	if err := d.ProvidesIsolation(IsolationFirecracker); err == nil ||
+		!strings.Contains(err.Error(), "--provider firecracker") {
+		t.Errorf("firecracker: %v - want the refusal that names what does work", err)
+	}
+
+	// No engine to judge: whatever asks next reports a dead daemon better than an isolation
+	// message would, so this is not the place that refuses.
+	for _, iso := range []Isolation{IsolationGVisor, IsolationKata} {
+		if err := d.ProvidesIsolation(iso); err != nil {
+			t.Errorf("%s refused with no engine to ask: %v", iso, err)
+		}
+	}
+}
+
+func TestDockerRuntimeNamesReadsTheDaemonsRegisteredRuntimes(t *testing.T) {
+	const info = `{"io.containerd.runc.v2":{"path":"runc"},"runsc":{"path":"/usr/local/bin/runsc"}}`
+
+	got := dockerRuntimeNames(info)
+	if !slices.Equal(got, []string{"io.containerd.runc.v2", "runsc"}) {
+		t.Fatalf("names = %v, want them sorted", got)
+	}
+
+	// Unreadable output is no names, which reads as "not registered": the alternative is
+	// accepting a tier on the strength of output nobody could parse.
+	for _, out := range []string{"", "not json", "null"} {
+		if n := dockerRuntimeNames(out); len(n) != 0 {
+			t.Errorf("dockerRuntimeNames(%q) = %v", out, n)
+		}
+	}
+
+	if listed(nil) == listed([]string{"runc"}) {
+		t.Error("listed() does not distinguish no runtimes from some")
 	}
 }
