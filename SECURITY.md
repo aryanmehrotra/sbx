@@ -13,7 +13,7 @@ and its advisory go out together.
 
 | Version | Supported |
 |---|---|
-| latest release (v0.16.x) | yes |
+| latest release (v0.17.x) | yes |
 | anything older | no: upgrade |
 
 Before 1.0, fixes land on `main` with no backport branch. A security fix may also ship as a patch
@@ -197,7 +197,7 @@ Anything that breaks a boundary sbx claims to hold:
 
 ## Advisories
 
-### v0.16.1 and earlier: `egress: "deny"` does not stop egress on a VM-backed engine (refused since the next release)
+### v0.16.1 and earlier: `egress: "deny"` does not stop egress on a VM-backed engine (refused since v0.17.0)
 
 Affected: every version, on colima and Docker Desktop, for a service with `egress: "deny"` and no
 egress filter. Also any `egress_policy` whose `defaultAction` is `allow`, whose deny rules are a
