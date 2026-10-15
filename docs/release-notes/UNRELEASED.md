@@ -22,23 +22,8 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Breaking
 
-- `egress: "deny"` is refused on Docker Desktop and colima, where the engine's VM routes the bridge out whatever masquerade says. Use `egress_policy` or `egress_allow`, which decide there for traffic that honours `HTTP_PROXY`.
-
 ## Added
-
-- `credentialProxy` and the OpenSandbox Credential Vault API. An agent can hold a placeholder, or nothing, and the filter adds the real credential on the way out. No feature switch: the field on the create is the opt-in.
-- `SBX_CREDENTIAL_VAULT_CA` names the authority a `credentialProxy` sandbox is given at `/etc/sbx/credential-vault-ca.pem`, for an entrypoint that adds it to the image's own trust store.
-- `credentialProxy` on a host that cannot hold a hosted egress filter is refused with a 400 before any sandbox is made.
-- `sbx doctor` reports `hosted egress filter`: whether `sbx serve` holds a sandbox's filter itself here, which is what `credentialProxy` needs.
 
 ## Changed
 
-- A sandbox whose `sbx serve` restarted is told its credential vault cannot come back, with a 412 naming the fix, instead of being given one that signs with an authority the sandbox does not trust.
-- A create is refused when something on the host already routes the `198.18.0.0/15` range sbx addresses sandbox bridges from, naming the route to remove.
-
 ## Fixed
-
-- `egress_allow`, `egress_policy` and `"egress": "allow"` work again on Docker Desktop and colima, where docker 28 refused the filter's fixed address.
-- `sbx serve` no longer leaks a goroutine for every tunnel it terminates to add a credential.
-- `sbx features` no longer lists a `credential-vault` switch that does nothing; `credentialProxy` on the create is the opt-in.
-- A create that fails now takes back the egress filter and bridge it made; `sbx rm` reclaims the ones left behind a sandbox that has no services, and `sbx gc` lists the ones a killed create left.
