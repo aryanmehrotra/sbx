@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
@@ -200,8 +203,9 @@ func TestDockerRuntimeNamesReadsTheDaemonsRegisteredRuntimes(t *testing.T) {
 		t.Fatalf("names = %v, want them sorted", got)
 	}
 
-	// Unreadable output is no names, which reads as "not registered": the alternative is
-	// accepting a tier on the strength of output nobody could parse.
+	// Unreadable output is no names — and no names is no answer, which ProvidesIsolation
+	// accepts rather than refuses (see dockerRuntimeNames). Nothing is downgraded by that: the
+	// tier still reaches `docker run --runtime`, which the daemon fails by itself.
 	for _, out := range []string{"", "not json", "null"} {
 		if n := dockerRuntimeNames(out); len(n) != 0 {
 			t.Errorf("dockerRuntimeNames(%q) = %v", out, n)
@@ -210,5 +214,104 @@ func TestDockerRuntimeNamesReadsTheDaemonsRegisteredRuntimes(t *testing.T) {
 
 	if listed(nil) == listed([]string{"runc"}) {
 		t.Error("listed() does not distinguish no runtimes from some")
+	}
+}
+
+// fakeDockerInfo puts a `docker` on PATH whose `info` answers with runtimes, counting every
+// call. The count is the point: the probe runs inside a request handler, so a caller that
+// creates in a loop must not fork a `docker` per create.
+func fakeDockerInfo(t *testing.T, runtimesJSON, sleep string) (counter string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	counter = filepath.Join(dir, "info.calls")
+
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  info) echo x >> " + counter + "; " +
+		(map[bool]string{true: "sleep " + sleep + "; ", false: ""})[sleep != ""] +
+		"printf '%s' '" + runtimesJSON + "'; exit 0 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	return counter
+}
+
+func infoCalls(t *testing.T, counter string) int {
+	t.Helper()
+
+	b, err := os.ReadFile(counter)
+	if err != nil {
+		return 0
+	}
+
+	return len(strings.Fields(string(b)))
+}
+
+// The daemon is asked once, not once per create.
+//
+// ProvidesIsolation runs on every gvisor or kata create, inside the HTTP handler, and it is a
+// fork: without this, N creates arriving together are N `docker` processes and N times the
+// latency measured on a busy daemon.
+func TestProvidesIsolationAsksTheDaemonOncePerWindow(t *testing.T) {
+	counter := fakeDockerInfo(t, `{"runc":{},"runsc":{}}`, "")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/nonexistent/docker.sock"})
+
+	for i := range 5 {
+		if err := d.ProvidesIsolation(IsolationGVisor); err != nil {
+			t.Fatalf("create %d refused by a daemon that has runsc: %v", i, err)
+		}
+	}
+
+	// Both tiers read the same list — it is a property of the daemon, not of the tier — so a
+	// kata question inside the window must not re-ask either.
+	if err := d.ProvidesIsolation(IsolationKata); err == nil {
+		t.Error("kata accepted by a daemon that has only runc and runsc")
+	}
+
+	if got := infoCalls(t, counter); got != 1 {
+		t.Errorf("docker info ran %d times for six creates, want 1", got)
+	}
+}
+
+// A hung daemon does not hold the create open.
+//
+// `docker info` had no deadline of its own, so a daemon that accepted the connection and then
+// stopped answering blocked the handler for as long as it felt like. The bound is what makes
+// this safe to run before the 202; a slow daemon is then treated like an absent one — no names,
+// no opinion, and the create goes through to `docker run --runtime`, which fails by itself if
+// the runtime really is missing.
+func TestProvidesIsolationDoesNotWaitForAHungDaemon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spends the probe timeout")
+	}
+
+	fakeDockerInfo(t, `{"runc":{}}`, "30")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/nonexistent/docker.sock"})
+
+	done := make(chan error, 1)
+	start := time.Now()
+
+	go func() { done <- d.ProvidesIsolation(IsolationGVisor) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("a daemon that never answered produced a refusal: %v", err)
+		}
+
+		if waited := time.Since(start); waited > runtimeAnswerTimeout*2 {
+			t.Errorf("waited %s on a hung daemon, want about %s", waited, runtimeAnswerTimeout)
+		}
+	case <-time.After(runtimeAnswerTimeout * 3):
+		t.Fatalf("still waiting after %s: the probe has no deadline", runtimeAnswerTimeout*3)
 	}
 }
