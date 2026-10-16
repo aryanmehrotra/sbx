@@ -29,6 +29,15 @@ tier v0.11.0 isolated_session credential_vault pool
 # request through the filter and assert the credential arrived at the target host, which also needs
 # the sandbox to trust the authority it was given, and an allowance written before a run would be a
 # claim rather than a measurement.
+#
+# One test in that file WILL fail when the tier is run, and it is a divergence rather than a bug:
+# TestCredentialVaultRuntimeMutationAddsReplacesAndDeletesBinding's last request (GET
+# /runtime-added, after that binding was deleted) asserts the request reaches the target host
+# uncredentialled. sbx refuses a request no binding covers on a host a binding names, because
+# forwarding it sends the placeholder the sandbox was given to the real host (DECISIONS, "The
+# credential is added inside a terminated tunnel"). It answers 502 and dials nothing, so the test's
+# curl gets no JSON back. Nothing else in the file is affected: its other requests all match a
+# binding, and none of its binding sets overlap.
 # v0.12.0 is "everything not needing an LLM endpoint": scenario_agent needs LLM_ENDPOINT.
 tier v0.12.0 e2e
 

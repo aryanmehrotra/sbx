@@ -8,12 +8,15 @@ package credvault
 // enforce is a sandbox that behaves differently from the server the caller tested against, and
 // for a credential binding "differently" means a secret sent somewhere it was not meant to go.
 //
-// One rule is sbx's own, at the end: a binding on a host the sandbox's egress policy denies is
+// Two rules are sbx's own, at the end. A binding on a host the sandbox's egress policy denies is
 // refused, because the filter would answer that request with 403 and the vault would have reported
-// protection for a request that never leaves.
+// protection for a request that never leaves. And two bindings that could both match one request
+// are refused as a pair, because exactly one applies at request time (Apply) - a set that cannot
+// be applied is a set that should not be written.
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/aryanmehrotra/sbx/internal/egress"
@@ -376,8 +379,8 @@ func normalizeSubstitutions(subs []Substitution) error {
 }
 
 // validateCandidate checks a whole proposed vault, after the individual pieces are normalized:
-// every credential a binding names exists, and every host a binding names is one the sandbox's
-// egress policy lets it reach.
+// every credential a binding names exists, every host a binding names is one the sandbox's egress
+// policy lets it reach, and no two bindings cover the same request.
 func validateCandidate(credentials map[string]record, bindings map[string]Binding, pol egress.Policy, hasPolicy bool) error {
 	for _, b := range bindings {
 		for _, name := range credentialsOf(b.Auth) {
@@ -417,7 +420,178 @@ func validateCandidate(credentials map[string]record, bindings map[string]Bindin
 		}
 	}
 
+	return oneBindingPerRequest(bindings)
+}
+
+// oneBindingPerRequest refuses two bindings that could both cover one request.
+//
+// Exactly one binding applies at request time, so an overlapping pair is a vault that cannot be
+// used: whichever request falls in the overlap is refused with ErrAmbiguousBinding, on a tunnel,
+// long after the write that caused it. Found here instead, the caller hears it from the PATCH that
+// did it and can say which binding they meant.
+//
+// It is checked over the whole candidate rather than the bindings being added, because a PATCH
+// that adds one binding can collide with one that was already there, and a PATCH that replaces one
+// can collide with a binding nobody touched.
+func oneBindingPerRequest(bindings map[string]Binding) error {
+	names := make([]string, 0, len(bindings))
+	for name := range bindings {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	for i, a := range names {
+		for _, b := range names[i+1:] {
+			if overlap, how := bindingsOverlap(bindings[a], bindings[b]); overlap {
+				return invalid("bindings %q and %q both cover %s: exactly one binding applies to "+
+					"a request, so a request in the overlap would be refused rather than "+
+					"credentialled. Narrow one of them - a different host, scheme, method or "+
+					"path - or fold the two into one binding", a, b, how)
+			}
+		}
+	}
+
 	return nil
+}
+
+// bindingsOverlap reports whether one request could match both bindings, and names an example of
+// such a request for the refusal. Both bindings are normalized, so every field is populated.
+//
+// A request matches on four things at once (matches in apply.go), so the bindings overlap only if
+// all four do. Any one field that cannot agree keeps them apart, which is what makes the rule
+// cheap to satisfy: a second binding on the same host needs only a method or a path the first does
+// not claim.
+func bindingsOverlap(a, b Binding) (overlap bool, example string) {
+	scheme, ok := firstCommon(a.Match.Schemes, b.Match.Schemes)
+	if !ok {
+		return false, ""
+	}
+
+	method, ok := firstCommon(a.Match.Methods, b.Match.Methods)
+	if !ok {
+		return false, ""
+	}
+
+	host, ok := overlappingHost(a.Match.Hosts, b.Match.Hosts)
+	if !ok {
+		return false, ""
+	}
+
+	path, ok := overlappingPath(a.Match.Paths, b.Match.Paths)
+	if !ok {
+		return false, ""
+	}
+
+	return true, method + " " + scheme + "://" + host + path
+}
+
+// firstCommon is a value both sets hold, in the first set's order so the message does not depend on
+// which binding was named first.
+func firstCommon(first, second []string) (string, bool) {
+	for _, v := range first {
+		if contains(second, v) {
+			return v, true
+		}
+	}
+
+	return "", false
+}
+
+// overlappingHost is a hostname both host sets match, or false.
+func overlappingHost(first, second []string) (string, bool) {
+	for _, x := range first {
+		for _, y := range second {
+			if host, ok := hostPatternsOverlap(x, y); ok {
+				return host, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+// hostPatternsOverlap is a name both patterns match, for the two forms normalizeHost allows: an
+// FQDN, or a leading "*." over a domain.
+//
+// The case worth being careful about is a wildcard covering another binding's exact host:
+// "*.example.com" and "api.example.com" are different strings that both match api.example.com, so
+// comparing the patterns for equality would miss the overlap entirely. A wildcard does not cover
+// its own domain, because matchesHost requires a label in front of it - so "*.example.com" and
+// "example.com" do not overlap, and that is the one pair that reads like it should.
+func hostPatternsOverlap(x, y string) (string, bool) {
+	wildX, wildY := strings.HasPrefix(x, "*."), strings.HasPrefix(y, "*.")
+	domX, domY := strings.TrimPrefix(x, "*."), strings.TrimPrefix(y, "*.")
+
+	switch {
+	case !wildX && !wildY:
+		return x, x == y
+
+	// Two wildcards overlap when one domain sits under the other: a name below the deeper of the
+	// two is matched by both.
+	case wildX && wildY:
+		switch {
+		case domX == domY:
+			return "host." + domX, true
+		case strings.HasSuffix(domX, "."+domY):
+			return "host." + domX, true
+		case strings.HasSuffix(domY, "."+domX):
+			return "host." + domY, true
+		}
+
+		return "", false
+
+	case wildX:
+		return y, strings.HasSuffix(y, "."+domX)
+
+	default:
+		return x, strings.HasSuffix(x, "."+domY)
+	}
+}
+
+// overlappingPath is a path both path sets match, or false.
+func overlappingPath(first, second []string) (string, bool) {
+	for _, x := range first {
+		for _, y := range second {
+			if path, ok := pathPatternsOverlap(x, y); ok {
+				return path, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+// pathPatternsOverlap is a path both patterns match, for the spec's one glob: a trailing "*" is a
+// prefix, anything else is exact (matchesPath).
+//
+// Two prefixes overlap when either contains the other, and the deeper one is the example - every
+// path under it is under both. The default "/*" is a prefix of every pattern, which is why two
+// bindings that name no path at all on one host always collide.
+func pathPatternsOverlap(x, y string) (string, bool) {
+	preX, wildX := strings.TrimSuffix(x, "*"), strings.HasSuffix(x, "*")
+	preY, wildY := strings.TrimSuffix(y, "*"), strings.HasSuffix(y, "*")
+
+	switch {
+	case wildX && wildY:
+		switch {
+		case strings.HasPrefix(preX, preY):
+			return preX, true
+		case strings.HasPrefix(preY, preX):
+			return preY, true
+		}
+
+		return "", false
+
+	case wildX:
+		return y, strings.HasPrefix(y, preX)
+
+	case wildY:
+		return x, strings.HasPrefix(x, preY)
+
+	default:
+		return x, x == y
+	}
 }
 
 // credentialsOf is every credential name an auth refers to, including its substitutions.

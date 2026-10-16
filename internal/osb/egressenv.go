@@ -68,20 +68,11 @@ func splitEgressEnv(env map[string]string) (sandbox, egressEnv map[string]string
 	return sandbox, egressEnv, nil
 }
 
-// credentialProxyEnabled reports whether the create asked for a credential proxy. A field that
-// does not say is off, which is what the schema's default says it is; a field that cannot be read
-// is a refusal, from credentialProxyRequest.
-func credentialProxyEnabled(raw json.RawMessage) bool {
-	on, _ := credentialProxyRequest(raw)
-
-	return on
-}
-
 // credentialProxyRequest reads the create request's credentialProxy, or says why it cannot.
 //
-//	absent, null, {}, {"enabled": false}   off
-//	{"enabled": true}                      on
-//	anything else                          refused
+//	absent, null, {"enabled": false}   off
+//	{"enabled": true}                  on
+//	{}, anything else                  refused
 //
 // The last line is the point. CredentialProxyConfig is `additionalProperties: false` with
 // `enabled` defaulting to false (specs/sandbox-lifecycle.yml at the pinned commit), so a
@@ -89,10 +80,20 @@ func credentialProxyEnabled(raw json.RawMessage) bool {
 // as "off" instead would hand somebody who wrote {"enabled": "true"} a sandbox with no credential
 // protection and a 202 saying it worked. A security feature may be off, but not by accident.
 //
-// An empty object is NOT refused, however much it looks like one: the schema gives `enabled` a
-// default of false, so {} is a legal way to say off and upstream's own server reads it that way
-// (server/opensandbox_server/services/validators.py at the pinned commit). Refusing it would
-// refuse a request that works against the reference implementation.
+// An empty object is refused on the same grounds, and that one IS a departure from upstream rather
+// than an oversight. The schema does give `enabled` a default of false, so {} is a legal way to
+// say off and upstream's own server reads it that way: a client that sends {} and works against
+// the reference implementation gets a 400 here. It is refused anyway because {} is the one
+// spelling where "off" and "I meant to turn this on" are the same bytes - no field to misspell, no
+// value to mistype - so the server cannot tell a caller who chose to run without the proxy from
+// one who believes they enabled it, and the first thing either of them hears is 202. Explicit-off
+// stays legal, which is what makes the refusal cheap to satisfy: a caller who means off says so.
+//
+// What that costs in conformance is bounded, and measured rather than assumed. The Go SDK the
+// upstream suite drives this through declares `Enabled bool` with no `omitempty`
+// (sdks/sandbox/go/types.go at the pinned commit), so it cannot emit {} at all - the field is
+// absent for a nil pointer and carries an explicit boolean otherwise - and both upstream tests
+// that send a credentialProxy send {"enabled": true}.
 func credentialProxyRequest(raw json.RawMessage) (enabled bool, err error) {
 	t := strings.TrimSpace(string(raw))
 	if t == "" || t == "null" {
@@ -114,9 +115,15 @@ func credentialProxyRequest(raw json.RawMessage) (enabled bool, err error) {
 		}
 	}
 
+	// The only object that reaches here without `enabled` is {}: every other key was refused
+	// above. So this branch is the empty object, and it is a refusal.
 	got, ok := fields["enabled"]
 	if !ok {
-		return false, nil
+		return false, fmt.Errorf("credentialProxy is empty and so says nothing: " +
+			"{\"enabled\": true} turns the credential proxy on, {\"enabled\": false} runs this " +
+			"sandbox without it. An empty object would be read as off, and a caller who meant on " +
+			"would get a sandbox with no credential protection and a 202 saying it worked. Send " +
+			"{\"credentialProxy\": {\"enabled\": true}}, or leave the field out")
 	}
 
 	if err := json.Unmarshal(got, &enabled); err != nil {

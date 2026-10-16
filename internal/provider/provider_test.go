@@ -1,8 +1,12 @@
 package provider
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aryanmehrotra/sbx/internal/spec"
 )
@@ -108,5 +112,206 @@ func TestDockerRefusesFirecrackerIsolation(t *testing.T) {
 		if dockerRefuses(iso) != nil {
 			t.Errorf("%s refused", iso)
 		}
+	}
+}
+
+// One parser, so a tier named on `--isolation` is named the same through the OpenSandbox API.
+func TestParseIsolationTakesEveryTierAndRefusesTheRest(t *testing.T) {
+	for _, want := range []Isolation{IsolationContainer, IsolationGVisor, IsolationKata, IsolationFirecracker} {
+		got, err := ParseIsolation(string(want))
+		if err != nil || got != want {
+			t.Errorf("ParseIsolation(%q) = %q, %v", want, got, err)
+		}
+	}
+
+	for _, bad := range []string{"", "jail", "Container", "runsc", " gvisor"} {
+		if _, err := ParseIsolation(bad); err == nil {
+			t.Errorf("ParseIsolation(%q) accepted", bad)
+		} else if !strings.Contains(err.Error(), "gvisor") {
+			// The message lists the tiers, because the caller got the spelling wrong and the
+			// list is the fix.
+			t.Errorf("ParseIsolation(%q): %v - the refusal must list the tiers", bad, err)
+		}
+	}
+}
+
+// The tier a caller asks for is checked against the host before anything is created, and a tier
+// this docker cannot give is refused rather than quietly served as a container.
+func TestProvidesIsolationRefusesWhatDockerCannotRun(t *testing.T) {
+	// No engine behind it: the gvisor and kata branches below never get that far.
+	d := &dockerProvider{endpoint: dockerEndpoint{Network: "unix", Address: "/nonexistent/docker.sock"}}
+
+	var _ IsolationHost = d
+
+	// A container is the daemon's own runtime, so there is nothing to look for and no engine to
+	// ask - this must not refuse, because it is the default every existing create takes.
+	if err := d.ProvidesIsolation(IsolationContainer); err != nil {
+		t.Errorf("container refused: %v", err)
+	}
+
+	// A microVM per container is not a runtime docker can be handed, which is true whether or
+	// not an engine answers.
+	if err := d.ProvidesIsolation(IsolationFirecracker); err == nil ||
+		!strings.Contains(err.Error(), "--provider firecracker") {
+		t.Errorf("firecracker: %v - want the refusal that names what does work", err)
+	}
+
+	// No engine to judge: whatever asks next reports a dead daemon better than an isolation
+	// message would, so this is not the place that refuses.
+	//
+	// This reaches that arm two ways, and both must be silent. Against an unreachable socket
+	// `docker info` exits non-zero on some versions and ZERO on others, printing client-side
+	// info and warning on stderr. The second shape is why the name list, not the exit code, is
+	// what decides: see TestDockerRuntimeNamesTreatsAnEmptyAnswerAsNoAnswer below.
+	for _, iso := range []Isolation{IsolationGVisor, IsolationKata} {
+		if err := d.ProvidesIsolation(iso); err != nil {
+			t.Errorf("%s refused with no engine to ask: %v", iso, err)
+		}
+	}
+}
+
+// An empty answer is not a negative answer.
+//
+// A daemon that is up always reports at least its own default runtime, so no names means the
+// question never reached a daemon — and refusing on that would tell an operator whose daemon is
+// down to install a runtime they may already have. That is the same misdiagnosis
+// ProvidesIsolation exists to remove, reached from the other side.
+//
+// Pinned here rather than through ProvidesIsolation because the docker call shells out with no
+// seam, and the shape of the answer is what the decision turns on.
+func TestDockerRuntimeNamesTreatsAnEmptyAnswerAsNoAnswer(t *testing.T) {
+	for name, info := range map[string]string{
+		"nothing at all":         "",
+		"an empty object":        "{}",
+		"a null":                 "null",
+		"output nobody can read": "Cannot connect to the Docker daemon",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := dockerRuntimeNames(info); len(got) != 0 {
+				t.Errorf("dockerRuntimeNames(%q) = %v, want none: a non-empty list here would be "+
+					"read as a daemon that answered and lacks the runtime", info, got)
+			}
+		})
+	}
+}
+
+func TestDockerRuntimeNamesReadsTheDaemonsRegisteredRuntimes(t *testing.T) {
+	const info = `{"io.containerd.runc.v2":{"path":"runc"},"runsc":{"path":"/usr/local/bin/runsc"}}`
+
+	got := dockerRuntimeNames(info)
+	if !slices.Equal(got, []string{"io.containerd.runc.v2", "runsc"}) {
+		t.Fatalf("names = %v, want them sorted", got)
+	}
+
+	// Unreadable output is no names — and no names is no answer, which ProvidesIsolation
+	// accepts rather than refuses (see dockerRuntimeNames). Nothing is downgraded by that: the
+	// tier still reaches `docker run --runtime`, which the daemon fails by itself.
+	for _, out := range []string{"", "not json", "null"} {
+		if n := dockerRuntimeNames(out); len(n) != 0 {
+			t.Errorf("dockerRuntimeNames(%q) = %v", out, n)
+		}
+	}
+
+	if listed(nil) == listed([]string{"runc"}) {
+		t.Error("listed() does not distinguish no runtimes from some")
+	}
+}
+
+// fakeDockerInfo puts a `docker` on PATH whose `info` answers with runtimes, counting every
+// call. The count is the point: the probe runs inside a request handler, so a caller that
+// creates in a loop must not fork a `docker` per create.
+func fakeDockerInfo(t *testing.T, runtimesJSON, sleep string) (counter string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	counter = filepath.Join(dir, "info.calls")
+
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  info) echo x >> " + counter + "; " +
+		(map[bool]string{true: "sleep " + sleep + "; ", false: ""})[sleep != ""] +
+		"printf '%s' '" + runtimesJSON + "'; exit 0 ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	return counter
+}
+
+func infoCalls(t *testing.T, counter string) int {
+	t.Helper()
+
+	b, err := os.ReadFile(counter)
+	if err != nil {
+		return 0
+	}
+
+	return len(strings.Fields(string(b)))
+}
+
+// The daemon is asked once, not once per create.
+//
+// ProvidesIsolation runs on every gvisor or kata create, inside the HTTP handler, and it is a
+// fork: without this, N creates arriving together are N `docker` processes and N times the
+// latency measured on a busy daemon.
+func TestProvidesIsolationAsksTheDaemonOncePerWindow(t *testing.T) {
+	counter := fakeDockerInfo(t, `{"runc":{},"runsc":{}}`, "")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/nonexistent/docker.sock"})
+
+	for i := range 5 {
+		if err := d.ProvidesIsolation(IsolationGVisor); err != nil {
+			t.Fatalf("create %d refused by a daemon that has runsc: %v", i, err)
+		}
+	}
+
+	// Both tiers read the same list — it is a property of the daemon, not of the tier — so a
+	// kata question inside the window must not re-ask either.
+	if err := d.ProvidesIsolation(IsolationKata); err == nil {
+		t.Error("kata accepted by a daemon that has only runc and runsc")
+	}
+
+	if got := infoCalls(t, counter); got != 1 {
+		t.Errorf("docker info ran %d times for six creates, want 1", got)
+	}
+}
+
+// A hung daemon does not hold the create open.
+//
+// `docker info` had no deadline of its own, so a daemon that accepted the connection and then
+// stopped answering blocked the handler for as long as it felt like. The bound is what makes
+// this safe to run before the 202; a slow daemon is then treated like an absent one — no names,
+// no opinion, and the create goes through to `docker run --runtime`, which fails by itself if
+// the runtime really is missing.
+func TestProvidesIsolationDoesNotWaitForAHungDaemon(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spends the probe timeout")
+	}
+
+	fakeDockerInfo(t, `{"runc":{}}`, "30")
+
+	d := newDocker(dockerEndpoint{Network: "unix", Address: "/nonexistent/docker.sock"})
+
+	done := make(chan error, 1)
+	start := time.Now()
+
+	go func() { done <- d.ProvidesIsolation(IsolationGVisor) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("a daemon that never answered produced a refusal: %v", err)
+		}
+
+		if waited := time.Since(start); waited > runtimeAnswerTimeout*2 {
+			t.Errorf("waited %s on a hung daemon, want about %s", waited, runtimeAnswerTimeout)
+		}
+	case <-time.After(runtimeAnswerTimeout * 3):
+		t.Fatalf("still waiting after %s: the probe has no deadline", runtimeAnswerTimeout*3)
 	}
 }

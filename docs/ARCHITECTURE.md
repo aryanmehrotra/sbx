@@ -316,15 +316,19 @@ served beside `/policy` on the same per-sandbox endpoint.
   say before anything is created that this machine holds no bridge of its own, and again on the
   backend's own report of the sandbox it made. `sbx doctor` reports it as `hosted egress filter`.
 - Each sandbox gets its own authority, minted in memory, constrained by critical X.509 name
-  constraints to the hosts its own bindings name, with every IP range excluded. It is destroyed
+  constraints to the hosts its egress policy allows, with every IP range excluded. It is destroyed
   with the sandbox's filter, and nothing about it is written to disk.
 - Credential values are write-only: no route returns one, and the type that holds one redacts
   itself in logs, errors and JSON.
 - A binding may only name a host the policy permits. One that names a denied host is refused,
   because the filter would answer that request with 403 before any credential was added.
-- What is left is the data path: the filter does not read inside a tunnel yet, so a binding records
-  the intent and the request still goes out as the sandbox sent it
-  ([ROADMAP](ROADMAP.md#not-built-yet-in-the-opensandbox-api)).
+- A tunnel to a bound host is terminated with that authority and the credential is added on the way
+  out, over HTTP/1.1 or HTTP/2. Exactly one binding applies: a pair that could both cover one
+  request is refused when it is written, and a request none of them covers is refused rather than
+  sent without the credential it was meant to carry.
+- A credential is added only where the host the tunnel was opened to, the TLS server name and the
+  request's authority are the same host. Anything else is 421, which is what stops an HTTP/2 client
+  reusing one connection for a second authority and being credentialled for it.
 
 ## Remote access: `sbx connect` and `sbx pack`
 

@@ -57,7 +57,7 @@ Other vendor details:
 - E2B's default timeout kills the sandbox after 5 min; auto-pause is opt-in ([fork][e2b-fork]).
 - Daytona advertises creation "sub 90ms" ([pricing][dt-price]); memory is kept only for VM sandboxes ([sandboxes][dt-sb]).
 - Modal memory snapshots are alpha ([snapshots][modal-snap]); isolation is gVisor ([security][modal-sec]).
-- OpenSandbox has a credential vault and "~80ms" Firecracker pools ([repo][osb], [performance][osb-perf]). Its isolated sessions are [not built in sbx yet](ROADMAP.md#not-built-yet-in-the-opensandbox-api), and sbx serves the vault API without adding the credentials to requests.
+- OpenSandbox has a credential vault and "~80ms" Firecracker pools ([repo][osb], [performance][osb-perf]). Its isolated sessions are [not built in sbx yet](ROADMAP.md#not-built-yet-in-the-opensandbox-api); sbx serves the vault API and adds the credentials in its own egress filter, with no sidecar.
 - Vercel saves the filesystem, not memory; any SDK call resumes a stopped sandbox ([persistence][vc-p], [firewall][vc-fw]).
 - Neon wakes on a Postgres connection in "a few hundred milliseconds" ([latency][neon-lat]).
 

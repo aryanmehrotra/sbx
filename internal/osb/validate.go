@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/aryanmehrotra/sbx/internal/provider"
 )
 
 // Metadata follows Kubernetes label rules upstream (it becomes labels there), so it does here
@@ -130,6 +132,35 @@ func parseMemory(s string) (uint64, error) {
 	}
 
 	return uint64(b), nil
+}
+
+// parseIsolation reads extensions["sbx.isolation"]: how strongly this sandbox is separated from
+// the host and its neighbours. Absent is a container, which is what every sandbox created through
+// this API has always been.
+//
+// An extension rather than a field of CreateSandboxRequest because the request is the spec's,
+// field for field (types.go), and release-1.1.0 has no tier in it - a field of our own in that
+// struct would read to every SDK author as part of the standard. `extensions` is where the spec
+// puts what a vendor adds, and `sbx.ports`, `sbx.idle` and `sbx.pool` are already there. It also
+// falls out right at the warm pool: poolExtensions is a whitelist, so a tier nobody has listed
+// sends the create down the cold path, which is the only correct answer when every pool member
+// was pre-created as a container.
+//
+// The names and their validity are provider.ParseIsolation's, not a second set.
+func parseIsolation(s string) (provider.Isolation, error) {
+	// Trimmed because this one arrives inside a JSON string rather than from a shell, where a
+	// stray space is a typo nobody can see; `--isolation` is left exact.
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return provider.IsolationContainer, nil
+	}
+
+	iso, err := provider.ParseIsolation(t)
+	if err != nil {
+		return "", fmt.Errorf("extensions[\"sbx.isolation\"]: %w", err)
+	}
+
+	return iso, nil
 }
 
 // parsePorts reads extensions["sbx.ports"]: container ports to front directly rather than

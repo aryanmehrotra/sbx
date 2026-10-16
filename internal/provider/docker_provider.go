@@ -55,6 +55,10 @@ func PortRanges() (publicLo, publicHi, backingLo, backingHi int) {
 type dockerProvider struct {
 	api      *dockerClient // hot path: start, stop, health
 	endpoint dockerEndpoint
+
+	// What the daemon answered when last asked which runtimes it has, and when. Read by
+	// ProvidesIsolation on every gvisor or kata create; see registeredRuntimes.
+	runtimes runtimeAnswer
 }
 
 func newDocker(ep dockerEndpoint) *dockerProvider {
@@ -71,11 +75,37 @@ func (d *dockerProvider) Name() string { return "docker" }
 // do its own resolution would mean `create` could reach one daemon and the wake another, on
 // any machine with more than one context - which is most of them.
 func (d *dockerProvider) docker(args ...string) (string, error) {
-	cmd := exec.Command("docker", args...)
+	return d.dockerWithin(context.Background(), args...)
+}
+
+// dockerWithin is `docker` under a caller's context, for the calls that must not be able to
+// wait for ever.
+//
+// Creation deliberately has no deadline — pulling an image is slow and killing it half way
+// leaves the daemon holding the layers — so the plain `docker` above keeps that behaviour.
+// What needs bounding is a QUESTION asked inside an HTTP handler, where a hung daemon would
+// otherwise hold the request open with nothing to show for it.
+//
+// A deadline is reported as what happened, not as what the runtime did: "context deadline
+// exceeded" wrapped around a command line tells an operator nothing about which daemon was
+// slow, and the fix for a slow daemon is not the fix for an absent one.
+func (d *dockerProvider) dockerWithin(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Env = append(os.Environ(), "DOCKER_HOST="+d.endpoint.String())
+
+	// Killing `docker` is not enough on its own. CombinedOutput waits for the output pipes to
+	// close, and anything the CLI left behind still holds them — so without a WaitDelay the
+	// deadline fires, the process dies, and the read goes on waiting for a grandchild. That is
+	// the hang this deadline exists to stop, arrived at one level down.
+	cmd.WaitDelay = time.Second
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("docker %s: the daemon at %s did not answer in time (%w)",
+				strings.Join(args, " "), d.endpoint.String(), ctxErr)
+		}
+
 		return "", fmt.Errorf("docker %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 
