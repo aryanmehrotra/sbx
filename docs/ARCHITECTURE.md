@@ -64,6 +64,7 @@ Every provider takes the same `sandbox.json`. What has actually been run where, 
 | the egress filter as a container (Docker Desktop, colima) | **run by hand** on Docker Desktop 28.5.1, an M4 on macOS 15.6.1: the bridge is addressed by sbx, the filter holds the top of it, an allowed host answered 200 and a denied one 403. A direct dial that goes around the filter still leaves that host |
 | docker `--isolation gvisor` | **verified in CI** (`isolation` job) |
 | docker `--isolation kata` | **run by hand** on a nested VM host at v0.16.0: the container gets no network, and `sbx create`, `ready` and `wake` now refuse it saying so. `sbx doctor` checks registration only |
+| a tier through the API (`extensions["sbx.isolation"]`) | **unit-tested**: the tier reaches the provider, and a host whose daemon has no such runtime refuses the create. The `isolation` job drives the command line, so this route to a tier is **not yet run end to end** |
 | kubernetes | **unit-tested**; **run by hand** on minikube (benchmarks); not in CI |
 | kubernetes `--isolation firecracker` (kata-fc) | **unit-tested**; **not yet run end to end** on a cluster |
 | firecracker · Linux with `/dev/kvm` | **verified in CI** (`microvm` job, nested KVM, jailer on) |
