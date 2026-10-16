@@ -26,7 +26,7 @@ sbx is a tool you run on hardware you control. It is not a multi-tenant platform
 | Runs on | What separates a sandbox from the host | Holds | Does not hold |
 |---|---|---|---|
 | docker or kubernetes (default) | a container: own filesystem and processes, the host's kernel | separation between cooperating projects | code you did not write: a kernel bug escapes to the host |
-| `--isolation gvisor` or `kata` | gVisor (a user-space kernel) or Kata (a small VM per container) | more than a container; refused with a reason where the runtime is missing | anything beyond what that runtime claims |
+| `--isolation gvisor` or `kata`, on the command line or through the API | gVisor (a user-space kernel) or Kata (a small VM per container) | more than a container; refused with a reason where the runtime is missing | anything beyond what that runtime claims; the container itself is not hardened |
 | `--provider firecracker` | a microVM with its own kernel, its VMM jailed per VM | untrusted code: an escape lands as an unprivileged, jailed user | the daemon runs as root; no per-VM disk quota on the state filesystem |
 
 A VMM (virtual machine monitor) is the host process that runs one VM; here it is Firecracker.
@@ -36,7 +36,15 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
 - A container shares the host kernel. For code you did not write, use `--provider firecracker`
   (Linux with `/dev/kvm`, or an M3+ Mac or Windows 11 through a helper VM). `--isolation
   gvisor|kata` is the alternative on docker or kubernetes. A missing runtime is refused, never
-  silently downgraded.
+  silently downgraded. `extensions: {"sbx.isolation": "gvisor"}` on an API create asks for the same
+  tiers and is refused on the same terms.
+- A tier is a kernel boundary and nothing else. `gvisor` adds `--runtime runsc` to the container
+  and changes nothing else about it: sbx passes no `--cap-drop`, no `--security-opt`, no `--user`,
+  no read-only root filesystem and no user namespace of its own. A sandbox runs as its image's
+  `USER`, which is root in the usual images, with docker's default capability set and seccomp
+  profile and a writable root filesystem. An API create cannot ask for capabilities. A
+  `sandbox.json` can, with `cap_add`. If you want more than the runtime gives you, harden the
+  image.
 - `egress: "deny"` puts the service on a bridge with IP masquerade disabled. It is not a
   filtering firewall, and docker enforces it, not sbx. On kubernetes it is refused, because a
   NetworkPolicy is enforced only by some CNIs. Where the engine runs in a VM (Docker Desktop,
@@ -57,6 +65,11 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   whose filter is a container, which would put both on the sandbox's own network
   ([DECISIONS.md](docs/DECISIONS.md#a-credential-vault-exists-only-where-the-daemon-hosts-the-filter-itself)).
   `sbx doctor` reports that host answer as `hosted egress filter`.
+- Nothing in a vault expires. A credential, a binding and the authority's key are held until the
+  sandbox's filter goes, which is the discovery pass after the sandbox is deleted (`--refresh`,
+  15 s by default), or until `sbx serve` exits. There is no TTL to set and no rotation. The
+  authority's certificate and the leaves it signs do have lifetimes, so they bound how long that
+  TLS identity is good for, not how long the secret is kept.
 - A filtered service (`egress_allow`, `egress_policy`, `egress: "allow"`) reaches out through sbx's
   egress filter, on ports 80 and 443 plus any `host:port` its `egress_allow` names. It is the only
   door where docker's bridge is an interface of the host, and on firecracker. On a VM-backed engine
@@ -72,6 +85,16 @@ A VMM (virtual machine monitor) is the host process that runs one VM; here it is
   the last push across a restart. With no daemon running, or with the filter on a remote docker
   (whose control port the daemon cannot reach), a network created later stays reachable on ports
   80 and 443 of its gateway until a daemon runs or the sandbox is removed and created again.
+- The filter is the door off the host, not a door between a sandbox and the host itself. The
+  sandbox's gateway is the host, and it is on-link, so a direct connection to the gateway address,
+  or to any other address the host holds, does not pass through the filter at all. Any host service
+  bound to `0.0.0.0` answers there. A hosted filter refuses the host's loopback, link-local and
+  multicast whatever the policy says, and a host interface's own address is not in that set.
+  sbx's own ports bind to `127.0.0.1`, so the OpenSandbox API and the daemon do not answer on the
+  gateway. On docker sbx writes no firewall rule, so the host's INPUT chain is the only thing that
+  decides this and it is yours to close: bind sensitive services to a real interface rather than
+  `0.0.0.0`, or add an INPUT rule for the sandbox's bridge. On firecracker sbx closes it per bridge
+  itself, with the host guard below.
 - The filter's control port (`sbx-egress:20998`) is reachable from the workload, so every path
   on it, the activity reading included, needs the per-filter token the daemon holds.
 - A spec is executable: it names images, commands (`health`, `init`) and host files to mount.
@@ -163,6 +186,21 @@ What remains open:
 - `sbx mcp` holds the API key, so an agent driving it can create, exec in and delete API
   sandboxes. Use `--url` only over a transport you trust.
 
+## What is recorded
+
+`sbx history --json` holds the commands that changed something, and every wake and sleep
+([CLI](docs/CLI.md#finding-out)). Past that line there is no record:
+
+- The egress filter logs nothing per request. An allowed destination and a denied one leave the
+  same trace, which is none.
+- `execd` logs no command it runs, and the PTY scrollback a reconnect replays is a 1 MiB ring in
+  that sandbox's memory, written nowhere.
+- Writing a credential or a binding leaves no history entry, so nothing says when a binding
+  started covering a host.
+
+After the fact, sbx cannot say what a sandbox reached or which request carried a credential. There
+is no switch that turns a record on.
+
 ## What would be a real vulnerability
 
 Anything that breaks a boundary sbx claims to hold:
@@ -181,7 +219,8 @@ Anything that breaks a boundary sbx claims to hold:
 - A credential reaching a host no binding of that sandbox names, a sandbox reading a credential
   value back out of the vault or out of its own environment, or a credential vault authority
   certifying a host the sandbox's egress policy does not allow.
-- `--isolation gvisor|kata` reporting success under the default runtime.
+- `--isolation gvisor|kata`, or `extensions["sbx.isolation"]`, reporting success under the default
+  runtime.
 - A public port serving a different sandbox than `sbx env` named, including through a `sbx connect`
   tunnel to a recreated sandbox.
 - `sbx gc` deleting an artifact of a live sandbox.
