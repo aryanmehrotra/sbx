@@ -19,6 +19,15 @@ var (
 	// ErrNoSuchCredential is a binding naming a credential the vault does not hold.
 	ErrNoSuchCredential = errors.New("this binding names a credential this vault does not hold")
 
+	// ErrNoBinding is a request this vault cannot find a binding for: a destination the filter
+	// asked about, where the method or the path fell outside the binding that named the host - or
+	// a vault that stopped existing while the request was in flight.
+	ErrNoBinding = errors.New("no credential binding covers this request")
+
+	// ErrAmbiguousBinding is a request two or more bindings cover. The write path refuses a pair
+	// that could do this, so reaching it means the two went out of step.
+	ErrAmbiguousBinding = errors.New("more than one credential binding covers this request")
+
 	// ErrUnknownAuthType is an auth type Apply has no arm for. The API refuses these at write
 	// time, so this means the two went out of step.
 	ErrUnknownAuthType = errors.New("this binding's auth type is not one this vault can apply")
@@ -46,12 +55,24 @@ const maxSubstitutionBody = 1 << 20 // 1 MiB
 // internal/egress - every file of that package is compiled into the container filter, and this one
 // is not. The filter knows that a destination is bound; it never learns what with.
 //
-// Every binding that matches is applied, in binding-name order. The order matters because two
-// bindings can write one header, and map iteration would make which one wins differ between two
-// identical requests.
+// Exactly one binding applies, and anything else is a refusal: no match and more than one match
+// both mean the vault cannot say what this request should carry.
+//
+// This replaces two earlier answers, and both of them were a credential control failing quietly.
+// Every matching binding used to be applied in binding-name order, which made a request's
+// credential depend on how two overlapping bindings sorted - deterministic, and still nothing the
+// caller chose. A request nothing matched used to be forwarded exactly as it arrived, which is the
+// worse half: the destination is one the sandbox asked to have credentials added to, so the
+// placeholder it was given goes to the real host, and the agent is told by the host rather than by
+// the filter. Fail closed means the filter says it, before anything is dialled.
+//
+// Neither rule follows from the spec - it defines a binding's match and says nothing about two of
+// them covering one request - so this is sbx's choice and not upstream's. The write path refuses
+// bindings that could both match (validateCandidate), so the ambiguous answer here is the
+// backstop for the two going out of step, not the place a caller normally meets it.
 func (v *Vault) Apply(r *http.Request) error {
 	if r == nil || r.URL == nil {
-		return nil
+		return fmt.Errorf("%w: there is no request here to match one against", ErrNoBinding)
 	}
 
 	scheme := requestScheme(r)
@@ -64,26 +85,48 @@ func (v *Vault) Apply(r *http.Request) error {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
+	// Bound said yes and then a DELETE landed. Refused rather than forwarded: an empty vault is
+	// not a vault that decided this request needs nothing.
 	if !v.exists {
-		return nil
+		return fmt.Errorf("%w: this sandbox's credential vault was removed while the request was "+
+			"in flight, so %s %s://%s%s was not sent", ErrNoBinding, r.Method, scheme, host,
+			r.URL.Path)
 	}
 
+	var matched []string
+
 	for _, name := range sortedBindingNames(v.bindings) {
-		b := v.bindings[name]
-
-		if !v.matches(b, scheme, host, r) {
-			continue
+		if v.matches(v.bindings[name], scheme, host, r) {
+			matched = append(matched, name)
 		}
+	}
 
-		if err := v.applyAuth(b, r); err != nil {
-			return fmt.Errorf("binding %s: %w", b.Name, err)
-		}
+	switch len(matched) {
+	// The only case that goes on to apply anything.
+	case 1:
+	case 0:
+		return fmt.Errorf("%w: nothing in this vault matches %s %s://%s%s, so the request would "+
+			"have left carrying the placeholder the sandbox was given and failed at the host as "+
+			"the agent's own unauthenticated call. A binding has to agree on all four - "+
+			"match.hosts, match.schemes, match.methods and match.paths", ErrNoBinding, r.Method,
+			scheme, host, r.URL.Path)
+	default:
+		return fmt.Errorf("%w: %s %s://%s%s is covered by %s, and which credential it should "+
+			"carry is not this vault's guess to make", ErrAmbiguousBinding, r.Method, scheme, host,
+			r.URL.Path, strings.Join(matched, " and "))
+	}
+
+	b := v.bindings[matched[0]]
+
+	if err := v.applyAuth(b, r); err != nil {
+		return fmt.Errorf("binding %s: %w", b.Name, err)
 	}
 
 	return nil
 }
 
-// sortedBindingNames is the deterministic order Apply walks bindings in.
+// sortedBindingNames is the order Apply walks bindings in, so a refusal naming two of them names
+// them the same way twice.
 func sortedBindingNames(bindings map[string]Binding) []string {
 	names := make([]string, 0, len(bindings))
 	for name := range bindings {

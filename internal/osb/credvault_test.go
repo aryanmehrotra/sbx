@@ -98,15 +98,18 @@ func TestCredentialProxyNeedsNoFeatureSwitch(t *testing.T) {
 }
 
 // Off is a legal state, and it was not before: `present` treated {"enabled": false} as a request
-// for the feature and answered 501. The schema gives `enabled` a default of false, so {} and an
-// explicit false both mean off and both have to be accepted - the reference server reads them
-// that way, and a client written against it would otherwise be refused here.
+// for the feature and answered 501. An explicit false and a field that is not there both mean off
+// and both are accepted.
+//
+// {} used to be in this list, because the schema gives `enabled` a default of false and the
+// reference server reads an empty object as off. It is a 400 now
+// (TestAnEmptyCredentialProxyIsRefused): off has to be said, not defaulted into.
 func TestCredentialProxyOffIsAccepted(t *testing.T) {
 	t.Setenv("SBX_FEATURES", "")
 
 	h := newHarness(t)
 
-	for _, raw := range []string{`{"enabled": false}`, `{}`, `null`} {
+	for _, raw := range []string{`{"enabled": false}`, `null`} {
 		body := minimalCreate()
 		body["credentialProxy"] = json.RawMessage(raw)
 
@@ -123,6 +126,33 @@ func TestCredentialProxyOffIsAccepted(t *testing.T) {
 		if !ok || rec.CredentialProxy {
 			t.Fatalf("credentialProxy %s was recorded as enabled", raw)
 		}
+	}
+}
+
+// {"credentialProxy": {}} is the one request where sbx is deliberately stricter than the server it
+// claims compatibility with. Upstream's schema defaults `enabled` to false, so an empty object is
+// a legal way to say off there; here it is a 400 that names the field.
+//
+// It is the only spelling where "off" and "I meant to turn this on" are the same bytes - there is
+// no field to misspell and no value to mistype - so a server that reads it as off cannot tell the
+// two apart, and both callers hear 202. The conformance cost is bounded: upstream's Go SDK
+// declares `Enabled bool` with no `omitempty`, so it cannot send {} at all.
+func TestAnEmptyCredentialProxyIsRefused(t *testing.T) {
+	h := newHarness(t)
+
+	body := minimalCreate()
+	body["credentialProxy"] = json.RawMessage(`{}`)
+
+	resp := h.do("POST", "/v1/sandboxes", body, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("credentialProxy {} = %d, want 400: an empty object does not say whether a "+
+			"security feature is on, and reading it as off is that feature failing open and silent",
+			resp.StatusCode)
+	}
+
+	if msg := h.errOf(resp).Message; !strings.Contains(msg, "credentialProxy") ||
+		!strings.Contains(msg, "enabled") {
+		t.Errorf("the refusal has to name the field and the one that fixes it: %s", msg)
 	}
 }
 

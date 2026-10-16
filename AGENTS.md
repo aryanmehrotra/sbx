@@ -178,3 +178,11 @@ Never edit or delete earlier lines. Past about 25, move the oldest to [CONTRIBUT
   (`internal/osb/slots.go`, `internal/osb/provision.go`), so every API sandbox ran on the host
   kernel while DECISIONS said a tier never downgrades silently. A literal argument of an enum
   type deserves the same look as a TODO.
+- 2026-10-15 · net/http reads a connection's protocol off the connection itself, so a `net.Conn`
+  wrapper around a `*tls.Conn` negotiates `h2` by ALPN and then speaks HTTP/1.1 inside it - the
+  client's first frame comes back as "frame header looked like an HTTP/1.1 header". Wrap below the
+  TLS layer, not above it (`internal/credvault/intercept.go`, `serveTerminated`).
+- 2026-10-15 · "Nothing matched" is not "nothing to add". The credential swap forwarded a request
+  no binding covered exactly as it arrived, which sent the placeholder the sandbox was given to the
+  real host and made the filter's gap look like the agent's bad token (`Vault.Apply`). A control
+  that cannot say what a request should carry refuses it.

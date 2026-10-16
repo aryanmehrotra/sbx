@@ -673,6 +673,20 @@ This daemon has no credential vault to give the sandbox. There is no feature swi
 egress filter in its own process. The two entries below are the usual reasons; `sbx doctor` reports
 the host's answer as `hosted egress filter`.
 
+### An API create with `credentialProxy: {}` answers 400
+
+An empty object does not say whether the credential proxy is on. Say it:
+
+```json
+{"credentialProxy": {"enabled": true}}      // on
+{"credentialProxy": {"enabled": false}}     // off, and accepted
+```
+
+Leaving the field out is off too. Only `{}` is refused, and sbx is deliberately stricter than the
+reference server here: its schema defaults `enabled` to false, so `{}` is a legal way to say off
+there. It is the one spelling where "off" and "I meant to turn this on" are the same bytes, and a
+caller who meant on would get a sandbox with no credential protection and a 202 saying it worked.
+
 ### An API create with `credentialProxy` answers 400 about this machine
 
 `sbx serve` cannot hold a sandbox's egress filter in its own process here, so a vault would keep
@@ -798,6 +812,48 @@ can sign for the hosts that sandbox was given. Create the sandbox again.
 A binding may only name a host the sandbox can reach, because the filter would answer the request
 with 403 before any credential was added. Allow the host first with `PATCH
 /v1/sandboxes/{id}/networkpolicy`, or drop it from the binding.
+
+### `/credential-vault` answers 400 about two bindings covering one request
+
+Exactly one binding applies to a request, so a pair that could both cover one is refused when it is
+written rather than when a request falls in the overlap. The message names both bindings and an
+example request they share.
+
+Four things decide a match - `match.hosts`, `match.schemes`, `match.methods`, `match.paths` - and
+one of them disagreeing is enough to keep two bindings apart. The pairs that catch people out are
+the ones spelled differently and matching the same name anyway: `*.example.com` covers
+`api.example.com`, and `/v1/*` covers `/v1/messages`. Two bindings that name no method and no path
+collide on any shared host, because the spec's defaults are every common method and `/*`.
+
+Split them by path or method, or fold them into one binding:
+
+```json
+[{"name": "models", "match": {"hosts": ["api.example.com"], "paths": ["/v1/models"]}},
+ {"name": "messages", "match": {"hosts": ["api.example.com"], "paths": ["/v1/messages/*"]}}]
+```
+
+### A request to a bound host answers 502 "no credential binding covers this request"
+
+The destination is one the vault holds a binding for, but nothing in the vault matches that
+request's method and path, so it was refused instead of sent. Forwarding it would send the
+placeholder the sandbox was given to the real host, which fails there as a bad credential and reads
+as the agent's bug rather than the binding's.
+
+The message gives the method, scheme, host and path that matched nothing. Widen the binding's
+`match.methods` or `match.paths` to cover it, or drop the host from the binding so the tunnel is
+spliced rather than read.
+
+### A request inside a bound tunnel answers 421
+
+The three names for the destination did not agree: the host the tunnel was opened to, the server
+name in the TLS handshake, and the authority on the request itself. A credential is added only when
+all three are the same host.
+
+The usual cause is an HTTP/2 client reusing one connection for a second authority, which it is
+entitled to do and which 421 tells it not to do here - Go's and most other h2 clients open a fresh
+connection and carry on. The other cause is a client that connects by address, or with no SNI: a
+vault issues its leaves for names, so a handshake that named no host cannot be shown to have
+reached the one the binding covers. Connect by hostname.
 
 ## Remote deployments
 

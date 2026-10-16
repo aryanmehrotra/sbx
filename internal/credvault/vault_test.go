@@ -703,9 +703,16 @@ func TestApplyReplacesTheAgentsOwnHeaderRatherThanAppending(t *testing.T) {
 	}
 }
 
-// A request the bindings do not cover leaves exactly as it arrived. The vault decides what a
-// permitted request carries, and a host no binding names is not its business.
-func TestApplyLeavesAnUnmatchedRequestAlone(t *testing.T) {
+// A request no binding covers is refused, and nothing is sent.
+//
+// It used to be forwarded exactly as it arrived, on the grounds that a host no binding names is
+// not the vault's business. That reads well and is wrong where it matters: the filter asks the
+// vault only about a destination it holds a binding for, so a request that gets this far and
+// matches nothing is one whose method or path fell outside the binding - and forwarding it sends
+// the placeholder the sandbox was given to the real host. The agent then hears about it from the
+// host, as a bad credential, rather than from the filter, as a binding that does not cover what it
+// did. A credential control that cannot say what a request should carry refuses it.
+func TestApplyRefusesARequestNoBindingCovers(t *testing.T) {
 	v := newVault(t, "api.example.com", "other.example.com")
 
 	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
@@ -720,12 +727,14 @@ func TestApplyLeavesAnUnmatchedRequestAlone(t *testing.T) {
 		r := httpsTo(t, c.method, c.url, nil)
 		r.Header.Set("Authorization", "Bearer sk-placeholder-not-real")
 
-		if err := v.Apply(r); err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+		err := v.Apply(r)
+		if !errors.Is(err, ErrNoBinding) {
+			t.Errorf("%s: Apply returned %v, want ErrNoBinding: forwarding it sends the "+
+				"sandbox's placeholder to the real host", c.name, err)
 		}
 
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-placeholder-not-real" {
-			t.Errorf("%s: Apply rewrote a request no binding covers (%q)", c.name, got)
+			t.Errorf("%s: a refused request was rewritten anyway (%q)", c.name, got)
 		}
 	}
 }
@@ -859,51 +868,184 @@ func TestApplyRefusesABindingWhoseCredentialIsMissing(t *testing.T) {
 	}
 }
 
-// Two bindings can write one header, so which one wins cannot depend on map iteration: the same
-// request would carry different credentials on different runs.
-func TestApplyIsDeterministicWhenTwoBindingsWriteOneHeader(t *testing.T) {
-	const runs = 20
+// Two bindings that both cover one request are refused when they are written.
+//
+// They used to be accepted, and both applied in binding-name order, so the later name's credential
+// was the one that survived on the wire. That is deterministic - the same request carried the same
+// credential every run - but it is still a credential nobody chose: the answer came from how two
+// names sorted. The vault refuses the pair instead, at the write, where the caller can say which
+// one they meant.
+func TestTwoBindingsCoveringOneRequestAreRefusedAtTheWrite(t *testing.T) {
+	v := newVault(t, "api.example.com")
 
-	for range runs {
-		v := newVault(t, "api.example.com")
+	_, err := v.Create(CreateRequest{
+		Credentials: []Credential{
+			{Name: "first", Source: InlineSource{Type: "inline", Value: "sk-first"}},
+			{Name: "second", Source: InlineSource{Type: "inline", Value: "sk-second"}},
+		},
+		Bindings: []Binding{
+			{Name: "a-first", Match: Match{Hosts: []string{"api.example.com"}},
+				Auth: Auth{Type: authBearer, Credential: "first"}},
+			{Name: "b-second", Match: Match{Hosts: []string{"api.example.com"}},
+				Auth: Auth{Type: authBearer, Credential: "second"}},
+		},
+	})
 
-		if _, err := v.Create(CreateRequest{
-			Credentials: []Credential{
-				{Name: "first", Source: InlineSource{Type: "inline", Value: "sk-first"}},
-				{Name: "second", Source: InlineSource{Type: "inline", Value: "sk-second"}},
-			},
-			Bindings: []Binding{
-				{Name: "a-first", Match: Match{Hosts: []string{"api.example.com"}},
-					Auth: Auth{Type: authBearer, Credential: "first"}},
-				{Name: "b-second", Match: Match{Hosts: []string{"api.example.com"}},
-					Auth: Auth{Type: authBearer, Credential: "second"}},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
+	if err == nil {
+		t.Fatal("two bindings on one host with the spec's default methods and paths were " +
+			"accepted: every request to that host falls in the overlap, and which credential it " +
+			"carries would be decided by the binding names")
+	}
 
-		r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
-
-		if err := v.Apply(r); err != nil {
-			t.Fatal(err)
-		}
-
-		// Binding-name order, so the later name is the one that is left.
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-second" {
-			t.Fatalf("Authorization is %q, want the last binding by name to win every time", got)
+	for _, want := range []string{"a-first", "b-second", "GET https://api.example.com/"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q, so the caller cannot see which pair collides "+
+				"or on what: %v", want, err)
 		}
 	}
 }
 
-// A vault nothing was ever written to adds nothing, rather than refusing. The filter only asks
-// about a destination Bound said yes to, but a DELETE between the two is a real race.
-func TestApplyOnAnEmptyVaultChangesNothing(t *testing.T) {
+// The overlap is a property of what a request could match, not of how the patterns are spelled. A
+// wildcard and an exact host under it are different strings that cover the same name, and so are
+// two wildcards where one domain sits under the other.
+//
+// The pairs that do NOT overlap matter just as much: the rule has to stay cheap to satisfy, or a
+// sandbox with two credentials for one API cannot be configured at all. A different method, a
+// different path prefix, a different scheme or a sibling domain each keep two bindings apart.
+func TestWhichBindingPairsCountAsOverlapping(t *testing.T) {
+	for name, c := range map[string]struct {
+		first, second Match
+		overlap       bool
+	}{
+		"a wildcard over the other's exact host": {
+			first:   Match{Hosts: []string{"*.example.com"}},
+			second:  Match{Hosts: []string{"api.example.com"}},
+			overlap: true,
+		},
+		"a wildcard under another wildcard": {
+			first:   Match{Hosts: []string{"*.example.com"}},
+			second:  Match{Hosts: []string{"*.eu.example.com"}},
+			overlap: true,
+		},
+		"a wildcard and its own domain": {
+			first:  Match{Hosts: []string{"*.example.com"}},
+			second: Match{Hosts: []string{"example.com"}},
+		},
+		"two wildcards over sibling domains": {
+			first:  Match{Hosts: []string{"*.eu.example.com"}},
+			second: Match{Hosts: []string{"*.us.example.com"}},
+		},
+		"one host, methods that do not meet": {
+			first:  Match{Hosts: []string{"api.example.com"}, Methods: []string{"GET"}},
+			second: Match{Hosts: []string{"api.example.com"}, Methods: []string{"POST"}},
+		},
+		"one host, one method in common": {
+			first:   Match{Hosts: []string{"api.example.com"}, Methods: []string{"GET", "POST"}},
+			second:  Match{Hosts: []string{"api.example.com"}, Methods: []string{"POST"}},
+			overlap: true,
+		},
+		"one host, path prefixes that do not meet": {
+			first:  Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/*"}},
+			second: Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v2/*"}},
+		},
+		"one host, a path prefix over the other's exact path": {
+			first:   Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/*"}},
+			second:  Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/messages"}},
+			overlap: true,
+		},
+		"one host, a prefix under another prefix": {
+			first:   Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/*"}},
+			second:  Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/messages/*"}},
+			overlap: true,
+		},
+		"one host, schemes that do not meet": {
+			first:  Match{Hosts: []string{"api.example.com"}, Schemes: []string{"https"}},
+			second: Match{Hosts: []string{"api.example.com"}, Schemes: []string{"http"}},
+		},
+		"one host, the same exact path twice": {
+			first:   Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/messages"}},
+			second:  Match{Hosts: []string{"api.example.com"}, Paths: []string{"/v1/messages"}},
+			overlap: true,
+		},
+	} {
+		// The policy allows every name, so the only thing being tested is the overlap rule.
+		v := newVault(t, "*.example.com", "example.com", "*.eu.example.com", "*.us.example.com")
+
+		_, err := v.Create(CreateRequest{
+			Credentials: []Credential{
+				{Name: "api", Source: InlineSource{Type: "inline", Value: "sk-live-secret"}},
+			},
+			Bindings: []Binding{
+				{Name: "a", Match: c.first, Auth: Auth{Type: authBearer, Credential: "api"}},
+				{Name: "b", Match: c.second, Auth: Auth{Type: authBearer, Credential: "api"}},
+			},
+		})
+
+		switch {
+		case c.overlap && err == nil:
+			t.Errorf("%s: accepted, but one request matches both - and that request would be "+
+				"refused on a tunnel rather than here", name)
+		case c.overlap && !strings.Contains(err.Error(), `both cover`):
+			// Refused for the right reason: these hosts are all in the policy and all inside the
+			// authority, so a refusal that does not mention the overlap is a different bug
+			// passing this test.
+			t.Errorf("%s: refused, but not as an overlap: %v", name, err)
+		case !c.overlap && err != nil:
+			t.Errorf("%s: refused, but no request matches both: %v", name, err)
+		}
+	}
+}
+
+// The write path refuses an overlapping pair, so Apply should never meet one. It refuses it anyway
+// rather than picking, for the same reason an unknown auth type is refused here as well: the two
+// halves can go out of step, and a credential chosen by sort order is a credential nobody chose.
+func TestApplyRefusesARequestTwoBindingsCover(t *testing.T) {
+	v := newVault(t, "api.example.com")
+
+	if _, err := v.Create(bearerFor("api.example.com")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reach past the API, which will not write this pair, to the state the data path has to
+	// survive if it ever appears.
+	v.mu.Lock()
+	v.bindings["zz-second"] = Binding{
+		Name:  "zz-second",
+		Match: Match{Hosts: []string{"api.example.com"}, Schemes: defaultSchemes(), Methods: defaultMethods(), Paths: defaultPaths()},
+		Auth:  Auth{Type: authBearer, Credential: "api"},
+	}
+	v.mu.Unlock()
+
+	r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
+	r.Header.Set("Authorization", "Bearer sk-placeholder-not-real")
+
+	err := v.Apply(r)
+	if !errors.Is(err, ErrAmbiguousBinding) {
+		t.Fatalf("Apply returned %v, want ErrAmbiguousBinding", err)
+	}
+
+	for _, want := range []string{"api", "zz-second"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name the binding %q: %v", want, err)
+		}
+	}
+
+	if got := r.Header.Get("Authorization"); got != "Bearer sk-placeholder-not-real" {
+		t.Errorf("a refused request was credentialled anyway (%q)", got)
+	}
+}
+
+// A vault nothing was ever written to refuses the request, rather than letting it through
+// uncredentialled. The filter only asks about a destination Bound said yes to, but a DELETE
+// between the two is a real race - and the request it races with is one that was meant to carry a
+// credential, so an empty vault is not a vault that decided it needs none.
+func TestApplyOnAnEmptyVaultRefuses(t *testing.T) {
 	v := newVault(t, "api.example.com")
 
 	r := httpsTo(t, http.MethodGet, "https://api.example.com/v1/models", nil)
 
-	if err := v.Apply(r); err != nil {
-		t.Fatalf("Apply on a vault with no revision refused: %v", err)
+	if err := v.Apply(r); !errors.Is(err, ErrNoBinding) {
+		t.Fatalf("Apply on a vault with no revision returned %v, want ErrNoBinding", err)
 	}
 
 	if r.Header.Get("Authorization") != "" {

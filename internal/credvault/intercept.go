@@ -88,12 +88,28 @@ func Intercept(filter http.Handler, vault *Vault) http.Handler {
 
 // serveTerminated runs one terminated tunnel: handshake as the destination, then serve the
 // requests inside it through the filter.
+//
+// Both protocols the agent CLIs use are offered. Claude Code and Codex stream over HTTP/2, so a
+// termination that only spoke HTTP/1.1 was a credential path the clients it exists for had never
+// been through: whichever of them negotiated h2 would have found no ALPN agreement and fallen back
+// at best, and the swap is the product's headline protection.
 func serveTerminated(client net.Conn, leaf *tls.Certificate, filter http.Handler, host, port string) {
-	inside := tls.Server(client, &tls.Config{
+	// The listener wrapper goes UNDER the TLS layer rather than around it, which is what makes h2
+	// reachable at all. net/http decides a connection's protocol by asking it for its
+	// ConnectionState, so the thing http.Serve is handed has to BE the *tls.Conn - wrapped in
+	// anything, the methods are not promoted, the ALPN result is never read, and every tunnel is
+	// HTTP/1.1 whatever the handshake agreed. Closing still reaches the listener, because closing
+	// a tls.Conn closes what it was built on.
+	ln := &oneConn{}
+
+	inside := tls.Server(closesListener{Conn: client, listener: ln}, &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
 		MinVersion:   tls.VersionTLS12,
+		NextProtos:   []string{"h2", "http/1.1"},
 	})
 	defer inside.Close()
+
+	ln.conn = inside
 
 	_ = inside.SetDeadline(time.Now().Add(handshakeTimeout))
 
@@ -109,38 +125,47 @@ func serveTerminated(client net.Conn, leaf *tls.Certificate, filter http.Handler
 	_ = inside.SetDeadline(time.Time{})
 
 	// http.Serve gives the decrypted stream a real HTTP server: keep-alive, pipelining, chunked
-	// bodies and correct response framing, none of which is worth reimplementing here.
+	// bodies, the HTTP/2 framing layer and correct response framing, none of which is worth
+	// reimplementing here. It configures HTTP/2 for a listener it was given rather than one it
+	// opened - a zero Server has no TLSConfig, which net/http reads as "the caller may hand me an
+	// h2 conn" - so the only thing this has to get right is the NextProtos above and the
+	// unwrapped conn below. The handshake is done already; the server's own is idempotent.
 	//
-	// It returns when Accept fails and at no other time, so the connection it is handed closes
-	// the listener as well: http.Serve's own per-connection goroutine closes that connection once
-	// the last request on it is done, Accept comes back with net.ErrClosed, and Serve returns.
-	// Closing the connection alone is not enough - the defer above closes the connection, not the
-	// listener - and without the listener going too this goroutine parks in Accept for the life of
-	// the daemon, one per terminated tunnel.
-	ln := &oneConn{}
-	ln.conn = closesListener{Conn: inside, listener: ln}
-
-	_ = http.Serve(ln, originForm(filter, host, port))
+	// Serve returns when Accept fails and at no other time, so the connection it is handed closes
+	// the listener as well: its per-connection goroutine closes that connection once the last
+	// request on it is done, Accept comes back with net.ErrClosed, and Serve returns. Closing the
+	// connection alone is not enough - the defer above closes the connection, not the listener -
+	// and without the listener going too this goroutine parks in Accept for the life of the
+	// daemon, one per terminated tunnel.
+	_ = http.Serve(ln, originForm(filter, host, port, inside.ConnectionState().ServerName))
 }
 
 // originForm turns each request inside the tunnel back into the absolute-form request the filter
-// already knows how to handle, and hands it over.
+// already knows how to handle, and hands it over - after checking that the three names for the
+// destination agree.
 //
 // A request on a terminated tunnel carries an origin-form target (`GET /v1/messages`) and the
-// destination only in Host, because the client believes it is talking to the destination. The
-// filter's relay path reads the URL, so the scheme and host it was CONNECTed to are put back -
-// https, because this is a tunnel that was terminated, whatever the Host header claims.
-func originForm(filter http.Handler, host, port string) http.Handler {
+// destination only in its authority, because the client believes it is talking to the destination.
+// The filter's relay path reads the URL, so the scheme and host it was CONNECTed to are put back -
+// https, because this is a tunnel that was terminated, whatever the authority claims.
+func originForm(filter http.Handler, host, port, sni string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL == nil {
 			r.URL = &url.URL{}
 		}
 
+		if why := misdirected(host, port, sni, r); why != "" {
+			http.Error(w, why, http.StatusMisdirectedRequest)
+
+			return
+		}
+
 		r.URL.Scheme = "https"
 
-		// The CONNECT target, not the Host header: the header is the client's claim and the
-		// target is what the policy was checked against and what the certificate was minted for.
-		// A client that sent a different Host would otherwise pick its own destination.
+		// The CONNECT target, not the request's authority: the authority is the client's claim
+		// and the target is what the policy was checked against and what the certificate was
+		// minted for. They have been proved equal just above, so this is now the same value said
+		// once rather than a rewrite that hides a disagreement.
 		r.URL.Host = net.JoinHostPort(host, port)
 		r.Host = r.URL.Host
 
@@ -150,8 +175,65 @@ func originForm(filter http.Handler, host, port string) http.Handler {
 		r.TLS = nil
 		r.RequestURI = ""
 
+		// The relay leg is HTTP/1.1 whatever arrived here: the filter's transport writes an
+		// HTTP/1.1 request, so a struct still saying HTTP/2.0 describes a wire nobody wrote. It
+		// does not follow redirects either way - the relay is a RoundTrip, not a Client - so a
+		// 3xx goes back to the agent, which is the only place that may decide to follow it.
+		r.Proto, r.ProtoMajor, r.ProtoMinor = "HTTP/1.1", 1, 1
+
 		filter.ServeHTTP(w, r)
 	})
+}
+
+// misdirected reports why a request inside the tunnel must not be served, or "" when the three
+// names for its destination agree.
+//
+// There are three names, and a credential is added only when all of them are the same one: the
+// CONNECT target the policy was checked against and the leaf was minted for, the SNI the client
+// asked the handshake for, and the authority the request itself carries. HTTP/2 is what makes this
+// worth enforcing rather than assuming. A client may coalesce requests for several authorities
+// onto one connection it opened for a different one, so the authority of request two on an h2
+// stream is not the name anything upstream of here was checked against - and the earlier code
+// overwrote the authority with the CONNECT target, which turned exactly that disagreement into a
+// request credentialled for a host the client never named.
+//
+// 421 and not 403, because it is the status that says this: the connection is wrong for this
+// request, open another one. Go's own HTTP/2 client re-dials on a 421 rather than failing, so a
+// coalescing client recovers by itself.
+func misdirected(host, port, sni string, r *http.Request) string {
+	// An authority with no port keeps the connection's: a client naming :443 and a client naming
+	// nothing are talking about the same place. One that names a DIFFERENT port is not.
+	authority, authorityPort, err := splitHostPort(r.Host)
+	if err != nil {
+		authorityPort = port
+	}
+
+	switch {
+	case !sameHost(authority, host) || authorityPort != port:
+		return "this request is for " + r.Host + " on a connection opened for " +
+			net.JoinHostPort(host, port) + ", so no credential was added and nothing was sent. " +
+			"A credential binding applies to the host the tunnel was opened to; open one per host"
+
+	// An empty SNI is a client that connected without naming the host - by address, or with the
+	// extension left off. It cannot agree with anything, so it does not: a vault whose leaves are
+	// issued for names has nothing to check such a request against.
+	case sni == "":
+		return "this request arrived with no server name in its TLS handshake, so the name it " +
+			"was sent to cannot be shown to be " + host + " and no credential was added. Connect " +
+			"by hostname, not by address"
+
+	case !sameHost(sni, host):
+		return "this request's TLS handshake asked for " + sni + " on a connection opened for " +
+			host + ", so no credential was added and nothing was sent"
+	}
+
+	return ""
+}
+
+// sameHost compares two hostnames the way the vault's own matching does: case-insensitively, with
+// the root's trailing dot off.
+func sameHost(a, b string) bool {
+	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
 }
 
 // leafFor is the certificate this filter presents as host, from the sandbox's own authority.
@@ -182,13 +264,18 @@ func targetOf(target string) (string, string) {
 	return host, port
 }
 
-// closesListener is the connection as http.Serve sees it: closing it closes the listener too.
+// closesListener is the raw connection with one addition: closing it closes the listener too.
 //
 // That is the only thing that ends http.Serve here, because http.Serve returns when Accept fails,
 // Accept fails when the listener is closed, and the listener is a oneConn that nobody else ever
 // reaches. The wrapper rather than a close in serveTerminated: the connection ends on http.Serve's
 // own goroutine, whenever the last request on it is done, and that is the moment the listener has
 // to go.
+//
+// It sits UNDER the TLS layer rather than over it. Over it, the thing http.Serve is handed is not a
+// *tls.Conn, so net/http cannot read the handshake's ALPN result and every tunnel is HTTP/1.1
+// however the handshake ended. Closing still arrives: a tls.Conn's Close closes what it was built
+// on, which is this.
 type closesListener struct {
 	net.Conn
 
@@ -210,7 +297,7 @@ func (c closesListener) Close() error {
 //
 // Close does not close the connection: serveTerminated owns it through its own defer, and closing
 // it twice would race the copy still draining it. The other direction does hold - the connection
-// this yields is wrapped in closesListener - and that is what lets http.Serve return.
+// this yields is built on a closesListener - and that is what lets http.Serve return.
 type oneConn struct {
 	conn net.Conn
 

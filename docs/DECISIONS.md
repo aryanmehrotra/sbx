@@ -1061,12 +1061,20 @@ drops every vault and the API answers 404 until the caller posts again. The alte
 private key on a filesystem, and the API's record file - which does carry the `credentialProxy`
 flag - is 0600 but survives upgrades, reboots and backups.
 
-**`{}` is accepted as off, and a field this server cannot read is refused.** `CredentialProxyConfig`
-gives `enabled` a default of false, so `{"credentialProxy": {}}` and an explicit false both mean
-off and the reference server reads them that way; refusing them would refuse a request that works
-against upstream. What is refused is anything this server would read as off when the caller meant
-on: a quoted boolean, a misspelled field, a field the schema does not have. Being off by accident
-is the one failure a control like this must not have.
+**Nothing turns this on or off by accident, including `{}`.** What is refused is anything this
+server would read as off when the caller meant on: a quoted boolean, a misspelled field, a field
+the schema does not have - and an empty object. Being off by accident is the one failure a control
+like this must not have.
+
+`{}` was accepted as off at first, and the argument for that was real: `CredentialProxyConfig` gives
+`enabled` a default of false, so `{"credentialProxy": {}}` means off in the schema and the reference
+server reads it that way, and refusing it refuses a request that works against upstream. It is
+refused anyway, because `{}` is the one spelling where "off" and "I meant to turn this on" are the
+same bytes. There is no field to misspell and no value to mistype, so the server cannot tell the
+two callers apart and both hear 202. An explicit `false` stays legal, which is what keeps the
+refusal cheap: a caller who means off says so. The conformance cost is bounded and was measured
+rather than assumed - upstream's Go SDK declares `Enabled bool` with no `omitempty`, so it cannot
+send `{}` at all, and both upstream tests that send a `credentialProxy` send `{"enabled": true}`.
 
 ---
 
@@ -1110,8 +1118,42 @@ there in a way that reads as the agent's bug rather than the filter's.
 one: two `Authorization` headers are one header with two values on the wire, and upstream reads the
 first.
 
-**Bindings are applied in binding-name order.** Two bindings can write one header, and map
-iteration would make which one wins differ between two identical requests.
+**Exactly one binding applies, and none or two is a refusal.** This replaced two earlier answers,
+and both of them were the swap failing quietly. Every matching binding used to be applied in
+binding-name order, so where two bindings overlapped the credential on the wire was decided by how
+their names sorted - deterministic, and still a credential nobody chose. A request nothing matched
+used to be forwarded untouched, on the grounds that a host no binding names is not the vault's
+business; but the filter asks the vault only about a destination it holds a binding for, so a
+request that gets that far and matches nothing is one whose method or path fell outside the
+binding, and forwarding it sends the sandbox's placeholder to the real host. Neither rule follows
+from the spec, which defines a binding's match and says nothing about two of them covering one
+request. This one fails closed.
+
+**An overlapping pair is refused when it is written, not when a request falls in it.** A vault that
+cannot be applied should not be stored: the alternative is a 502 on a tunnel, long after the PATCH
+that caused it, for whichever requests land in the overlap. Overlap is a property of what a request
+could match rather than of how the patterns are spelled, so `*.example.com` collides with
+`api.example.com` and `/v1/*` collides with `/v1/messages`. A wildcard does not cover its own
+domain, because a match needs a label in front of it. The apply-time refusal stays as the backstop
+for the two halves going out of step.
+
+**The termination speaks HTTP/2 as well, and checks that three names agree.** Claude Code and Codex
+stream over h2, so an interception that offered only HTTP/1.1 was a credential path the clients it
+exists for had never been through. ALPN offers `h2` and `http/1.1`, and the decrypted stream is
+handed to `http.Serve` as the `tls.Conn` itself rather than wrapped in anything - net/http decides
+a connection's protocol by asking it for its `ConnectionState`, so a wrapper negotiates h2 and then
+speaks HTTP/1.1 inside it. The relay leg stays HTTP/1.1, which is what the filter's transport
+writes, and it does not follow redirects: a 3xx goes back to the agent to decide on.
+
+HTTP/2 is also why the names are checked rather than assumed. A client may coalesce requests for
+several authorities onto one connection it opened for a different one, so the authority of the
+second request on a stream is not the name the policy was checked against or the leaf was minted
+for. A credential is added only when the CONNECT target, the SNI and the request's authority are
+the same host; anything else is 421, which is the status that says "wrong connection for this
+request" and which h2 clients recover from by opening another. A handshake with no server name at
+all cannot agree with anything and is refused on the same grounds: this authority issues leaves for
+names. The authority used to be overwritten with the CONNECT target, which turned that
+disagreement into a request credentialled for a host the client never named.
 
 ### The authority is minted once per sandbox, constrained to the hosts its policy allows
 
