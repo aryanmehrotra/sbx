@@ -155,10 +155,40 @@ func TestProvidesIsolationRefusesWhatDockerCannotRun(t *testing.T) {
 
 	// No engine to judge: whatever asks next reports a dead daemon better than an isolation
 	// message would, so this is not the place that refuses.
+	//
+	// This reaches that arm two ways, and both must be silent. Against an unreachable socket
+	// `docker info` exits non-zero on some versions and ZERO on others, printing client-side
+	// info and warning on stderr. The second shape is why the name list, not the exit code, is
+	// what decides: see TestDockerRuntimeNamesTreatsAnEmptyAnswerAsNoAnswer below.
 	for _, iso := range []Isolation{IsolationGVisor, IsolationKata} {
 		if err := d.ProvidesIsolation(iso); err != nil {
 			t.Errorf("%s refused with no engine to ask: %v", iso, err)
 		}
+	}
+}
+
+// An empty answer is not a negative answer.
+//
+// A daemon that is up always reports at least its own default runtime, so no names means the
+// question never reached a daemon — and refusing on that would tell an operator whose daemon is
+// down to install a runtime they may already have. That is the same misdiagnosis
+// ProvidesIsolation exists to remove, reached from the other side.
+//
+// Pinned here rather than through ProvidesIsolation because the docker call shells out with no
+// seam, and the shape of the answer is what the decision turns on.
+func TestDockerRuntimeNamesTreatsAnEmptyAnswerAsNoAnswer(t *testing.T) {
+	for name, info := range map[string]string{
+		"nothing at all":         "",
+		"an empty object":        "{}",
+		"a null":                 "null",
+		"output nobody can read": "Cannot connect to the Docker daemon",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := dockerRuntimeNames(info); len(got) != 0 {
+				t.Errorf("dockerRuntimeNames(%q) = %v, want none: a non-empty list here would be "+
+					"read as a daemon that answered and lacks the runtime", info, got)
+			}
+		})
 	}
 }
 

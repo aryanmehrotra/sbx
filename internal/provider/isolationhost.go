@@ -63,6 +63,21 @@ func (d *dockerProvider) ProvidesIsolation(iso Isolation) error {
 		return nil
 	}
 
+	// NO NAMES AT ALL IS NOT A NEGATIVE ANSWER. A daemon that is up always reports at least its
+	// own default runtime, so an empty list means the question did not reach a daemon — the CLI
+	// answered for itself. `docker info` does not reliably exit non-zero for that: against an
+	// unreachable socket some versions print client-side info, warn on stderr and exit 0, which
+	// is how this arm is reached without the error above firing.
+	//
+	// Refusing here would tell an operator whose daemon is down to install a runtime they may
+	// well already have — the same misdiagnosis this function exists to remove, arrived at from
+	// the other side. So it is treated exactly like the unreachable-engine case above: say
+	// nothing, and let whatever asks next report the dead daemon, which it does far better than
+	// an isolation message could.
+	if len(have) == 0 {
+		return nil
+	}
+
 	// The daemon's registered runtimes are the authority, not a binary on this PATH: the daemon
 	// runs the container, and where it lives in a VM this PATH means nothing. `sbx doctor` says
 	// the same thing from the CLI's default engine; this asks the engine this provider is on.
