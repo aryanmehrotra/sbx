@@ -22,22 +22,8 @@ At release time, Breaking and Changed become the note's "Before you upgrade", Ad
 
 ## Breaking
 
-- `credentialProxy: {}` on a create is refused with 400: say `{"enabled": true}` or
-  `{"enabled": false}`.
-- A credential binding applies only where exactly one binding matches. Two bindings that could
-  cover one request are refused when written, and a request no binding covers is refused rather
-  than sent without its credential.
-
 ## Added
-
-- `extensions["sbx.isolation"]` creates an OpenSandbox sandbox under `gvisor`, `kata` or
-  `firecracker`, refused by name where the host cannot provide it.
-- Credential injection works for HTTP/2 clients, so Claude Code and Codex reach a bound host
-  through the filter.
 
 ## Changed
 
 ## Fixed
-
-- A request inside a bound tunnel whose TLS name or authority is not the host the tunnel was
-  opened to answers 421 instead of being credentialled for the wrong host.

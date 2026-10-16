@@ -4,6 +4,7 @@ What changed in each sbx release, what it means for you, and how to upgrade. New
 
 | Version | Date | Headline |
 |---|---|---|
+| [v0.18.0](v0.18.0.md) | 2026-10-16 | An API create gets the isolation tier it asks for, or a refusal |
 | [v0.17.0](v0.17.0.md) | 2026-10-15 | The filter adds the real credential a sandbox never holds |
 | [v0.16.1](v0.16.1.md) | 2026-09-30 | `sbx env` uses only this backend's record of a sandbox |
 | [v0.16.0](v0.16.0.md) | 2026-09-30 | `sbx ready` and `sbx egress` you can trust on any engine |
